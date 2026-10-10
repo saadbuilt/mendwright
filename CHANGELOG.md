@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version starts with 0, a minor release can change the public API.
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-10-11
 
 First public release. Earlier versions were developed privately as selfheal and never published.
 
