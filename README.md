@@ -16,8 +16,6 @@ Self-healing selectors for Playwright and Selenium.
 
 When a site update breaks a selector, mendwright asks a model for a new XPath, checks it against the live page, saves it, and retries the step. On the next run the saved selector is used and the model isn't called at all.
 
-It won't heal a step whose key or button label says pay, buy, checkout, submit, confirm or delete. A wrong guess there could act on a live account, and those are yours to fix by hand.
-
 Use the model you already have: Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama.
 
 ## Install
