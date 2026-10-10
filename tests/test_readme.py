@@ -581,7 +581,7 @@ def test_readme_quotes_the_attention_required_text_the_code_raises(world):
     world.site.set_content(SIGNUP_HTML)       # has no #pay, so the selector misses
     heal = mendwright.open(SyncPage(world.site))
     with pytest.raises(mendwright.AttentionRequired) as caught:
-        heal.locator('pay', '#pay').click()
+        heal.locator('pay', '#pay', destructive=True).click()
     error = caught.value
     raised = type(error).__module__ + '.' + type(error).__qualname__ + ': ' + str(error)
 

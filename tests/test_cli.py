@@ -52,8 +52,7 @@ DEMO_LINES = [
     "      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page",
     "      retry    ok: box checked with the healed selector, heal confirmed",
     "  v2  pay           #pay           MISS   no element matches",
-    "      refused  'pay' looks like a destructive control (its key contains 'pay'). "
-    "Not healed, no model call.",
+    "      refused  'pay' is marked destructive=True. Not healed, no model call.",
     "",
     "Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.",
 ]
@@ -159,6 +158,8 @@ def test_demo_keep_leaves_a_store_that_report_reads(capsys, temp_root):
     terms = next(k for k in report["keys"] if k["key"] == "accept_terms")
     sources = {c["selector"]: c["source"] for c in terms["candidates"]}
     assert sources == {"#accept-terms": "code", HEALED_XPATH: "heal"}
+    pay = next(k for k in report["keys"] if k["key"] == "pay")
+    assert pay["destructive"] is True                     # destructive=True was saved
     assert report["journal"]["counts"] == {"requested": 1, "applied": 1, "rejected": 0,
                                            "quarantined": 0}
     assert report["journal"]["last_applied"][0]["old"] == ["#accept-terms"]
@@ -675,7 +676,7 @@ def test_report_text(capsys, tmp_path):
         "  superseded  code  #old-go  in frame //iframe[@id='shop']  (last success: never)",
         "  heals: 1 requested, 0 applied, 0 rejected, 0 quarantined",
         "",
-        "pay_button  (button, treated as destructive because its key contains 'pay')",
+        "pay_button  (button)",                    # the word 'pay' alone marks nothing
         "",
         "Heals (journal.jsonl): 3 requested, 2 applied, 1 rejected, 1 quarantined",
         "Last applied heals, newest first:",
@@ -703,8 +704,7 @@ def test_report_markdown_for_the_step_summary(capsys, tmp_path):
         "| `go` (button, destructive, never auto-healed) | "
         "`//button[@id='go'] \\| //a[@id='go']` | seed | active | never |",
         "|  | `#old-go` in frame `//iframe[@id='shop']` | code | **superseded** | never |",
-        "| `pay_button` (button, treated as destructive because its key contains 'pay') "
-        "| (none) | | | |",
+        "| `pay_button` (button) | (none) | | | |",
         "",
         "### Heals",
         "",
@@ -745,7 +745,7 @@ def test_report_json(capsys, tmp_path):
     assert go["candidates"][1] == {"selector": "#old-go", "source": "code",
                                    "status": "superseded", "last_success": None,
                                    "added": None, "frame": "//iframe[@id='shop']"}
-    assert data["keys"][2]["looks_destructive"] == "its key contains 'pay'"
+    assert data["keys"][2]["destructive"] is False        # a key is destructive only when marked
     journal = data["journal"]
     assert journal["exists"] is True
     assert journal["counts"] == {"requested": 3, "applied": 2, "rejected": 1, "quarantined": 1}

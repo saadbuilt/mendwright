@@ -28,7 +28,6 @@ from typing import Optional, Protocol, runtime_checkable
 
 import lxml.html
 
-from ..destructive import destructive_label, element_labels, is_labelled_control
 from ..validation import _norm, _role_of
 
 FrameChain = tuple  # tuple[str, ...] of frame selectors, outermost first
@@ -280,24 +279,6 @@ def element_summary(tag, outer_html):
     return {'tag': tag or (el.tag if isinstance(el.tag, str) else ''),
             'role': _role_of(el), 'text': text,
             'outer_html': _VALUE_ATTR.sub('', outer)[:OUTER_HTML_LIMIT]}
-
-
-def described_destructive_label(described, extra_labels=()):
-    """(label, word) when the element a describe() result stands for is a button, link or
-    input button and one of its labels contains a destructive word, else None.
-
-    The labels are its text and the aria-label, title and alt text read from its
-    outer_html, each checked on its own (see mendwright.destructive.element_labels).
-    describe() strips value= attributes, so a caller that can read an input button's
-    value from the element passes it in extra_labels."""
-    if not isinstance(described, dict):
-        return None
-    el = _parse_element(described.get('tag'), described.get('outer_html') or '')
-    if not is_labelled_control(el, described.get('role')):
-        return None
-    labels = [_norm(described.get('text') or '')] + element_labels(el, text=False)
-    labels += [_norm(x) for x in extra_labels if isinstance(x, str)]
-    return destructive_label([label for label in dict.fromkeys(labels) if label])
 
 
 def summary_from_js(data):

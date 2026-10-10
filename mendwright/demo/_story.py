@@ -2,11 +2,13 @@
 
     heal = mendwright.open(page, provider=..., store_path=<temp dir>)
     heal.locator('accept_terms', '#accept-terms').check(...)
+    heal.locator('pay', '#pay', destructive=True)
 
 v1 of a checkout page matches both selectors. v2 (a redesign) removed both ids. The
 checkbox misses, the provider proposes an XPath, mendwright's local checks pass it, the
 step is retried and the box is checked. The pay button misses too, and is refused
-without a model call, because mendwright never heals a destructive control.
+without a model call, because its key is marked destructive=True and mendwright never
+heals a key marked destructive.
 
 The provider here is ScriptedProvider: it builds the real prompt and parses a canned
 reply with the real parser, but makes no API call. The page is StandInPage, or a real
@@ -104,7 +106,7 @@ class StoryResult:
     healed_xpath: str | None = None  # what mendwright applied for accept_terms
     retried: bool = False           # the retried step checked the box on v2
     confirmed: bool | None = None   # the canary result for the heal
-    pay_refused: bool = False       # the pay heal was refused as destructive
+    pay_refused: bool = False       # the pay heal was refused: the key is marked destructive
     pay_model_calls: int = 0        # model calls spent on pay (must stay 0)
     model_calls: int = 0
     store_path: str = ''
@@ -210,12 +212,6 @@ def _recorded(provider):
     return calls, proposals
 
 
-def _refusal(reason):
-    """The first part of the coordinator's destructive refusal, for one short line."""
-    head = reason.split(', and mendwright never auto-heals', 1)[0].strip()
-    return head if head and head != reason.strip() else reason.strip()
-
-
 def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provider=None):
     """Run the story on ``page`` (StandInPage or a real sync Playwright page) with the
     override store at ``store_path``. ``say`` receives each line. Returns a StoryResult.
@@ -253,7 +249,7 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
     result.v1_terms = bool(box.is_checked())
     say(row('v1', TERMS_KEY, TERMS_SELECTOR, 'ok' if result.v1_terms else 'FAIL',
             'green' if result.v1_terms else 'red', 'matched, box checked'))
-    heal.locator(PAY_KEY, PAY_SELECTOR, poll_ms=poll_ms)
+    heal.locator(PAY_KEY, PAY_SELECTOR, destructive=True, poll_ms=poll_ms)
     result.v1_pay = True
     say(row('v1', PAY_KEY, PAY_SELECTOR, 'ok', 'green', 'matched (not clicked)'))
 
@@ -293,20 +289,20 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
         result.problems.append('#accept-terms still matched on v2, so nothing was healed.')
         say(row('v2', TERMS_KEY, TERMS_SELECTOR, 'ok', 'yellow', 'still matched (no heal needed)'))
 
-    # v2: the pay button broke too, and is never healed.
+    # v2: the pay button broke too. It is marked destructive=True, so it is never healed.
     calls_before = len(asked)
     try:
-        heal.locator(PAY_KEY, PAY_SELECTOR, poll_ms=poll_ms)
+        heal.locator(PAY_KEY, PAY_SELECTOR, destructive=True, poll_ms=poll_ms)
     except AttentionRequired as exc:
         reason = heal.coordinator.explain(PAY_KEY) or str(exc)
-        result.pay_refused = 'destructive' in reason
+        result.pay_refused = 'is marked as a destructive control' in reason
         result.pay_model_calls = len(asked) - calls_before
         say(row('v2', PAY_KEY, PAY_SELECTOR, 'MISS', 'red', 'no element matches'))
         if result.pay_refused:
             calls = ('no model call' if result.pay_model_calls == 0
                      else str(result.pay_model_calls) + ' model call(s)')
-            say(detail(style('refused', 'yellow'), _refusal(reason) + '. Not healed, ' + calls
-                       + '.'))
+            say(detail(style('refused', 'yellow'), "'" + PAY_KEY + "' is marked destructive=True. "
+                       'Not healed, ' + calls + '.'))
         else:
             say(detail('', reason))
     else:

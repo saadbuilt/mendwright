@@ -108,7 +108,7 @@ PAY_PAGE = page('<form><button type="button" id="pay-now">Pay now</button></form
 
 
 def neutral_button_page(button_id):
-    """One button with a label that has no destructive word in it."""
+    """One button labelled Continue, with the given id."""
     return page('<form><button type="button" id="' + button_id + '">Continue</button></form>')
 
 

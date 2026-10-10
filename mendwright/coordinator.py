@@ -1,7 +1,7 @@
 """The heal itself. When every candidate selector misses, HealCoordinator captures the
 page, asks a provider for a fix, checks and saves it, and resolve_with_heal() retries the
 step in the same call. A guard can block healing while a payment or registration is being
-submitted, destructive controls are never healed, and a failed canary quarantines the
+submitted, keys marked destructive are never healed, and a failed canary quarantines the
 healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
 """
@@ -10,7 +10,7 @@ import logging
 import time
 
 from .capture import build_bundle
-from .client import DEFAULT_AUTH_HEADER, apply, refuses_destructive_target
+from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
 from .journal import NullJournal
 from .providers import GatewayProvider
@@ -38,14 +38,7 @@ def _role_needed(selector_key):
             "in the seed file.")
 
 
-def _destructive_message(selector_key, meta):
-    why = meta.get('destructiveReason')
-    if isinstance(why, str) and why:
-        # The facade guessed this from the key or the element's text.
-        return ("'" + selector_key + "' looks like a destructive control (" + why + "), and "
-                "mendwright never auto-heals those, because a validated but wrong selector "
-                "could act on a live account. Fix the selector in your code, or pass "
-                "destructive=False to heal.locator() if this control is safe to heal.")
+def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
             "could act on a live account. Fix the selector in your code or seed file by hand.")
@@ -120,13 +113,13 @@ class HealCoordinator:
 
     def try_heal(self, selector_key, meta, broken_candidates, context, row=None):
         """Heal + apply a validated selector. Returns the applied xpath (truthy) if a
-        candidate was applied, else None/False. Never heals a destructive control, and
+        candidate was applied, else None/False. Never heals a key marked destructive, and
         never heals while the guard blocks. On every non-applied path it records a
         human-readable reason via ``self.heal_reasons`` (see ``explain``)."""
         if meta.get('destructive'):
-            # Submit/pay/confirm controls are not auto-healed: a validated but wrong
-            # selector would act on a live account, and the canary IS the real click.
-            return self._decline(selector_key, _destructive_message(selector_key, meta))
+            # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
+            # but wrong selector would act on a live account, and the canary IS the real click.
+            return self._decline(selector_key, _destructive_message(selector_key))
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
         # stand-in) carries its own actionable reason; surface it verbatim. The str check
         # matters: a bare Mock()/MagicMock() test double answers every attribute with a
@@ -183,12 +176,10 @@ class HealCoordinator:
                                   reasoning=proposal.get('reasoning'))
             if self.dry_run:
                 valid = None
-                refuse = refuses_destructive_target(self.store, selector_key, meta)
                 for xpath in [proposal.get('xpath')] + list(proposal.get('fallbacks') or []):
                     if xpath and validate(xpath, html, expected_role=meta.get('expectedRole'),
                                           expected_text=meta.get('expectedText'),
-                                          destructive=bool(meta.get('destructive')),
-                                          refuse_destructive_target=refuse).ok:
+                                          destructive=bool(meta.get('destructive'))).ok:
                         valid = xpath
                         break
                 self._emit(logging.INFO, '[heal dry-run] key=' + selector_key + ' proposed=' +
@@ -217,9 +208,7 @@ class HealCoordinator:
         self._decline(selector_key,
             "no selector the model proposed for '" + selector_key + "' passed mendwright's local "
             "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
-            "matches exactly one element of the expected role and is present on the live page. "
-            "It also refuses a button or link whose label looks destructive (pay, buy, "
-            "checkout, confirm, submit, delete), unless the key has destructive=False.")
+            "matches exactly one element of the expected role and is present on the live page.")
         return None
 
     def _provider_model(self):

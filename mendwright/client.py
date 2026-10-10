@@ -150,24 +150,6 @@ def _xpath_forms(proposed):
     return body, normalize('xpath=' + body)
 
 
-def refuses_destructive_target(store, selector_key, meta):
-    """True when a heal of selector_key must not land on an element whose label looks
-    destructive (see mendwright.destructive). On by default. Off when meta says
-    refuseDestructiveTarget=False, or when the store holds an explicit destructive=False
-    for the key (heal.locator(..., destructive=False) or store.set_meta(...))."""
-    flag = (meta or {}).get('refuseDestructiveTarget')
-    if isinstance(flag, bool):
-        return flag
-    choice = getattr(store, 'destructive_choice', None)
-    if callable(choice):
-        try:
-            if choice(selector_key) is False:
-                return False
-        except Exception:
-            pass
-    return True
-
-
 def apply(store, selector_key, proposal, html, meta, driver=None):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
@@ -177,11 +159,6 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
     supplied, the live check against the current page (exactly-one + visible). A candidate
     that validates statically but is not uniquely present live is NOT applied.
 
-    A button or link (or input button) whose label contains a destructive word is refused,
-    in the HTML and on the live page, unless the key was opted out (see
-    refuses_destructive_target). So a key that is not destructive itself is never healed
-    onto a "Pay now" or "Delete account" control.
-
     A candidate the store already holds as quarantined or superseded is rejected with
     reason 'previously quarantined' / 'previously superseded'. Adding it again would not
     reactivate it, so the retry would fail and cost another model call. A quarantine also
@@ -189,8 +166,6 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
     selector under another spelling ("(//input[@id='a'])[1]" for "//input[@id='a']") is
     rejected as well, until that row is removed from the store.
     """
-    refuse = refuses_destructive_target(store, selector_key, meta)
-    live_meta = dict(meta, refuseDestructiveTarget=refuse)
     doc, bad = _quarantined_paths(store, selector_key, html)
     candidates = [proposal.get('xpath')] + list(proposal.get('fallbacks') or [])
     reason = 'no candidates in proposal'
@@ -207,8 +182,7 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
             continue
         result = validate(body, html, expected_role=meta.get('expectedRole'),
                           expected_text=meta.get('expectedText'),
-                          destructive=bool(meta.get('destructive')),
-                          refuse_destructive_target=refuse)
+                          destructive=bool(meta.get('destructive')))
         reason = result.reason
         if not result.ok:
             continue
@@ -220,7 +194,7 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
         if classify(xpath) != XPATH:  # defensive: never store a model's engine selector
             reason = 'not an XPath expression'
             continue
-        live = live_reason(driver, xpath, live_meta)
+        live = live_reason(driver, xpath, meta)
         if live:
             reason = live
             continue

@@ -2,7 +2,7 @@
 
 When a selector stops matching, a model provider suggests a new XPath. mendwright checks
 it against the captured HTML and the live page before saving it, then retries the step.
-Destructive controls (pay, submit, confirm and similar) are never healed.
+A key you mark as destructive (a pay, submit or delete control) is never healed.
 
 The pipeline: resolve the candidate selectors (resolver) -> when none matches, capture a
 redacted page bundle (capture) -> ask a provider for a fix (providers, prompt) -> check it

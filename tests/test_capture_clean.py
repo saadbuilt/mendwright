@@ -168,10 +168,7 @@ def test_model_sees_cleaned_html_while_gate_checks_the_raw_page(tmp_path, monkey
     store = SelectorStore(data, str(tmp_path / 'o.json'))
     coord = HealCoordinator(store, provider=Provider(), html_provider=lambda: page,
                             inventory_provider=lambda: [], guard=lambda: True)
-    # The target is a "Buy now" button, which the gate refuses by default; this test is
-    # about what the gate reads, so the key opts out of that check.
-    meta = dict(store.meta('buy'), refuseDestructiveTarget=False)
-    applied = coord.try_heal('buy', meta, [], {})
+    applied = coord.try_heal('buy', store.meta('buy'), [], {})
     assert applied == "//button[@id='buy-now']"
     assert '<script' not in seen['html']
     assert gate_inputs == [page]  # the gate got the raw page, scripts and all

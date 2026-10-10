@@ -130,14 +130,10 @@ def test_gate_rejects_a_hidden_element(tab, store_file, stub_provider):
     assert "//button[@id='ghost']" not in saved_candidates(store_file, 'continue')
 
 
-@pytest.mark.parametrize('how', ['key_word', 'destructive_keys', 'destructive_arg'])
+@pytest.mark.parametrize('how', ['destructive_keys', 'destructive_arg'])
 def test_a_destructive_control_is_never_healed(how, tab, store_file, stub_provider):
-    if how == 'key_word':
-        tab.load(PAY_PAGE)
-        key, stale, fixed = 'pay_now', "//button[@id='pay-old']", "//button[@id='pay-now']"
-    else:
-        tab.load(neutral_button_page('go-on-v2'))
-        key, stale, fixed = 'go_on', "//button[@id='go-on']", "//button[@id='go-on-v2']"
+    tab.load(PAY_PAGE)
+    key, stale, fixed = 'pay_now', "//button[@id='pay-old']", "//button[@id='pay-now']"
     provider = stub_provider(fixed)
     heal = _open(tab, provider, store_file,
                  destructive_keys={key} if how == 'destructive_keys' else frozenset())
@@ -146,13 +142,23 @@ def test_a_destructive_control_is_never_healed(how, tab, store_file, stub_provid
         heal.locator(key, stale, role='button', timeout_ms=FAST_MS, poll_ms=POLL_MS,
                      destructive=True if how == 'destructive_arg' else None)
 
-    message = str(info.value)
-    if how == 'key_word':
-        assert "looks like a destructive control (its key contains 'pay')" in message
-    else:
-        assert 'is marked as a destructive control' in message and 'looks like' not in message
+    assert "'pay_now' is marked as a destructive control" in str(info.value)
     assert provider.bundles == []                         # the model is never asked
     assert fixed not in saved_candidates(store_file, key)
+
+
+def test_a_pay_button_is_healed_when_its_key_is_not_marked(tab, store_file, stub_provider):
+    """Only keys you mark are destructive. A key named pay_now, on a button labelled
+    Pay now, heals like any other key."""
+    tab.load(PAY_PAGE)
+    provider = stub_provider("//button[@id='pay-now']")
+    heal = _open(tab, provider, store_file)
+
+    heal.locator('pay_now', "//button[@id='pay-old']", role='button', timeout_ms=FAST_MS,
+                 poll_ms=POLL_MS).click()
+
+    assert len(provider.bundles) == 1
+    assert heal.heals[0].new == "//button[@id='pay-now']"
 
 
 def test_the_destructive_flag_survives_a_new_open(tab, store_file, stub_provider):
@@ -170,30 +176,6 @@ def test_the_destructive_flag_survives_a_new_open(tab, store_file, stub_provider
                        poll_ms=POLL_MS)
 
     assert 'is marked as a destructive control' in str(info.value)
-    assert provider.bundles == []
-
-
-@pytest.mark.parametrize('control,label,word', [
-    ('<button type="button" id="{id}">Place order</button>', 'Place order', 'place order'),
-    ('<input type="submit" id="{id}" value="Buy now">', 'Buy now', 'buy'),
-], ids=['button-text', 'submit-value'])
-def test_a_destructive_label_seen_on_the_page_is_remembered(control, label, word, tab,
-                                                            store_file, stub_provider):
-    """The key and the code say nothing, but the control's label on the page does."""
-    tab.load(page('<form>' + control.format(id='place') + '</form>'))
-    first = _open(tab, stub_provider(None), store_file)
-    first.locator('go_on', "//*[@id='place']", role='button')
-    assert saved_entry(store_file, 'go_on')['expectedText'] == [label]
-
-    tab.load(page('<form>' + control.format(id='place-v2') + '</form>'))
-    provider = stub_provider("//*[@id='place-v2']")
-    second = _open(tab, provider, store_file)
-    with pytest.raises(AttentionRequired) as info:
-        second.locator('go_on', "//*[@id='place']", role='button', timeout_ms=FAST_MS,
-                       poll_ms=POLL_MS)
-
-    assert ("looks like a destructive control (its text " + repr(label) + " contains "
-            + repr(word) + ")") in str(info.value)
     assert provider.bundles == []
 
 

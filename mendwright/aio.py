@@ -13,7 +13,7 @@ Every safety decision is made by the sync core, unchanged:
 - Resolution polls on the event loop, trying candidates in the same order as the sync
   Healer (the selector in your code first), with ``await asyncio.sleep()`` between polls.
 - A heal runs the sync HealCoordinator in a worker thread (asyncio.to_thread). It checks
-  destructive keys, the guard and the rate limit, captures the page, asks the provider,
+  keys marked destructive, the guard and the rate limit, captures the page, asks the provider,
   validates the proposal against the captured HTML and then live on the real page, and
   saves it. It reaches the page through SyncBridge, which hands each driver call back to
   the event loop and waits for the answer. So the live gate checks the page as it is now,
@@ -42,9 +42,8 @@ from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
-from .facade import (_INPUT_BUTTON, _UNREAD, _register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS,
-                     ActionProxy, Healer, HealEvent, Role, Selector, _healed_target_error,
-                     _label_source, _locator_args, _pick_label, _setup, _value_label)
+from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
+                     HealEvent, Role, Selector, _healed_target_error, _locator_args, _setup)
 from .limits import Guardrails
 from .resolver import _frame_chain, _no_match_message, _require_visible, _split_runnable
 from .selectors import InvalidSelector
@@ -278,27 +277,6 @@ async def _url(driver):
         return ''
 
 
-async def _live_label(described, native):
-    """facade._live_label, with the element read awaited."""
-    text, read_value = _label_source(described)
-    if read_value:
-        try:
-            text = _value_label(await _awaited(native.get_attribute('value')))
-        except Exception:
-            text = ''
-    return _pick_label(text, described)
-
-
-async def _input_value(described, native):
-    """facade._input_value, with the element read awaited."""
-    if not _INPUT_BUTTON.match((described or {}).get('outer_html') or ''):
-        return ''
-    try:
-        return _value_label(await _awaited(native.get_attribute('value')))
-    except Exception:
-        return ''
-
-
 class AsyncHealer:
     """The async Healer: resolves selector keys on one async page, heals them when they
     break, and hands back an AsyncActionProxy. Made by mendwright.aio.open().
@@ -314,9 +292,9 @@ class AsyncHealer:
         self.driver = driver
         self.store = store
         self.coordinator = coordinator
-        # The sync Healer's own helpers (argument checks, metadata, the destructive word
-        # check, role and label learning) run on the same store; only page work is async
-        # here. This healer stands in for it in live_healers().
+        # The sync Healer's own helpers (argument checks, metadata, role learning) run on
+        # the same store; only page work is async here. This healer stands in for it in
+        # live_healers().
         self._core = Healer(page, driver, store, coordinator, timeout_ms=timeout_ms)
         _unregister(self._core)
         _register(self)
@@ -406,35 +384,28 @@ class AsyncHealer:
         except AttentionRequired as exc:
             await self._stop_if_in_a_frame(key, exc)
             native = await self._heal(key, exc, attempt)
-        described = await self._check_healed_target(key, native)
-        await self._learn(key, roles, native, text_given=text is not None, described=described)
+        await self._check_healed_target(key)
+        await self._learn(key, roles)
         return native
 
-    async def _check_healed_target(self, key, native):
-        """Healer._check_healed_target(), with the page reads awaited: a match that came
-        from a heal and points at a destructive control is quarantined, and
-        AttentionRequired is raised before anything acts on it."""
+    async def _check_healed_target(self, key):
+        """Healer._check_healed_target(): a match that came from a heal, on a key marked
+        destructive, is quarantined, and AttentionRequired is raised before anything acts
+        on it."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        healed = core._healed_winner(key)
-        if healed is None:
-            return _UNREAD
-        xpath, meta = healed
-        described, value = None, ''
-        if not meta['destructive'] and meta.get('refuseDestructiveTarget'):
-            described = await self._describe_winner(key)
-            value = await _input_value(described, native)
-        why = core._healed_target_problem(key, meta, described, [value])
-        if why:
-            coordinator = self.coordinator
-            if coordinator.pending.get(key) == xpath:
-                # This call's own heal. A gateway provider reports the outcome over HTTP.
-                await _in_thread(coordinator.confirm_pending, key, False)
-            else:
-                self.store.quarantine(key, xpath)
-                coordinator.journal.quarantine(key, xpath=xpath)
-            raise _healed_target_error(key, xpath, why, core._locked(key))
-        return _UNREAD if described is None else described
+        xpath = core._destructive_heal(key)
+        if xpath is None:
+            return
+        coordinator = self.coordinator
+        if coordinator.pending.get(key) == xpath:
+            # A heal from earlier in this process. A gateway provider reports the outcome
+            # over HTTP.
+            await _in_thread(coordinator.confirm_pending, key, False)
+        else:
+            self.store.quarantine(key, xpath)
+            coordinator.journal.quarantine(key, xpath=xpath)
+        raise _healed_target_error(key, xpath, core._locked(key))
 
     async def _resolve(self, key, timeout_ms, poll_ms):
         """mendwright.resolver.resolve(), awaited: the candidates in the same order, bad
@@ -487,7 +458,7 @@ class AsyncHealer:
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
         attempt() on the event loop. The coordinator reaches the page through SyncBridge."""
         __tracebackhide__ = True  # pytest shows the caller
-        meta = self._core._heal_meta(key)
+        meta = self.store.meta(key)
         context = {'url': await _url(self.driver)}
         missed = [exc]
 
@@ -501,18 +472,13 @@ class AsyncHealer:
         await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
         return await attempt()
 
-    async def _learn(self, key, roles, native, *, text_given, described=_UNREAD):
-        """Healer._learn(), with describe() and the label read awaited."""
+    async def _learn(self, key, roles):
+        """Healer._learn(), with describe() awaited."""
         core = self._core
-        todo = core._learn_todo(key, roles, text_given=text_given)
+        todo = core._learn_todo(key, roles)
         if todo is None:
             return
-        if described is _UNREAD:
-            described = await self._describe_winner(key)
-        label = ''
-        if todo[2] and described is not None:
-            label = await _live_label(described, native)
-        core._learn_from(key, roles, todo, described, label)
+        core._learn_from(key, roles, todo, await self._describe_winner(key))
 
     async def _describe_winner(self, key):
         target = self._core._winner_target(key)

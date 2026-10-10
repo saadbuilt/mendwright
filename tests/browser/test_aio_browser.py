@@ -243,16 +243,20 @@ def test_a_failed_action_quarantines_the_heal(engine, tmp_path):
     assert heal.pending() == {}
 
 
-def test_destructive_keys_are_never_healed(engine, tmp_path):
+@pytest.mark.parametrize('how', ['destructive_keys', 'destructive_arg'])
+def test_destructive_keys_are_never_healed(how, engine, tmp_path):
     provider = Stub("//button[@id='pay']")
 
     async def main():
         page = await engine.page("<button id='pay'>Pay now</button>")
         try:
-            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
-                                             timeout_ms=100)
-            with pytest.raises(AttentionRequired, match='looks like a destructive control'):
-                await heal.locator('pay_button', '#old-pay', role='button').click()
+            heal = await mendwright.aio.open(
+                page, provider=provider, store_path=_store(tmp_path), timeout_ms=100,
+                destructive_keys={'pay_button'} if how == 'destructive_keys' else frozenset())
+            with pytest.raises(AttentionRequired,
+                               match="'pay_button' is marked as a destructive control"):
+                await heal.locator('pay_button', '#old-pay', role='button',
+                                   destructive=True if how == 'destructive_arg' else None).click()
         finally:
             await page.context.close()
 

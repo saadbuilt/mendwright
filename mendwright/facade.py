@@ -4,15 +4,14 @@ resolves a key, heals and retries it when it breaks, and arms the canary, in one
 It is a layer over the low-level core (resolve, resolve_with_heal, HealCoordinator,
 SelectorStore), which keeps working as before. The facade adds the conveniences that need
 a live page: the selector in your code wins over stored ones, the role is read from the
-element, pay/submit/confirm-like keys are treated as destructive, and actions run through
-the driver so the same verbs work on Playwright and Selenium.
+element, and actions run through the driver so the same verbs work on Playwright and
+Selenium.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import threading
 import weakref
 from dataclasses import dataclass
@@ -20,10 +19,7 @@ from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .coordinator import HealCoordinator, resolve_with_heal
-from .destructive import (DESTRUCTIVE_PHRASES, DESTRUCTIVE_WORDS,  # noqa: F401  (re-exported)
-                          destructive_hit as _destructive_hit, text_words as _text_words)
 from .drivers import driver_describe, driver_inventory, wrap
-from .drivers.base import described_destructive_label
 from .exceptions import AttentionRequired
 from .journal import Journal
 from .limits import Guardrails, RateLimiter
@@ -279,95 +275,16 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     return store, coord, timeout_ms
 
 
-# DESTRUCTIVE_WORDS and DESTRUCTIVE_PHRASES (from mendwright.destructive) make the facade
-# treat a key as destructive unless destructive=False is passed: in the key itself, in
-# its expected text, or in the label of the element it matched.
-
-_CAMEL_WORDS = re.compile(r'[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+')
-_INPUT_BUTTON = re.compile(r"""^<input\b[^>]*\btype\s*=\s*["']?(submit|button|reset)\b""",
-                           re.IGNORECASE)
-
-
-def _key_words(key):
-    """'placeOrder_btn-2' -> ['place', 'order', 'btn', '2']"""
-    words = []
-    for part in re.split(r'[_\-.\s]+', str(key)):
-        words.extend(w.lower() for w in _CAMEL_WORDS.findall(part))
-    return words
-
-
-def _destructive_reason(key, expected_text):
-    """Why the facade treats key as destructive, or None."""
-    hit = _destructive_hit(_key_words(key))
-    if hit:
-        return 'its key contains ' + repr(hit)
-    for text in expected_text or ():
-        hit = _destructive_hit(text)
-        if hit:
-            return 'its text ' + repr(text) + ' contains ' + repr(hit)
-    return None
-
-
-def _label_source(described):
-    """(text, read_value) for a described element: its visible text, and whether the
-    label is instead the value of an <input type=submit|button|reset>, which describe()
-    leaves out and the caller must read from the element."""
-    text = (described.get('text') or '').strip()
-    if text:
-        return text, False
-    return '', bool(_INPUT_BUTTON.match(described.get('outer_html') or ''))
-
-
-def _value_label(value):
-    """An input button's value attribute as a label: whitespace collapsed, capped."""
-    return ' '.join(value.split())[:200] if isinstance(value, str) else ''
-
-
-def _input_value(described, native):
-    """The value attribute of an <input type=submit|button|reset> as a label, read from the
-    element because describe() strips value=. '' for anything else."""
-    if not _INPUT_BUTTON.match((described or {}).get('outer_html') or ''):
-        return ''
-    try:
-        return _value_label(native.get_attribute('value'))
-    except Exception:
-        return ''
-
-
-# describe() not called yet (see Healer._learn).
-_UNREAD = object()
-
-
-def _healed_target_error(key, xpath, why, locked):
-    """The AttentionRequired for a stored heal that points at a destructive control."""
+def _healed_target_error(key, xpath, locked):
+    """The AttentionRequired for a stored heal on a key that is marked destructive."""
     fix = ('Fix the selector in your code or seed file.' if locked else
            'Fix the selector in your code, or pass destructive=False to heal.locator() if '
            'this control is safe to act on.')
     return AttentionRequired(
         "mendwright: '" + key + "' matched " + xpath + ', a selector an earlier heal saved, '
-        'but ' + why + '. mendwright quarantined that selector and did not act on it. ' + fix)
-
-
-def _pick_label(text, described):
-    """The label to remember for a described element: the first of its labels that looks
-    destructive, else its visible label ``text``. The labels are the text and the
-    aria-label, title and image alt text read from describe()'s outer_html, each checked on
-    its own: an aria-label replaces the text as the accessible name, so
-    <button aria-label="Delete account">x</button> is remembered as 'Delete account'."""
-    found = described_destructive_label(described, [text])
-    return found[0] if found else text
-
-
-def _live_label(described, native):
-    """The label of a described element: see _pick_label. The visible label is its text,
-    or the value of an <input type=submit|button|reset>, which describe() leaves out."""
-    text, read_value = _label_source(described)
-    if read_value:
-        try:
-            text = _value_label(native.get_attribute('value'))
-        except Exception:
-            text = ''
-    return _pick_label(text, described)
+        "but '" + key + "' is marked as a destructive control, and a destructive control "
+        'never acts through a healed selector. mendwright quarantined that selector and did '
+        'not act on it. ' + fix)
 
 
 def _bare_url(url):
@@ -443,7 +360,6 @@ class Healer:
         self.coordinator = coordinator
         self.timeout_ms = timeout_ms
         self._role_checked: set = set()
-        self._label_checked: set = set()
         _register(self)
 
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
@@ -467,11 +383,12 @@ class Healer:
 
         text is the element's expected visible text (a string or a list of accepted ones).
 
-        destructive marks a control mendwright must never heal (pay, submit, confirm).
-        None leaves the saved value alone. A key is also treated as destructive when the
-        seed or open(destructive_keys=...) says so, which nothing can undo, or when a word
-        from DESTRUCTIVE_WORDS / DESTRUCTIVE_PHRASES appears in the key, its text or its
-        button label. Pass destructive=False to opt a key out of that word check.
+        destructive=True marks a control mendwright must never heal, such as a pay, submit
+        or delete button. It is saved, so later runs keep it. destructive=False clears a
+        flag saved that way. None leaves the saved value alone. A key is also destructive
+        when the seed or open(destructive_keys=...) says so, which nothing can undo.
+        mendwright does not guess this from the key or the element's text: mark each
+        control that must not be healed.
 
         inline_xpath is the old name of selector and still works as a keyword.
 
@@ -493,8 +410,8 @@ class Healer:
         except AttentionRequired as exc:
             self._stop_if_in_a_frame(key, exc)
             native = self._heal(key, exc, attempt)
-        described = self._check_healed_target(key, native)
-        self._learn(key, roles, native, text_given=text is not None, described=described)
+        self._check_healed_target(key)
+        self._learn(key, roles)
         return ActionProxy(self, key, native)
 
     def present(self, key: str) -> bool:
@@ -577,34 +494,16 @@ class Healer:
         except Exception:
             return None
 
-    # --- a stored heal that points at a destructive control ---------------------------
+    # --- a stored heal on a key marked destructive -----------------------------------
 
-    def _healed_winner(self, key):
-        """(xpath, heal meta) when the candidate that just matched came from a heal, else
-        None. Selectors from your code or a seed file are never second-guessed."""
+    def _destructive_heal(self, key):
+        """The xpath that just matched for key when it came from a heal and the key is
+        marked destructive, else None. Selectors from your code or a seed file are never
+        second-guessed."""
         winner = self.store.last_success(key)
         if not winner or winner.get('source') != 'heal':
             return None
-        return winner['xpath'], self._heal_meta(key)
-
-    def _healed_target_problem(self, key, meta, described, extra_labels=()):
-        """Why a heal-sourced match must not be acted on, or None. A key treated as
-        destructive never acts through a healed selector; any other key (unless opted out
-        with destructive=False) not on an element whose label looks destructive."""
-        if meta['destructive']:
-            why = meta.get('destructiveReason')
-            if isinstance(why, str) and why:
-                return ("'" + key + "' looks like a destructive control (" + why + '), and a '
-                        'destructive control never acts through a healed selector')
-            return ("'" + key + "' is marked as a destructive control, and a destructive "
-                    'control never acts through a healed selector')
-        if not meta.get('refuseDestructiveTarget'):
-            return None
-        found = described_destructive_label(described, extra_labels)
-        if found:
-            return ('the element looks destructive (its label ' + repr(found[0][:80])
-                    + ' contains ' + repr(found[1]) + ')')
-        return None
+        return winner['xpath'] if self.store.meta(key)['destructive'] else None
 
     def _locked(self, key):
         locked = getattr(self.store, 'is_locked_destructive', None)
@@ -613,65 +512,46 @@ class Healer:
         except Exception:
             return False
 
-    def _check_healed_target(self, key, native):
-        """Refuse a match that came from a heal and points at a destructive control: the
+    def _check_healed_target(self, key):
+        """Refuse a match that came from a heal when the key is marked destructive: the
         heal is quarantined and AttentionRequired is raised, so nothing acts on it. The
-        gate refuses such heals, so this covers heals saved before that check (or a page
-        that changed since). Returns the describe() result it read, or _UNREAD."""
+        coordinator never heals such a key, so this covers a heal saved before the key was
+        marked."""
         __tracebackhide__ = True  # pytest shows the caller
-        healed = self._healed_winner(key)
-        if healed is None:
-            return _UNREAD
-        xpath, meta = healed
-        described = None
-        if not meta['destructive'] and meta.get('refuseDestructiveTarget'):
-            described = self._describe_winner(key)
-        why = self._healed_target_problem(key, meta, described,
-                                          [_input_value(described, native)])
-        if why:
-            coordinator = self.coordinator
-            if coordinator.pending.get(key) == xpath:
-                coordinator.confirm_pending(key, False)   # this call's own heal
-            else:
-                self.store.quarantine(key, xpath)
-                coordinator.journal.quarantine(key, xpath=xpath)
-            raise _healed_target_error(key, xpath, why, self._locked(key))
-        return _UNREAD if described is None else described
+        xpath = self._destructive_heal(key)
+        if xpath is None:
+            return
+        coordinator = self.coordinator
+        if coordinator.pending.get(key) == xpath:
+            coordinator.confirm_pending(key, False)   # a heal from earlier in this process
+        else:
+            self.store.quarantine(key, xpath)
+            coordinator.journal.quarantine(key, xpath=xpath)
+        raise _healed_target_error(key, xpath, self._locked(key))
 
-    def _learn(self, key, roles, native, *, text_given, described=_UNREAD):
+    def _learn(self, key, roles):
         """After a match, learn from the live element (one describe() at most):
         - with role= omitted, save the role the element has;
-        - with a single role= given, warn once if the element disagrees;
-        - with no expected text, save the label of a button or link whose label looks
-          destructive, so a later heal of this key is refused even when the element can
-          no longer be found.
-        ``described`` is a describe() result already read for this match, if any."""
-        todo = self._learn_todo(key, roles, text_given=text_given)
+        - with a single role= given, warn once if the element disagrees."""
+        todo = self._learn_todo(key, roles)
         if todo is None:
             return
-        if described is _UNREAD:
-            described = self._describe_winner(key)
-        label = _live_label(described, native) if todo[2] and described is not None else ''
-        self._learn_from(key, roles, todo, described, label)
+        self._learn_from(key, roles, todo, self._describe_winner(key))
 
-    def _learn_todo(self, key, roles, *, text_given):
-        """What _learn() has to find out for key, as (need_role, check_role, need_label),
-        or None when there is nothing to learn (and so no describe() round trip)."""
-        store = self.store
+    def _learn_todo(self, key, roles):
+        """What _learn() has to find out for key, as (need_role, check_role), or None when
+        there is nothing to learn (and so no describe() round trip)."""
         user_role = roles[0] if roles and len(roles) == 1 else None
-        need_role = user_role is None and store.role_is_guess(key)
+        need_role = user_role is None and self.store.role_is_guess(key)
         check_role = user_role is not None and key not in self._role_checked
-        need_label = (not text_given and key not in self._label_checked
-                      and not store.meta(key)['expectedText'])
-        if not (need_role or check_role or need_label):
+        if not (need_role or check_role):
             return None
-        return need_role, check_role, need_label
+        return need_role, check_role
 
-    def _learn_from(self, key, roles, todo, described, label):
+    def _learn_from(self, key, roles, todo, described):
         """The store side of _learn(): ``described`` is the matched element's describe()
-        result (or None) and ``label`` its live label, read only when todo asks for it."""
-        need_role, check_role, need_label = todo
-        store = self.store
+        result, or None."""
+        need_role, check_role = todo
         user_role = roles[0] if roles and len(roles) == 1 else None
         if need_role:
             self._learn_role(key, roles, described)
@@ -684,11 +564,6 @@ class Healer:
                     "to mendwright's gate, so a heal for it would be rejected. Pass role=%r, or "
                     'leave role out and mendwright reads it from the page.',
                     user_role, key, live, live)
-        if need_label:
-            self._label_checked.add(key)
-        if (need_label and described is not None and label
-                and described.get('role') in ('button', 'link') and _destructive_hit(label)):
-            store.set_meta(key, text=label)
 
     def _learn_role(self, key, roles, described):
         store = self.store
@@ -754,22 +629,8 @@ class Healer:
                 raise pending.pop()
             return attempt()
 
-        return resolve_with_heal(resolve_fn, self.coordinator, key, self._heal_meta(key),
+        return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
                                  {'url': self.driver.url()})
-
-    def _heal_meta(self, key):
-        """The key's metadata for a heal attempt, with the destructive word check applied.
-        refuseDestructiveTarget tells the gate to refuse a heal onto an element whose label
-        looks destructive; destructive=False for the key turns both checks off."""
-        meta = self.store.meta(key)
-        opted_out = self.store.destructive_choice(key) is False
-        meta = dict(meta, refuseDestructiveTarget=not opted_out)
-        if not meta['destructive'] and not opted_out:
-            hit = _destructive_reason(key, meta.get('expectedText'))
-            if hit:
-                # Computed on every call and never saved: destructive=False opts out.
-                meta = dict(meta, destructive=True, destructiveReason=hit)
-        return meta
 
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs

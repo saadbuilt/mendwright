@@ -428,7 +428,6 @@ def collect_report(path):
             candidates.append(row)
         keys.append({'key': key, 'role': entry.get('expectedRole'),
                      'destructive': entry.get('destructive') is True,
-                     'looks_destructive': _looks_destructive(key, entry),
                      'candidates': candidates})
 
     journal_path = os.path.join(os.path.dirname(path), 'journal.jsonl')
@@ -464,22 +463,10 @@ def _when(ts):
     return text
 
 
-def _looks_destructive(key, entry):
-    """Why mendwright.open() treats key as destructive by its words (see
-    mendwright.facade.DESTRUCTIVE_WORDS), or None. A saved destructive=False opts out."""
-    if entry.get('destructive') is not None:
-        return None
-    from .facade import _destructive_reason
-    text = entry.get('expectedText')
-    return _destructive_reason(key, text if isinstance(text, list) else [])
-
-
 def _role_note(k):
     parts = [k['role'] or 'role unknown']
     if k['destructive']:
         parts.append('destructive, never auto-healed')
-    elif k.get('looks_destructive'):
-        parts.append('treated as destructive because ' + k['looks_destructive'])
     return ', '.join(parts)
 
 

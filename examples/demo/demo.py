@@ -3,8 +3,8 @@ step runs again.
 
     python examples/demo/demo.py
 
-(With nothing cloned, `mendwright demo` tells the same story, plus a pay button that
-mendwright refuses to heal.)
+(With nothing cloned, `mendwright demo` tells the same story, plus a pay button marked
+destructive=True, which mendwright refuses to heal.)
 
 v1.html and v2.html, next to this file, are one signup page before and after a redesign
 that removed the checkbox's id. The code in main() is what you would write in a test.

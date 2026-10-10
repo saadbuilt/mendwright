@@ -2,15 +2,13 @@
 the store only after two checks (client.apply runs both):
 
   1. Static validation against the captured snapshot (validation.validate): not a pure
-     absolute-index path, exactly one match, the expected role, the exact text for
-     destructive controls, and, unless the key was opted out with destructive=False, no
-     button or link whose label looks destructive.
+     absolute-index path, exactly one match, the expected role, and the exact text for
+     destructive controls.
   2. A live check against the current page through the Driver (live_reason below): it
      matches exactly one element at that moment, and, for a driver with describe(), that
      element is read again: it must have the expected role (and the expected text for a
-     destructive key), and its label must not look destructive. The element must also be
-     visible unless its role is checkbox (a hidden native checkbox behind a styled label
-     is common).
+     destructive key). The element must also be visible unless its role is checkbox (a
+     hidden native checkbox behind a styled label is common).
 
 The snapshot is taken before the model call, which takes seconds, so the page can change
 in between (a single-page app re-rendering). Reading the element again on the live page
@@ -19,11 +17,9 @@ live element cannot be read, the proposal is refused (fail closed). A driver wit
 describe() gets only the count and visibility checks.
 
 A selector that matched once in a captured string is not enough; it must be uniquely
-present on the live page when it is saved. Destructive controls never get this far: the
+present on the live page when it is saved. Keys marked destructive never get this far: the
 coordinator refuses them first."""
 
-from .destructive import target_reason
-from .drivers.base import described_destructive_label
 from .validation import _norm
 
 NOT_LIVE = 'passed static validation but not uniquely present on the live page'
@@ -52,10 +48,6 @@ def live_reason(driver, xpath, meta, frame_chain=()):
                 texts = {_norm(t) for t in (meta.get('expectedText') or ())}
                 if _norm(live.get('text')) not in texts:
                     return 'live action text mismatch: ' + _norm(live.get('text'))
-            elif meta.get('refuseDestructiveTarget'):
-                found = described_destructive_label(live)
-                if found:
-                    return target_reason(*found)
         if meta.get('expectedRole') == 'checkbox':
             return ''
         if not driver.is_visible(xpath, frame_chain):

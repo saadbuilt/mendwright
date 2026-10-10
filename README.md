@@ -27,9 +27,9 @@ mendwright demo
 
 If the `mendwright` command isn't on your PATH (common on Windows), run `python -m mendwright demo`.
 
-The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors; mendwright heals the checkbox and refuses to heal the pay button.
+The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors. mendwright heals the checkbox, and refuses to heal the pay button because the demo marks it `destructive=True`.
 
-<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page the accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector also misses and is refused without a model call.">
+<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page the accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector, marked destructive=True, also misses and is refused without a model call.">
 
 <details>
 <summary>The same output as text</summary>
@@ -46,7 +46,7 @@ Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API c
       checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
       retry    ok: box checked with the healed selector, heal confirmed
   v2  pay           #pay           MISS   no element matches
-      refused  'pay' looks like a destructive control (its key contains 'pay'). Not healed, no model call.
+      refused  'pay' is marked destructive=True. Not healed, no model call.
 
 Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.
 ```
@@ -150,10 +150,11 @@ To make CI show selector drift instead of quietly healing it, run `pytest --mend
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-dark.svg">
-  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-light.svg" width="800" alt="How a heal works: a selector misses; a destructive control, an unknown role or a used-up hourly limit stops with AttentionRequired before any model call; otherwise the page is captured and redacted, a model proposes an XPath and local checks run; a failure gives the model the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.">
+  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-light.svg" width="800" alt="How a heal works: a selector misses; a key marked destructive, an unknown role or a used-up hourly limit stops with AttentionRequired before any model call; otherwise the page is captured and redacted, a model proposes an XPath and local checks run; a failure gives the model the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.">
 </picture>
 
-A step is refused before any model call when it looks destructive, when mendwright doesn't know what kind of element it is (see `role=` above), or when the hourly limit is used up: 3 heal attempts per key and 60 in all by default.
+A step is refused before any model call when its key is marked destructive, when mendwright doesn't know what kind of element it is (see `role=` above), or when the hourly limit is used up: 3 heal attempts per key and 60 in all by default.
+mendwright doesn't guess which controls are destructive. Mark a pay, submit or delete step with `heal.locator(..., destructive=True)`, or pass its key in `mendwright.open(destructive_keys=...)`.
 A rejected attempt counts, and an attempt makes up to 2 model calls. Going through a gateway skips this limit, because the gateway meters on its side.
 Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at most 60,000 characters of HTML and 60,000 of element inventory per request), and uses the XPath it proposes only if:
 
@@ -161,8 +162,7 @@ Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at
 - the store doesn't hold it as quarantined or superseded for this key, and it doesn't reach an element the key has quarantined
 - it matches exactly one element in the captured HTML
 - that element has the step's role (checkbox, button, link, and so on)
-- a button or link it picks has no destructive word in its label (text, `aria-label`, `title`, `alt`, or an input button's `value`), unless the key has `destructive=False`
-- it matches exactly one element on the live page, and that element is visible (hidden checkboxes are allowed), still has the role, and still passes the label check
+- it matches exactly one element on the live page, and that element is visible (hidden checkboxes are allowed) and still has the role
 
 If the first proposal fails, the model gets the reason and one more try. Heals are saved in `.mendwright/overrides.json`, and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it.
 On the next run the selector in your code is tried first and the saved heal right after it, in the same pass. That resolves without a wait or a model call. If the action on a healed element fails in the browser, the heal is quarantined and not used again.
@@ -170,12 +170,12 @@ On the next run the selector in your code is tried first and the saved heal righ
 ## Errors
 
 When mendwright can't or won't heal a step, it raises `mendwright.AttentionRequired` with the reason and a next step.
-This is the error for a key named `pay` whose selector stopped matching:
+This is the error from `heal.locator("pay", "#pay", destructive=True)` when `#pay` stopped matching:
 
 <!-- readme-test: attention-pay -->
 ```text
 mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 candidate(s)).
-  -> 'pay' looks like a destructive control (its key contains 'pay'), and mendwright never auto-heals those, because a validated but wrong selector could act on a live account. Fix the selector in your code, or pass destructive=False to heal.locator() if this control is safe to heal.
+  -> 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
 ```
 
 `mendwright doctor` checks the install, the provider and the store path. `mendwright report` lists each key with its selectors and recent heals; `--format md` prints a Markdown table you can append to `$GITHUB_STEP_SUMMARY`.
@@ -210,7 +210,6 @@ Where another tool fits better: Healenium needs no change per step (you wrap the
 - With a hosted provider, page HTML is sent to it. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, the rest is cut before it reaches the model. An element near the end is then visible to it only through the element inventory.
 - How often a model picks the right element hasn't been measured, for any model.
-- The destructive check reads the key, `text=`, and the label of the button or link a key last matched, plus the label of a button or link a heal picks. A destructive control whose label uses none of the English words isn't caught. Mark it with `destructive=True`.
 - `--mendwright-strict` only fails the run that made the heal. Later runs pick up the saved heal and pass, which is why strict CI runs need a fresh store.
 
 ## Links

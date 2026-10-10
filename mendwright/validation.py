@@ -2,18 +2,14 @@
 
 The static half of the checks a heal must pass: a candidate is accepted only if it
 matches exactly one element of the expected role (and, for destructive keys, has one of
-the expected action texts), and is not a pure absolute-index path. With
-refuse_destructive_target=True, a button or link (or input button) whose label contains a
-destructive word is refused too. client.apply() runs it before a heal is saved, followed
-by the live check in gate.py.
+the expected action texts), and is not a pure absolute-index path. client.apply() runs it
+before a heal is saved, followed by the live check in gate.py.
 """
 
 import re
 from dataclasses import dataclass
 
 import lxml.html
-
-from .destructive import destructive_label, element_labels, is_labelled_control, target_reason
 
 
 @dataclass
@@ -72,15 +68,10 @@ def _norm(text):
     return re.sub(r'\s+', ' ', (text or '')).strip()
 
 
-def validate(xpath, html, *, expected_role, expected_text=None, destructive=False,
-             refuse_destructive_target=False):
+def validate(xpath, html, *, expected_role, expected_text=None, destructive=False):
     """Check xpath against the captured html. Returns a Result whose reason says why a
-    candidate was refused.
-
-    refuse_destructive_target=True (client.apply() and the heal coordinator pass it unless
-    the key was opted out with destructive=False) also refuses a button, link or input
-    button whose text, aria-label, title, alt text or input value contains a destructive
-    word (mendwright.destructive.DESTRUCTIVE_WORDS)."""
+    candidate was refused. destructive=True also requires the element's text to be one of
+    expected_text."""
     if _is_brittle(xpath):
         return Result(False, 'brittle absolute-index path', 0)
     try:
@@ -104,8 +95,4 @@ def validate(xpath, html, *, expected_role, expected_text=None, destructive=Fals
         text = _norm(el.text_content())
         if text not in {_norm(t) for t in expected_text}:
             return Result(False, 'action text mismatch: ' + text, 1)
-    elif refuse_destructive_target and is_labelled_control(el, role):
-        found = destructive_label(element_labels(el))
-        if found:
-            return Result(False, target_reason(*found), 1)
     return Result(True, 'ok', 1)

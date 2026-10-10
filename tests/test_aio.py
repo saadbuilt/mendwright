@@ -296,38 +296,52 @@ def test_the_live_gate_runs_on_the_real_page(apage, tmp_path, stub_provider):
     assert apage.sync.actions == []
 
 
-def test_destructive_keys_are_refused_without_a_model_call(apage, tmp_path, stub_provider):
+def test_keys_marked_destructive_are_refused_without_a_model_call(apage, tmp_path,
+                                                                 stub_provider):
     provider = stub_provider(HEALED)
 
     async def main():
         heal = await _open(apage, tmp_path, provider, destructive_keys={'agree'})
-        with pytest.raises(AttentionRequired, match="looks like a destructive control"):
-            await heal.locator('pay_now', STALE, role='checkbox', timeout_ms=0).check()
-        with pytest.raises(AttentionRequired, match='never auto-heals those'):
+        with pytest.raises(AttentionRequired, match="'agree' is marked as a destructive control"):
             await heal.locator('agree', STALE, role='checkbox', timeout_ms=0).check()
-        # destructive=False opts out of the word check, as in sync.
-        await heal.locator('pay_now', STALE, role='checkbox', timeout_ms=0,
-                           destructive=False).check()
+        # destructive=False cannot clear a key passed in destructive_keys.
+        with pytest.raises(AttentionRequired, match='never auto-heals those'):
+            await heal.locator('agree', STALE, role='checkbox', timeout_ms=0,
+                               destructive=False).check()
+        with pytest.raises(AttentionRequired, match="'terms' is marked as a destructive control"):
+            await heal.locator('terms', STALE, role='checkbox', timeout_ms=0,
+                               destructive=True).check()
+
+    run(main())
+    assert provider.bundles == []
+
+
+def test_destructive_true_is_kept_by_the_next_open(apage, tmp_path, stub_provider):
+    provider = stub_provider(HEALED)
+
+    async def main():
+        first = await _open(apage, tmp_path, provider)
+        await first.locator('terms', "//input[@id='new-id']", role='checkbox',
+                            destructive=True).check()
+        # Next run: the selector in the code is stale, and destructive= is left out.
+        second = await _open(apage, tmp_path, provider)
+        with pytest.raises(AttentionRequired, match='is marked as a destructive control'):
+            await second.locator('terms', STALE, role='checkbox', timeout_ms=0).check()
+
+    run(main())
+    assert provider.bundles == []
+
+
+def test_a_word_in_the_key_does_not_block_a_heal(apage, tmp_path, stub_provider):
+    provider = stub_provider(HEALED)
+
+    async def main():
+        heal = await _open(apage, tmp_path, provider)
+        await heal.locator('confirm_payment', STALE, role='checkbox', timeout_ms=0).check()
 
     run(main())
     assert len(provider.bundles) == 1
-
-
-def test_a_destructive_button_label_is_learned_and_refused_next_run(make_page, tmp_path,
-                                                                    stub_provider):
-    page = AsyncFakePage(make_page("<form><input type='submit' id='go' value='Buy  now'></form>"))
-    provider = stub_provider("//input[@type='submit']")
-
-    async def main():
-        heal = await _open(page, tmp_path, provider)
-        await heal.locator('next_step', '#go', role='button').click()
-        assert heal.store.meta('next_step')['expectedText'] == ['Buy now']
-        heal = await _open(page, tmp_path, provider)
-        await heal.locator('next_step', '#moved', role='button', timeout_ms=0).click()
-
-    with pytest.raises(AttentionRequired, match="contains 'buy'"):
-        run(main())
-    assert provider.bundles == []
+    assert apage.sync.actions[-1][:2] == ('xpath=' + HEALED, 'check')
 
 
 def test_a_selector_inside_an_iframe_stops_before_any_model_call(make_page, tmp_path,
@@ -352,40 +366,9 @@ def test_a_selector_inside_an_iframe_stops_before_any_model_call(make_page, tmp_
     assert provider.bundles == []
 
 
-def test_an_aria_label_is_learned_and_refused_next_run(make_page, tmp_path, stub_provider):
-    page = AsyncFakePage(make_page("<form><button id='b' aria-label='Delete account'>"
-                                   "&#215;</button></form>"))
-    provider = stub_provider('//button')
-
-    async def main():
-        heal = await _open(page, tmp_path, provider)
-        await heal.locator('row_action', '#b', role='button').click()
-        assert heal.store.meta('row_action')['expectedText'] == ['Delete account']
-        heal = await _open(page, tmp_path, provider)
-        await heal.locator('row_action', '#moved', role='button', timeout_ms=0).click()
-
-    with pytest.raises(AttentionRequired, match="contains 'delete'"):
-        run(main())
-    assert provider.bundles == []
-
-
-def test_a_neutral_key_is_not_healed_onto_a_destructive_label(make_page, tmp_path,
-                                                             stub_provider):
-    page = AsyncFakePage(make_page("<form><button id='p'>Pay now</button></form>"))
-    provider = stub_provider("//button[@id='p']")
-
-    async def main():
-        heal = await _open(page, tmp_path, provider)
-        await heal.locator('next_step', '#continue', role='button', timeout_ms=0).click()
-
-    with pytest.raises(AttentionRequired, match="looks destructive"):
-        run(main())
-    assert len(provider.bundles) == 2
-    assert page.sync.actions == []
-
-
-def test_a_saved_heal_on_a_destructive_control_is_quarantined(make_page, tmp_path,
-                                                             stub_provider):
+@pytest.mark.parametrize('marked', [True, False])
+def test_a_saved_heal_is_quarantined_when_the_key_is_marked_destructive(marked, make_page,
+                                                                        tmp_path, stub_provider):
     import json
     sp = tmp_path / 'o.json'
     sp.write_text(json.dumps({'schema': 2, 'selectors': {'next_step': {
@@ -399,13 +382,21 @@ def test_a_saved_heal_on_a_destructive_control_is_quarantined(make_page, tmp_pat
     async def main():
         heal = await _open(page, tmp_path, provider)
         try:
-            await heal.locator('next_step', '#continue', role='button', timeout_ms=0).click()
+            await heal.locator('next_step', '#continue', role='button', timeout_ms=0,
+                               destructive=True if marked else None).click()
         finally:
-            assert heal.store.status('next_step', "//button[@id='p']") == 'quarantined'
+            status = heal.store.status('next_step', "//button[@id='p']")
+            assert status == ('quarantined' if marked else 'active')
 
-    with pytest.raises(AttentionRequired, match="its label 'Pay now' contains 'pay'"):
-        run(main())
-    assert page.sync.actions == [] and provider.bundles == []
+    if marked:
+        with pytest.raises(AttentionRequired,
+                           match="'next_step' is marked as a destructive control"):
+            run(main())
+        assert page.sync.actions == []
+    else:
+        run(main())    # the label 'Pay now' alone does not stop the saved heal
+        assert page.sync.actions[-1][:2] == ("xpath=//button[@id='p']", 'click')
+    assert provider.bundles == []
 
 
 @pytest.mark.parametrize('kind', ['sync', 'async'])

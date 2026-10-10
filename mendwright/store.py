@@ -264,7 +264,7 @@ class SelectorStore:
 
     def destructive_choice(self, key):
         """The destructive flag set_meta() saved for key (True or False), or None when it
-        was never set. Lets the facade tell an explicit destructive=False from the default."""
+        was never set. Tells an explicit destructive=False apart from the default."""
         return self._meta.get(key, {}).get('destructive')
 
     def meta(self, key):
