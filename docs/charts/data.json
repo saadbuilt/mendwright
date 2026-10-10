@@ -458,9 +458,10 @@
         "rule": "yes = refuses to heal pay, submit or delete style controls without the user marking each one. partial = refuses only the steps the user marks, by a flag or an opt-out switch. no = no mechanism. Applied the same way to every tool.",
         "cells": {
           "mendwright": {
-            "state": "yes",
-            "note": "on by default",
-            "source": "mendwright/facade.py"
+            "state": "partial",
+            "note": "keys you mark",
+            "source": "mendwright/coordinator.py",
+            "detail": "destructive=True in heal.locator(), mendwright.open(destructive_keys=...) or \"destructive\": true in a seed file. Those keys are refused before any model call."
           },
           "healenium": {
             "state": "partial",

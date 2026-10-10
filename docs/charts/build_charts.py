@@ -503,10 +503,10 @@ def chart_flow(data, theme):
     b = box(spine_x, spine_w, top, 40, 'A stored selector stops matching', kind='pill')
     down(b, b + gap)
     top = b + gap
-    b = box(spine_x, spine_w, top, 58, 'Refuse before asking the model?',
-            ['destructive, role unknown or hourly limit used up'], kind='decision')
-    across(top + 29, 'yes')
-    exit_box(top + 29, 'Stop and raise AttentionRequired', ['The model is not called.'], 'bang')
+    b = box(spine_x, spine_w, top, 70, 'Refuse before asking the model?',
+            ['key marked destructive, role unknown,', 'or hourly limit used up'], kind='decision')
+    across(top + 35, 'yes')
+    exit_box(top + 35, 'Stop and raise AttentionRequired', ['The model is not called.'], 'bang')
     down(b, b + gap, 'no')
     top = b + gap
     b = box(spine_x, spine_w, top, 58, 'Capture the page', ['HTML snapshot, redacted first'])
@@ -520,8 +520,7 @@ def chart_flow(data, theme):
               'not quarantined or superseded for this key',
               'exactly one match in the snapshot',
               'the expected role',
-              'no destructive word in a button or link label',
-              'unique, visible, same role and label on the live page']
+              'unique, visible and the same role on the live page']
     h = 34 + 19 * len(checks) + 10
     svg.add('<g class="node">')
     svg.add('<rect x="%s" y="%s" width="%s" height="%s" rx="10" fill="%s" stroke="%s" '
@@ -547,12 +546,12 @@ def chart_flow(data, theme):
     top = b + gap
     b = box(spine_x, spine_w, top, 40, 'The step continues', kind='pill')
     y = footer(svg, b + 4, ['Code: mendwright/facade.py, coordinator.py and gate.py.'])
-    desc = ('Flow: a selector misses; a destructive control, an unknown role or a used-up hourly '
-            'limit stops with AttentionRequired before any model call; otherwise the page is '
-            'captured and redacted, a model proposes an XPath, and local checks run (not a '
+    desc = ('Flow: a selector misses; a key marked destructive, an unknown role or a used-up '
+            'hourly limit stops with AttentionRequired before any model call; otherwise the page '
+            'is captured and redacted, a model proposes an XPath, and local checks run (not a '
             'brittle index path, not quarantined or superseded for this key, exactly one match, '
-            'expected role, no destructive word in a button or link label, unique, visible, same '
-            'role and label on the live page); a failure gives the model the reason and one more try, and a '
+            'expected role, unique, visible and the same role on the live page); a failure '
+            'gives the model the reason and one more try, and a '
             'second failure raises AttentionRequired with nothing saved; a pass is saved and the '
             'step retried; if the action then fails the healed selector is quarantined.')
     return svg.render(y, title, desc)
