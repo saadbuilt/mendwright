@@ -14,9 +14,9 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-When a site update breaks a selector, mendwright asks a model for a new XPath, checks it against the live page, saves it, and retries the step. On the next run the saved selector is used and the model isn't called at all.
+When a site update breaks a selector, mendwright asks a model for a new XPath, checks it against the live page, saves it, and retries the step. On the next run the saved selector is used and the model isn't called.
 
-Use the model you already have: Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama.
+Supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama.
 
 ## Install
 
