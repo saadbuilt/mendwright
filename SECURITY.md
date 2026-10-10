@@ -25,11 +25,10 @@ Every proposed XPath goes through `client.apply()`, which runs two checks.
 - it isn't a pure absolute-index path such as `/html[1]/body[1]/div[3]/input[1]`;
 - it matches exactly one element;
 - that element has the key's expected role (ARIA names such as `textbox` or `switch` are mapped to the element roles they mean);
-- for a key marked destructive, the element's text is one of the expected texts. The coordinator refuses destructive keys before this point, so this rule only matters when you call `validate()` yourself;
-- for any other key, unless it has `destructive=False`, an element that is a button, a link or an input button has no destructive word in its label.
+- for a key marked destructive, the element's text is one of the expected texts. The coordinator refuses destructive keys before this point, so this rule only matters when you call `validate()` yourself.
 
 `live_match()` in `mendwright/gate.py` then checks the XPath on the current page through the driver.
-It must match exactly one element, that element must be visible unless its role is checkbox, and it must still have the key's role. For a destructive key, its text must also be one of the expected texts, and for any other key its label must still pass the destructive word check. Any driver error counts as no match.
+It must match exactly one element, that element must be visible unless its role is checkbox, and it must still have the key's role. For a destructive key, its text must also be one of the expected texts. Any driver error counts as no match.
 `mendwright.open()` and `mendwright.aio.open()` always pass a driver. A `HealCoordinator` you build yourself runs this check only when you pass `driver=`.
 
 `apply()` also rejects a proposal that the store holds as quarantined or superseded, or that reaches an element the key has quarantined, even through a different XPath. It never stores a selector that isn't XPath.
@@ -47,30 +46,24 @@ Other limits on a heal:
 ## Destructive controls
 
 A key that is destructive is never healed, and no model is called for it.
-A key is destructive when:
+A key is destructive only when you mark it:
 
 - the seed file marks it, or it is in `mendwright.open(destructive_keys=...)`. Nothing at run time can clear these.
-- `heal.locator(..., destructive=True)` marks it. This is saved in the override file.
-- The facade's word check matches. One of `pay`, `payment`, `purchase`, `buy`, `checkout`, `confirm`, `submit` or `delete`, or the phrase "place order", "order now" or "complete order", appears in the key, in its `text=`, or in the label of the button or link it last matched. The lists are `DESTRUCTIVE_WORDS` and `DESTRUCTIVE_PHRASES` in `mendwright/facade.py`. `destructive=False` opts a key out of the word check, and the choice is saved.
+- `heal.locator(..., destructive=True)` marks it. This is saved in the override file, and `destructive=False` clears it.
 
-A heal is also refused when the model picks a button or link with a destructive label, even for a key that looks harmless. The label is the element's visible text, `aria-label`, `title` or `alt`, or the `value` of an input button. The check runs after the model answers, in `validate()` and again in the live check, so it costs a model call. The model gets the reason and one more try. `destructive=False` on the key turns it off too.
+mendwright doesn't guess which controls are destructive from the key, `text=` or the page. A key you don't mark can be healed onto any element that has its role, including a button that pays or deletes.
+
+A heal saved for a key before it was marked is quarantined, not acted on.
+With the low-level `HealCoordinator`, the flag comes from `meta['destructive']`, which `store.meta(key)` fills from the seed file, `destructive_keys` and saved flags.
 
 This is what a refused key looks like, from a run with a stub provider:
 
 ```
 mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 candidate(s)).
-  -> 'pay' looks like a destructive control (its key contains 'pay'), and mendwright never auto-heals those, because a validated but wrong selector could act on a live account. Fix the selector in your code, or pass destructive=False to heal.locator() if this control is safe to heal.
+  -> 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
 ```
 
 The provider received 0 calls.
-
-Limits of the word check:
-
-- The word check on keys, `text=` and learned labels runs in `mendwright.open()` and `mendwright.aio.open()` only. With the low-level `HealCoordinator`, only seed flags, `destructive_keys` and `meta['destructive']` apply there. The label check on the element a heal picks runs in both.
-- The key and `text=` are checked before any model call. A label is learned only after the selector has matched once, and only for button and link roles. If the first call for a key already needs a heal, the label of the element the model picks is the only label that gets checked.
-- The label check reads buttons, links and input buttons. A field labelled "Confirm password" isn't treated as destructive.
-- A clickable control whose label uses none of the listed words isn't caught, such as an icon button. Mark it with `destructive=True`.
-- The words are English.
 
 ## Redaction
 
@@ -135,7 +128,7 @@ out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see
 
 ## Files mendwright writes
 
-- `./.mendwright/overrides.json` (or `MENDWRIGHT_STORE`): selectors, their status, and each key's role, expected text and destructive flag. It holds no page HTML, but selectors can quote page text: a healed XPath often anchors on a label (for example `contains(normalize-space(.),'accept the terms')`), and the label of a button or link that looks destructive is saved as `expectedText` (for example `"Pay now"`). Review the file before you commit it.
+- `./.mendwright/overrides.json` (or `MENDWRIGHT_STORE`): selectors, their status, and each key's role, expected text and destructive flag. It holds no page HTML, but selectors can quote page text: a healed XPath often anchors on a label (for example `contains(normalize-space(.),'accept the terms')`), and a `text=` you pass is saved as `expectedText`. Review the file before you commit it.
 - `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. On POSIX it's created with mode 0600.
 - `overrides.json.lock` while a write is in progress.
 
@@ -144,9 +137,10 @@ A store file that is corrupt or can't be read raises an error. mendwright never 
 ## Residual risks
 
 - The live check and the retried action are separate calls. The page can change between them.
+- Only keys you mark are refused as destructive. An unmarked key can be healed onto a control that pays, submits or deletes, as long as it has the key's role.
 - A hostile page can steer the model toward a different element with the same role. The checks limit the role, the match count and visibility, but can't judge intent. Use `expect=` on actions that matter.
 - A direct provider holds its API key in your process. Without the google-genai SDK, `GeminiProvider` falls back to a REST call that puts the key in the URL query (`?key=`), so a proxy that logs URLs can record it. Install `mendwright[gemini]` to have the SDK make the call instead. `GatewayProvider` keeps the model key on your server.
 - `mendwright doctor` prints absolute paths for Python, the package and the store, which can contain your user name.
 - With the pytest plugin, a passing test confirms its heals. For `GatewayProvider` that is an HTTP call to `/heal/outcome`. A test that passes for the wrong reason confirms a wrong heal.
 
-If you find a way to get a selector past the checks, to heal a destructive control, or to send more page data than this page describes, please report it privately as described at the top.
+If you find a way to get a selector past the checks, to heal a key marked destructive, or to send more page data than this page describes, please report it privately as described at the top.

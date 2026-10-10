@@ -58,8 +58,8 @@ heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
 | `key` | The name the element's selectors and heals are saved under. Use one key per element. |
 | `selector` | What your code says the element is: an XPath, CSS or Playwright selector, or a list of them tried in order. Leave it out to use only what the store has. |
 | `role` | The kind of element (see [Roles](#roles)). Optional: mendwright saves the role the first time a selector matches. |
-| `text` | The element's expected visible text, a string or a list. mendwright checks it for [destructive words](#destructive-controls). |
-| `destructive` | `True` means never heal this key. `False` opts the key out of the word check and is remembered. `None` keeps what was saved. |
+| `text` | The element's expected visible text, a string or a list. The model gets it as a hint. |
+| `destructive` | `True` means never heal this key, and is saved for later runs. `False` clears a flag saved that way. `None` keeps what was saved. See [Destructive controls](#destructive-controls). |
 | `timeout_ms` | Overrides the Healer's timeout for this call |
 | `poll_ms` | How often to poll while waiting |
 
@@ -482,32 +482,30 @@ If `role=` disagrees with the element it matched, mendwright logs a WARNING, bec
 
 ## Destructive controls
 
-A key is treated as destructive, and never healed, when any of these hold:
+A key is destructive, and never healed, when you mark it in one of these ways:
 
-- the key was passed in `open(destructive_keys=...)`, or the seed file marks it `"destructive": true`
-- `destructive=True` was passed for it (saved in the store)
-- a word from `mendwright.facade.DESTRUCTIVE_WORDS` or a phrase from `DESTRUCTIVE_PHRASES` appears in the key, in its `text=`, or in the label of the button or link it last matched
+- `destructive=True` in `heal.locator()`. It is saved in the store, so later runs keep it.
+- the key is in `mendwright.open(destructive_keys=...)`
+- the seed file marks it `"destructive": true`
 
-The words are `pay`, `payment`, `purchase`, `buy`, `checkout`, `confirm`, `submit` and `delete`.
-The phrases are `place order`, `order now` and `complete order`.
-Keys are split into words on `_`, `-`, `.` and camelCase, so `placeOrder_btn` matches "place order" and `payload` doesn't match "pay".
-A label is the text of a button or link, or the `value` of an `<input type=submit>`. When a matched button or link has a label with one of these words, it is saved as `expectedText`, so the check still works on a later run where the element is gone.
+```python
+heal.locator("pay", "#pay", destructive=True).click()
+```
 
-Such a step is refused before any model call:
+mendwright doesn't guess this from the key, from `text=` or from the page.
+A key you don't mark can be healed onto any element that has its role, including a button that pays or deletes. Mark every step like that.
+
+A marked step is refused before any model call:
 
 ```text
 No matching element for: pay (tried 1 candidate(s)).
-  -> 'pay' looks like a destructive control (its key contains 'pay'), and mendwright never auto-heals those, because a validated but wrong selector could act on a live account. Fix the selector in your code, or pass destructive=False to heal.locator() if this control is safe to heal.
+  -> 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
 ```
 
-A heal is also refused when the model picks a button or link with a destructive label, even if the key looks harmless. Say `primary_cta` was a "Save" button and the model proposes the "Pay now" button next to it. The label is the element's visible text, `aria-label`, `title` or `alt`, or the `value` of an input button, and the same words apply.
-It's checked on the captured page, and again on the live page when there is a driver. The low-level API runs it too.
-This check runs after the model answers, so unlike the key checks above it costs a model call. The model gets the reason and one more try, like any other rejected proposal.
+If a heal was saved for the key before you marked it, mendwright doesn't act on it. It quarantines that selector and raises `AttentionRequired`.
 
-`destructive=False` opts a key out of the word check and the label check, and the choice is saved.
+`destructive=False` clears a flag that `destructive=True` saved.
 It can't unmark a key from `destructive_keys` or the seed file.
-
-The checks only know English words. A destructive control whose label uses none of them, such as an icon button or a label in another language, isn't caught. Mark it with `destructive=True` or `destructive_keys`.
 
 ## Store and journal
 
@@ -690,7 +688,7 @@ accept_terms  (checkbox)
   active      heal  //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']  (last success: 2026-10-10 19:07:59 UTC)
   heals: 1 requested, 1 applied, 0 rejected, 0 quarantined
 
-pay  (button, treated as destructive because its key contains 'pay')
+pay  (button, destructive, never auto-healed)
   active      code  #pay  (last success: 2026-10-10 19:07:59 UTC)
 
 Heals (journal.jsonl): 1 requested, 1 applied, 0 rejected, 0 quarantined
@@ -728,7 +726,7 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve(store, page, key)` returns the native locator or element, or raises `AttentionRequired`.
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
-- These paths skip what the facade adds: the code-first selector order, role learning and the destructive word check on keys. The label check on the element a heal picks still runs.
+- These paths skip what the facade adds: the code-first selector order and role learning. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`.
 
 ## Troubleshooting
@@ -739,12 +737,11 @@ The first line names the key. The line after `->` says why there was no heal:
 
 | The message says | What to do |
 |---|---|
-| looks like a destructive control, or is marked as a destructive control | Fix the selector by hand, or pass `destructive=False` if the control is safe to heal |
+| is marked as a destructive control | Fix the selector by hand. If you marked it with `destructive=True` and the control is safe to heal, pass `destructive=False` |
 | no provider configured | Set a key and its model variable, or pass `provider=` |
 | `<Provider> returned no selector for '<key>': <reason>` | The reason is the provider's own error, such as an HTTP 401 for a bad key, an unknown model or no network. Fix what it names, or try another model. |
 | does not know what kind of element | Pass `role=` |
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
-| the element looks destructive (its label `'...'` contains `'...'`) | The model picked a button or link with a destructive label. Fix the selector by hand, or pass `destructive=False` for the key if that control is safe to heal |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |
 | the selector matches only inside a child iframe (Playwright) | Open mendwright on the frame (see [Iframes](#iframes)) |
 | rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` |

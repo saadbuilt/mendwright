@@ -119,7 +119,6 @@ heal.locator(key, selector)               facade.py (sync), aio.py (async)
     build_bundle()                        capture.py
     provider.propose(bundle)              providers/, prompt.py
     apply(): validate(), live_match()     client.py, validation.py, gate.py
-      (both refuse a button or link with a destructive label; words in destructive.py)
     save the new candidate                store.py
   resolve() again
 .click()                                  ActionProxy in facade.py, through driver.act_on()
@@ -131,7 +130,7 @@ The modules:
 - `selectors.py`: `classify()` (XPath, CSS or Playwright engine selector), `check_syntax()`, `normalize()` and `InvalidSelector`.
 - `drivers/`: `base.py` holds the `Driver` protocol, the shared describe and inventory scripts, and the fallback helpers. `registry.py` has `wrap()` and `register_driver()`. The built-in drivers are `playwright_sync.py`, `playwright_async.py` (used by `mendwright.aio`) and `selenium.py`, which handles frames, implicit waits and the verb mapping.
 - `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run.
-- `facade.py`: `mendwright.open()`, `Healer` and `ActionProxy`. Puts the selectors from your code first, reads the role from the page, applies the destructive word check, and runs actions, quarantining a heal whose action fails.
+- `facade.py`: `mendwright.open()`, `Healer` and `ActionProxy`. Puts the selectors from your code first, reads the role from the page, never acts through a saved heal on a key marked destructive, and runs actions, quarantining a heal whose action fails.
 - `aio.py`: `mendwright.aio.open()` and `AsyncHealer`. A heal runs the sync coordinator in a worker thread, which reaches the page through `SyncBridge`.
 - `coordinator.py`: `HealCoordinator` and `resolve_with_heal()`. Runs the checks before any model call, builds the bundle, asks the provider (with one re-prompt on rejection), applies, journals, and keeps the reason for `explain()`.
 - `validation.py` and `gate.py`: `validate()` checks a proposal against the captured HTML with lxml; `live_match()` checks it against the page through the driver. `client.apply()` runs both.

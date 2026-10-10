@@ -27,14 +27,14 @@ Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API c
       checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
       retry    ok: box checked with the healed selector, heal confirmed
   v2  pay           #pay           MISS   no element matches
-      refused  'pay' looks like a destructive control (its key contains 'pay'). Not healed, no model call.
+      refused  'pay' is marked destructive=True. Not healed, no model call.
 
 Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.
 ```
 
 The pages are `mendwright/demo/v1.html` and `v2.html`, a checkout form.
 In v2 the ids `accept-terms` and `pay` are gone, while the checkbox, its label and the "Pay now" button are unchanged.
-The checkbox is healed. The pay button is refused without a model call, because its key contains "pay" (see [Destructive controls](../../SECURITY.md#destructive-controls)).
+The checkbox is healed. The demo marks the pay step `destructive=True`, so the pay button is refused without a model call (see [Destructive controls](../../SECURITY.md#destructive-controls)).
 
 Options:
 
