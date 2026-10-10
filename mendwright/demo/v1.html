@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout (v1)</title>
+</head>
+<body>
+  <main>
+    <h1>Checkout</h1>
+
+    <!-- v1: the page the selectors were written against. Both controls carry a
+         hand-picked id, so the obvious selectors are #accept-terms and #pay. -->
+    <form id="checkout" method="post" action="/checkout">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email">
+
+      <div class="consent">
+        <label>
+          <input id="accept-terms" name="terms" type="checkbox">
+          <span>I accept the terms and conditions</span>
+        </label>
+      </div>
+
+      <button id="pay" type="submit">Pay now</button>
+    </form>
+  </main>
+</body>
+</html>

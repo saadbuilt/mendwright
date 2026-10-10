@@ -1,0 +1,9 @@
+# The sdist carries what it needs to run the offline test suite from the tarball.
+# Explicit patterns rather than graft, so __pycache__ and .pyc files never get in.
+# Each pattern must match at least one file, or the build prints a warning.
+include CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md
+recursive-include tests *.py *.html
+recursive-include examples/demo *.py *.html *.md
+# The reference gateway and its config: tests/test_gateway_worker.py checks the worker
+# against mendwright/prompt.py.
+include examples/heal_gateway.mjs examples/wrangler.toml

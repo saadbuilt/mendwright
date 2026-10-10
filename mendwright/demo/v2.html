@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout (v2)</title>
+</head>
+<body>
+  <main>
+    <h1>Checkout</h1>
+
+    <!-- v2: the same page after a front-end redesign. The consent block is now a
+         design-system component and both controls lost their ids (the checkbox has a
+         build-generated one). #accept-terms and #pay match nothing, but the checkbox
+         role and its visible label text are unchanged. -->
+    <form id="checkout" method="post" action="/checkout">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email">
+
+      <fieldset class="legal">
+        <ds-checkbox>
+          <label class="ds-checkbox__control">
+            <input type="checkbox" name="agreement" id="mui-generated-8842" data-testid="legal-consent">
+            <span>I accept the terms and conditions</span>
+          </label>
+        </ds-checkbox>
+      </fieldset>
+
+      <button class="ds-button ds-button--primary" type="submit" data-testid="checkout-submit">Pay now</button>
+    </form>
+  </main>
+</body>
+</html>

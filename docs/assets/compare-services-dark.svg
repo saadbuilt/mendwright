@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="504" viewBox="0 0 800 504" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="title">Services you run before the first heal</title>
+<desc id="desc">Bar chart. mendwright: 0; robotframework-heal: 0; Healenium-Web: 3; Healenium-Proxy: 6.</desc>
+<rect x="0.5" y="0.5" width="799" height="503" rx="12" fill="#1a1a19" stroke="#ffffff" stroke-opacity="0.1"/>
+<text x="24" y="42" font-size="18" font-weight="600" fill="#ffffff">Services you run before the first heal</text>
+<text x="24" y="66" font-size="13" fill="#c3c2b7">Separately run services or containers. Your test runner, browser and LLM API are not counted.</text>
+<text x="24" y="102" font-size="13"><tspan font-weight="600" fill="#ffffff">mendwright</tspan><tspan dx="8" fill="#c3c2b7">direct mode, Python</tspan></text>
+<line x1="24" y1="109" x2="24" y2="133" stroke="#898781" stroke-width="1"/>
+<text x="32" y="125.5" font-size="13" font-weight="600" fill="#ffffff">0</text>
+<text x="24" y="147" font-size="12" fill="#c3c2b7">Calls your LLM provider's API. Healed selectors go to ./.mendwright/overrides.json.</text>
+<text x="24" y="183" font-size="13"><tspan font-weight="600" fill="#ffffff">robotframework-heal</tspan><tspan dx="8" fill="#c3c2b7">Robot Framework only</tspan></text>
+<line x1="24" y1="190" x2="24" y2="214" stroke="#898781" stroke-width="1"/>
+<text x="32" y="206.5" font-size="13" font-weight="600" fill="#ffffff">0</text>
+<text x="24" y="228" font-size="12" fill="#c3c2b7">Calls your LLM provider's API. History goes to a local SQLite file.</text>
+<text x="24" y="264" font-size="13"><tspan font-weight="600" fill="#ffffff">Healenium-Web</tspan><tspan dx="8" fill="#c3c2b7">Java only</tspan></text>
+<line x1="24" y1="271" x2="24" y2="295" stroke="#898781" stroke-width="1"/>
+<path class="bar" d="M24 274H376A4 4 0 0 1 380 278V288A4 4 0 0 1 376 292H24z" fill="#3987e5"/>
+<text x="388" y="287.5" font-size="13" font-weight="600" fill="#ffffff">3</text>
+<text x="24" y="309" font-size="12" fill="#c3c2b7">PostgreSQL, hlm-backend, selector-imitator. No LLM in the open source edition.</text>
+<text x="24" y="345" font-size="13"><tspan font-weight="600" fill="#ffffff">Healenium-Proxy</tspan><tspan dx="8" fill="#c3c2b7">for Python, JS or C# Selenium</tspan></text>
+<line x1="24" y1="352" x2="24" y2="376" stroke="#898781" stroke-width="1"/>
+<path class="bar" d="M24 355H732A4 4 0 0 1 736 359V369A4 4 0 0 1 732 373H24z" fill="#3987e5"/>
+<text x="744" y="368.5" font-size="13" font-weight="600" fill="#ffffff">6</text>
+<text x="24" y="390" font-size="12" fill="#c3c2b7">4 Healenium services, a Selenium hub and 1 browser node. No LLM in the open source edition.</text>
+<text x="24" y="418" font-size="12" fill="#c3c2b7">Healenium-Proxy needs 4 if you already run a Selenium Grid; the shipped docker-compose.yaml starts 8.</text>
+<text x="24" y="440" font-size="12" fill="#c3c2b7">mendwright's optional gateway mode adds 1: a Cloudflare Worker with a KV binding.</text>
+<text x="24" y="462" font-size="12" fill="#c3c2b7">Sources: Healenium compose files and the robotframework-heal and mendwright READMEs, checked 2026-10-10.</text>
+<text x="24" y="484" font-size="12" fill="#c3c2b7">Data and links: docs/charts/data.json</text>
+</svg>

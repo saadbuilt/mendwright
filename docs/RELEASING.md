@@ -1,0 +1,138 @@
+# Releasing mendwright
+
+Releases go to PyPI from GitHub Actions through trusted publishing, so no API token is stored in the repository. The workflow is `.github/workflows/release.yml`. It does two things:
+
+- Pushing a tag such as `v0.3.0` builds and tests the sdist and wheel, then uploads them to TestPyPI. The PyPI upload waits for your approval.
+- Running it by hand from the Actions tab does the same build and test, then uploads to TestPyPI only. Use this as a rehearsal.
+
+Three things to know before the first release:
+
+- PyPI never accepts the same version twice. A file name stays taken even after you delete the release. If anything goes wrong after an upload, the fix is a new version number.
+- 0.1.0 and 0.2.0 were developed privately under the name selfheal and never published. The first upload to PyPI is 0.3.0.
+- A pending publisher does **not** reserve the name. Until the first upload, anyone can register `mendwright` on PyPI, and that invalidates your pending publisher ([PyPI docs](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)). Do the TestPyPI rehearsal and the 0.3.0 release on the same day the repository goes public. If you can't, claim the name by hand first (see [Claiming the name by hand](#claiming-the-name-by-hand)).
+
+## One-time setup
+
+1. Create an account on [pypi.org](https://pypi.org) and turn on two-factor authentication. PyPI requires 2FA for publishing.
+2. Create a second account on [test.pypi.org](https://test.pypi.org). It is a separate site with separate logins. Turn on 2FA there as well.
+3. On PyPI, open [Publishing](https://pypi.org/manage/account/publishing/), pick the GitHub tab and add a pending publisher:
+   - PyPI project name: `mendwright`
+   - Owner: `saadbuilt`
+   - Repository name: `mendwright`
+   - Workflow name: `release.yml`
+   - Environment name: `pypi`
+4. On TestPyPI, open [Publishing](https://test.pypi.org/manage/account/publishing/) and add the same publisher with the environment name `testpypi`.
+5. Create the repository `saadbuilt/mendwright` on GitHub with `main` as the default branch, and push the code to `main`.
+6. Make the repository public (Settings, General, Danger Zone, Change visibility). The links on the PyPI page point at GitHub, and GitHub Free only offers environments on public repositories.
+7. Turn on private vulnerability reporting (Settings, Advanced Security, then Enable next to Private vulnerability reporting). `SECURITY.md` and the bug report template send people there.
+8. In Settings, Environments, create `pypi`:
+   - Turn on Required reviewers and add yourself.
+   - Leave Prevent self-review off while you are the only maintainer. Otherwise nobody can approve your releases.
+   - Under Deployment branches and tags, choose Selected branches and tags, then add a rule with ref type Tag and the pattern `v*`.
+9. Create a second environment, `testpypi`, with no reviewers and no branch rule. That lets a manual rehearsal run from `main`.
+10. Optional: add a tag ruleset for `v*` (Settings, Rules, Rulesets) so only maintainers can create release tags.
+11. Set the description, website and topics, and turn off the empty Wiki and Projects tabs:
+
+    ```
+    gh repo edit saadbuilt/mendwright --description "Self-healing selectors for Playwright and Selenium. A model proposes a new XPath and mendwright checks it against the live page before using it." --homepage https://pypi.org/project/mendwright/ --enable-wiki=false --enable-projects=false --add-topic playwright,selenium,python,xpath,selectors,locators,self-healing,self-healing-tests,test-automation,browser-automation,web-automation,e2e-testing,ui-testing,flaky-tests,pytest,pytest-plugin,playwright-python,selenium-python,qa-automation,llm
+    ```
+
+    Then open Settings, General, Social preview and upload `docs/assets/social-preview.png`. GitHub doesn't read it from the repository, so this step is by hand.
+
+Then, on the same day, rehearse on TestPyPI and release 0.3.0 as described below.
+
+## Rehearse on TestPyPI
+
+1. Make sure `main` has the version you want to ship.
+2. In the Actions tab, open Release, click Run workflow and choose `main`.
+3. When the run is green, install from TestPyPI into a fresh virtualenv. The extra index lets pip fetch lxml from the real PyPI.
+
+   ```
+   python -m venv mw-rehearsal
+   mw-rehearsal/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ mendwright==0.3.0
+   mw-rehearsal/bin/mendwright --version
+   mw-rehearsal/bin/mendwright demo
+   ```
+
+   On Windows the paths are `mw-rehearsal\Scripts\python` and `mw-rehearsal\Scripts\mendwright`.
+4. Open https://test.pypi.org/project/mendwright/ and check that the README renders and the links work.
+
+TestPyPI also takes each version only once. A second rehearsal of the same version still builds and tests, and the upload step skips files that are already there.
+
+## Each release
+
+1. Set the version in three places, all to the same value:
+   - `version` in `pyproject.toml`
+   - both `__version__ = '...'` fallback lines at the bottom of `mendwright/__init__.py`
+2. In `CHANGELOG.md`, change `## [X.Y.Z] - Unreleased` to `## [X.Y.Z] - YYYY-MM-DD`, and check that the link line `[X.Y.Z]: https://github.com/saadbuilt/mendwright/releases/tag/vX.Y.Z` is at the bottom.
+3. If `README.md` or the code changed since the wheel was last measured, measure it again. The wheel embeds the README, so its size changes. Build it with `python -m build --wheel`, put the new byte counts in `download.rows[0]` and the Linux total in `infra.rows[0]` of `docs/charts/data.json`, and run `python docs/charts/build_charts.py`. Then update the figures in `docs/comparison.md`: the download and infra tables, the chart descriptions and the Methodology bullets.
+4. Reinstall and run the tests:
+
+   ```
+   python -m pip install -e ".[dev]"
+   python -m pytest -q
+   ```
+
+   The reinstall matters. `mendwright.__version__` is read from the installed package metadata, so an old editable install still reports the previous version and `tests/test_version.py` fails.
+5. Open a pull request, wait for CI to pass, and merge it to `main`.
+6. Tag the merge commit and push the tag:
+
+   ```
+   git checkout main
+   git pull
+   git tag -a vX.Y.Z -m "mendwright X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+   The build job stops if the tag doesn't match `version` in `pyproject.toml`.
+7. In the Actions tab, open the Release run. After the TestPyPI job passes, the PyPI job waits for approval. Click Review deployments and approve `pypi`.
+8. Create the GitHub release from the files the run built. Put the CHANGELOG section for this version in `notes.md` first.
+
+   ```
+   gh run download <run-id> -n python-package-distributions -D dist
+   gh release create vX.Y.Z dist/* --title "mendwright X.Y.Z" --notes-file notes.md
+   ```
+
+9. Check the real install from a fresh virtualenv:
+
+   ```
+   python -m pip install mendwright==X.Y.Z
+   mendwright --version
+   ```
+
+## Claiming the name by hand
+
+Use this only if the first trusted-publishing release can't happen on the day the repository goes public.
+It uploads 0.3.0 from your own machine with an API token, then hands later releases to the workflow.
+
+1. On PyPI, open Account settings, API tokens, and add a token with the scope "Entire account (all projects)". A token scoped to one project can only be made once the project exists.
+2. Do steps 1 to 5 of Each release first, so `main` has version 0.3.0 and the CHANGELOG heading carries the release date. Then build, check and upload from `main`:
+
+   ```
+   git checkout main
+   git pull
+   python -m pip install -e ".[dev]"
+   python -m pytest -q
+   python -m build
+   python -m twine check --strict dist/*
+   python -m twine upload dist/*
+   ```
+
+   twine asks for a username and a password. Enter `__token__` as the username and the token as the password.
+3. Open https://pypi.org/project/mendwright/ and check the page.
+4. Open the project's Manage page on PyPI, then Publishing. If the GitHub publisher from setup step 3 isn't listed, add it there with the same values.
+5. Delete the account-wide token (Account settings, API tokens).
+6. Tag `v0.3.0` and push it, as in step 6 of Each release. The build and TestPyPI jobs run as usual. When the PyPI job asks for approval, reject it: PyPI already has 0.3.0, and that job doesn't skip existing files, so it would fail.
+7. Create the GitHub release from your local `dist/`, which holds the files you uploaded, rather than from the run's artifact:
+
+   ```
+   gh release create v0.3.0 dist/* --title "mendwright 0.3.0" --notes-file notes.md
+   ```
+
+From 0.3.1 on, follow Each release.
+
+## When something fails
+
+- The build job failed: nothing was uploaded. Fix the problem on `main`, delete the tag (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), and tag the fixed commit.
+- The TestPyPI job failed: PyPI was not touched. Fix it and run the release again. If TestPyPI already has the files, the upload step skips them.
+- The PyPI upload failed partway, or a broken release went out: release X.Y.Z+1. Deleting the tag doesn't help, because PyPI won't take X.Y.Z again. You can yank the broken version on PyPI (Manage, Releases, Options, Yank). Yanking hides it from new installs but keeps it available to anyone who pinned it.

@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1102" viewBox="0 0 800 1102" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="title">Feature comparison</title>
+<desc id="desc">Dot matrix of 13 features for mendwright, Healenium, robotframework-heal, Skyvern, Stagehand, auto-playwright.</desc>
+<rect x="0.5" y="0.5" width="799" height="1101" rx="12" fill="#1a1a19" stroke="#ffffff" stroke-opacity="0.1"/>
+<text x="24" y="42" font-size="18" font-weight="600" fill="#ffffff">Feature comparison</text>
+<text x="24" y="66" font-size="13" fill="#c3c2b7">Read from each project's code, README and docs. Checked 2026-10-10.</text>
+<circle class="mark" cx="31" cy="91" r="7" fill="#3987e5"/>
+<text x="45" y="95.5" font-size="13" fill="#c3c2b7">yes</text>
+<circle class="mark" cx="93.85" cy="91" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M93.85 84.75A6.25 6.25 0 0 0 93.85 97.25Z" fill="#3987e5"/>
+<text x="107.85" y="95.5" font-size="13" fill="#c3c2b7">partial or opt-in</text>
+<circle class="mark" cx="228.48" cy="91" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="242.48" y="95.5" font-size="13" fill="#c3c2b7">no</text>
+<text x="285.09" y="96" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="299.09" y="95.5" font-size="13" fill="#c3c2b7">not documented</text>
+<text x="430.77" y="95" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="448.77" y="95.5" font-size="13" fill="#c3c2b7">does not apply</text>
+<rect x="222" y="114" width="88.67" height="906" rx="8" fill="#3987e5" fill-opacity="0.13"/>
+<text x="266.33" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">mendwright</text>
+<text x="359" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">Healenium</text>
+<text x="359" y="148" font-size="12" fill="#c3c2b7" text-anchor="middle">open source</text>
+<text x="451.67" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">robotframework-</text>
+<text x="451.67" y="149" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">heal</text>
+<text x="544.33" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">Skyvern</text>
+<text x="544.33" y="148" font-size="12" fill="#c3c2b7" text-anchor="middle">click fallback</text>
+<text x="637" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">Stagehand</text>
+<text x="729.67" y="132" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">auto-</text>
+<text x="729.67" y="149" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">playwright</text>
+<line x1="24" y1="164" x2="776" y2="164" stroke="#383835" stroke-width="1"/>
+<text x="24" y="188.5" font-size="13" fill="#ffffff">Heals with no prior success</text>
+<circle class="mark" cx="266.33" cy="184" r="7" fill="#3987e5"/>
+<circle class="mark" cx="359" cy="184" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="359" y="209" font-size="12" fill="#c3c2b7" text-anchor="middle">needs a</text>
+<text x="359" y="223" font-size="12" fill="#c3c2b7" text-anchor="middle">baseline</text>
+<text x="451.67" y="189" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<circle class="mark" cx="544.33" cy="184" r="7" fill="#3987e5"/>
+<text x="544.33" y="209" font-size="12" fill="#c3c2b7" text-anchor="middle">AI fallback</text>
+<text x="637" y="188" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="637" y="209" font-size="12" fill="#c3c2b7" text-anchor="middle">infers steps</text>
+<text x="729.67" y="188" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="729.67" y="209" font-size="12" fill="#c3c2b7" text-anchor="middle">no selectors</text>
+<line x1="24" y1="232" x2="776" y2="232" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="256.5" font-size="13" fill="#ffffff">Persists the healed selector</text>
+<circle class="mark" cx="266.33" cy="252" r="7" fill="#3987e5"/>
+<text x="266.33" y="277" font-size="12" fill="#c3c2b7" text-anchor="middle">JSON file</text>
+<circle class="mark" cx="359" cy="252" r="7" fill="#3987e5"/>
+<text x="359" y="277" font-size="12" fill="#c3c2b7" text-anchor="middle">PostgreSQL</text>
+<circle class="mark" cx="451.67" cy="252" r="7" fill="#3987e5"/>
+<text x="451.67" y="277" font-size="12" fill="#c3c2b7" text-anchor="middle">SQLite</text>
+<text x="544.33" y="257" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<circle class="mark" cx="637" cy="252" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M637 245.75A6.25 6.25 0 0 0 637 258.25Z" fill="#3987e5"/>
+<text x="637" y="277" font-size="12" fill="#c3c2b7" text-anchor="middle">Browserbase</text>
+<text x="637" y="291" font-size="12" fill="#c3c2b7" text-anchor="middle">only</text>
+<circle class="mark" cx="729.67" cy="252" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<line x1="24" y1="300" x2="776" y2="300" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="324.5" font-size="13" fill="#ffffff">Checks the proposal on the</text>
+<text x="24" y="340.5" font-size="13" fill="#ffffff">live page</text>
+<circle class="mark" cx="266.33" cy="320" r="7" fill="#3987e5"/>
+<text x="266.33" y="345" font-size="12" fill="#c3c2b7" text-anchor="middle">unique, visible</text>
+<circle class="mark" cx="359" cy="320" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M359 313.75A6.25 6.25 0 0 0 359 326.25Z" fill="#3987e5"/>
+<text x="359" y="345" font-size="12" fill="#c3c2b7" text-anchor="middle">score</text>
+<text x="359" y="359" font-size="12" fill="#c3c2b7" text-anchor="middle">threshold</text>
+<circle class="mark" cx="451.67" cy="320" r="7" fill="#3987e5"/>
+<text x="451.67" y="345" font-size="12" fill="#c3c2b7" text-anchor="middle">per README</text>
+<text x="544.33" y="325" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="637" y="325" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="729.67" y="325" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<line x1="24" y1="368" x2="776" y2="368" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="392.5" font-size="13" fill="#ffffff">Refuses destructive controls</text>
+<circle class="mark" cx="266.33" cy="388" r="7" fill="#3987e5"/>
+<text x="266.33" y="413" font-size="12" fill="#c3c2b7" text-anchor="middle">on by default</text>
+<circle class="mark" cx="359" cy="388" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M359 381.75A6.25 6.25 0 0 0 359 394.25Z" fill="#3987e5"/>
+<text x="359" y="413" font-size="12" fill="#c3c2b7" text-anchor="middle">manual</text>
+<text x="359" y="427" font-size="12" fill="#c3c2b7" text-anchor="middle">opt-out</text>
+<text x="451.67" y="393" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="544.33" y="393" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="637" y="393" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="729.67" y="393" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<line x1="24" y1="436" x2="776" y2="436" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="460.5" font-size="13" fill="#ffffff">No backend services</text>
+<circle class="mark" cx="266.33" cy="456" r="7" fill="#3987e5"/>
+<text x="266.33" y="481" font-size="12" fill="#c3c2b7" text-anchor="middle">direct mode</text>
+<circle class="mark" cx="359" cy="456" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="359" y="481" font-size="12" fill="#c3c2b7" text-anchor="middle">3 or more</text>
+<circle class="mark" cx="451.67" cy="456" r="7" fill="#3987e5"/>
+<circle class="mark" cx="544.33" cy="456" r="7" fill="#3987e5"/>
+<text x="544.33" y="481" font-size="12" fill="#c3c2b7" text-anchor="middle">in-process</text>
+<circle class="mark" cx="637" cy="456" r="7" fill="#3987e5"/>
+<circle class="mark" cx="729.67" cy="456" r="7" fill="#3987e5"/>
+<line x1="24" y1="490" x2="776" y2="490" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="514.5" font-size="13" fill="#ffffff">Python API</text>
+<circle class="mark" cx="266.33" cy="510" r="7" fill="#3987e5"/>
+<circle class="mark" cx="359" cy="510" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M359 503.75A6.25 6.25 0 0 0 359 516.25Z" fill="#3987e5"/>
+<text x="359" y="535" font-size="12" fill="#c3c2b7" text-anchor="middle">via proxy</text>
+<circle class="mark" cx="451.67" cy="510" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="451.67" y="535" font-size="12" fill="#c3c2b7" text-anchor="middle">Robot</text>
+<text x="451.67" y="549" font-size="12" fill="#c3c2b7" text-anchor="middle">Framework</text>
+<circle class="mark" cx="544.33" cy="510" r="7" fill="#3987e5"/>
+<circle class="mark" cx="637" cy="510" r="7" fill="#3987e5"/>
+<text x="637" y="535" font-size="12" fill="#c3c2b7" text-anchor="middle">async, 3.11+</text>
+<circle class="mark" cx="729.67" cy="510" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="729.67" y="535" font-size="12" fill="#c3c2b7" text-anchor="middle">JS/TS</text>
+<line x1="24" y1="558" x2="776" y2="558" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="582.5" font-size="13" fill="#ffffff">Playwright</text>
+<circle class="mark" cx="266.33" cy="578" r="7" fill="#3987e5"/>
+<text x="266.33" y="603" font-size="12" fill="#c3c2b7" text-anchor="middle">sync and</text>
+<text x="266.33" y="617" font-size="12" fill="#c3c2b7" text-anchor="middle">async</text>
+<circle class="mark" cx="359" cy="578" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="359" y="603" font-size="12" fill="#c3c2b7" text-anchor="middle">Pro only</text>
+<circle class="mark" cx="451.67" cy="578" r="7" fill="#3987e5"/>
+<text x="451.67" y="603" font-size="12" fill="#c3c2b7" text-anchor="middle">Browser</text>
+<text x="451.67" y="617" font-size="12" fill="#c3c2b7" text-anchor="middle">library</text>
+<circle class="mark" cx="544.33" cy="578" r="7" fill="#3987e5"/>
+<text x="544.33" y="603" font-size="12" fill="#c3c2b7" text-anchor="middle">launched by</text>
+<text x="544.33" y="617" font-size="12" fill="#c3c2b7" text-anchor="middle">Skyvern</text>
+<circle class="mark" cx="637" cy="578" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="637" y="603" font-size="12" fill="#c3c2b7" text-anchor="middle">own driver</text>
+<circle class="mark" cx="729.67" cy="578" r="7" fill="#3987e5"/>
+<line x1="24" y1="626" x2="776" y2="626" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="650.5" font-size="13" fill="#ffffff">Selenium</text>
+<circle class="mark" cx="266.33" cy="646" r="7" fill="#3987e5"/>
+<circle class="mark" cx="359" cy="646" r="7" fill="#3987e5"/>
+<circle class="mark" cx="451.67" cy="646" r="7" fill="#3987e5"/>
+<text x="451.67" y="671" font-size="12" fill="#c3c2b7" text-anchor="middle">SeleniumLibrary</text>
+<circle class="mark" cx="544.33" cy="646" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<circle class="mark" cx="637" cy="646" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<circle class="mark" cx="729.67" cy="646" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<line x1="24" y1="680" x2="776" y2="680" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="704.5" font-size="13" fill="#ffffff">Choice of LLM provider</text>
+<circle class="mark" cx="266.33" cy="700" r="7" fill="#3987e5"/>
+<text x="359" y="704" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="359" y="725" font-size="12" fill="#c3c2b7" text-anchor="middle">no LLM in</text>
+<text x="359" y="739" font-size="12" fill="#c3c2b7" text-anchor="middle">OSS</text>
+<circle class="mark" cx="451.67" cy="700" r="7" fill="#3987e5"/>
+<circle class="mark" cx="544.33" cy="700" r="7" fill="#3987e5"/>
+<circle class="mark" cx="637" cy="700" r="7" fill="#3987e5"/>
+<circle class="mark" cx="729.67" cy="700" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="729.67" y="725" font-size="12" fill="#c3c2b7" text-anchor="middle">OpenAI only</text>
+<line x1="24" y1="748" x2="776" y2="748" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="772.5" font-size="13" fill="#ffffff">No change to each step</text>
+<circle class="mark" cx="266.33" cy="768" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="266.33" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">one line per</text>
+<text x="266.33" y="807" font-size="12" fill="#c3c2b7" text-anchor="middle">step</text>
+<circle class="mark" cx="359" cy="768" r="7" fill="#3987e5"/>
+<text x="359" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">wrap the</text>
+<text x="359" y="807" font-size="12" fill="#c3c2b7" text-anchor="middle">driver once</text>
+<circle class="mark" cx="451.67" cy="768" r="7" fill="#3987e5"/>
+<text x="451.67" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">one Library</text>
+<text x="451.67" y="807" font-size="12" fill="#c3c2b7" text-anchor="middle">line</text>
+<circle class="mark" cx="544.33" cy="768" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="544.33" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">prompt= per</text>
+<text x="544.33" y="807" font-size="12" fill="#c3c2b7" text-anchor="middle">step</text>
+<circle class="mark" cx="637" cy="768" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="637" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">act() per step</text>
+<circle class="mark" cx="729.67" cy="768" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="729.67" y="793" font-size="12" fill="#c3c2b7" text-anchor="middle">each step</text>
+<text x="729.67" y="807" font-size="12" fill="#c3c2b7" text-anchor="middle">rewritten</text>
+<line x1="24" y1="816" x2="776" y2="816" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="840.5" font-size="13" fill="#ffffff">Heals without any model</text>
+<circle class="mark" cx="266.33" cy="836" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="266.33" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">needs a</text>
+<text x="266.33" y="875" font-size="12" fill="#c3c2b7" text-anchor="middle">model</text>
+<circle class="mark" cx="359" cy="836" r="7" fill="#3987e5"/>
+<text x="359" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">tree similarity</text>
+<circle class="mark" cx="451.67" cy="836" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M451.67 829.75A6.25 6.25 0 0 0 451.67 842.25Z" fill="#3987e5"/>
+<text x="451.67" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">model is the</text>
+<text x="451.67" y="875" font-size="12" fill="#c3c2b7" text-anchor="middle">last step</text>
+<circle class="mark" cx="544.33" cy="836" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="544.33" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">AI fallback</text>
+<text x="637" y="840" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="637" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">model runs</text>
+<text x="637" y="875" font-size="12" fill="#c3c2b7" text-anchor="middle">each step</text>
+<text x="729.67" y="840" font-size="12" fill="#c3c2b7" text-anchor="middle">n/a</text>
+<text x="729.67" y="861" font-size="12" fill="#c3c2b7" text-anchor="middle">model runs</text>
+<text x="729.67" y="875" font-size="12" fill="#c3c2b7" text-anchor="middle">each step</text>
+<line x1="24" y1="884" x2="776" y2="884" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="908.5" font-size="13" fill="#ffffff">Page content stays on your</text>
+<text x="24" y="924.5" font-size="13" fill="#ffffff">machine</text>
+<circle class="mark" cx="266.33" cy="904" r="6.25" fill="none" stroke="#3987e5" stroke-width="1.5"/>
+<path class="mark" d="M266.33 897.75A6.25 6.25 0 0 0 266.33 910.25Z" fill="#3987e5"/>
+<text x="266.33" y="929" font-size="12" fill="#c3c2b7" text-anchor="middle">local model</text>
+<text x="266.33" y="943" font-size="12" fill="#c3c2b7" text-anchor="middle">only</text>
+<circle class="mark" cx="359" cy="904" r="7" fill="#3987e5"/>
+<text x="359" y="929" font-size="12" fill="#c3c2b7" text-anchor="middle">no LLM in</text>
+<text x="359" y="943" font-size="12" fill="#c3c2b7" text-anchor="middle">OSS</text>
+<text x="451.67" y="909" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="544.33" y="909" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="637" y="909" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<text x="729.67" y="909" font-size="15" font-weight="600" fill="#c3c2b7" text-anchor="middle">?</text>
+<line x1="24" y1="952" x2="776" y2="952" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="976.5" font-size="13" fill="#ffffff">Steps with no selector</text>
+<circle class="mark" cx="266.33" cy="972" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="266.33" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">needs a</text>
+<text x="266.33" y="1011" font-size="12" fill="#c3c2b7" text-anchor="middle">selector</text>
+<circle class="mark" cx="359" cy="972" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="359" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">needs a</text>
+<text x="359" y="1011" font-size="12" fill="#c3c2b7" text-anchor="middle">locator</text>
+<circle class="mark" cx="451.67" cy="972" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
+<text x="451.67" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">needs a</text>
+<text x="451.67" y="1011" font-size="12" fill="#c3c2b7" text-anchor="middle">locator</text>
+<circle class="mark" cx="544.33" cy="972" r="7" fill="#3987e5"/>
+<text x="544.33" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">prompt-only</text>
+<text x="544.33" y="1011" font-size="12" fill="#c3c2b7" text-anchor="middle">steps</text>
+<circle class="mark" cx="637" cy="972" r="7" fill="#3987e5"/>
+<text x="637" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">act('...')</text>
+<circle class="mark" cx="729.67" cy="972" r="7" fill="#3987e5"/>
+<text x="729.67" y="997" font-size="12" fill="#c3c2b7" text-anchor="middle">English steps</text>
+<text x="24" y="1038" font-size="12" fill="#c3c2b7">A note under a mark gives the limit or the evidence. "per README" means the project says so; it was not tested here.</text>
+<text x="24" y="1060" font-size="12" fill="#c3c2b7">Healenium means the open source edition, Web and Proxy. Healenium Pro adds an LLM and Playwright.</text>
+<text x="24" y="1082" font-size="12" fill="#c3c2b7">Each cell's source is linked in docs/charts/data.json.</text>
+</svg>

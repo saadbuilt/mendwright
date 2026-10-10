@@ -1,0 +1,261 @@
+# Contributing to mendwright
+
+mendwright has one runtime dependency (lxml), and the core runs without a browser library or a vendor SDK installed.
+Changes that keep it that way are the easiest to merge.
+New drivers and new providers are the most useful contributions; their contracts are below.
+
+## Where to start
+
+- Pick an issue labelled [good first issue](https://github.com/saadbuilt/mendwright/labels/good%20first%20issue).
+- Report a heal that picked the wrong element, with the "A heal picked the wrong element" issue template. These reports are the only accuracy data the project has.
+- Add a driver for another browser library ([Writing a driver](#writing-a-driver)) or a provider for another model API ([Writing a provider](#writing-a-provider)).
+
+## Setup
+
+Python 3.10 or later.
+
+```bash
+git clone https://github.com/saadbuilt/mendwright
+cd mendwright
+python -m venv .venv
+. .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+`[dev]` installs pytest, ruff, build and twine.
+Keep the quotes around `".[dev]"`; zsh treats the brackets as a glob otherwise.
+
+For the real-browser tests, also install the browser libraries and Playwright's browsers:
+
+```bash
+pip install -e ".[dev,playwright,selenium]"
+python -m playwright install chromium firefox webkit
+```
+
+Selenium drives the Chrome and Firefox already installed on your machine.
+Selenium Manager downloads a matching driver the first time.
+patchright and camoufox are optional: `pip install patchright` then `python -m patchright install chromium`, and `pip install camoufox` then `python -m camoufox fetch`.
+
+## Running the tests
+
+### Offline suite
+
+```bash
+python -m pytest
+```
+
+This needs no network, API key or browser, and takes about 10 seconds.
+One or two tests skip on purpose: one needs a live gateway, and a POSIX-only one skips on Windows.
+
+`pyproject.toml` sets `addopts = "-m 'not browser' -p no:mendwright"`.
+The first part leaves out the browser tests.
+The second turns off mendwright's own pytest plugin, because this repo's tests call `mendwright.open()` hundreds of times and the plugin would print a heal summary at the end. `tests/test_pytest_plugin.py` loads the plugin explicitly through pytester.
+
+New tests must not reach the network, a real model or a real browser, and must not depend on the clock or on randomness.
+The fixtures in `tests/conftest.py` cover most cases:
+
+- `make_page`: a `FakePage`, an lxml-backed page shaped like a Playwright page.
+- `stub_provider`: a `StubProvider` that returns a fixed proposal and records what it was sent.
+- Autouse fixtures that unset `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_DRY_RUN` and `MENDWRIGHT_DISABLE`, and reset the shared rate limiters.
+
+Providers take an injected `http=` transport; `tests/test_providers.py` shows the pattern.
+
+### Browser suite
+
+```bash
+python -m pytest -m browser
+```
+
+A `-m` on the command line replaces the default one.
+The suite is in `tests/browser/`:
+
+- The sync tests run on 7 engines: `pw-chromium`, `pw-firefox`, `pw-webkit`, `patchright`, `camoufox`, `sel-chrome` and `sel-firefox`.
+- `test_aio_browser.py` runs `mendwright.aio` on Chromium, Firefox and WebKit.
+- An engine that isn't installed is skipped, and the skip message names the install command.
+
+Run one engine with `-k`, for example `python -m pytest -m browser -k pw-webkit`.
+Run one scenario on every engine with, for example, `-k heal_after_a_redesign`.
+The last full local run passed on all 7 engines, plus the async tests on all 3 browsers (Windows 11, Python 3.12). The sync suite took a little over 2 minutes.
+
+`MENDWRIGHT_REQUIRE_ENGINES` takes a comma-separated list of engine ids that must start.
+If one of them fails to launch, its tests fail instead of being skipped. CI sets it to `pw-chromium,pw-firefox,pw-webkit,sel-chrome,sel-firefox`.
+Only the fixture in `tests/browser/conftest.py` reads it. `test_aio_browser.py` has its own `engine` fixture, which still skips an engine that can't launch.
+
+Rules for browser tests:
+
+- Mark them with `pytestmark = pytest.mark.browser`.
+- Do not import playwright or selenium at module level or in a conftest. The default run still collects `tests/browser/` in CI jobs that have neither installed. Use `pytest.importorskip()` or import inside the test.
+- A test that only applies to one family takes `@pytest.mark.engine_family('playwright')` or `('selenium')`. It is deselected on the other family, so the skip count only shows real gaps.
+
+### Gateway parity test
+
+`tests/test_gateway_worker.py` runs `examples/heal_gateway.mjs` under node, with `fetch` stubbed and no network.
+It checks that the worker's `buildPrompt()` and `parseProposal()` give the same results as `build_prompt()` and `parse_proposal()` in `mendwright/prompt.py`, and that the worker reads its model id from `MODEL`.
+It's skipped when `node` isn't on PATH.
+
+If you change `mendwright/prompt.py`, make the same change in `examples/heal_gateway.mjs` and run:
+
+```bash
+python -m pytest tests/test_prompt.py tests/test_gateway_worker.py
+```
+
+## Lint
+
+```bash
+ruff check .
+```
+
+The configuration is in `pyproject.toml`: rules E, F, W and B, line length 112.
+
+## Architecture
+
+What happens in one call to `heal.locator(key, selector).click()`:
+
+```
+heal.locator(key, selector)               facade.py (sync), aio.py (async)
+  resolve()                               resolver.py, through a Driver (drivers/)
+  on a miss: HealCoordinator.try_heal()   coordinator.py
+    destructive, guard, role, rate checks
+    build_bundle()                        capture.py
+    provider.propose(bundle)              providers/, prompt.py
+    apply(): validate(), live_match()     client.py, validation.py, gate.py
+      (both refuse a button or link with a destructive label; words in destructive.py)
+    save the new candidate                store.py
+  resolve() again
+.click()                                  ActionProxy in facade.py, through driver.act_on()
+  on failure: quarantine the heal         coordinator.confirm_pending()
+```
+
+The modules:
+
+- `selectors.py`: `classify()` (XPath, CSS or Playwright engine selector), `check_syntax()`, `normalize()` and `InvalidSelector`.
+- `drivers/`: `base.py` holds the `Driver` protocol, the shared describe and inventory scripts, and the fallback helpers. `registry.py` has `wrap()` and `register_driver()`. The built-in drivers are `playwright_sync.py`, `playwright_async.py` (used by `mendwright.aio`) and `selenium.py`, which handles frames, implicit waits and the verb mapping.
+- `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run.
+- `facade.py`: `mendwright.open()`, `Healer` and `ActionProxy`. Puts the selectors from your code first, reads the role from the page, applies the destructive word check, and runs actions, quarantining a heal whose action fails.
+- `aio.py`: `mendwright.aio.open()` and `AsyncHealer`. A heal runs the sync coordinator in a worker thread, which reaches the page through `SyncBridge`.
+- `coordinator.py`: `HealCoordinator` and `resolve_with_heal()`. Runs the checks before any model call, builds the bundle, asks the provider (with one re-prompt on rejection), applies, journals, and keeps the reason for `explain()`.
+- `validation.py` and `gate.py`: `validate()` checks a proposal against the captured HTML with lxml; `live_match()` checks it against the page through the driver. `client.apply()` runs both.
+- `store.py` and `roles.py`: the seed and override layers, candidate status, per-key metadata, the lock file and the merge; and the role vocabulary.
+- `capture.py`: `build_bundle()`, `redact()` and `clean_html()`.
+- `providers/`: the `HealProvider` protocol (`base.py`), the built-in providers, `auto_provider()` (`detect.py`) and the error text (`_errors.py`). `prompt.py` holds the one prompt every provider uses.
+- `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal.
+- `publish.py`: writes a confirmed selector into a seed JSON file.
+- `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel.
+- `pytest_plugin.py`: the `heal` fixture, confirmation from test results, strict mode and the summary.
+
+## Writing a driver
+
+A driver wraps one live page or session.
+`wrap()` accepts any object that has `count`, `is_visible` and `handle`; anything else goes through the registered detectors.
+
+| Method | Status | Contract |
+|---|---|---|
+| `count(selector, frame_chain=())` | required | Number of matches. |
+| `is_visible(selector, frame_chain=())` | required | Whether the match is visible. |
+| `handle(selector, frame_chain=())` | required | The native locator or element, so user code can act on it. |
+| `scroll_into_view(selector, frame_chain=())` | expected | |
+| `act(selector, verb, *args, frame_chain=())` | expected | Perform a verb on the match. |
+| `url()` | expected | The current URL. |
+| `outer_html(scope=None)` | expected | The HTML the checks run against. |
+| `act_on(native, verb, *args, **kwargs)` | optional | Run a Playwright-style verb on a `handle()` result. Without it, `driver_act_on()` calls `getattr(native, verb)(*args, **kwargs)`. |
+| `describe(selector, frame_chain=())` | optional | `{'tag', 'role', 'text', 'outer_html'}` for a single match, else `None`. Without it, `driver_describe()` returns `None` and the role is guessed from the selector text. |
+| `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
+
+Rules:
+
+- `frame_chain` is a tuple of frame selectors, outermost first.
+- A selector can be XPath, CSS or a Playwright engine selector (see `mendwright/selectors.py`). Raise `InvalidSelector` for a kind your library can't run, or one the browser rejects. For any other error, the read methods return `0`, `False` or `None`, so the resolver keeps polling.
+- `outer_html(scope)` must capture the same document or frame that resolution runs against. Otherwise a selector can be unique in the snapshot and not on the page.
+- `describe()` must compute `role` and `text` the way `validate()` does: `validation._role_of()` on the element, and its whitespace-normalised text, cut to 200 characters. The built-in drivers do this with `DESCRIBE_JS` and `summary_from_js()` in `drivers/base.py`.
+- `inventory()` must not read input values.
+- Detect your page by its methods, not its module name. camoufox and patchright pages aren't in the `playwright` module, and a wrapper has no stable module name. Register with `register_driver(detect, make)`, or `register_driver_front(detect, make)` to be checked before the built-in drivers.
+- For `mendwright.aio`, a custom driver whose `count`, `is_visible` and `handle` are coroutine functions is accepted by `mendwright.aio.open()`.
+
+```python
+from mendwright import register_driver
+
+register_driver(my_detect, MyDriver)   # my_detect(obj) -> bool, MyDriver(obj) -> driver
+```
+
+The tests to copy from are `tests/test_driver_protocol.py`, `tests/test_driver_describe_inventory.py` and `tests/test_driver_act_on.py`.
+
+## Writing a provider
+
+A provider turns a capture bundle into a proposal:
+
+```
+propose(bundle) -> {'xpath': str, 'fallbacks': [str, ...], 'reasoning': str} | None
+report_outcome(key, xpath, success) -> None
+last_error: str | None
+```
+
+`HealProvider` in `mendwright/providers/base.py` is the protocol.
+`last_error` is optional for providers outside this repo (the coordinator reads it with `getattr`), and required for built-in ones.
+
+Rules:
+
+- Build the request with `mendwright.prompt.build_prompt(bundle)` and parse the reply with `parse_proposal(text)`. Do not write a second prompt.
+- Set `last_error = None` in `__init__` and at the start of `propose()`. When `propose()` returns `None`, set it to one or two sentences: what happened, then a next step that names a real setting. It must not contain the API key, an auth header, the request body or a URL query string. `Describer` in `mendwright/providers/_errors.py` does this for the built-in providers.
+- Import the vendor SDK inside the method that needs it, with a stdlib `urllib` fallback, so `import mendwright` works without the SDK. Bedrock is the exception: its requests are SigV4-signed, so it needs boto3, and only constructing a `BedrockProvider` without it raises.
+- Never hardcode a model id. Take it from a `model=` argument or a `<PROVIDER>_MODEL` environment variable, and raise an error that names the variable when neither is set.
+- Accept an `http=` transport so tests can run offline.
+- A provider only proposes. It never writes to the store or touches the page; the coordinator checks every proposal locally before it is used.
+
+The tests to copy from are `tests/test_provider_last_error.py` and the `tests/test_provider_*.py` file for a similar provider.
+
+## Pull requests
+
+Before you open one, check:
+
+- [ ] `python -m pytest` passes, and new behaviour has offline tests.
+- [ ] `ruff check .` passes.
+- [ ] No new required dependency. Vendor SDKs stay optional and are imported lazily.
+- [ ] No model id in library code.
+- [ ] The checks aren't weakened: a provider only proposes, and `validate()`, `live_match()`, the destructive-control refusal and `guard` still apply.
+- [ ] If `mendwright/prompt.py` changed, `examples/heal_gateway.mjs` changed to match, and `tests/test_gateway_worker.py` passes with node installed.
+- [ ] If the change is user-visible, `CHANGELOG.md` has an entry under the next version.
+- [ ] If a driver changed, `python -m pytest -m browser` passes for the engines you have.
+
+Keep pull requests small and about one thing.
+
+## Releases
+
+See [docs/RELEASING.md](docs/RELEASING.md).
+
+## Reference
+
+### Live gateway test
+
+`tests/test_success_heal.py` has one test against a deployed gateway. It runs only when `MENDWRIGHT_GATEWAY` is set:
+
+```bash
+export MENDWRIGHT_GATEWAY=https://heal.example.workers.dev
+export MENDWRIGHT_KEY=<your client key>
+python -m pytest tests/test_success_heal.py
+```
+
+### What CI runs
+
+`.github/workflows/ci.yml` has these jobs:
+
+| Job | What it runs |
+|---|---|
+| lint | `ruff check .` on Python 3.12. Findings fail the job. |
+| test | `python -m pytest -q` on Ubuntu with Python 3.10, 3.11, 3.12, 3.13 and 3.14, on Windows with 3.10 and 3.14, and on macOS with 3.12. |
+| test-next | The same on the Python 3.15 prerelease. Failures are reported but don't fail the run. |
+| lowest-deps | The offline suite on Python 3.10 with lxml 5.0.0 and pytest 7. |
+| browsers | `python -m pytest -m browser -q -rs` on Ubuntu with Python 3.12. It installs Playwright's three browsers, uses the runner image's Chrome and Firefox for Selenium, and sets `MENDWRIGHT_REQUIRE_ENGINES`. patchright and camoufox aren't installed there, so their tests skip. |
+| package | Builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a fresh venv, runs `mendwright --version`, `python -m mendwright doctor` and `mendwright demo`, then runs the sdist's tests against the installed wheel. |
+
+### Charts
+
+The comparison charts in `docs/assets/` are generated from `docs/charts/data.json`:
+
+```bash
+python docs/charts/build_charts.py           # rewrite the 12 SVGs
+python docs/charts/build_charts.py --check   # exit 1 if an SVG is out of date, 2 if data.json is invalid
+```
+
+The script uses only the standard library and gives the same bytes on every run.
+`docs/assets/demo.svg`, the terminal recording in the README, is built from the real output of `mendwright demo` with `python docs/charts/build_demo_svg.py` (also `--check`). Run it again after any change to the demo's output.
+CI doesn't run either one, so run `--check` before a pull request that touches `data.json` or the demo.

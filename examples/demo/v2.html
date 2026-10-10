@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create your account — v2</title>
+</head>
+<body>
+  <main>
+    <h1>Create your account</h1>
+
+    <!-- v2: the SAME page after a front-end redesign. The consent block became a
+         design-system web component and the checkbox lost its hand-picked id (it now
+         has a build-generated one). An id-based selector (//input[@id='accept-terms'])
+         no longer matches anything — but the checkbox ROLE and the visible LABEL text
+         are unchanged, so a role/label-anchored selector still resolves. -->
+    <form id="signup" method="post" action="/signup">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" required>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required>
+
+      <fieldset class="legal">
+        <ds-checkbox>
+          <label class="ds-checkbox__control">
+            <input type="checkbox" name="agreement" id="mui-generated-8842" data-testid="legal-consent" required>
+            <span>I accept the terms and conditions</span>
+          </label>
+        </ds-checkbox>
+      </fieldset>
+
+      <button type="submit">Sign up</button>
+    </form>
+  </main>
+</body>
+</html>

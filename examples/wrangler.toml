@@ -1,0 +1,22 @@
+name = "mendwright-gateway"
+main = "heal_gateway.mjs"
+compatibility_date = "2025-01-01"
+
+# One-time setup:
+#   wrangler kv namespace create HEAL_KV     # paste the id below
+#   wrangler secret put HEAL_KEY             # client auth (X-Heal-Key)
+#   wrangler secret put ANTHROPIC_API_KEY    # or OPENAI_API_KEY when PROVIDER = "openai"
+#   wrangler deploy
+# Top-level keys such as this one must stay above the first [table] header, or TOML
+# reads them as part of that table.
+kv_namespaces = [
+  { binding = "HEAL_KV", id = "REPLACE_WITH_KV_NAMESPACE_ID" }
+]
+
+# Runtime settings the worker reads.
+#   PROVIDER  "anthropic" (default) or "openai".
+#   MODEL     the model id to call. Required: the worker has no default model and answers
+#             /heal with HTTP 500 until MODEL is set. Use an id from your provider's docs.
+[vars]
+PROVIDER = "anthropic"
+# MODEL = "<model id>"

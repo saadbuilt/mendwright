@@ -1,0 +1,897 @@
+{
+  "about": "Every number and every feature-matrix cell behind docs/assets/*.svg and docs/comparison.md. build_charts.py reads this file and nothing else. Competitor facts were read from each project's own README, docs, compose files, PyPI JSON or the Docker Hub API on the date below. Nothing here measures repair accuracy; that was not measured.",
+  "date": "2026-10-10",
+  "units": {
+    "MB": "1,000,000 bytes (decimal). Docker Hub reports bytes; spot check: postgres:15.5-alpine linux/amd64 is 94,821,839 B, hlm-backend:3.5.1 is 317,362,138 B."
+  },
+  "services": {
+    "title": "Services you run before the first heal",
+    "subtitle": "Separately run services or containers. Your test runner, browser and LLM API are not counted.",
+    "method": "Count of long-running services or containers a tool needs before it can heal anything, read from its install docs and compose files.",
+    "rows": [
+      {
+        "tool": "mendwright",
+        "scope": "direct mode, Python",
+        "value": 0,
+        "parts": [],
+        "detail": "Calls your LLM provider's API. Healed selectors go to ./.mendwright/overrides.json.",
+        "llm_api": true,
+        "source": "README.md and mendwright/store.py in this repo",
+        "method": "Code reading plus a stub-provider run with no network (research, 2026-10-10)."
+      },
+      {
+        "tool": "robotframework-heal",
+        "scope": "Robot Framework only",
+        "value": 0,
+        "parts": [],
+        "detail": "Calls your LLM provider's API. History goes to a local SQLite file.",
+        "llm_api": true,
+        "source": "https://github.com/manykarim/robotframework-heal",
+        "method": "README, Quickstart section."
+      },
+      {
+        "tool": "Healenium-Web",
+        "scope": "Java only",
+        "value": 3,
+        "parts": [
+          "postgres-db",
+          "hlm-backend",
+          "selector-imitator"
+        ],
+        "detail": "PostgreSQL, hlm-backend, selector-imitator. No LLM in the open source edition.",
+        "llm_api": false,
+        "source": "https://github.com/healenium/healenium/blob/master/docker-compose-web.yaml",
+        "method": "Services in docker-compose-web.yaml. A shell install without Docker still needs PostgreSQL and both services (https://healenium.io/docs/download_and_install/hlm_web)."
+      },
+      {
+        "tool": "Healenium-Proxy",
+        "scope": "for Python, JS or C# Selenium",
+        "value": 6,
+        "parts": [
+          "postgres-db",
+          "hlm-backend",
+          "selector-imitator",
+          "hlm-proxy",
+          "selenium-hub",
+          "1 browser node"
+        ],
+        "detail": "4 Healenium services, a Selenium hub and 1 browser node. No LLM in the open source edition.",
+        "llm_api": false,
+        "source": "https://github.com/healenium/healenium/blob/master/docker-compose.yaml",
+        "method": "Minimum set from docker-compose.yaml and the healenium-proxy README (https://github.com/healenium/healenium-proxy). 4 if you already run a Selenium Grid; the shipped compose starts 8."
+      }
+    ],
+    "notes": [
+      "Healenium-Proxy needs 4 if you already run a Selenium Grid; the shipped docker-compose.yaml starts 8.",
+      "mendwright's optional gateway mode adds 1: a Cloudflare Worker with a KV binding."
+    ]
+  },
+  "download": {
+    "title": "Python packages downloaded",
+    "subtitle": "Compressed wheels for the package and all its dependencies, excluding browser libraries.",
+    "method": "pip install --dry-run --ignore-installed --only-binary=:all: --no-cache-dir <package>==<version> on CPython 3.12.10, Windows 11 x64 (cp312 win_amd64). The resolved set is pip's 'Would install' line; each size is the PyPI JSON size of the exact wheel pip picked; sizes are summed. Excluded wherever they were pulled in: playwright, greenlet, pyee, patchright, selenium, robotframework, robotframework-browser, grpcio, grpcio-tools, the Appium client and the Robot Framework Selenium and Appium libraries. Competitor rows from the research run on 2026-10-10.",
+    "rows": [
+      {
+        "tool": "mendwright",
+        "version": "0.3.0",
+        "mb": 4.16,
+        "packages": 2,
+        "bytes": 4159697,
+        "parts_bytes": {
+          "mendwright-0.3.0-py3-none-any.whl": 153698,
+          "lxml-6.1.3-cp312-cp312-win_amd64.whl": 4005999
+        },
+        "linux_x86_64": {
+          "bytes": 5258945,
+          "mb": 5.26,
+          "parts_bytes": {
+            "mendwright-0.3.0-py3-none-any.whl": 153698,
+            "lxml-6.1.3 manylinux2014_x86_64 wheel": 5105247
+          }
+        },
+        "source": "Measured in this repo; lxml sizes from https://pypi.org/pypi/lxml/6.1.3/json",
+        "method": "git archive of the 0.3.0 source into a scratch folder, then python -m build --wheel (isolated build, setuptools 84.0.0). The wheel embeds README.md as its long description and the package code, measured on the final 0.3.0 tree on 2026-10-11. lxml is the only runtime dependency (Requires-Dist: lxml>=5) and declares none of its own."
+      },
+      {
+        "tool": "stagehand",
+        "version": "4.2.0",
+        "mb": 4.26,
+        "packages": 17,
+        "source": "https://pypi.org/pypi/stagehand/4.2.0/json",
+        "note": "No Playwright dependency. It drives a locally installed Chrome, which is not counted."
+      },
+      {
+        "tool": "robotframework-selfhealing-agents",
+        "version": "0.1.7",
+        "mb": 17.45,
+        "packages": 53,
+        "with_excluded": {
+          "mb": 37.08,
+          "packages": 59
+        },
+        "source": "https://pypi.org/pypi/robotframework-selfhealing-agents/0.1.7/json"
+      },
+      {
+        "tool": "robotframework-heal",
+        "version": "0.4.0",
+        "mb": 29.77,
+        "packages": 82,
+        "with_excluded": {
+          "mb": 49.69,
+          "packages": 89
+        },
+        "source": "https://pypi.org/pypi/robotframework-heal/0.4.0/json"
+      },
+      {
+        "tool": "browser-use",
+        "version": "0.13.11",
+        "mb": 57.03,
+        "packages": 106,
+        "source": "https://pypi.org/pypi/browser-use/0.13.11/json",
+        "note": "Includes the Windows-only pywin32 (6.9 MB), colorama and screeninfo. No Playwright dependency; it drives Chromium over CDP, which is not counted."
+      },
+      {
+        "tool": "skyvern[local]",
+        "version": "1.0.55",
+        "mb": 178.83,
+        "packages": 162,
+        "with_excluded": {
+          "mb": 217.78,
+          "packages": 165
+        },
+        "source": "https://pypi.org/pypi/skyvern/1.0.55/json",
+        "note": "The base skyvern SDK (cloud client) is 12.8 MB in 26 packages. skyvern[server] is 260.94 MB in 218 packages with Playwright."
+      }
+    ],
+    "reference": [
+      {
+        "tool": "playwright",
+        "version": "1.63.0",
+        "mb": 38.99,
+        "packages": 4,
+        "note": "Python package only, no browsers."
+      },
+      {
+        "tool": "selenium",
+        "version": "4.51.0",
+        "mb": 13.24,
+        "packages": 17
+      }
+    ],
+    "notes": [
+      "Do not compare these with npm unpacked sizes or Docker image sizes; they are measured differently."
+    ]
+  },
+  "infra": {
+    "title": "Download before the first heal, including services",
+    "subtitle": "Compressed sizes for Linux x86_64. Docker totals are upper bounds.",
+    "method": "mendwright: wheel bytes (see download.rows[0].linux_x86_64). Healenium: compressed linux/amd64 image size from the Docker Hub API, summed per image. Image sums are upper bounds because base layers shared between images are counted once per image. Client libraries (Playwright, Selenium, the healenium-web jar and its Maven dependencies) are excluded. Browsers are excluded, except that the Healenium-Proxy setup includes a Selenium Chromium node image, which contains a browser.",
+    "series": [
+      {
+        "id": "tool",
+        "label": "The tool, its dependencies and services"
+      },
+      {
+        "id": "grid",
+        "label": "Selenium hub and 1 Chromium node (includes a browser)"
+      }
+    ],
+    "rows": [
+      {
+        "tool": "mendwright",
+        "scope": "2 wheels: mendwright and lxml",
+        "segments": [
+          {
+            "series": "tool",
+            "mb": 5.26
+          }
+        ],
+        "total_mb": 5.26,
+        "source": "Measured; see download.rows[0]"
+      },
+      {
+        "tool": "Healenium-Web",
+        "scope": "3 Docker images",
+        "segments": [
+          {
+            "series": "tool",
+            "mb": 512.3
+          }
+        ],
+        "total_mb": 512.3,
+        "images": [
+          {
+            "image": "postgres:15.5-alpine",
+            "mb": 94.8,
+            "source": "https://hub.docker.com/v2/repositories/library/postgres/tags/15.5-alpine"
+          },
+          {
+            "image": "healenium/hlm-backend:3.5.1",
+            "mb": 317.4,
+            "source": "https://hub.docker.com/v2/repositories/healenium/hlm-backend/tags/3.5.1"
+          },
+          {
+            "image": "healenium/hlm-selector-imitator:1.6",
+            "mb": 100.1,
+            "source": "https://hub.docker.com/v2/repositories/healenium/hlm-selector-imitator/tags/1.6"
+          }
+        ],
+        "source": "https://github.com/healenium/healenium/blob/master/docker-compose-web.yaml"
+      },
+      {
+        "tool": "Healenium-Proxy for Python",
+        "scope": "4 Healenium images, Selenium hub, 1 Chromium node",
+        "segments": [
+          {
+            "series": "tool",
+            "mb": 841.2
+          },
+          {
+            "series": "grid",
+            "mb": 1374.5
+          }
+        ],
+        "total_mb": 2215.7,
+        "images": [
+          {
+            "image": "postgres:15.5-alpine",
+            "mb": 94.8,
+            "series": "tool",
+            "source": "https://hub.docker.com/v2/repositories/library/postgres/tags/15.5-alpine"
+          },
+          {
+            "image": "healenium/hlm-backend:3.5.1",
+            "mb": 317.4,
+            "series": "tool",
+            "source": "https://hub.docker.com/v2/repositories/healenium/hlm-backend/tags/3.5.1"
+          },
+          {
+            "image": "healenium/hlm-selector-imitator:1.6",
+            "mb": 100.1,
+            "series": "tool",
+            "source": "https://hub.docker.com/v2/repositories/healenium/hlm-selector-imitator/tags/1.6"
+          },
+          {
+            "image": "healenium/hlm-proxy:2.2.1",
+            "mb": 328.9,
+            "series": "tool",
+            "source": "https://hub.docker.com/v2/repositories/healenium/hlm-proxy/tags/2.2.1"
+          },
+          {
+            "image": "selenium/hub:latest",
+            "mb": 369.7,
+            "series": "grid",
+            "source": "https://hub.docker.com/v2/repositories/selenium/hub/tags/latest"
+          },
+          {
+            "image": "selenium/node-chromium:latest",
+            "mb": 1004.8,
+            "series": "grid",
+            "source": "https://hub.docker.com/v2/repositories/selenium/node-chromium/tags/latest"
+          }
+        ],
+        "source": "https://github.com/healenium/healenium/blob/master/docker-compose.yaml"
+      }
+    ],
+    "shipped_compose": {
+      "total_mb": 4255.4,
+      "adds": [
+        {
+          "image": "selenium/node-edge:latest",
+          "mb": 1080.3,
+          "source": "https://hub.docker.com/v2/repositories/selenium/node-edge/tags/latest"
+        },
+        {
+          "image": "selenium/node-firefox:latest",
+          "mb": 959.4,
+          "source": "https://hub.docker.com/v2/repositories/selenium/node-firefox/tags/latest"
+        }
+      ],
+      "note": "The :latest Selenium tags were last updated 2026-09-17."
+    }
+  },
+  "features": {
+    "title": "Feature comparison",
+    "subtitle": "Read from each project's code, README and docs.",
+    "states": {
+      "yes": "Does it, as documented or verified.",
+      "partial": "Partly, opt-in, or with a stated limit (the note says which).",
+      "no": "Does not, or not in the open source edition.",
+      "unknown": "Not documented; we could not tell.",
+      "na": "Does not apply to how the tool works."
+    },
+    "tools": [
+      {
+        "id": "mendwright",
+        "label": "mendwright",
+        "sub": ""
+      },
+      {
+        "id": "healenium",
+        "label": "Healenium",
+        "sub": "open source"
+      },
+      {
+        "id": "rfheal",
+        "label": "robotframework-heal",
+        "sub": ""
+      },
+      {
+        "id": "skyvern",
+        "label": "Skyvern",
+        "sub": "click fallback"
+      },
+      {
+        "id": "stagehand",
+        "label": "Stagehand",
+        "sub": ""
+      },
+      {
+        "id": "autopw",
+        "label": "auto-playwright",
+        "sub": ""
+      }
+    ],
+    "tool_sources": {
+      "mendwright": "README.md, mendwright/facade.py, mendwright/coordinator.py, mendwright/gate.py, mendwright/drivers/playwright_sync.py in this repo",
+      "healenium": "https://healenium.io/docs/how_healenium_works",
+      "rfheal": "https://github.com/manykarim/robotframework-heal",
+      "skyvern": "https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md",
+      "stagehand": "https://github.com/browserbase/stagehand",
+      "autopw": "https://github.com/lucgagan/auto-playwright"
+    },
+    "rows": [
+      {
+        "id": "no_prior",
+        "label": "Heals with no prior success",
+        "rule": "Can repair a selector it never saw succeed, with no stored baseline. n/a when the tool stores no selectors.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "",
+            "source": "Stub-provider run: the first call healed with lastSucceededAt null (research, 2026-10-10)"
+          },
+          "healenium": {
+            "state": "no",
+            "note": "needs a baseline",
+            "source": "https://healenium.io/docs/how_healenium_works"
+          },
+          "rfheal": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "AI fallback",
+            "source": "https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md"
+          },
+          "stagehand": {
+            "state": "na",
+            "note": "infers steps",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "na",
+            "note": "no selectors",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "persists",
+        "label": "Persists the healed selector",
+        "rule": "Writes the repaired selector somewhere the next run reads it.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "JSON file",
+            "source": "mendwright/store.py"
+          },
+          "healenium": {
+            "state": "yes",
+            "note": "PostgreSQL",
+            "source": "https://github.com/healenium/healenium/blob/master/docker-compose-web.yaml"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "SQLite",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://www.skyvern.com/docs/developers/features/code-caching.md"
+          },
+          "stagehand": {
+            "state": "partial",
+            "note": "Browserbase only",
+            "source": "https://docs.stagehand.dev/v4/best-practices/caching"
+          },
+          "autopw": {
+            "state": "no",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "live_check",
+        "label": "Checks the proposal on the live page",
+        "rule": "Checks a proposed selector against the current page before using it. yes = uniqueness or a live re-check; partial = a similarity score threshold only.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "unique, visible",
+            "source": "mendwright/gate.py"
+          },
+          "healenium": {
+            "state": "partial",
+            "note": "score threshold",
+            "source": "https://github.com/healenium/healenium-selector-imitator"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "per README",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md"
+          },
+          "stagehand": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "destructive",
+        "label": "Refuses destructive controls",
+        "rule": "yes = refuses to heal pay, submit or delete style controls without the user marking each one. partial = refuses only the steps the user marks, by a flag or an opt-out switch. no = no mechanism. Applied the same way to every tool.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "on by default",
+            "source": "mendwright/facade.py"
+          },
+          "healenium": {
+            "state": "partial",
+            "note": "manual opt-out",
+            "source": "https://github.com/healenium/healenium-web",
+            "detail": "@DisableHealing in Java; driver.execute_script('disable_healing_true') in proxy mode (https://github.com/healenium/healenium-proxy)."
+          },
+          "rfheal": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "no_services",
+        "label": "No backend services",
+        "rule": "Heals with no separately run service or container. An LLM API does not count.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "direct mode",
+            "source": "README.md"
+          },
+          "healenium": {
+            "state": "no",
+            "note": "3 or more",
+            "source": "https://github.com/healenium/healenium/blob/master/docker-compose-web.yaml"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "in-process",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "python",
+        "label": "Python API",
+        "rule": "Callable from a plain Python script.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "",
+            "source": "pyproject.toml"
+          },
+          "healenium": {
+            "state": "partial",
+            "note": "via proxy",
+            "source": "https://github.com/healenium/healenium-proxy"
+          },
+          "rfheal": {
+            "state": "no",
+            "note": "Robot Framework",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "yes",
+            "note": "async, 3.11+",
+            "source": "https://github.com/browserbase/stagehand/blob/main/packages/sdk-python/README.md"
+          },
+          "autopw": {
+            "state": "no",
+            "note": "JS/TS",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "playwright",
+        "label": "Playwright",
+        "rule": "Runs on Playwright pages. partial = with a stated limit.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "sync and async",
+            "source": "mendwright/drivers/playwright_sync.py, mendwright/aio.py"
+          },
+          "healenium": {
+            "state": "no",
+            "note": "Pro only",
+            "source": "https://healenium.io/docs/playwright_proxy"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "Browser library",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "launched by Skyvern",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "no",
+            "note": "own driver",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "selenium",
+        "label": "Selenium",
+        "rule": "Works with Selenium WebDriver.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "",
+            "source": "mendwright/drivers/selenium.py"
+          },
+          "healenium": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/healenium/healenium-web"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "SeleniumLibrary",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "no",
+            "note": "",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "no",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "no",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "llm_choice",
+        "label": "Choice of LLM provider",
+        "rule": "Lets you pick the LLM provider. n/a when the tool uses no LLM.",
+        "cells": {
+          "mendwright": {
+            "state": "yes",
+            "note": "",
+            "source": "README.md, Providers section"
+          },
+          "healenium": {
+            "state": "na",
+            "note": "no LLM in OSS",
+            "source": "https://healenium.io/docs/ai"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "yes",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "no",
+            "note": "OpenAI only",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "no_step_change",
+        "label": "No change to each step",
+        "rule": "Existing steps keep working with a one-time setup. no = every step is rewritten or gets an extra argument. Counted in integration_effort below.",
+        "cells": {
+          "mendwright": {
+            "state": "no",
+            "note": "one line per step",
+            "source": "README.md, Quickstart: page.locator(xpath) becomes heal.locator(key, xpath, role=...)"
+          },
+          "healenium": {
+            "state": "yes",
+            "note": "wrap the driver once",
+            "source": "https://github.com/healenium/healenium-web"
+          },
+          "rfheal": {
+            "state": "yes",
+            "note": "one Library line",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "no",
+            "note": "prompt= per step",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "no",
+            "note": "act() per step",
+            "source": "https://github.com/browserbase/stagehand/blob/main/packages/sdk-python/README.md"
+          },
+          "autopw": {
+            "state": "no",
+            "note": "each step rewritten",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "no_model",
+        "label": "Heals without any model",
+        "rule": "Can repair a selector with no LLM call. partial = deterministic repair first, a model only when that fails. na = the tool asks a model for every step.",
+        "cells": {
+          "mendwright": {
+            "state": "no",
+            "note": "needs a model",
+            "source": "README.md, How it works"
+          },
+          "healenium": {
+            "state": "yes",
+            "note": "tree similarity",
+            "source": "https://healenium.io/docs/how_healenium_works"
+          },
+          "rfheal": {
+            "state": "partial",
+            "note": "model is the last step",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "no",
+            "note": "AI fallback",
+            "source": "https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md"
+          },
+          "stagehand": {
+            "state": "na",
+            "note": "model runs each step",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "na",
+            "note": "model runs each step",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "content_local",
+        "label": "Page content stays on your machine",
+        "rule": "No page content goes to a model provider. partial = only when you run a local model. Judged on the open source edition.",
+        "cells": {
+          "mendwright": {
+            "state": "partial",
+            "note": "local model only",
+            "source": "SECURITY.md, Redaction"
+          },
+          "healenium": {
+            "state": "yes",
+            "note": "no LLM in OSS",
+            "source": "https://healenium.io/docs/how_healenium_works"
+          },
+          "rfheal": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "unknown",
+            "note": "",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      },
+      {
+        "id": "no_selector",
+        "label": "Steps with no selector",
+        "rule": "A step can be written as plain English with no selector at all.",
+        "cells": {
+          "mendwright": {
+            "state": "no",
+            "note": "needs a selector",
+            "source": "README.md, Limitations"
+          },
+          "healenium": {
+            "state": "no",
+            "note": "needs a locator",
+            "source": "https://github.com/healenium/healenium-web"
+          },
+          "rfheal": {
+            "state": "no",
+            "note": "needs a locator",
+            "source": "https://github.com/manykarim/robotframework-heal"
+          },
+          "skyvern": {
+            "state": "yes",
+            "note": "prompt-only steps",
+            "source": "https://github.com/Skyvern-AI/skyvern"
+          },
+          "stagehand": {
+            "state": "yes",
+            "note": "act('...')",
+            "source": "https://github.com/browserbase/stagehand"
+          },
+          "autopw": {
+            "state": "yes",
+            "note": "English steps",
+            "source": "https://github.com/lucgagan/auto-playwright"
+          }
+        }
+      }
+    ]
+  },
+  "integration_effort": {
+    "note": "Not charted; the result is mixed, so docs/comparison.md shows it as a table. Lines counted from each project's quickstart.",
+    "rows": [
+      {
+        "tool": "mendwright",
+        "one_time": "2 lines: import mendwright, heal = mendwright.open(page)",
+        "per_step": "1 line: page.locator(xpath) becomes heal.locator(key, xpath, role=...)",
+        "config": "2 env vars: <PROVIDER>_API_KEY and <PROVIDER>_MODEL",
+        "services": "0",
+        "source": "README.md, Using it in your own script"
+      },
+      {
+        "tool": "Healenium-Web",
+        "one_time": "an import, and driver creation replaced by 2 lines (a delegate driver and SelfHealingDriver.create(delegate))",
+        "per_step": "none",
+        "config": "a dependency block (Maven 5 lines or Gradle 1) and a 5-line healenium.properties",
+        "services": "3",
+        "source": "https://github.com/healenium/healenium-web"
+      },
+      {
+        "tool": "Healenium-Proxy (Python)",
+        "one_time": "about 2 lines: the local driver becomes webdriver.Remote('http://localhost:8085', options=...)",
+        "per_step": "none",
+        "config": "the docker-compose file",
+        "services": "6",
+        "source": "https://github.com/healenium/healenium-example-python"
+      },
+      {
+        "tool": "robotframework-heal",
+        "one_time": "1 line in Settings: Library    Heal",
+        "per_step": "none",
+        "config": "3 .env lines: HEAL_MODEL, HEAL_BASE_URL, HEAL_API_KEY",
+        "services": "0",
+        "source": "https://github.com/manykarim/robotframework-heal"
+      },
+      {
+        "tool": "robotframework-selfhealing-agents",
+        "one_time": "1 line: Library    SelfhealingAgents",
+        "per_step": "none",
+        "config": "1 .env line: OPENAI_API_KEY",
+        "services": "0",
+        "source": "https://github.com/MarketSquare/robotframework-selfhealing-agents"
+      },
+      {
+        "tool": "Skyvern",
+        "one_time": "launch the client and the browser through Skyvern (Skyvern.local(), a launch call, get_working_page())",
+        "per_step": "add prompt='...' to each page.click, fill or select_option",
+        "config": "a .env file",
+        "services": "0 with Skyvern.local() (engine runs in-process)",
+        "source": "https://github.com/Skyvern-AI/skyvern"
+      },
+      {
+        "tool": "Stagehand (Python)",
+        "one_time": "adopt its driver: launch, Stagehand.create, close",
+        "per_step": "each step becomes stagehand.act('...') or page.locator(observe(...).selector)",
+        "config": "a provider/model string and your key",
+        "services": "0 (Browserbase is optional)",
+        "source": "https://github.com/browserbase/stagehand/blob/main/packages/sdk-python/README.md"
+      },
+      {
+        "tool": "auto-playwright",
+        "one_time": "1 import",
+        "per_step": "every step rewritten as auto('...', { page, test })",
+        "config": "OPENAI_API_KEY",
+        "services": "0",
+        "source": "https://github.com/lucgagan/auto-playwright"
+      }
+    ]
+  }
+}

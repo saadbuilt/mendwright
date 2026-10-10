@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/saadbuilt/mendwright/security/advisories/new
+    about: Private reports only. Please don't open a public issue for a vulnerability.
+  - name: Troubleshooting
+    url: https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#troubleshooting
+    about: What each AttentionRequired message means and what to do about it.

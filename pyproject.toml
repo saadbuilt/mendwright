@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mendwright"
+version = "0.3.0"
+description = "Self-healing selectors for Playwright and Selenium. When a selector breaks, a model suggests a new one, mendwright checks it against the page, and the step is retried."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "saadbuilt" }]
+dependencies = ["lxml>=5"]
+keywords = [
+  "playwright", "selenium", "pytest", "selectors", "locators", "xpath", "self-healing",
+  "test-automation", "flaky-tests", "browser-automation", "web-scraping", "llm",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: Pytest",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP :: Browsers",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Testing",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/saadbuilt/mendwright"
+Documentation = "https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md"
+Issues = "https://github.com/saadbuilt/mendwright/issues"
+Changelog = "https://github.com/saadbuilt/mendwright/blob/main/CHANGELOG.md"
+
+[project.scripts]
+mendwright = "mendwright.cli:main"
+
+[project.entry-points.pytest11]
+mendwright = "mendwright.pytest_plugin"
+
+[project.optional-dependencies]
+# The core needs only lxml. Providers import their SDK lazily and fall back to urllib,
+# and drivers use whichever browser library the caller already has.
+test = ["pytest>=7"]
+dev = ["pytest>=7", "ruff", "build", "twine"]
+playwright = ["playwright>=1.40"]
+selenium = ["selenium>=4.10"]
+anthropic = ["anthropic>=0.39"]
+openai = ["openai>=1.0"]
+gemini = ["google-genai"]
+bedrock = ["boto3>=1.34"]
+litellm = ["litellm"]
+# All model providers. Browser libraries are left out on purpose: install playwright or
+# selenium yourself, or add the matching extra.
+all = ["anthropic>=0.39", "openai>=1.0", "google-genai", "boto3>=1.34", "litellm"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mendwright*"]
+
+[tool.setuptools.package-data]
+# Data files that live inside the package (for example a bundled demo page) ship in the wheel.
+mendwright = ["py.typed", "**/*.html", "**/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "browser: needs a real browser; run with -m browser",
+]
+# Real-browser tests are opt-in. A later -m on the command line replaces this one.
+# The repo's own tests call mendwright.open() hundreds of times; keep the plugin's
+# end-of-run heal summary out of them. tests/test_pytest_plugin.py loads it explicitly.
+addopts = "-m 'not browser' -p no:mendwright"
+
+[tool.ruff]
+line-length = 112
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The logging NullHandler is attached before the submodules import, and
+# mendwright.open is re-exported on purpose but kept out of __all__.
+"mendwright/__init__.py" = ["E402", "F401"]
+# Test data (HTML snippets, long selectors) reads better on one line.
+"tests/**" = ["E501"]

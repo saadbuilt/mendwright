@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ruff with the config in pyproject.toml. Findings show up as annotations on the PR.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: python -m pip install ruff
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+  # The offline suite needs only lxml and pytest. No browser, network or vendor SDK.
+  test:
+    name: test (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # Windows catches path handling in the store and journal files.
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with test extras
+        run: python -m pip install -e ".[test]"
+      - name: Run the offline suite
+        run: python -m pytest -q
+
+  # The next Python release. Failures here are reported but do not fail the run.
+  test-next:
+    name: test (py3.15, experimental)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with test extras
+        run: python -m pip install -e ".[test]"
+      - name: Run the offline suite
+        run: python -m pytest -q
+
+  # The oldest versions pyproject.toml claims to support: lxml>=5 and pytest>=7.
+  lowest-deps:
+    name: test (lowest deps, py3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with the oldest lxml and pytest
+        run: python -m pip install -e . "lxml==5.0.0" "pytest==7.*"
+      - name: Show the resolved versions
+        run: python -c "import lxml.etree, pytest; print('lxml', lxml.etree.__version__, 'pytest', pytest.__version__)"
+      - name: Run the offline suite
+        run: python -m pytest -q
+
+  # Real Chromium, Firefox and WebKit through Playwright, and Chrome through Selenium.
+  # Selenium uses the Chrome already on the runner image; Selenium Manager fetches the driver.
+  browsers:
+    name: browsers (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with Playwright and Selenium
+        run: python -m pip install -e ".[test,playwright,selenium]"
+      - name: Install the Playwright browsers
+        run: python -m playwright install --with-deps chromium firefox webkit
+      - name: Run the browser tests
+        env:
+          # Fail, rather than skip, if one of these cannot start on the runner.
+          MENDWRIGHT_REQUIRE_ENGINES: pw-chromium,pw-firefox,pw-webkit,sel-chrome,sel-firefox
+        run: python -m pytest -m browser -q -rs
+
+  # Build the sdist and wheel the way a release does, install the wheel into a clean venv,
+  # and run the sdist's own tests against it.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install build twine
+      - name: Build the sdist and wheel
+        run: python -m build
+      - name: Check the metadata
+        run: python -m twine check --strict dist/*
+      - name: Install the wheel into a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl pytest
+      # Run from the temp dir so the demo's .mendwright/ folder stays out of the checkout.
+      - name: Run the installed command
+        working-directory: ${{ runner.temp }}
+        run: |
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          mendwright --version
+          python -m mendwright doctor
+          mendwright demo
+      - name: Run the sdist's tests against the installed wheel
+        run: |
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist"
+          cd "$RUNNER_TEMP"
+          venv/bin/python -c "import mendwright, sysconfig; f = mendwright.__file__; print('testing', f, mendwright.__version__); assert f.startswith(sysconfig.get_paths()['purelib']), 'not the installed wheel'"
+          venv/bin/python -m pytest -q sdist/*/tests
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

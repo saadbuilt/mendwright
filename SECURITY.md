@@ -1,0 +1,152 @@
+# Security policy
+
+## Reporting a vulnerability
+
+Please report security problems privately, not in a public issue or pull request.
+Use GitHub's private vulnerability reporting: open [this form](https://github.com/saadbuilt/mendwright/security/advisories/new), or click Report a vulnerability on the repository's security tab.
+
+Include the mendwright version, the browser library and provider you used, what happened, and the smallest reproduction you have.
+Remove page content, keys and tokens from anything you attach. [Redaction](#redaction) lists what mendwright itself doesn't remove.
+
+I'll reply on the report itself, and we'll agree on the fix and a disclosure date there.
+
+## Trust model
+
+mendwright treats the model's output as untrusted.
+The model sees a redacted copy of the page, and a hostile page can try to steer it.
+A proposal is only a string. mendwright uses it after the local checks below pass, and the model never touches the page or the store.
+
+## The checks
+
+Every proposed XPath goes through `client.apply()`, which runs two checks.
+
+`validate()` in `mendwright/validation.py` evaluates the XPath against the captured HTML with lxml. It rejects the proposal unless:
+
+- it isn't a pure absolute-index path such as `/html[1]/body[1]/div[3]/input[1]`;
+- it matches exactly one element;
+- that element has the key's expected role (ARIA names such as `textbox` or `switch` are mapped to the element roles they mean);
+- for a key marked destructive, the element's text is one of the expected texts. The coordinator refuses destructive keys before this point, so this rule only matters when you call `validate()` yourself;
+- for any other key, unless it has `destructive=False`, an element that is a button, a link or an input button has no destructive word in its label.
+
+`live_match()` in `mendwright/gate.py` then checks the XPath on the current page through the driver.
+It must match exactly one element, that element must be visible unless its role is checkbox, and it must still have the key's role. For a destructive key, its text must also be one of the expected texts, and for any other key its label must still pass the destructive word check. Any driver error counts as no match.
+`mendwright.open()` and `mendwright.aio.open()` always pass a driver. A `HealCoordinator` you build yourself runs this check only when you pass `driver=`.
+
+`apply()` also rejects a proposal that the store holds as quarantined or superseded, or that reaches an element the key has quarantined, even through a different XPath. It never stores a selector that isn't XPath.
+A proposal's frame hint is ignored; frame context is never taken from model output.
+
+If the first proposal fails, the coordinator asks once more with the rejection reason. After that it raises `AttentionRequired`.
+
+Other limits on a heal:
+
+- `guard`: a callable passed to `mendwright.open(guard=...)`. While it returns `False`, nothing is healed and no model is called.
+- Rate limit: direct providers get 3 heal attempts per key and 60 in total per hour by default (`rate_per_key_per_hour`, `rate_global_per_hour`). Every attempt that reaches the provider uses a slot, including rejected and dry-run ones, and makes up to 2 model calls. The limit is shared per store file within one process. When it's reached, the heal is declined.
+- Confirmation: a new heal counts as confirmed only after `expect=` on the action passes, `.confirm(True)`, `Healer.confirm_all(True)`, or the pytest plugin sees the test pass. If the action fails in the browser, or `expect=` returns false, the healed selector is quarantined and isn't tried again.
+- `MENDWRIGHT_DISABLE=1`: selectors still resolve, but nothing is healed and no provider is called.
+
+## Destructive controls
+
+A key that is destructive is never healed, and no model is called for it.
+A key is destructive when:
+
+- the seed file marks it, or it is in `mendwright.open(destructive_keys=...)`. Nothing at run time can clear these.
+- `heal.locator(..., destructive=True)` marks it. This is saved in the override file.
+- The facade's word check matches. One of `pay`, `payment`, `purchase`, `buy`, `checkout`, `confirm`, `submit` or `delete`, or the phrase "place order", "order now" or "complete order", appears in the key, in its `text=`, or in the label of the button or link it last matched. The lists are `DESTRUCTIVE_WORDS` and `DESTRUCTIVE_PHRASES` in `mendwright/facade.py`. `destructive=False` opts a key out of the word check, and the choice is saved.
+
+A heal is also refused when the model picks a button or link with a destructive label, even for a key that looks harmless. The label is the element's visible text, `aria-label`, `title` or `alt`, or the `value` of an input button. The check runs after the model answers, in `validate()` and again in the live check, so it costs a model call. The model gets the reason and one more try. `destructive=False` on the key turns it off too.
+
+This is what a refused key looks like, from a run with a stub provider:
+
+```
+mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 candidate(s)).
+  -> 'pay' looks like a destructive control (its key contains 'pay'), and mendwright never auto-heals those, because a validated but wrong selector could act on a live account. Fix the selector in your code, or pass destructive=False to heal.locator() if this control is safe to heal.
+```
+
+The provider received 0 calls.
+
+Limits of the word check:
+
+- The word check on keys, `text=` and learned labels runs in `mendwright.open()` and `mendwright.aio.open()` only. With the low-level `HealCoordinator`, only seed flags, `destructive_keys` and `meta['destructive']` apply there. The label check on the element a heal picks runs in both.
+- The key and `text=` are checked before any model call. A label is learned only after the selector has matched once, and only for button and link roles. If the first call for a key already needs a heal, the label of the element the model picks is the only label that gets checked.
+- The label check reads buttons, links and input buttons. A field labelled "Confirm password" isn't treated as destructive.
+- A clickable control whose label uses none of the listed words isn't caught, such as an icon button. Mark it with `destructive=True`.
+- The words are English.
+
+## Redaction
+
+Redaction is **best-effort**. Visible text and most attribute values reach the model provider.
+
+`build_bundle()` in `mendwright/capture.py` prepares the page in three steps:
+
+1. `redact()`. It removes quoted `value="..."` and `value='...'` attributes. It replaces caller-supplied row secrets with `[redacted]`: the values in `row['secrets']` and `row['proxy']`, and every string under `row['profile']`, in plain and HTML-escaped form. It replaces absolute `http(s)://` URLs with `[URL]`, and runs of 12 to 19 digits with `[redacted number]`.
+2. `clean_html()`. It removes `<script>`, `<style>`, `<noscript>`, `<template>`, comments and processing instructions, empties `<svg>`, removes `<meta>`, `<link>` and `<base>` from `<head>`, and collapses whitespace. If lxml can't parse the page, the text from step 1 is used as is.
+3. `redact()` again. lxml writes every attribute with quotes, so an unquoted `value=` from the original page is removed here.
+
+The inventory sent with the page never contains input values: the drivers don't read them, every string gets the same redaction, and keys named `value` are dropped.
+The broken selectors and the expected text in the bundle get the same redaction as the page.
+The page URL isn't part of the prompt, so direct providers never send it. `GatewayProvider` posts the whole bundle, in which an http(s) page URL is replaced with `[URL]`. A URL with another scheme, such as `file://`, is sent as it is.
+The local checks use the full, unredacted page; none of it is sent anywhere.
+
+`redact()` on its own does step 1 only. It misses unquoted `value=` attributes and keeps scripts and `<meta>` tags.
+
+This is real input and output for one element, with `row={'profile': {'name': {'first': 'Jane'}}}`:
+
+```
+in:  <span aria-label="Jane Doe" data-user="u42">jane@example.com 555-1234 4111111111111111 https://x.com/a?b=1</span>
+out: <span aria-label="[redacted] Doe" data-user="u42">jane@example.com 555-1234 [redacted number] [URL]</span>
+```
+
+What isn't removed:
+
+- visible text, including `<textarea>` and `contenteditable` content;
+- `aria-label`, `title`, `placeholder`, `alt` and `data-*` values;
+- email addresses, and numbers shorter than 12 digits;
+- relative links with tokens in the query, such as `/reset?token=abc123`;
+- anything in a page lxml can't parse, apart from step 1.
+
+`mendwright.open()` doesn't take a `row`, so the facade has no row secrets to replace. The attribute, URL and number rules still apply. To redact specific values, pass `row=` to `resolve_with_heal()` on the low-level API.
+
+Ways to send less:
+
+- Use a model served by Ollama on your own machine (`OLLAMA_MODEL`), so the page doesn't leave it.
+- On the low-level API, give `HealCoordinator` an `html_provider` that returns only the part of the page the key lives in.
+- Set `MENDWRIGHT_DISABLE=1` where no page content may leave the machine. Dry run (`MENDWRIGHT_DRY_RUN=1`) still calls the provider.
+
+## Provider error text
+
+When a provider call fails, `provider.last_error` and the `AttentionRequired` message say why.
+That text is built in `mendwright/providers/_errors.py`. It never includes the request body, and it masks:
+
+- the provider's own API key;
+- key-shaped tokens: `sk-`, `rk-`, `pk-`, `gsk-` and `xai-` prefixes, Google `AIza` keys, AWS `AKIA` and `ASIA` key ids, JWTs, and hex strings of 32 or more characters;
+- `Bearer` and `Basic` values of 16 or more characters;
+- echoed `api-key`, `x-goog-api-key`, `authorization`, `auth-token`, `access-token`, `secret` and `heal-key` values;
+- the query parameters `key`, `api_key`, `token`, `access_token`, `sig`, `signature` and `x-amz-*`;
+- URL user info and query strings, when the URL is shown as the request target.
+
+Vendor messages are cut to 200 characters. For example:
+
+```
+in:  Incorrect API key provided: sk-proj-abc123def456ghi. Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123 see https://gw.example/heal?key=s3cr3tvalue&x=1
+out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see https://gw.example/heal?key=[redacted]&x=1
+```
+
+`mendwright doctor` adds its own masking. It replaces the value of any environment variable whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `AUTH` or `CREDENTIAL` with `***` wherever it appears in error text. It shows `MENDWRIGHT_GATEWAY` as scheme and host only, and shows `MENDWRIGHT_KEY` and other unlisted `MENDWRIGHT_*` variables as `(set, value hidden)`.
+
+## Files mendwright writes
+
+- `./.mendwright/overrides.json` (or `MENDWRIGHT_STORE`): selectors, their status, and each key's role, expected text and destructive flag. It holds no page HTML, but selectors can quote page text: a healed XPath often anchors on a label (for example `contains(normalize-space(.),'accept the terms')`), and the label of a button or link that looks destructive is saved as `expectedText` (for example `"Pay now"`). Review the file before you commit it.
+- `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. On POSIX it's created with mode 0600.
+- `overrides.json.lock` while a write is in progress.
+
+A store file that is corrupt or can't be read raises an error. mendwright never treats it as empty and overwrites it.
+
+## Residual risks
+
+- The live check and the retried action are separate calls. The page can change between them.
+- A hostile page can steer the model toward a different element with the same role. The checks limit the role, the match count and visibility, but can't judge intent. Use `expect=` on actions that matter.
+- A direct provider holds its API key in your process. Without the google-genai SDK, `GeminiProvider` falls back to a REST call that puts the key in the URL query (`?key=`), so a proxy that logs URLs can record it. Install `mendwright[gemini]` to have the SDK make the call instead. `GatewayProvider` keeps the model key on your server.
+- `mendwright doctor` prints absolute paths for Python, the package and the store, which can contain your user name.
+- With the pytest plugin, a passing test confirms its heals. For `GatewayProvider` that is an HTTP call to `/heal/outcome`. A test that passes for the wrong reason confirms a wrong heal.
+
+If you find a way to get a selector past the checks, to heal a destructive control, or to send more page data than this page describes, please report it privately as described at the top.

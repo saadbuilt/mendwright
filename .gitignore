@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# mendwright's own runtime output: the writable override store and the event journal
+# are created next to a running tool, never committed.
+.mendwright/
