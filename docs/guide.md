@@ -411,6 +411,17 @@ If a selector matches nothing on the page but would match inside a child iframe,
 
 Both cases are covered by the real-browser test `test_the_iframe_workaround`, which also checks that the captured HTML is the frame's.
 
+## Layout changes and flow changes
+
+A heal happens when a stored selector stops matching on the page mendwright was opened on. That makes it a fit for layout changes inside one page: renamed or generated ids and classes, reworded or translated labels, new wrapper elements, elements moved to another region, and form fields in a new order. The benchmark has cases for each of these ([docs/benchmark.md](benchmark.md)).
+
+Flow changes are different. When a step moves to the next page, a confirmation modal is added, or two steps swap order, the element your step wants is not on the current page. mendwright does not navigate or reorder your script. It asks the model for a replacement on the page it has, and a model may propose a similar element that is unique, visible and of the right role, for example a Help button in place of a Continue button that moved away. That passes the checks. Two things limit the damage:
+
+- Mark steps that submit, pay or delete with `destructive=True`, so they are never healed (see [Destructive controls](#destructive-controls)).
+- Run CI with `--mendwright-strict`, so a heal fails the test and someone looks at it before it is trusted (see [Strict mode](#strict-mode)).
+
+Positional selectors are a blind spot. `(//form//input)[1]` keeps matching after the email and password fields swap places, so it now points at the password field. No selector broke, so mendwright never runs. Anchor selectors on something that travels with the element: an id, a name, a label or its text.
+
 ## Selectors
 
 `locator()` takes three kinds of selector, decided by `mendwright.selectors.classify()`:

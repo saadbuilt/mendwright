@@ -167,6 +167,22 @@ Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at
 If the first proposal fails, the model gets the reason and one more try. Heals are saved in `.mendwright/overrides.json`, and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it.
 On the next run the selector in your code is tried first and the saved heal right after it, in the same pass. That resolves without a wait or a model call. If the action on a healed element fails in the browser, the heal is quarantined and not used again.
 
+## What it can and can't fix
+
+mendwright repairs a selector on the page your script is on. It handles layout changes within that page:
+
+- ids and classes renamed, or replaced by build-generated ones
+- labels reworded or translated
+- elements wrapped in a new container or component
+- elements moved to another part of the page, or form fields put in a different order
+- lookalike elements where the surrounding text decides which one is meant
+
+It doesn't change your script's flow. If a step moves to another page, a new step or modal is added, or steps swap order, fix the script by hand.
+In those cases the element isn't on the current page, and a model may still propose a similar-looking one that passes the checks, so mark irreversible steps with `destructive=True`.
+
+Anchor selectors on ids, names, labels or text rather than position.
+A positional selector such as `(//form//input)[1]` that still matches after two fields swap now points at the wrong field, and since nothing broke, mendwright doesn't step in.
+
 ## Errors
 
 When mendwright can't or won't heal a step, it raises `mendwright.AttentionRequired` with the reason and a next step.
