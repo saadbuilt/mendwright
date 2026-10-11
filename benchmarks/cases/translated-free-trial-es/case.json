@@ -1,0 +1,8 @@
+{
+  "id": "translated-free-trial-es",
+  "category": "translated",
+  "description": "The Spanish marketing home page. The hero link reads \"Prueba gratis\"; the header now has an \"Empezar\" link to the same sign-up page.",
+  "key": "start_free_trial",
+  "selector": "//a[normalize-space()='Start free trial']",
+  "truth": "//a[normalize-space()='Prueba gratis']"
+}

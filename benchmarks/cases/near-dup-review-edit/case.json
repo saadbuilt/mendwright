@@ -1,0 +1,8 @@
+{
+  "id": "near-dup-review-edit",
+  "category": "near_duplicate",
+  "description": "The review step has three \"Edit\" links. The sections lost their ids, \"Shipping address\" is now \"Delivery address\", and the blocks are in a new order.",
+  "key": "edit_shipping_address",
+  "selector": "//section[@id='shipping-address']//a[normalize-space()='Edit']",
+  "truth": "//section[.//h2[normalize-space()='Delivery address']]//a[normalize-space()='Edit']"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "label-reworded-email-field",
+  "category": "label_reworded",
+  "description": "The profile form moved to Angular Material. \"E-mail\" is now \"Email address\", the field names changed, and a new optional recovery email field sits below it.",
+  "key": "profile_email",
+  "selector": "//label[normalize-space()='E-mail']/following-sibling::input",
+  "truth": "//input[@id='profile-email']"
+}

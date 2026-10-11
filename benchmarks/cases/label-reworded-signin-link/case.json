@@ -1,0 +1,8 @@
+{
+  "id": "label-reworded-signin-link",
+  "category": "label_reworded",
+  "description": "The header link changed from \"Sign in\" to \"Log in\", next to a new \"Create account\" link. A members banner links to the same page with a return parameter.",
+  "key": "sign_in_link",
+  "selector": "//a[normalize-space()='Sign in']",
+  "truth": "//header//a[@href='/account/login']"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "moved-logout-button",
+  "category": "moved",
+  "description": "Log out moved from the top bar to the bottom of the new side navigation. The security page also has a \"Log out of all other devices\" button.",
+  "key": "log_out",
+  "selector": "//nav[@id='topbar']//button[normalize-space()='Log out']",
+  "truth": "//nav[@data-testid='side-nav']//button[normalize-space()='Log out']"
+}

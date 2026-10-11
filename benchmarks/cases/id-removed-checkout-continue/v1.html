@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout | Northwind Outfitters</title>
+  <link rel="stylesheet" href="/assets/theme.css?v=812">
+  <style>
+    body { font-family: "Helvetica Neue", Arial, sans-serif; margin: 0; color: #222; }
+    .site-header { border-bottom: 1px solid #ddd; }
+    .header-main { display: flex; align-items: center; gap: 24px; padding: 12px 32px; }
+    .main-nav ul, .account-links { list-style: none; margin: 0; padding: 0; display: flex; gap: 16px; }
+    .product-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; list-style: none; padding: 0; }
+    .btn { padding: 8px 16px; border-radius: 4px; border: 1px solid #222; background: #fff; cursor: pointer; }
+    .btn-primary { background: #1d3b2a; color: #fff; }
+    .cookie-banner { background: #f6f3ee; padding: 16px 32px; }
+    .site-footer { background: #1d3b2a; color: #eee; padding: 32px; }
+  </style>
+  <script>window.dataLayer = window.dataLayer || []; window.dataLayer.push({"pageType": "checkout"});</script>
+</head>
+<body>
+  <div id="cookie-banner" class="cookie-banner" role="dialog" aria-label="Cookie consent">
+    <p>We use cookies to improve your experience and to show you relevant offers. <a href="/legal/cookies">Read our cookie policy</a>.</p>
+    <button id="cookie-reject" class="btn" type="button">Reject all</button>
+    <button id="cookie-settings" class="btn" type="button">Cookie settings</button>
+    <button id="cookie-accept" class="btn btn-primary" type="button">Accept all</button>
+  </div>
+  <header class="site-header">
+    <div class="promo-strip">Free shipping on orders over $75. <a href="/help/shipping">Details</a></div>
+    <div class="header-main">
+      <a class="logo" href="/"><img src="/assets/logo.svg" alt="Northwind Outfitters" width="160" height="32"></a>
+      <form class="search-form" action="/search" method="get" role="search">
+        <label for="search-input">Search</label>
+        <input id="search-input" name="q" type="search" placeholder="Search products">
+        <button type="submit" class="btn">Search</button>
+      </form>
+      <ul class="account-links">
+        <li><a href="/account/login">Sign in</a></li>
+        <li><a href="/wishlist">Wishlist</a></li>
+        <li><a class="cart-link" href="/cart">Cart (2)</a></li>
+      </ul>
+    </div>
+    <nav class="main-nav" aria-label="Main">
+      <ul>
+        <li><a href="/c/new-in">New in</a></li>
+        <li><a href="/c/women">Women</a></li>
+        <li><a href="/c/men">Men</a></li>
+        <li><a href="/c/kids">Kids</a></li>
+        <li><a href="/c/outdoor">Outdoor</a></li>
+        <li><a href="/c/sale">Sale</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main class="checkout">
+    <ol class="checkout-steps"><li class="current">Delivery</li><li>Payment</li><li>Review</li></ol>
+    <div class="checkout-layout">
+      <form id="delivery-form" action="/checkout/delivery" method="post">
+        <h1>Delivery details</h1>
+        <div class="field"><label for="checkout-email">Email</label><input id="checkout-email" name="email" type="email" autocomplete="email"></div>
+        <div class="field-row">
+          <div class="field"><label for="first-name">First name</label><input id="first-name" name="first_name" type="text" autocomplete="given-name"></div>
+          <div class="field"><label for="last-name">Last name</label><input id="last-name" name="last_name" type="text" autocomplete="family-name"></div>
+        </div>
+        <div class="field"><label for="phone">Phone</label><input id="phone" name="phone" type="tel" autocomplete="tel"></div>
+        <div class="field"><label for="address1">Address</label><input id="address1" name="address1" type="text" autocomplete="address-line1"></div>
+        <div class="field-row">
+          <div class="field"><label for="city">City</label><input id="city" name="city" type="text" autocomplete="address-level2"></div>
+          <div class="field"><label for="postcode">Postcode</label><input id="postcode" name="postcode" type="text" autocomplete="postal-code"></div>
+        </div>
+        <div class="field"><label for="country">Country</label><select id="country" name="country" autocomplete="country"><option>United States</option><option>Canada</option><option>United Kingdom</option></select></div>
+        <fieldset class="shipping-methods">
+          <legend>Delivery method</legend>
+          <label><input type="radio" name="shipping" value="standard" checked> Standard (3 to 5 days) <strong>Free</strong></label>
+          <label><input type="radio" name="shipping" value="express"> Express (next day) <strong>$9.95</strong></label>
+        </fieldset>
+        <div class="form-actions">
+          <a href="/cart" class="btn btn-link">Return to cart</a>
+          <button id="continue-to-payment" type="submit" class="btn btn-primary">Continue to payment</button>
+        </div>
+      </form>
+      <aside class="order-summary">
+    <h2>Order summary</h2>
+    <ul class="summary-items">
+      <li><span class="item-name">Merino crew sweater</span> <span class="item-variant">Navy / M</span> <span class="item-price">$89.00</span></li>
+      <li><span class="item-name">Trail Runner 2</span> <span class="item-variant">UK 9</span> <span class="item-price">$129.00</span></li>
+    </ul>
+    <form class="discount-form" action="/checkout/discount" method="post">
+      <label for="discount-code">Discount code</label>
+      <input id="discount-code" name="code" type="text">
+      <button type="submit" class="btn">Apply</button>
+    </form>
+    <dl class="totals"><dt>Subtotal</dt><dd>$218.00</dd><dt>Delivery</dt><dd>Calculated at next step</dd><dt>Total</dt><dd>$218.00</dd></dl>
+  </aside>
+    </div>
+  </main>
+  <footer class="site-footer">
+    <section class="newsletter">
+      <h2>Get 10% off your first order</h2>
+      <form action="/newsletter" method="post" class="newsletter-form">
+        <label for="newsletter-email">Email address</label>
+        <input id="newsletter-email" name="email" type="email" placeholder="you@example.com">
+        <button type="submit" class="btn btn-primary">Subscribe</button>
+      </form>
+    </section>
+    <div class="footer-columns">
+      <div class="footer-column">
+        <h3>Help</h3>
+        <ul>
+          <li><a href="/help/contact">Contact us</a></li>
+          <li><a href="/help/shipping">Shipping</a></li>
+          <li><a href="/help/returns">Returns &amp; exchanges</a></li>
+          <li><a href="/help/size-guide">Size guide</a></li>
+          <li><a href="/help/faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div class="footer-column">
+        <h3>Company</h3>
+        <ul>
+          <li><a href="/about">About us</a></li>
+          <li><a href="/careers">Careers</a></li>
+          <li><a href="/sustainability">Sustainability</a></li>
+          <li><a href="/press">Press</a></li>
+        </ul>
+      </div>
+      <div class="footer-column">
+        <h3>Legal</h3>
+        <ul>
+          <li><a href="/legal/privacy">Privacy policy</a></li>
+          <li><a href="/legal/terms">Terms of service</a></li>
+          <li><a href="/legal/cookies">Cookie policy</a></li>
+          <li><a href="/legal/accessibility">Accessibility</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="social"><a href="https://instagram.com/northwind.example">Instagram</a> <a href="https://pinterest.com/northwind.example">Pinterest</a> <a href="https://youtube.com/@northwind.example">YouTube</a></p>
+    <p class="copyright">&copy; 2026 Northwind Outfitters Ltd. All prices include sales tax where applicable.</p>
+  </footer>
+</body>
+</html>

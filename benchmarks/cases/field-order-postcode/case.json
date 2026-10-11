@@ -1,0 +1,8 @@
+{
+  "id": "field-order-postcode",
+  "category": "field_order",
+  "description": "The selector took the fifth input of the billing form. The new form asks for the ZIP code second so it can fill in the city, and the form was renamed.",
+  "key": "billing_postcode",
+  "selector": "(//form[@name='billing']//input)[5]",
+  "truth": "//form[@data-testid='billing-form']//input[@autocomplete='postal-code']"
+}

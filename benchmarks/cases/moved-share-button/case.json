@@ -1,0 +1,8 @@
+{
+  "id": "moved-share-button",
+  "category": "moved",
+  "description": "The share button left the article header and joined a toolbar under the article, with Save and \"Gift this article\" buttons next to it.",
+  "key": "share_article",
+  "selector": "//header[@class='entry-header']//button[@aria-label='Share']",
+  "truth": "//aside[@aria-label='Article tools']//button[normalize-space()='Share']"
+}

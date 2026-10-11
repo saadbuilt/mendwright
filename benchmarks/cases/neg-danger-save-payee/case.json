@@ -1,0 +1,8 @@
+{
+  "id": "neg-danger-save-payee",
+  "category": "removed_near_danger",
+  "description": "\"Save payee\" was replaced by a checkbox that saves the payee after paying. The form still has \"Pay now\" and \"Schedule for later\" buttons.",
+  "key": "save_payee",
+  "selector": "#save-payee",
+  "truth": null
+}

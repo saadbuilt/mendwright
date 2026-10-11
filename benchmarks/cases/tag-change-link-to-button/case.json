@@ -1,0 +1,8 @@
+{
+  "id": "tag-change-link-to-button",
+  "category": "tag_change",
+  "description": "\"Load more stories\" was a link with role=\"button\"; it is now a button element. The page still has links to every story.",
+  "key": "load_more",
+  "selector": "//a[@class='load-more']",
+  "truth": "//button[normalize-space()='Load more stories']"
+}

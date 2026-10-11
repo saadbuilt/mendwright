@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Members | Tallyboard</title>
+  <link rel="stylesheet" href="/static/css/main.8c41d2f7.css">
+  <style data-emotion="css" data-s="">
+    .css-1n7v3ny{display:grid;grid-template-columns:240px 1fr;grid-template-rows:56px 1fr;min-height:100vh}
+    .css-18hx0ck{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:0 16px;background:#111827;color:#f9fafb}
+    .css-1k9bcj4{display:flex;flex-direction:column;gap:2px;padding:12px;background:#fff;border-right:1px solid #e5e7eb}
+    .css-1ifw8zs{padding:24px 32px;background:#f9fafb}
+    .css-1hy6j3k{background:transparent;border:0;color:inherit;padding:6px;border-radius:6px}
+    .css-1kq7vxs{background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600}
+    .css-q2ws3e{background:#fff;color:#111827;border:1px solid #d1d5db;border-radius:8px;padding:8px 14px}
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="css-1n7v3ny" data-testid="app-shell">
+      <header class="css-18hx0ck" data-testid="top-bar">
+        <a class="css-1dbjc4n" href="/dashboard" aria-label="Tallyboard home"><tb-logo></tb-logo><span class="css-901oao">Tallyboard</span></a>
+        <div class="css-k008qs" role="search">
+          <input class="css-1x8a2b" type="search" placeholder="Search or jump to..." aria-label="Search">
+          <kbd class="css-12ab9cd">Ctrl K</kbd>
+        </div>
+        <div class="css-1wbh2a1">
+          <button class="css-1hy6j3k" type="button" aria-label="Notifications (3 unread)"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11a6 6 0 0 0-5-5.9V4h-2v1.1A6 6 0 0 0 6 11v5l-2 2v1h16v-1z"></path></svg></button>
+          <a class="css-4rbku5" href="/help">Help</a>
+          <button class="css-1hy6j3k" type="button" aria-haspopup="menu" aria-label="Account menu"><span class="css-1o7bb8a">PS</span></button>
+        </div>
+      </header>
+      <nav class="css-1k9bcj4" data-testid="side-nav" aria-label="Workspace">
+        <div class="css-7kq2ze"><span class="css-901oao">Harborview Studio</span></div>
+        <a class="css-c1z8w3" href="/dashboard">Dashboard</a>
+        <a class="css-c1z8w3" href="/projects">Projects</a>
+        <a class="css-c1z8w3" href="/tasks">My tasks</a>
+        <a class="css-c1z8w3" href="/reports">Reports</a>
+        <a class="css-c1z8w3" href="/team" aria-current="page">Team</a>
+        <a class="css-c1z8w3" href="/settings">Settings</a>
+      </nav>
+      <main class="css-1ifw8zs" data-testid="page-content">
+        <div class="css-2k9x1c"><h1 class="css-1kx6r5">Members</h1><div class="css-1wbh2a1"><button class="css-1kq7vxs" type="button">Invite members</button></div></div>
+        <input class="css-1x8a2b" type="search" placeholder="Find a member" aria-label="Find a member">
+        <table class="css-9vtf3d" data-testid="members-table">
+          <thead><tr><th>Member</th><th>Role</th><th>Last active</th><th><span class="css-visually">Actions</span></th></tr></thead>
+          <tbody>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">AL</span><div><span class="css-901oao">Ana Lima</span> <span class="css-9pa8cd">ana.lima@harborview.example</span></div></div></td>
+              <td>Guest</td><td>3 days ago</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">LM</span><div><span class="css-901oao">Leo Martins</span> <span class="css-9pa8cd">leo.martins@harborview.example</span></div></div></td>
+              <td>Admin</td><td>1 hour ago</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">MO</span><div><span class="css-901oao">Maya Okafor</span> <span class="css-9pa8cd">maya.okafor@harborview.example</span></div></div></td>
+              <td>Member</td><td>2 hours ago</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">KM</span><div><span class="css-901oao">Kenji Mori</span> <span class="css-9pa8cd">kenji.mori@harborview.example</span></div></div></td>
+              <td>Member</td><td>Last week</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">PS</span><div><span class="css-901oao">Priya Shah</span> <span class="css-9pa8cd">priya.shah@harborview.example</span></div></div></td>
+              <td>Owner</td><td>Active now</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><div class="css-person"><span class="css-avatar" aria-hidden="true">SW</span><div><span class="css-901oao">Sam Whitfield</span> <span class="css-9pa8cd">sam.whitfield@harborview.example</span></div></div></td>
+              <td>Member</td><td>Yesterday</td>
+              <td><button class="css-1hy6j3k" type="button" aria-label="Edit member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"></path></svg></button>
+                  <button class="css-1hy6j3k" type="button" aria-label="Remove member"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V4h6v3m-8 0 1 13h8l1-13"></path></svg></button></td>
+            </tr>
+          </tbody>
+        </table>
+      </main>
+    </div>
+  </div>
+  <script type="application/json" id="tb-config">{"release":"2026.10.1","features":{"newNav":true}}</script>
+</body>
+</html>

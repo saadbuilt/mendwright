@@ -1,0 +1,8 @@
+{
+  "id": "neg-removed-marketing-optin",
+  "category": "removed",
+  "description": "The \"Email me with news and offers\" checkbox was dropped from checkout. Three other checkboxes remain: save details, same billing address and accept the terms.",
+  "key": "newsletter_optin",
+  "selector": "#newsletter-optin",
+  "truth": null
+}

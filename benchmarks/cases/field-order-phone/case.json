@@ -1,0 +1,8 @@
+{
+  "id": "field-order-phone",
+  "category": "field_order",
+  "description": "The delivery form numbered its fields field-1 to field-8; phone was field-4. The React version uses generated ids (:r0: to :r7:) and asks for country first and phone last, so the fourth field is now the street address.",
+  "key": "phone",
+  "selector": "#field-4",
+  "truth": "//input[@autocomplete='tel']"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "moved-changelog-link",
+  "category": "moved",
+  "description": "The docs moved from Docusaurus to Starlight. The Changelog link left the top navigation and now sits in the footer, next to the page's other footer links.",
+  "key": "changelog_link",
+  "selector": "//nav[@aria-label='Main']//a[normalize-space()='Changelog']",
+  "truth": "//footer//a[@href='/changelog/']"
+}

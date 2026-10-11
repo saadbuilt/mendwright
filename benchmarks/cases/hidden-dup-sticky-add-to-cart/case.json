@@ -1,0 +1,8 @@
+{
+  "id": "hidden-dup-sticky-add-to-cart",
+  "category": "hidden_duplicate",
+  "description": "The product page gained a sticky buy bar with its own \"Add to cart\" button; the bar is hidden until the page scrolls. The main button lost its id.",
+  "key": "add_to_cart",
+  "selector": "#add-to-cart",
+  "truth": "//form[@data-testid='buy-box']//button[normalize-space()='Add to cart']"
+}

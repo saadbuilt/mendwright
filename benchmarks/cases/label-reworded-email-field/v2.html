@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profile | Fernbank</title>
+  <link rel="stylesheet" href="/styles-QJ7XKX2N.css">
+  <style>
+    fb-root{display:block;min-height:100vh;background:#f3f5f4}
+    .fb-toolbar{display:flex;align-items:center;gap:24px;padding:0 24px;height:64px;background:#08372a;color:#fff}
+    .mat-mdc-card{display:block;background:#fff;border-radius:12px;padding:20px;margin-bottom:16px}
+    .mdc-button{border-radius:20px;padding:0 20px;height:40px}
+  </style>
+</head>
+<body>
+  <fb-root ng-version="17.3.4">
+    <mat-toolbar class="mat-toolbar fb-toolbar" _ngcontent-ng-c2891 role="toolbar">
+      <a class="fb-brand" href="/accounts" _ngcontent-ng-c2891>Fernbank</a>
+      <nav class="mat-mdc-tab-nav-bar" mat-tab-nav-bar aria-label="Main" _ngcontent-ng-c2891>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/accounts">Accounts</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/payments">Pay &amp; transfer</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/cards">Cards</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/documents">Documents</a>
+      </nav>
+      <button mat-icon-button class="mdc-icon-button mat-mdc-icon-button" type="button" aria-label="Messages (1 unread)"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H5.2L4 17.2z"></path></svg></button>
+      <button mat-button class="mdc-button mat-mdc-button" type="button" aria-haspopup="menu" _ngcontent-ng-c2891><span class="mdc-button__label">Daniel Reyes</span></button>
+    </mat-toolbar>
+    <div class="fb-shell" _ngcontent-ng-c4410>
+      <mat-nav-list class="mat-mdc-nav-list" role="navigation" aria-label="Settings">
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/settings/profile" aria-current="page"><span class="mdc-list-item__content">Profile</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/settings/security"><span class="mdc-list-item__content">Sign-in & security</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/settings/alerts"><span class="mdc-list-item__content">Alerts</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/settings/documents"><span class="mdc-list-item__content">Statements & documents</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/settings/close"><span class="mdc-list-item__content">Close account</span></a>
+      </mat-nav-list>
+      <main class="fb-content" _ngcontent-ng-c4410>
+        <mat-card class="mat-mdc-card mdc-card" _ngcontent-ng-c771>
+          <mat-card-header><h1 class="mat-mdc-card-title">Profile</h1></mat-card-header>
+          <mat-card-content>
+            <form class="fb-profile-form" data-testid="profile-form" _ngcontent-ng-c771>
+              <mat-form-field class="mat-mdc-form-field" appearance="outline">
+                <label class="mdc-floating-label" for="profile-name">Legal name</label>
+                <input matInput class="mat-mdc-input-element" id="profile-name" name="legalName" type="text" autocomplete="name">
+              </mat-form-field>
+              <mat-form-field class="mat-mdc-form-field" appearance="outline">
+                <label class="mdc-floating-label" for="profile-email">Email address</label>
+                <input matInput class="mat-mdc-input-element" id="profile-email" name="contact.email" type="email" autocomplete="email">
+              </mat-form-field>
+              <mat-form-field class="mat-mdc-form-field" appearance="outline">
+                <label class="mdc-floating-label" for="profile-recovery">Recovery email (optional)</label>
+                <input matInput class="mat-mdc-input-element" id="profile-recovery" name="contact.recoveryEmail" type="email">
+              </mat-form-field>
+              <mat-form-field class="mat-mdc-form-field" appearance="outline">
+                <label class="mdc-floating-label" for="profile-mobile">Mobile number</label>
+                <input matInput class="mat-mdc-input-element" id="profile-mobile" name="contact.mobile" type="tel" autocomplete="tel">
+              </mat-form-field>
+              <mat-form-field class="mat-mdc-form-field" appearance="outline">
+                <label class="mdc-floating-label" for="profile-address">Mailing address</label>
+                <textarea matInput class="mat-mdc-input-element" id="profile-address" name="contact.address" rows="3"></textarea>
+              </mat-form-field>
+              <div class="fb-form-actions">
+                <button mat-button class="mdc-button" type="reset">Discard changes</button>
+                <button mat-flat-button color="primary" class="mdc-button mdc-button--unelevated" type="submit">Save changes</button>
+              </div>
+            </form>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="mat-mdc-card mdc-card fb-danger" _ngcontent-ng-c771>
+          <h2 class="mat-mdc-card-title">Close account</h2>
+          <p>Closing your account ends online banking for all of your accounts. Balances must be zero.</p>
+          <div class="fb-danger-actions">
+            <button mat-stroked-button class="mdc-button mdc-button--outlined" type="button">Download my data</button>
+            <button mat-stroked-button class="mdc-button mdc-button--outlined" type="button">Sign out of all devices</button>
+            <button mat-flat-button color="warn" class="mdc-button mdc-button--unelevated mat-warn" type="button">Close account</button>
+          </div>
+        </mat-card>
+      </main>
+    </div>
+    <footer class="fb-footer" _ngcontent-ng-c2891>
+      <a href="/security">Security &amp; fraud</a>
+      <a href="/legal/privacy">Privacy notice</a>
+      <a href="/legal/terms">Terms</a>
+      <a href="/help">Help &amp; support</a>
+      <p>Fernbank is a fictional bank that exists only in test pages.</p>
+    </footer>
+  </fb-root>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shopping bag | Northwind</title>
+  <link rel="preload" href="/_next/static/media/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/_next/static/css/4f1c2a9e0b.css">
+  <style>
+    .Header_root__a8Kx2{position:sticky;top:0;background:#fff;z-index:20;border-bottom:1px solid #e5e5e5}
+    .Header_inner__T1v9c{display:flex;align-items:center;gap:20px;padding:10px 24px}
+    .ProductGrid_grid__k3J9s{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px}
+    .Button_root__x9Y2z{border-radius:999px;padding:10px 18px;font-weight:600;cursor:pointer}
+    .Button_primary__p0O1a{background:#14532d;color:#fff;border:0}
+    .Button_secondary__m4Pq0{background:transparent;border:1px solid #14532d;color:#14532d}
+    .Footer_root__n3Gk8{background:#0f2a1c;color:#e8efe9;padding:40px 24px}
+  </style>
+</head>
+<body>
+  <div id="__next">
+    <header class="Header_root__a8Kx2" data-testid="site-header">
+      <div class="PromoBar_bar__Qm3pL" role="region" aria-label="Promotions">
+        <p>Free delivery on orders over $75. <a class="PromoBar_link__u7Vb1" href="/help/shipping">See details</a></p>
+      </div>
+      <div class="Header_inner__T1v9c">
+        <a class="Header_logo__p2Lr8" href="/" aria-label="Northwind Outfitters home"><nw-logo size="md"></nw-logo><span class="Header_wordmark__R4cd1">Northwind</span></a>
+        <form class="SearchBar_form__k1Ns0" role="search" action="/search">
+          <input class="SearchBar_input__0zQwe" name="q" type="search" placeholder="Search 10,000+ products" aria-label="Search" autocomplete="off">
+          <button class="SearchBar_submit__Lr5aa" type="submit" aria-label="Submit search"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2a8 8 0 1 0 4.9 14.3l5.4 5.4 1.4-1.4-5.4-5.4A8 8 0 0 0 10 2z"></path></svg></button>
+        </form>
+        <nav class="Header_utility__Yy7c1" aria-label="Account">
+          <a class="Header_link__Wd2k9" href="/account/login">Sign in</a>
+          <a class="Header_link__Wd2k9" href="/wishlist">Saved items</a>
+          <a class="Header_cartLink__Zp81Q" href="/cart" data-testid="header-cart">Cart <span class="Badge_badge__x0d3L">2</span></a>
+        </nav>
+      </div>
+      <nav class="MegaNav_root__Bb4Ko" aria-label="Main">
+        <ul class="MegaNav_list__c0Wq3">
+          <li><a class="MegaNav_link__fe21K" href="/c/new-in">New in</a></li>
+          <li><a class="MegaNav_link__fe21K" href="/c/women">Women</a></li>
+          <li><a class="MegaNav_link__fe21K" href="/c/men">Men</a></li>
+          <li><a class="MegaNav_link__fe21K" href="/c/kids">Kids</a></li>
+          <li><a class="MegaNav_link__fe21K" href="/c/outdoor">Outdoor</a></li>
+          <li><a class="MegaNav_link__fe21K" href="/c/sale">Sale</a></li>
+        </ul>
+      </nav>
+    </header>
+    <main class="Cart_root__k8Ds3">
+      <h1 class="Cart_title__Tp2x6">Shopping bag</h1>
+      <table class="Cart_table__Bb1q9" data-testid="cart-table">
+        <thead><tr><th>Item</th><th>Price</th><th>Qty</th><th>Total</th><th><span class="VisuallyHidden_root__s0Sx5">Actions</span></th></tr></thead>
+        <tbody>
+          <tr class="CartRow_row__Hy6t2" data-sku="SWT-NVY-M">
+            <td class="CartRow_product__Nn3k8"><img src="/_next/image?url=%2Fimages%2Fswt-nvy-m.jpg&amp;w=160" alt="" width="80" height="80"><div><a href="/p/swt-nvy-m">Merino crew sweater</a><p class="CartRow_variant__Dd1w7">Navy / M</p></div></td>
+            <td class="CartRow_price__Qq2s4">$89.00</td>
+            <td class="CartRow_qty__Jx9b3"><qty-stepper class="QtyStepper_root__p4Rm2"><button type="button" aria-label="Decrease quantity">-</button><input class="QtyStepper_input__Xc0v1" type="number" name="quantity" value="1" min="0" aria-label="Quantity"><button type="button" aria-label="Increase quantity">+</button></qty-stepper></td>
+            <td class="CartRow_total__Ve8c2">$89.00</td>
+            <td class="CartRow_actions__Wg5z1"><button class="CartRow_remove__Mf4p0" type="button">Remove</button></td>
+          </tr>
+          <tr class="CartRow_row__Hy6t2" data-sku="MUG-SPK-01">
+            <td class="CartRow_product__Nn3k8"><img src="/_next/image?url=%2Fimages%2Fmug-spk-01.jpg&amp;w=160" alt="" width="80" height="80"><div><a href="/p/mug-spk-01">Speckled camp mug</a><p class="CartRow_variant__Dd1w7">Slate</p></div></td>
+            <td class="CartRow_price__Qq2s4">$24.00</td>
+            <td class="CartRow_qty__Jx9b3"><qty-stepper class="QtyStepper_root__p4Rm2"><button type="button" aria-label="Decrease quantity">-</button><input class="QtyStepper_input__Xc0v1" type="number" name="quantity" value="2" min="0" aria-label="Quantity"><button type="button" aria-label="Increase quantity">+</button></qty-stepper></td>
+            <td class="CartRow_total__Ve8c2">$24.00</td>
+            <td class="CartRow_actions__Wg5z1"><button class="CartRow_remove__Mf4p0" type="button">Remove</button></td>
+          </tr>
+          <tr class="CartRow_row__Hy6t2" data-sku="SCK-WOOL-3PK">
+            <td class="CartRow_product__Nn3k8"><img src="/_next/image?url=%2Fimages%2Fsck-wool-3pk.jpg&amp;w=160" alt="" width="80" height="80"><div><a href="/p/sck-wool-3pk">Wool hiking socks (3 pack)</a><p class="CartRow_variant__Dd1w7">Charcoal / L</p></div></td>
+            <td class="CartRow_price__Qq2s4">$36.00</td>
+            <td class="CartRow_qty__Jx9b3"><qty-stepper class="QtyStepper_root__p4Rm2"><button type="button" aria-label="Decrease quantity">-</button><input class="QtyStepper_input__Xc0v1" type="number" name="quantity" value="1" min="0" aria-label="Quantity"><button type="button" aria-label="Increase quantity">+</button></qty-stepper></td>
+            <td class="CartRow_total__Ve8c2">$36.00</td>
+            <td class="CartRow_actions__Wg5z1"><button class="CartRow_remove__Mf4p0" type="button">Remove</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <aside class="CartSummary_root__Zx3w8" aria-label="Order summary">
+
+    <div class="Promo_root__Rf4v8">
+      <form class="Promo_form__Az1d2" data-testid="giftcard-form">
+        <nw-field label="Gift card"><input class="Input_root__b1Tz9" name="giftCard" type="text" inputmode="numeric" aria-label="Gift card number"></nw-field>
+        <button class="Button_root__x9Y2z Button_secondary__m4Pq0" type="submit" data-testid="giftcard-apply">Apply</button>
+      </form>
+      <form class="Promo_form__Az1d2" data-testid="promo-form">
+        <nw-field label="Promo code"><input class="Input_root__b1Tz9" name="promoCode" type="text" aria-label="Promo code"></nw-field>
+        <button class="Button_root__x9Y2z Button_secondary__m4Pq0" type="submit" data-testid="promo-apply">Apply</button>
+      </form>
+    </div>
+
+        <dl><dt>Subtotal</dt><dd>$185.00</dd></dl>
+        <p>Taxes and shipping are calculated at checkout.</p>
+        <a class="Button_root__x9Y2z Button_primary__p0O1a" href="/checkout">Checkout</a>
+        <a class="CartSummary_continue__u2Kd5" href="/c/new-in">Keep shopping</a>
+      </aside>
+    </main>
+    <footer class="Footer_root__n3Gk8" data-testid="site-footer">
+      <section class="Newsletter_root__Pq4s1">
+        <h2 class="Newsletter_title__d9Lx0">Get 10% off your first order</h2>
+        <form class="Newsletter_form__Hh2e7" action="/newsletter" method="post" data-testid="newsletter-form">
+          <input class="Input_root__b1Tz9" name="email" type="email" placeholder="Email address" aria-label="Email address">
+          <button class="Button_root__x9Y2z Button_primary__p0O1a" type="submit">Sign up</button>
+        </form>
+      </section>
+      <div class="Footer_columns__r8Zy3">
+        <nav class="Footer_column__Gg5t2" aria-label="Help">
+          <h3 class="Footer_heading__Ab3x9">Help</h3>
+          <ul>
+            <li><a class="Footer_link__Mm7q0" href="/help/contact">Contact us</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/help/shipping">Delivery</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/help/returns">Returns</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/help/size-guide">Size guide</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/help/faq">FAQ</a></li>
+          </ul>
+        </nav>
+        <nav class="Footer_column__Gg5t2" aria-label="Company">
+          <h3 class="Footer_heading__Ab3x9">Company</h3>
+          <ul>
+            <li><a class="Footer_link__Mm7q0" href="/about">About us</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/careers">Careers</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/sustainability">Sustainability</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/press">Press</a></li>
+          </ul>
+        </nav>
+        <nav class="Footer_column__Gg5t2" aria-label="Legal">
+          <h3 class="Footer_heading__Ab3x9">Legal</h3>
+          <ul>
+            <li><a class="Footer_link__Mm7q0" href="/legal/privacy">Privacy</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/legal/terms">Terms</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/legal/cookies">Cookies</a></li>
+            <li><a class="Footer_link__Mm7q0" href="/legal/accessibility">Accessibility</a></li>
+          </ul>
+        </nav>
+      </div>
+      <div class="Footer_bottom__k0Lp2">
+        <p>&copy; 2026 Northwind Outfitters Ltd.</p>
+        <ul class="Footer_social__T6Sx4">
+          <li><a href="https://instagram.com/northwind.example" aria-label="Instagram">Instagram</a></li>
+          <li><a href="https://pinterest.com/northwind.example" aria-label="Pinterest">Pinterest</a></li>
+        </ul>
+      </div>
+    </footer>
+    <div class="CookieBanner_root__s9Kd1" role="dialog" aria-modal="false" aria-labelledby="cookie-title" data-testid="cookie-banner">
+      <h2 id="cookie-title" class="CookieBanner_title__eW2a0">Your privacy</h2>
+      <p>We and our partners use cookies to personalise content and measure ads. <a href="/legal/cookies">Cookie policy</a></p>
+      <div class="CookieBanner_actions__Vb8n3">
+        <button class="Button_root__x9Y2z Button_secondary__m4Pq0" type="button">Manage preferences</button>
+        <button class="Button_root__x9Y2z Button_secondary__m4Pq0" type="button">Reject all</button>
+        <button class="Button_root__x9Y2z Button_primary__p0O1a" type="button">Accept all</button>
+      </div>
+    </div>
+  </div>
+  <script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{}},"page":"/cart","query":{},"buildId":"k2Lx9_qZ0aP4","isFallback":false}</script>
+</body>
+</html>

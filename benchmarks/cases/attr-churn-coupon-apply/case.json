@@ -1,0 +1,8 @@
+{
+  "id": "attr-churn-coupon-apply",
+  "category": "attribute_churn",
+  "description": "The test hooks changed from data-test to data-testid with new values, the coupon is now called a promo code, and the gift card form moved above it. Both forms have an \"Apply\" button.",
+  "key": "apply_coupon",
+  "selector": "//button[@data-test='apply-coupon']",
+  "truth": "//button[@data-testid='promo-apply']"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "neg-ambiguous-copy-button",
+  "category": "ambiguous",
+  "description": "The page that showed one install command now shows three (npm, pnpm, yarn) for a different package, each with an identical Copy button. The command the step copied is not on the page.",
+  "key": "copy_install_command",
+  "selector": "#copy-snippet",
+  "truth": null
+}

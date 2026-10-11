@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reports - Tallyboard</title>
+  <link rel="stylesheet" href="/assets/application-5c1e9f.css">
+  <style>
+    body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #f7f8fa; }
+    .navbar { display: flex; align-items: center; gap: 16px; padding: 8px 20px; background: #24292f; color: #fff; }
+    .navbar a, .navbar button { color: #fff; }
+    .app-shell { display: grid; grid-template-columns: 220px 1fr; }
+    .sidebar { background: #fff; border-right: 1px solid #e3e6ea; padding: 16px; }
+    .content { padding: 24px 32px; }
+    .btn { border: 1px solid #c9ced6; background: #fff; border-radius: 6px; padding: 6px 12px; }
+    .btn-primary { background: #3d5afe; color: #fff; border-color: #3d5afe; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef0f3; }
+  </style>
+  <script>window.TB = {"env": "production", "release": "2026.09.3"};</script>
+</head>
+<body>
+  <nav id="topbar" class="navbar">
+    <a class="navbar-brand" href="/dashboard">Tallyboard</a>
+    <form class="navbar-search" action="/search" role="search">
+      <input id="global-search" type="search" name="q" placeholder="Search projects, tasks, people" aria-label="Search">
+    </form>
+    <ul class="navbar-actions">
+      <li><button id="notifications-btn" class="btn btn-icon" type="button" aria-label="Notifications">Notifications <span class="badge">3</span></button></li>
+      <li><a href="/help" class="nav-link">Help</a></li>
+      <li><button id="account-menu-btn" class="btn btn-icon" type="button" aria-haspopup="menu">Priya Shah</button></li>
+    </ul>
+  </nav>
+  <div id="app" class="app-shell">
+    <aside class="sidebar">
+      <p class="workspace-name">Harborview Studio</p>
+      <ul class="sidebar-nav">
+        <li><a href="/dashboard">Dashboard</a></li>
+        <li><a href="/projects">Projects</a></li>
+        <li><a href="/tasks">My tasks</a></li>
+        <li><a href="/reports" class="active">Reports</a></li>
+        <li><a href="/team">Team</a></li>
+        <li><a href="/settings">Settings</a></li>
+      </ul>
+    </aside>
+    <main id="content" class="content">
+      <div class="page-header"><h1>Reports</h1></div>
+      <div class="report-toolbar">
+        <label for="report-range">Range</label>
+        <select id="report-range" name="range"><option>Last 30 days</option><option>This quarter</option><option>This year</option></select>
+        <div class="export-menu" role="menu" aria-label="Export">
+          <div role="button" tabindex="0" class="export-option" data-action="export-csv">Export CSV</div>
+          <div role="button" tabindex="0" class="export-option" data-action="export-pdf">Export PDF</div>
+          <div role="button" tabindex="0" class="export-option" data-action="schedule">Schedule email</div>
+        </div>
+      </div>
+      <section class="card">
+        <h2>Throughput</h2>
+        <p>142 tasks completed, up 12% on the previous period.</p>
+        <table class="table"><thead><tr><th>Week</th><th>Created</th><th>Completed</th></tr></thead>
+          <tbody><tr><td>Sep 15</td><td>41</td><td>38</td></tr><tr><td>Sep 22</td><td>37</td><td>35</td></tr><tr><td>Sep 29</td><td>44</td><td>39</td></tr><tr><td>Oct 6</td><td>33</td><td>30</td></tr></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <footer class="app-footer">
+    <a href="/status">Status</a> &middot; <a href="/changelog">Changelog</a> &middot; <a href="/legal/terms">Terms</a> &middot; <span>&copy; 2026 Tallyboard Inc.</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "id": "label-reworded-apply-filters",
+  "category": "label_reworded",
+  "description": "The filter panel's submit button now shows a live count (\"Show 5 flights\") instead of \"Apply filters\". Each result also has a Select button.",
+  "key": "apply_filters",
+  "selector": "//button[normalize-space()='Apply filters']",
+  "truth": "//form[@data-testid='filters-form']//button[@type='submit']"
+}

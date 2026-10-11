@@ -1,0 +1,8 @@
+{
+  "id": "attr-churn-menu-toggle",
+  "category": "attribute_churn",
+  "description": "In the new docs theme the menu button controls starlight__sidebar instead of sidebar-nav, and its label changed from \"Toggle navigation bar\" to \"Menu\".",
+  "key": "docs_menu_toggle",
+  "selector": "//button[@aria-controls='sidebar-nav']",
+  "truth": "//button[@aria-controls='starlight__sidebar']"
+}

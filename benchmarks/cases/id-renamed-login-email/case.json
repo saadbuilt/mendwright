@@ -1,0 +1,8 @@
+{
+  "id": "id-renamed-login-email",
+  "category": "id_renamed",
+  "description": "The sign-in page was rebuilt in React. The email field lost id=\"email\" (it is now signin-email), and the page gained a second email field for product updates.",
+  "key": "login_email",
+  "selector": "#email",
+  "truth": "//input[@id='signin-email']"
+}

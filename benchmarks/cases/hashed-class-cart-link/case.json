@@ -1,0 +1,8 @@
+{
+  "id": "hashed-class-cart-link",
+  "category": "hashed_class",
+  "description": "A new front-end build changed every CSS-module hash. The selector used the cart link's hashed class.",
+  "key": "header_cart",
+  "selector": "//a[contains(@class,'Header_cartLink__uIoob')]",
+  "truth": "//a[@data-testid='header-cart']"
+}

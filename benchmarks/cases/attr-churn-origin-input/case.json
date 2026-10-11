@@ -1,0 +1,8 @@
+{
+  "id": "attr-churn-origin-input",
+  "category": "attribute_churn",
+  "description": "The search form was rebuilt with airport-picker components. The origin field's name changed from origin to from_airport and it gained a data-testid; the destination field changed the same way.",
+  "key": "origin_airport",
+  "selector": "//input[@name='origin']",
+  "truth": "//input[@data-testid='origin-input']"
+}

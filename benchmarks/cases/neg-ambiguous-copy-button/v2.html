@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install the SDK | Helio Docs</title>
+  <link rel="stylesheet" href="/_astro/print.BB4k8m2X.css" media="print">
+  <link rel="stylesheet" href="/_astro/index.C8x2qLw1.css">
+  <style>
+    :root{--sl-nav-height:3.5rem;--sl-sidebar-width:18.75rem}
+    .header{display:flex;align-items:center;gap:1rem;height:var(--sl-nav-height);padding:0 1.5rem;border-bottom:1px solid #e5e5e5}
+    .sl-container{max-width:48rem;padding:1.5rem}
+    .expressive-code pre{background:#011627;color:#d6deeb;padding:1rem}
+  </style>
+</head>
+<body>
+  <div class="page sl-flex">
+    <header class="header">
+      <div class="header sl-flex">
+        <div class="title-wrapper sl-flex"><a href="/" class="site-title sl-flex"><span>Helio Docs</span></a></div>
+        <div class="sl-flex">
+          <site-search class="search">
+            <button data-open-modal disabled="" aria-label="Search" aria-keyshortcuts="Control+K" type="button"><span class="sl-hidden md:sl-block">Search</span><kbd class="sl-hidden md:sl-flex">Ctrl K</kbd></button>
+          </site-search>
+        </div>
+        <div class="sl-hidden md:sl-flex right-group">
+          <div class="sl-flex social-icons"><a href="https://github.com/helio-example/helio" rel="me" class="sl-flex"><span class="sr-only">GitHub</span><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6"></path></svg></a></div>
+          <starlight-theme-select><label style="--sl-label-icon-size: 0.875rem">Theme <select aria-label="Select theme"><option value="dark">Dark</option><option value="light">Light</option><option value="auto" selected>Auto</option></select></label></starlight-theme-select>
+        </div>
+        <starlight-menu-button class="print:hidden">
+          <button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden" type="button">Menu</button>
+        </starlight-menu-button>
+      </div>
+    </header>
+    <nav class="sidebar print:hidden" aria-label="Main">
+      <div id="starlight__sidebar" class="sidebar-pane">
+        <div class="sidebar-content sl-flex">
+          <ul class="top-level">
+            <li><a href="/start/">Start here</a></li>
+            <li><a href="/install/">Install</a></li>
+            <li><a href="/configure/">Configure</a></li>
+            <li><a href="/deploy/">Deploy</a></li>
+            <li><a href="/support/">Support</a></li>
+            <li><a href="/reference/">Reference</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+    <div class="main-frame">
+      <div class="lg:sl-flex">
+        <main data-pagefind-body lang="en" dir="ltr">
+          <div class="content-panel"><div class="sl-container">
+            <h1 id="_top">Install the SDK</h1>
+            <p>The SDK works in Node.js 20+, Deno and Bun. Pick your package manager.</p>
+            <div class="expressive-code">
+              <figure class="frame is-terminal"><figcaption class="header"><span class="title">npm</span></figcaption>
+                <pre data-language="bash"><code>npm add @helio/sdk</code></pre>
+                <div class="copy"><button title="Copy to clipboard" type="button">Copy</button></div>
+              </figure>
+            </div>
+            <div class="expressive-code">
+              <figure class="frame is-terminal"><figcaption class="header"><span class="title">pnpm</span></figcaption>
+                <pre data-language="bash"><code>pnpm add @helio/sdk</code></pre>
+                <div class="copy"><button title="Copy to clipboard" type="button">Copy</button></div>
+              </figure>
+            </div>
+            <div class="expressive-code">
+              <figure class="frame is-terminal"><figcaption class="header"><span class="title">yarn</span></figcaption>
+                <pre data-language="bash"><code>yarn add @helio/sdk</code></pre>
+                <div class="copy"><button title="Copy to clipboard" type="button">Copy</button></div>
+              </figure>
+            </div>
+            <p>Then import the client and call <code>connect()</code>.</p>
+          </div></div>
+        </main>
+      </div>
+    </div>
+    <footer class="sl-flex footer">
+      <div class="meta sl-flex"><a href="https://github.com/helio-example/helio/edit/main/docs/page.mdx" class="sl-flex">Edit page</a> <a href="/community/" class="sl-flex">Community</a></div>
+      <p class="kudos">Built with Starlight. &copy; 2026 Helio Labs.</p>
+    </footer>
+  </div>
+</body>
+</html>

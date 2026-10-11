@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pay a bill - Fernbank Online</title>
+  <link rel="stylesheet" href="/static/css/olb.css?build=20260611">
+  <style>
+    body { margin: 0; font: 15px/1.45 Arial, sans-serif; color: #1b1b1b; background: #f4f6f5; }
+    .olb-header { display: flex; align-items: center; gap: 28px; background: #0d4f3c; color: #fff; padding: 12px 28px; }
+    .olb-header a { color: #fff; }
+    .olb-layout { display: grid; grid-template-columns: 220px 1fr; gap: 24px; padding: 24px 28px; }
+    .panel { background: #fff; border: 1px solid #d8dedb; border-radius: 4px; padding: 20px; }
+    .btn { padding: 8px 16px; border-radius: 3px; border: 1px solid #0d4f3c; background: #fff; color: #0d4f3c; }
+    .btn-primary { background: #0d4f3c; color: #fff; }
+    .btn-danger { border-color: #a4161a; color: #a4161a; }
+  </style>
+  <script src="/static/js/vendor/jquery-3.7.1.min.js"></script>
+</head>
+<body>
+  <header class="olb-header">
+    <a class="olb-logo" href="/accounts">Fernbank</a>
+    <nav class="olb-nav" aria-label="Main">
+      <a href="/accounts">Accounts</a>
+      <a href="/payments" class="current">Payments</a>
+      <a href="/cards">Cards</a>
+      <a href="/statements">Statements</a>
+      <a href="/settings">Settings</a>
+    </nav>
+    <span class="olb-user">Signed in as Daniel Reyes</span>
+    <form action="/logout" method="post" class="olb-logout"><button type="submit" class="btn">Sign out</button></form>
+  </header>
+  <div class="olb-layout">
+    <nav class="olb-subnav" aria-label="Section">
+      <ul>
+        <li><a href="/payments/bill" class="current">Pay a bill</a></li>
+        <li><a href="/payments/transfer">Transfer</a></li>
+        <li><a href="/payments/payees">Payees</a></li>
+        <li><a href="/payments/scheduled">Scheduled</a></li>
+      </ul>
+    </nav>
+    <main id="main" class="olb-main">
+      <div class="panel">
+        <h1>Pay a bill</h1>
+        <form id="bill-form" action="/payments/bill" method="post">
+          <div class="field"><label for="payee-name">Payee name</label><input id="payee-name" name="payee_name" type="text"></div>
+          <div class="field"><label for="payee-account">Payee account number</label><input id="payee-account" name="payee_account" type="text" inputmode="numeric"></div>
+          <div class="field"><label for="from-account">From</label><select id="from-account" name="from"><option>Everyday checking (...4471)</option><option>Savings (...9032)</option></select></div>
+          <div class="field"><label for="amount">Amount</label><input id="amount" name="amount" type="text" inputmode="decimal"></div>
+          <div class="actions">
+            <button id="save-payee" type="button" class="btn">Save payee</button>
+            <button id="pay-now" type="submit" class="btn btn-primary">Pay now</button>
+          </div>
+        </form>
+      </div>
+    </main>
+  </div>
+  <footer class="olb-footer">
+    <ul>
+      <li><a href="/security">Security centre</a></li>
+      <li><a href="/legal/privacy">Privacy</a></li>
+      <li><a href="/legal/terms">Online banking terms</a></li>
+      <li><a href="/help">Help</a></li>
+    </ul>
+    <p>Fernbank is a fictional bank that exists only in test pages. Calls may be recorded for training.</p>
+  </footer>
+</body>
+</html>

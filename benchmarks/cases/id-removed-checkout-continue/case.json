@@ -1,0 +1,8 @@
+{
+  "id": "id-removed-checkout-continue",
+  "category": "id_renamed",
+  "description": "Checkout moved to a component library. The submit button lost its id, and the page gained express-checkout buttons above the form.",
+  "key": "continue_to_payment",
+  "selector": "#continue-to-payment",
+  "truth": "//form[@data-testid='delivery-form']//button[@type='submit']"
+}

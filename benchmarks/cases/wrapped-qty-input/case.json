@@ -1,0 +1,8 @@
+{
+  "id": "wrapped-qty-input",
+  "category": "wrapped",
+  "description": "The quantity box is now inside a qty-stepper custom element with minus and plus buttons, and the cell class changed. Every row has the same kind of input.",
+  "key": "mug_quantity",
+  "selector": "//tr[@data-sku='MUG-SPK-01']/td[@class='qty']/input",
+  "truth": "//tr[@data-sku='MUG-SPK-01']//input[@type='number']"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "wrapped-archive-confirm",
+  "category": "wrapped",
+  "description": "The confirm dialog was rebuilt: its footer is a footer element now and the confirm button sits inside a tooltip wrapper. Every table row also has an Archive button.",
+  "key": "confirm_archive",
+  "selector": "//div[@class='modal-footer']/button[normalize-space()='Archive project']",
+  "truth": "//div[@role='dialog']//button[normalize-space()='Archive project']"
+}

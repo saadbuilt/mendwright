@@ -1,0 +1,8 @@
+{
+  "id": "neg-ambiguous-invite-accept",
+  "category": "ambiguous",
+  "description": "The Acme invitation is gone. Three other invitations each have an identical \"Accept\" button, and nothing on the page ties any of them to the step.",
+  "key": "accept_invite",
+  "selector": "#accept-invite",
+  "truth": null
+}

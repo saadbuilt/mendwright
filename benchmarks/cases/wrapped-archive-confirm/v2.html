@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projects | Tallyboard</title>
+  <link rel="stylesheet" href="/static/css/main.8c41d2f7.css">
+  <style data-emotion="css" data-s="">
+    .css-1n7v3ny{display:grid;grid-template-columns:240px 1fr;grid-template-rows:56px 1fr;min-height:100vh}
+    .css-18hx0ck{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:0 16px;background:#111827;color:#f9fafb}
+    .css-1k9bcj4{display:flex;flex-direction:column;gap:2px;padding:12px;background:#fff;border-right:1px solid #e5e7eb}
+    .css-1ifw8zs{padding:24px 32px;background:#f9fafb}
+    .css-1hy6j3k{background:transparent;border:0;color:inherit;padding:6px;border-radius:6px}
+    .css-1kq7vxs{background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600}
+    .css-q2ws3e{background:#fff;color:#111827;border:1px solid #d1d5db;border-radius:8px;padding:8px 14px}
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="css-1n7v3ny" data-testid="app-shell">
+      <header class="css-18hx0ck" data-testid="top-bar">
+        <a class="css-1dbjc4n" href="/dashboard" aria-label="Tallyboard home"><tb-logo></tb-logo><span class="css-901oao">Tallyboard</span></a>
+        <div class="css-k008qs" role="search">
+          <input class="css-1x8a2b" type="search" placeholder="Search or jump to..." aria-label="Search">
+          <kbd class="css-12ab9cd">Ctrl K</kbd>
+        </div>
+        <div class="css-1wbh2a1">
+          <button class="css-1hy6j3k" type="button" aria-label="Notifications (3 unread)"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11a6 6 0 0 0-5-5.9V4h-2v1.1A6 6 0 0 0 6 11v5l-2 2v1h16v-1z"></path></svg></button>
+          <a class="css-4rbku5" href="/help">Help</a>
+          <button class="css-1hy6j3k" type="button" aria-haspopup="menu" aria-label="Account menu"><span class="css-1o7bb8a">PS</span></button>
+        </div>
+      </header>
+      <nav class="css-1k9bcj4" data-testid="side-nav" aria-label="Workspace">
+        <div class="css-7kq2ze"><span class="css-901oao">Harborview Studio</span></div>
+        <a class="css-c1z8w3" href="/dashboard">Dashboard</a>
+        <a class="css-c1z8w3" href="/projects" aria-current="page">Projects</a>
+        <a class="css-c1z8w3" href="/tasks">My tasks</a>
+        <a class="css-c1z8w3" href="/reports">Reports</a>
+        <a class="css-c1z8w3" href="/team">Team</a>
+        <a class="css-c1z8w3" href="/settings">Settings</a>
+      </nav>
+      <main class="css-1ifw8zs" data-testid="page-content">
+        <div class="css-2k9x1c">
+          <h1 class="css-1kx6r5">Projects</h1>
+          <div class="css-1wbh2a1">
+                <button class="css-q2ws3e" type="button">Import</button>
+                <button class="css-q2ws3e" type="button">Invite people</button>
+                <button class="css-1kq7vxs" type="button">New project</button>
+          </div>
+        </div>
+        <div class="css-7f3k2m" role="toolbar" aria-label="Project filters">
+          <input class="css-1x8a2b" type="search" placeholder="Filter projects" aria-label="Filter projects">
+          <button class="css-q2ws3e" type="button" aria-haspopup="listbox">Sort: Last updated</button>
+          <div role="tablist" aria-label="Project state">
+            <button role="tab" aria-selected="true" class="css-tb4t1a" type="button">Active</button>
+            <button role="tab" aria-selected="false" class="css-tb4t1a" type="button">Archived</button>
+          </div>
+        </div>
+        <table class="css-9vtf3d" data-testid="projects-table">
+          <thead><tr><th>Name</th><th>Owner</th><th>Status</th><th>Due</th><th>Progress</th><th><span class="css-visually">Actions</span></th></tr></thead>
+          <tbody>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/website-redesign">Website redesign</a></td>
+              <td>Priya Shah</td>
+              <td><span class="css-15b4yf1">On track</span></td>
+              <td>Nov 14</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="62" aria-valuemin="0" aria-valuemax="100" aria-label="62% complete"><div style="width: 62%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Website redesign">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Website redesign"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/q4-campaign">Q4 campaign</a></td>
+              <td>Leo Martins</td>
+              <td><span class="css-15b4yf1">At risk</span></td>
+              <td>Oct 31</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="35" aria-valuemin="0" aria-valuemax="100" aria-label="35% complete"><div style="width: 35%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Q4 campaign">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Q4 campaign"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/mobile-app-3.0">Mobile app 3.0</a></td>
+              <td>Maya Okafor</td>
+              <td><span class="css-15b4yf1">On track</span></td>
+              <td>Dec 5</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="48" aria-valuemin="0" aria-valuemax="100" aria-label="48% complete"><div style="width: 48%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Mobile app 3.0">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Mobile app 3.0"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/partner-portal">Partner portal</a></td>
+              <td>Sam Whitfield</td>
+              <td><span class="css-15b4yf1">Off track</span></td>
+              <td>Oct 20</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="20" aria-valuemin="0" aria-valuemax="100" aria-label="20% complete"><div style="width: 20%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Partner portal">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Partner portal"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/brand-refresh">Brand refresh</a></td>
+              <td>Ana Lima</td>
+              <td><span class="css-15b4yf1">Done</span></td>
+              <td>Sep 30</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100" aria-label="100% complete"><div style="width: 100%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Brand refresh">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Brand refresh"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+            <tr class="css-1r6x7ka">
+              <td><a class="css-4rbku5" href="/projects/data-warehouse-migration">Data warehouse migration</a></td>
+              <td>Kenji Mori</td>
+              <td><span class="css-15b4yf1">On track</span></td>
+              <td>Jan 16</td>
+              <td><div class="css-pr0g8s" role="progressbar" aria-valuenow="12" aria-valuemin="0" aria-valuemax="100" aria-label="12% complete"><div style="width: 12%"></div></div></td>
+              <td><button class="css-q2ws3e" type="button" aria-label="Archive Data warehouse migration">Archive</button><button class="css-1hy6j3k" type="button" aria-label="More actions for Data warehouse migration"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg></button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="css-1hz7c1m" aria-hidden="true"></div>
+        <div class="css-r2v8kc" role="dialog" aria-modal="true" aria-labelledby="dlg-archive-title" data-testid="confirm-dialog">
+          <header class="css-1p2k0dn"><h2 id="dlg-archive-title" class="css-1kx6r5">Archive this project?</h2><button class="css-1hy6j3k" type="button" aria-label="Close dialog"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></header>
+          <div class="css-1b9h4c3"><p><strong>Website redesign</strong> will become read-only. You can restore it from the Archived tab at any time.</p></div>
+          <footer class="css-9zk2q1">
+            <button class="css-q2ws3e" type="button">Cancel</button>
+            <tb-tooltip content="Members keep read access"><button class="css-1kq7vxs" type="button">Archive project</button></tb-tooltip>
+          </footer>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script type="application/json" id="tb-config">{"release":"2026.10.1","features":{"newNav":true}}</script>
+</body>
+</html>

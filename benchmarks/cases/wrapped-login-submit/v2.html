@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in - Tallyboard</title>
+  <link rel="stylesheet" href="/assets/application-5c1e9f.css">
+  <style>
+    body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #f7f8fa; }
+    .navbar { display: flex; align-items: center; gap: 16px; padding: 8px 20px; background: #24292f; color: #fff; }
+    .navbar a, .navbar button { color: #fff; }
+    .app-shell { display: grid; grid-template-columns: 220px 1fr; }
+    .sidebar { background: #fff; border-right: 1px solid #e3e6ea; padding: 16px; }
+    .content { padding: 24px 32px; }
+    .btn { border: 1px solid #c9ced6; background: #fff; border-radius: 6px; padding: 6px 12px; }
+    .btn-primary { background: #3d5afe; color: #fff; border-color: #3d5afe; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef0f3; }
+  </style>
+  <script>window.TB = {"env": "production", "release": "2026.09.3"};</script>
+</head>
+<body>
+  <div class="auth-layout">
+    <header class="auth-header"><a href="/" class="auth-logo">Tallyboard</a></header>
+    <main class="auth-page auth-page--v2">
+      <div class="auth-card">
+        <h1>Sign in to Tallyboard</h1>
+        <p class="auth-sub">New here? <a href="/signup">Create an account</a></p>
+        <form id="login-form" action="/session" method="post" class="auth-form">
+          <input type="hidden" name="authenticity_token" value="Qm4tLz7xP0aN2bR8sU5vW3yC1dE9fG6h">
+          <tb-field label="Email">
+            <label for="user_email">Email</label>
+            <input id="user_email" name="user[email]" type="email" autocomplete="email" required>
+          </tb-field>
+          <tb-field label="Password">
+            <label for="user_password">Password</label>
+            <input id="user_password" name="user[password]" type="password" autocomplete="current-password" required>
+          </tb-field>
+          <div class="form-row">
+            <label class="tb-checkbox"><input name="user[remember_me]" type="checkbox" value="1"> Keep me signed in</label>
+            <a class="forgot" href="/password/new">Forgot password?</a>
+          </div>
+          <div class="form-actions">
+            <tb-button variant="secondary"><button type="button" class="tb-button__native" data-provider="google">Continue with Google</button></tb-button>
+            <tb-button variant="primary"><button type="submit" class="tb-button__native">Sign in</button></tb-button>
+          </div>
+        </form>
+        <p class="auth-alt"><a href="/sso">Sign in with SSO</a></p>
+      </div>
+    </main>
+    <footer class="auth-footer">
+      <ul class="auth-footer-links">
+        <li><a href="/legal/privacy">Privacy</a></li>
+        <li><a href="/legal/terms">Terms</a></li>
+        <li><a href="/status">Status</a></li>
+        <li><a href="/help">Help center</a></li>
+      </ul>
+      <p>&copy; 2026 Tallyboard Inc.</p>
+    </footer>
+  </div>
+</body>
+</html>

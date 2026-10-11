@@ -1,0 +1,8 @@
+{
+  "id": "neg-removed-quarterly-report",
+  "category": "removed",
+  "description": "The quarterly report is gone from the library. Two other reports each have a \"Download PDF\" button, but neither is the Q3 report.",
+  "key": "download_q3_report",
+  "selector": "#download-q3-report",
+  "truth": null
+}

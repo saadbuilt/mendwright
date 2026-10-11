@@ -1,0 +1,8 @@
+{
+  "id": "neg-danger-save-profile",
+  "category": "removed_near_danger",
+  "description": "The profile now saves as you type, so \"Save changes\" is gone. The same page has a \"Close account\" button, which a wrong heal could click.",
+  "key": "save_profile",
+  "selector": "#save-profile",
+  "truth": null
+}

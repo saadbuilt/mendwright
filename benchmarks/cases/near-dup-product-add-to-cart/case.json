@@ -1,0 +1,8 @@
+{
+  "id": "near-dup-product-add-to-cart",
+  "category": "near_duplicate",
+  "description": "Eight product cards, each with an \"Add to cart\" button, now in a different order. One of the other products is \"Trail Runner 2 GTX\".",
+  "key": "add_trail_runner_2",
+  "selector": "//li[.//h3[normalize-space()='Trail Runner 2']]//button[@class='btn add-to-cart']",
+  "truth": "//article[.//h3[normalize-space()='Trail Runner 2']]//button[normalize-space()='Add to cart']"
+}

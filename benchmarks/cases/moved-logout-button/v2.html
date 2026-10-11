@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security | Tallyboard</title>
+  <link rel="stylesheet" href="/static/css/main.8c41d2f7.css">
+  <style data-emotion="css" data-s="">
+    .css-1n7v3ny{display:grid;grid-template-columns:240px 1fr;grid-template-rows:56px 1fr;min-height:100vh}
+    .css-18hx0ck{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:0 16px;background:#111827;color:#f9fafb}
+    .css-1k9bcj4{display:flex;flex-direction:column;gap:2px;padding:12px;background:#fff;border-right:1px solid #e5e7eb}
+    .css-1ifw8zs{padding:24px 32px;background:#f9fafb}
+    .css-1hy6j3k{background:transparent;border:0;color:inherit;padding:6px;border-radius:6px}
+    .css-1kq7vxs{background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600}
+    .css-q2ws3e{background:#fff;color:#111827;border:1px solid #d1d5db;border-radius:8px;padding:8px 14px}
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="css-1n7v3ny" data-testid="app-shell">
+      <header class="css-18hx0ck" data-testid="top-bar">
+        <a class="css-1dbjc4n" href="/dashboard" aria-label="Tallyboard home"><tb-logo></tb-logo><span class="css-901oao">Tallyboard</span></a>
+        <div class="css-k008qs" role="search">
+          <input class="css-1x8a2b" type="search" placeholder="Search or jump to..." aria-label="Search">
+          <kbd class="css-12ab9cd">Ctrl K</kbd>
+        </div>
+        <div class="css-1wbh2a1">
+          <button class="css-1hy6j3k" type="button" aria-label="Notifications (3 unread)"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11a6 6 0 0 0-5-5.9V4h-2v1.1A6 6 0 0 0 6 11v5l-2 2v1h16v-1z"></path></svg></button>
+          <a class="css-4rbku5" href="/help">Help</a>
+          <button class="css-1hy6j3k" type="button" aria-haspopup="menu" aria-label="Account menu"><span class="css-1o7bb8a">PS</span></button>
+        </div>
+      </header>
+      <nav class="css-1k9bcj4" data-testid="side-nav" aria-label="Workspace">
+        <div class="css-7kq2ze"><span class="css-901oao">Harborview Studio</span></div>
+        <a class="css-c1z8w3" href="/dashboard">Dashboard</a>
+        <a class="css-c1z8w3" href="/projects">Projects</a>
+        <a class="css-c1z8w3" href="/tasks">My tasks</a>
+        <a class="css-c1z8w3" href="/reports">Reports</a>
+        <a class="css-c1z8w3" href="/team">Team</a>
+        <a class="css-c1z8w3" href="/settings" aria-current="page">Settings</a>
+        <div class="css-8m1k2w" data-testid="side-nav-footer"><span class="css-901oao">Priya Shah</span><button class="css-q2ws3e" type="button">Log out</button></div>
+      </nav>
+      <main class="css-1ifw8zs" data-testid="page-content">
+        <h1 class="css-1kx6r5">Security</h1>
+        <section class="css-x8e3kd" aria-labelledby="pw-h">
+          <h2 id="pw-h" class="css-1s5pj4r">Password</h2>
+          <form class="css-15lh0bj">
+            <label class="css-u4rxok">Current password<input class="css-1x8a2b" type="password" name="currentPassword"></label>
+            <label class="css-u4rxok">New password<input class="css-1x8a2b" type="password" name="newPassword"></label>
+            <button class="css-1kq7vxs" type="submit">Update password</button>
+          </form>
+        </section>
+        <section class="css-x8e3kd" aria-labelledby="mfa-h">
+          <h2 id="mfa-h" class="css-1s5pj4r">Two-factor authentication</h2>
+          <p>On, using an authenticator app.</p>
+          <button class="css-q2ws3e" type="button">View recovery codes</button>
+        </section>
+        <section class="css-x8e3kd" aria-labelledby="sess-h">
+          <h2 id="sess-h" class="css-1s5pj4r">Where you're signed in</h2>
+          <table class="css-9vtf3d"><thead><tr><th>Device</th><th>Location</th><th>Last active</th><th><span class="css-visually">Actions</span></th></tr></thead>
+            <tbody>
+              <tr class="css-1r6x7ka"><td>Chrome on Windows</td><td>Seattle, US</td><td>Active now</td><td><span class="css-15b4yf1">This device</span></td></tr>
+              <tr class="css-1r6x7ka"><td>Safari on iPhone</td><td>Seattle, US</td><td>2 hours ago</td><td><button class="css-q2ws3e" type="button">Revoke</button></td></tr>
+              <tr class="css-1r6x7ka"><td>Firefox on Ubuntu</td><td>Portland, US</td><td>3 days ago</td><td><button class="css-q2ws3e" type="button">Revoke</button></td></tr>
+            </tbody>
+          </table>
+          <button class="css-q2ws3e" type="button">Log out of all other devices</button>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script type="application/json" id="tb-config">{"release":"2026.10.1","features":{"newNav":true}}</script>
+</body>
+</html>

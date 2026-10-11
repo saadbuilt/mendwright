@@ -1,0 +1,8 @@
+{
+  "id": "hashed-class-new-project",
+  "category": "hashed_class",
+  "description": "The app is built with emotion, which names classes by a hash of their styles. A theme change gave the primary button a new class.",
+  "key": "new_project",
+  "selector": "//button[@class='css-c3pbtlh']",
+  "truth": "//button[normalize-space()='New project']"
+}

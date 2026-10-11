@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flights from Seattle to Denver | Skylark</title>
+  <link rel="stylesheet" href="/static/css/main.3e91b0d2.css">
+  <style data-styled="active" data-styled-version="5.3.11">
+    .sc-bdVaJa{display:flex;align-items:center;gap:20px;padding:12px 32px;background:#0b3d91;color:#fff}
+    .sc-htpNat{padding:24px 32px}
+    .sc-bxivhb{display:grid;grid-template-columns:260px 1fr;gap:24px}
+    .sc-ifAKCX{background:#fff;border:1px solid #d6dbe4;border-radius:8px;padding:16px;margin-bottom:12px}
+    .sc-EHOje{background:#ff6b00;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-weight:700}
+  </style>
+</head>
+<body>
+  <div id="root">
+  <header class="sc-bdVaJa">
+    <a class="sc-bwzfXH" href="/">Skylark</a>
+    <nav class="sc-gzVnrw" aria-label="Products">
+      <a class="sc-jzJRlG" href="/flights">Flights</a>
+      <a class="sc-jzJRlG" href="/hotels">Hotels</a>
+      <a class="sc-jzJRlG" href="/car-hire">Car hire</a>
+      <a class="sc-jzJRlG" href="/deals">Deals</a>
+    </nav>
+    <div class="sc-cSHVUG">
+      <label class="sc-kAzzGY" for="currency">Currency</label>
+      <select class="sc-chPdSV" id="currency" name="currency">
+        <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option>
+      </select>
+      <a class="sc-jzJRlG" href="/trips">My trips</a>
+      <a class="sc-jzJRlG" href="/login">Sign in</a>
+    </div>
+  </header>
+  <main class="sc-htpNat">
+  <section class="sc-iwsKbI" aria-label="Your search">
+    <p class="sc-gZMcBi">Seattle (SEA) to Denver (DEN) &middot; Fri 14 Nov &middot; 1 adult &middot; Economy</p>
+    <a class="sc-gisBJw" href="/flights?modify=1">Change search</a>
+  </section>
+  <div class="sc-hKgILt">
+    <aside class="sc-kjoXOD" aria-label="Filters">
+      <form class="sc-cHGsZl" action="/flights/results" method="get">
+        <h2>Filters</h2>
+        <fieldset><legend>Stops</legend>
+          <label><input type="checkbox" name="stops" value="0" checked> Nonstop</label>
+          <label><input type="checkbox" name="stops" value="1" checked> 1 stop</label>
+          <label><input type="checkbox" name="stops" value="2"> 2+ stops</label>
+        </fieldset>
+        <fieldset><legend>Airlines</legend>
+          <label><input type="checkbox" name="airline" value="NW" checked> Northwest Air</label>
+          <label><input type="checkbox" name="airline" value="CA" checked> Coastal Airlines</label>
+          <label><input type="checkbox" name="airline" value="PJ" checked> Pinecrest Jet</label>
+        </fieldset>
+        <fieldset><legend>Departure time</legend>
+          <label><input type="radio" name="dep" value="any" checked> Any time</label>
+          <label><input type="radio" name="dep" value="morning"> Morning (5am to noon)</label>
+        </fieldset>
+        <button class="sc-dnqmqq" type="reset">Clear all</button>
+        <button class="sc-jSgupP" type="submit">Apply filters</button>
+      </form>
+    </aside>
+    <section class="sc-cMljjf" aria-label="Results">
+      <div class="sc-jAaTju">
+        <p>5 flights found</p>
+        <label for="sort">Sort by</label>
+  <select id="sort" name="sort"><option>Best</option><option>Cheapest</option><option>Fastest</option></select>
+      </div>
+      <ul class="sc-jDwBTQ">
+        <li class="sc-eCssSg">
+          <div class="sc-gqjmRU"><span class="sc-VigVT">Northwest Air</span> <span class="sc-jTzLTM">NW 412</span></div>
+          <div class="sc-fjdhpX"><time>06:10</time> to <time>09:25</time> <span>3h 15m</span> <span>Nonstop</span></div>
+          <div class="sc-jzgbtB"><span class="sc-gxMtzJ">$218</span> <button class="sc-dnqmqq" type="button" aria-label="Select Northwest Air NW 412">Select</button></div>
+        </li>
+        <li class="sc-eCssSg">
+          <div class="sc-gqjmRU"><span class="sc-VigVT">Coastal Airlines</span> <span class="sc-jTzLTM">CA 88</span></div>
+          <div class="sc-fjdhpX"><time>07:45</time> to <time>12:05</time> <span>4h 20m</span> <span>1 stop (DEN)</span></div>
+          <div class="sc-jzgbtB"><span class="sc-gxMtzJ">$184</span> <button class="sc-dnqmqq" type="button" aria-label="Select Coastal Airlines CA 88">Select</button></div>
+        </li>
+        <li class="sc-eCssSg">
+          <div class="sc-gqjmRU"><span class="sc-VigVT">Northwest Air</span> <span class="sc-jTzLTM">NW 418</span></div>
+          <div class="sc-fjdhpX"><time>11:30</time> to <time>14:40</time> <span>3h 10m</span> <span>Nonstop</span></div>
+          <div class="sc-jzgbtB"><span class="sc-gxMtzJ">$246</span> <button class="sc-dnqmqq" type="button" aria-label="Select Northwest Air NW 418">Select</button></div>
+        </li>
+        <li class="sc-eCssSg">
+          <div class="sc-gqjmRU"><span class="sc-VigVT">Pinecrest Jet</span> <span class="sc-jTzLTM">PJ 2031</span></div>
+          <div class="sc-fjdhpX"><time>13:15</time> to <time>18:50</time> <span>5h 35m</span> <span>1 stop (SLC)</span></div>
+          <div class="sc-jzgbtB"><span class="sc-gxMtzJ">$161</span> <button class="sc-dnqmqq" type="button" aria-label="Select Pinecrest Jet PJ 2031">Select</button></div>
+        </li>
+        <li class="sc-eCssSg">
+          <div class="sc-gqjmRU"><span class="sc-VigVT">Coastal Airlines</span> <span class="sc-jTzLTM">CA 94</span></div>
+          <div class="sc-fjdhpX"><time>17:55</time> to <time>21:10</time> <span>3h 15m</span> <span>Nonstop</span></div>
+          <div class="sc-jzgbtB"><span class="sc-gxMtzJ">$229</span> <button class="sc-dnqmqq" type="button" aria-label="Select Coastal Airlines CA 94">Select</button></div>
+        </li>
+      </ul>
+    </section>
+  </div>
+  </main>
+  <footer class="sc-kgoBCf">
+    <div class="sc-kGXeez">
+      <section><h4>Company</h4><a href="/about">About Skylark</a> <a href="/careers">Jobs</a> <a href="/press">Press</a></section>
+      <section><h4>Help</h4><a href="/help">Help centre</a> <a href="/help/refunds">Refunds</a> <a href="/help/baggage">Baggage</a> <a href="/privacy">Privacy settings</a></section>
+      <section><h4>Explore</h4><a href="/destinations">Destinations</a> <a href="/airlines">Airlines</a> <a href="/airports">Airports</a></section>
+    </div>
+    <p>&copy; 2026 Skylark Travel Ltd. Skylark is a fictional travel site.</p>
+  </footer>
+  </div>
+</body>
+</html>

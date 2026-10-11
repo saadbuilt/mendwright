@@ -1,0 +1,8 @@
+{
+  "id": "translated-search-flights-fr",
+  "category": "translated",
+  "description": "The French version of the search page: the submit button reads \"Rechercher des vols\", and the header has a site search button that reads \"Rechercher\".",
+  "key": "search_flights",
+  "selector": "//button[normalize-space()='Search flights']",
+  "truth": "//form[@data-testid='flight-search']//button[@type='submit']"
+}

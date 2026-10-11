@@ -1,0 +1,8 @@
+{
+  "id": "tag-change-input-to-button",
+  "category": "tag_change",
+  "description": "The form's input type=\"submit\" became a button element. The form also gained a Clear button, and the attach button is still there.",
+  "key": "send_message",
+  "selector": "//form[@id='support-form']//input[@type='submit']",
+  "truth": "//form[@id='support-form']//button[@type='submit']"
+}

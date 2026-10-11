@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vols pas chers | Skylark</title>
+  <link rel="stylesheet" href="/assets/index-D4xk19Lp.css">
+  <style data-styled="active" data-styled-version="6.1.13">
+    .sc-gsTCUz{display:flex;align-items:center;gap:24px;padding:12px 32px;background:#062b6b;color:#fff}
+    .sc-dlfnbm{padding:24px 32px}
+    .sc-hKgILt{display:grid;grid-template-columns:280px 1fr;gap:24px}
+    .sc-eCssSg{background:#fff;border:1px solid #cfd6e3;border-radius:12px;padding:16px;margin-bottom:12px}
+    .sc-jSgupP{background:#ff5a00;color:#fff;border:0;border-radius:999px;padding:10px 20px;font-weight:700}
+  </style>
+</head>
+<body>
+  <div id="app" data-v-app="">
+    <header class="sc-gsTCUz" data-v-7a1b2c3d>
+      <a class="sc-kEjbxe" href="/fr/" aria-label="Skylark" data-v-7a1b2c3d>Skylark</a>
+      <nav class="sc-iqHYGH" aria-label="Produits" data-v-7a1b2c3d>
+        <a class="sc-crrsfI" href="/fr/flights">Vols</a>
+        <a class="sc-crrsfI" href="/fr/hotels">Hôtels</a>
+        <a class="sc-crrsfI" href="/fr/car-hire">Location de voitures</a>
+        <a class="sc-crrsfI" href="/fr/deals">Bons plans</a>
+      </nav>
+      <form class="sc-dQppl" role="search" action="/fr/search" data-v-7a1b2c3d>
+        <input class="sc-hBEYos" type="search" name="q" aria-label="Rechercher sur Skylark" placeholder="Rechercher sur Skylark">
+        <button class="sc-fodVxV" type="submit">Rechercher</button>
+      </form>
+      <div class="sc-fFubgz" data-v-7a1b2c3d>
+        <sk-currency-picker>
+          <select class="sc-bkkeKt" aria-label="Devise" name="currency">
+            <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>CAD</option>
+          </select>
+        </sk-currency-picker>
+        <a class="sc-crrsfI" href="/fr/trips">Voyages</a>
+        <a class="sc-crrsfI" href="/fr/login">Se connecter</a>
+      </div>
+    </header>
+    <main class="sc-dlfnbm" data-v-1f9e3b11>
+      <section class="sc-iwsKbI" data-v-1f9e3b11>
+        <h1 class="sc-gZMcBi">Où allez-vous ensuite ?</h1>
+        <sk-segmented-control role="tablist" aria-label="Type de voyage">
+          <button role="tab" aria-selected="true" type="button">Aller-retour</button>
+          <button role="tab" aria-selected="false" type="button">Aller simple</button>
+          <button role="tab" aria-selected="false" type="button">Multi-destinations</button>
+        </sk-segmented-control>
+        <form class="sc-gzOgki" data-testid="flight-search" action="/flights/results" method="get">
+          <div class="sc-kpOJdX">
+            <sk-airport-input><input class="sc-hBEYos" data-testid="origin-input" name="from_airport" aria-label="Départ" type="text" placeholder="Ville ou aéroport" autocomplete="off"></sk-airport-input>
+            <button class="sc-fodVxV" type="button" aria-label="Inverser départ et arrivée"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11l-3-3M17 17H6l3 3"></path></svg></button>
+            <sk-airport-input><input class="sc-hBEYos" data-testid="destination-input" name="to_airport" aria-label="Arrivée" type="text" placeholder="Ville ou aéroport" autocomplete="off"></sk-airport-input>
+          </div>
+          <div class="sc-kpOJdX">
+            <label class="sc-gPEVay">Aller<input class="sc-hBEYos" type="date" name="departDate"></label>
+            <label class="sc-gPEVay">Retour<input class="sc-hBEYos" type="date" name="returnDate"></label>
+            <label class="sc-gPEVay">Voyageurs<select class="sc-iRbamj" name="travellers"><option>1 adulte</option><option>2 adultes</option><option>2 adultes, 1 enfant</option></select></label>
+            <label class="sc-gPEVay">Classe<select class="sc-iRbamj" name="cabin"><option>Économique</option><option>Premium économique</option><option>Affaires</option></select></label>
+          </div>
+          <div class="sc-kpOJdX">
+            <label class="sc-check"><input type="checkbox" name="nonstop"> Vols directs uniquement</label>
+            <button class="sc-dnqmqq" type="button">Ajouter un code promo</button>
+            <button class="sc-dnqmqq" type="button" hidden>Ajouter un vol</button>
+            <button class="sc-jSgupP" type="submit">Rechercher des vols</button>
+          </div>
+        </form>
+      </section>
+      <section class="sc-deals" aria-labelledby="deals-h">
+        <h2 id="deals-h">Bons plans au départ de Seattle</h2>
+        <ul>
+          <li><a href="/deals/sea-lax">Los Angeles dès 89 $</a></li>
+          <li><a href="/deals/sea-anc">Anchorage dès 142 $</a></li>
+          <li><a href="/deals/sea-hnl">Honolulu dès 289 $</a></li>
+        </ul>
+      </section>
+    </main>
+    <footer class="sc-gKsewC" data-v-7a1b2c3d>
+      <section><h4>Entreprise</h4><a href="/fr/about">À propos de Skylark</a> <a href="/fr/careers">Emplois</a> <a href="/fr/press">Presse</a></section>
+      <section><h4>Aide</h4><a href="/fr/help">Centre d'aide</a> <a href="/fr/help/refunds">Remboursements</a> <a href="/fr/help/baggage">Bagages</a> <a href="/fr/privacy">Confidentialité</a></section>
+      <section><h4>Explorer</h4><a href="/fr/destinations">Destinations</a> <a href="/fr/airlines">Compagnies aériennes</a> <a href="/fr/airports">Aéroports</a></section>
+      <p>&copy; 2026 Skylark Travel Ltd. Skylark est un site de voyage fictif.</p>
+    </footer>
+  </div>
+</body>
+</html>

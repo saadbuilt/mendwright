@@ -1,0 +1,8 @@
+{
+  "id": "id-renamed-search-input",
+  "category": "id_renamed",
+  "description": "The header search box lost id=\"search-input\" in a rebuild. The product list next to it now has its own search box for brands.",
+  "key": "site_search",
+  "selector": "#search-input",
+  "truth": "//header//input[@name='q']"
+}

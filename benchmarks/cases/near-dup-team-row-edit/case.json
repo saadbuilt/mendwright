@@ -1,0 +1,8 @@
+{
+  "id": "near-dup-team-row-edit",
+  "category": "near_duplicate",
+  "description": "Every row has an icon-only \"Edit member\" button with the same label. Only the row context (Maya Okafor) tells them apart, and the rows were re-sorted.",
+  "key": "edit_maya_okafor",
+  "selector": "//tr[td[normalize-space()='Maya Okafor']]//button[@class='btn-edit']",
+  "truth": "//tr[.//span[normalize-space()='Maya Okafor']]//button[@aria-label='Edit member']"
+}

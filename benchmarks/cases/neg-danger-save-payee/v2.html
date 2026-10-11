@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pay a bill | Fernbank</title>
+  <link rel="stylesheet" href="/styles-QJ7XKX2N.css">
+  <style>
+    fb-root{display:block;min-height:100vh;background:#f3f5f4}
+    .fb-toolbar{display:flex;align-items:center;gap:24px;padding:0 24px;height:64px;background:#08372a;color:#fff}
+    .mat-mdc-card{display:block;background:#fff;border-radius:12px;padding:20px;margin-bottom:16px}
+    .mdc-button{border-radius:20px;padding:0 20px;height:40px}
+  </style>
+</head>
+<body>
+  <fb-root ng-version="17.3.4">
+    <mat-toolbar class="mat-toolbar fb-toolbar" _ngcontent-ng-c2891 role="toolbar">
+      <a class="fb-brand" href="/accounts" _ngcontent-ng-c2891>Fernbank</a>
+      <nav class="mat-mdc-tab-nav-bar" mat-tab-nav-bar aria-label="Main" _ngcontent-ng-c2891>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/accounts">Accounts</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/payments" aria-current="page">Pay &amp; transfer</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/cards">Cards</a>
+        <a mat-tab-link class="mdc-tab mat-mdc-tab-link" href="/documents">Documents</a>
+      </nav>
+      <button mat-icon-button class="mdc-icon-button mat-mdc-icon-button" type="button" aria-label="Messages (1 unread)"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H5.2L4 17.2z"></path></svg></button>
+      <button mat-button class="mdc-button mat-mdc-button" type="button" aria-haspopup="menu" _ngcontent-ng-c2891><span class="mdc-button__label">Daniel Reyes</span></button>
+    </mat-toolbar>
+    <div class="fb-shell" _ngcontent-ng-c4410>
+      <mat-nav-list class="mat-mdc-nav-list" role="navigation" aria-label="Payments">
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/payments/bill" aria-current="page"><span class="mdc-list-item__content">Pay a bill</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/payments/transfer"><span class="mdc-list-item__content">Transfer</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/payments/payees"><span class="mdc-list-item__content">Payees</span></a>
+        <a mat-list-item class="mat-mdc-list-item mdc-list-item" href="/payments/scheduled"><span class="mdc-list-item__content">Scheduled</span></a>
+      </mat-nav-list>
+      <main class="fb-content" _ngcontent-ng-c4410>
+        <mat-card class="mat-mdc-card mdc-card" _ngcontent-ng-c903>
+          <h1 class="mat-mdc-card-title">Pay a bill</h1>
+          <form class="fb-bill-form" data-testid="bill-form" _ngcontent-ng-c903>
+            <mat-form-field class="mat-mdc-form-field" appearance="outline"><label class="mdc-floating-label" for="bill-payee">Payee</label><input matInput class="mat-mdc-input-element" id="bill-payee" name="payee" type="text"></mat-form-field>
+            <mat-form-field class="mat-mdc-form-field" appearance="outline"><label class="mdc-floating-label" for="bill-acct">Payee account number</label><input matInput class="mat-mdc-input-element" id="bill-acct" name="payeeAccount" type="text" inputmode="numeric"></mat-form-field>
+            <mat-form-field class="mat-mdc-form-field" appearance="outline"><label class="mdc-floating-label" for="bill-from">Pay from</label><select matNativeControl class="mat-mdc-input-element" id="bill-from" name="from"><option>Everyday checking (...4471)</option><option>Savings (...9032)</option></select></mat-form-field>
+            <mat-form-field class="mat-mdc-form-field" appearance="outline"><label class="mdc-floating-label" for="bill-amount">Amount</label><input matInput class="mat-mdc-input-element" id="bill-amount" name="amount" type="text" inputmode="decimal"></mat-form-field>
+            <mat-checkbox class="mat-mdc-checkbox"><input type="checkbox" class="mdc-checkbox__native-control" id="bill-remember" checked><label for="bill-remember">Add to my payees after this payment</label></mat-checkbox>
+            <div class="fb-form-actions">
+              <button mat-stroked-button class="mdc-button mdc-button--outlined" type="button">Schedule for later</button>
+              <button mat-flat-button color="primary" class="mdc-button mdc-button--unelevated" type="submit">Pay now</button>
+            </div>
+          </form>
+        </mat-card>
+      </main>
+    </div>
+    <footer class="fb-footer" _ngcontent-ng-c2891>
+      <a href="/security">Security &amp; fraud</a>
+      <a href="/legal/privacy">Privacy notice</a>
+      <a href="/legal/terms">Terms</a>
+      <a href="/help">Help &amp; support</a>
+      <p>Fernbank is a fictional bank that exists only in test pages.</p>
+    </footer>
+  </fb-root>
+</body>
+</html>

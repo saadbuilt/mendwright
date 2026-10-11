@@ -1,0 +1,8 @@
+{
+  "id": "neg-removed-compare-button",
+  "category": "removed",
+  "description": "Product comparison was retired. The toolbar that held the Compare button now has Filters and view buttons.",
+  "key": "compare_products",
+  "selector": "#compare-toggle",
+  "truth": null
+}

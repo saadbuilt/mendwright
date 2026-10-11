@@ -1,0 +1,9 @@
+{
+  "id": "id-removed-digest-checkbox",
+  "category": "id_renamed",
+  "description": "The news site moved from WordPress to Next.js. The comment form checkboxes have no ids now, and the digest option sits between two other checkboxes.",
+  "key": "newsletter_optin",
+  "selector": "#newsletter-optin",
+  "role": "checkbox",
+  "truth": "//input[@name='digest']"
+}

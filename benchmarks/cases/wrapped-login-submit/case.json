@@ -1,0 +1,8 @@
+{
+  "id": "wrapped-login-submit",
+  "category": "wrapped",
+  "description": "A design-system migration wrapped the submit button in a tb-button element inside a new actions row, so the child step in the selector no longer matches.",
+  "key": "sign_in",
+  "selector": "//form[@id='login-form']/button[@type='submit']",
+  "truth": "//form[@id='login-form']//button[@type='submit']"
+}

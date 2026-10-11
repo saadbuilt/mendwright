@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installation | Helio Docs</title>
+  <link rel="stylesheet" href="/assets/css/styles.6f1b2a9c.css">
+  <style>
+    :root { --ifm-color-primary: #2e8555; }
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .navbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; border-bottom: 1px solid #e3e3e3; }
+    .main-wrapper { display: flex; }
+    .theme-doc-sidebar-container { width: 280px; border-right: 1px solid #e3e3e3; }
+    pre { background: #f6f7f8; padding: 12px; }
+  </style>
+</head>
+<body>
+  <div id="__docusaurus">
+    <nav aria-label="Main" class="navbar navbar--fixed-top">
+      <div class="navbar__inner">
+        <div class="navbar__items">
+          <button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button" aria-controls="sidebar-nav">Menu</button>
+          <a class="navbar__brand" href="/"><b class="navbar__title">Helio Docs</b></a>
+          <a class="navbar__item navbar__link" href="/docs/intro">Docs</a>
+          <a class="navbar__item navbar__link" href="/docs/api">API</a>
+          <a class="navbar__item navbar__link" href="/guides">Guides</a>
+          <a class="navbar__item navbar__link" href="/changelog">Changelog</a>
+        </div>
+        <div class="navbar__items navbar__items--right">
+          <a href="https://github.com/helio-example/helio" class="navbar__item navbar__link">GitHub</a>
+          <button class="clean-btn toggleButton_gllP" type="button" title="Switch between dark and light mode" aria-label="Switch between dark and light mode (currently light mode)">Theme</button>
+          <button type="button" class="DocSearch DocSearch-Button" aria-label="Search">Search <kbd>Ctrl K</kbd></button>
+        </div>
+      </div>
+    </nav>
+    <div class="main-wrapper">
+      <aside class="theme-doc-sidebar-container" id="sidebar-nav">
+        <nav aria-label="Docs sidebar" class="menu thin-scrollbar">
+          <ul class="theme-doc-sidebar-menu menu__list">
+            <li class="menu__list-item"><a class="menu__link" href="/docs/intro">Introduction</a></li>
+            <li class="menu__list-item"><a class="menu__link" href="/docs/install">Installation</a></li>
+            <li class="menu__list-item"><a class="menu__link" href="/docs/config">Configuration</a></li>
+            <li class="menu__list-item"><a class="menu__link" href="/docs/deploy">Deploying</a></li>
+            <li class="menu__list-item"><a class="menu__link" href="/docs/support">Getting support</a></li>
+          </ul>
+        </nav>
+      </aside>
+      <main class="docMainContainer">
+        <div class="theme-doc-markdown markdown">
+          <header><h1>Installation</h1></header>
+          <p>Helio runs on Node.js 20 or newer. Install the CLI globally, then create a project.</p>
+          <div class="codeBlockContainer_Ckt0 theme-code-block">
+            <pre class="prism-code language-bash"><code>npm install -g @helio/cli
+        helio init my-site</code></pre>
+            <button type="button" aria-label="Copy code to clipboard" title="Copy" class="clean-btn copyButton_eDfN">Copy</button>
+          </div>
+          <h2 id="next-steps">Next steps</h2>
+          <p>Read <a href="/docs/config">Configuration</a> to set up your theme, or jump to <a href="/docs/deploy">Deploying</a>.</p>
+        </div>
+        <div class="theme-doc-footer">
+          <a href="https://github.com/helio-example/helio/edit/main/docs/install.md" class="theme-edit-this-page">Edit this page</a>
+        </div>
+        <nav class="pagination-nav" aria-label="Docs pages">
+          <a class="pagination-nav__link pagination-nav__link--prev" href="/docs/intro">Previous: Introduction</a>
+          <a class="pagination-nav__link pagination-nav__link--next" href="/docs/config">Next: Configuration</a>
+        </nav>
+      </main>
+    </div>
+    <footer class="footer footer--dark">
+      <div class="footer__links">
+        <div class="footer__col"><div class="footer__title">Docs</div><a class="footer__link-item" href="/docs/intro">Getting started</a> <a class="footer__link-item" href="/docs/api">API reference</a></div>
+        <div class="footer__col"><div class="footer__title">Community</div><a class="footer__link-item" href="https://discord.example/helio">Discord</a> <a class="footer__link-item" href="/community/forum">Forum</a></div>
+        <div class="footer__col"><div class="footer__title">More</div><a class="footer__link-item" href="/blog">Blog</a> <a class="footer__link-item" href="https://github.com/helio-example/helio">GitHub</a></div>
+      </div>
+      <div class="footer__copyright">Copyright &copy; 2026 Helio Labs. Built with Docusaurus.</div>
+    </footer>
+  </div>
+</body>
+</html>

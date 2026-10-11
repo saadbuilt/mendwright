@@ -1,0 +1,8 @@
+{
+  "id": "hidden-dup-pricing-link",
+  "category": "hidden_duplicate",
+  "description": "The marketing site moved to Astro. The Pricing link lost its id, and a mobile menu drawer (hidden on this page) now holds a second Pricing link.",
+  "key": "nav_pricing",
+  "selector": "#nav-pricing",
+  "truth": "//nav[@aria-label='Primary']//a[@href='/pricing']"
+}

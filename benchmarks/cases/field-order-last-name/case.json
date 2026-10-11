@@ -1,0 +1,8 @@
+{
+  "id": "field-order-last-name",
+  "category": "field_order",
+  "description": "The selector picked the second field of the sign-up form. In the new form the email and company come first, first name and surname share a row, and the form has a new id.",
+  "key": "last_name",
+  "selector": "//form[@id='signup']/div[2]/input",
+  "truth": "//input[@name='lastName']"
+}

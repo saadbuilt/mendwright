@@ -1,0 +1,8 @@
+{
+  "id": "tag-change-div-to-button",
+  "category": "tag_change",
+  "description": "A div with role=\"button\" became a real button element, without the data-action attribute. Three sibling export buttons look the same apart from their text.",
+  "key": "export_csv",
+  "selector": "//div[@role='button' and @data-action='export-csv']",
+  "truth": "//button[normalize-space()='Export CSV']"
+}

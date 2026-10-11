@@ -1,0 +1,8 @@
+{
+  "id": "translated-add-to-cart-de",
+  "category": "translated",
+  "description": "The store launched a German locale. On the German product page the button reads \"In den Warenkorb\"; the wishlist and size guide buttons are translated too.",
+  "key": "add_to_cart",
+  "selector": "//button[normalize-space()='Add to cart']",
+  "truth": "//button[normalize-space()='In den Warenkorb']"
+}

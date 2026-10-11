@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Traveller details | Skylark</title>
+  <link rel="stylesheet" href="/static/css/main.3e91b0d2.css">
+  <style data-styled="active" data-styled-version="5.3.11">
+    .sc-bdVaJa{display:flex;align-items:center;gap:20px;padding:12px 32px;background:#0b3d91;color:#fff}
+    .sc-htpNat{padding:24px 32px}
+    .sc-bxivhb{display:grid;grid-template-columns:260px 1fr;gap:24px}
+    .sc-ifAKCX{background:#fff;border:1px solid #d6dbe4;border-radius:8px;padding:16px;margin-bottom:12px}
+    .sc-EHOje{background:#ff6b00;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-weight:700}
+  </style>
+</head>
+<body>
+  <div id="root">
+  <header class="sc-bdVaJa">
+    <a class="sc-bwzfXH" href="/">Skylark</a>
+    <nav class="sc-gzVnrw" aria-label="Products">
+      <a class="sc-jzJRlG" href="/flights">Flights</a>
+      <a class="sc-jzJRlG" href="/hotels">Hotels</a>
+      <a class="sc-jzJRlG" href="/car-hire">Car hire</a>
+      <a class="sc-jzJRlG" href="/deals">Deals</a>
+    </nav>
+    <div class="sc-cSHVUG">
+      <label class="sc-kAzzGY" for="currency">Currency</label>
+      <select class="sc-chPdSV" id="currency" name="currency">
+        <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option>
+      </select>
+      <a class="sc-jzJRlG" href="/trips">My trips</a>
+      <a class="sc-jzJRlG" href="/login">Sign in</a>
+    </div>
+  </header>
+  <main class="sc-htpNat">
+  <section class="sc-iwsKbI">
+    <h1>Who's travelling?</h1>
+    <p>Seattle (SEA) to Denver (DEN), Fri 14 Nov, Northwest Air NW 412. Total $218.</p>
+  </section>
+  <form class="sc-gzOgki" name="passenger" action="/booking/passenger" method="post">
+    <h2>Passenger 1 (adult)</h2>
+    <label for="pax-first">First name</label><input id="pax-first" name="first" type="text">
+    <label for="pax-last">Last name</label><input id="pax-last" name="last" type="text">
+    <label for="pax-dob">Date of birth</label><input id="pax-dob" name="dob" type="date">
+  </form>
+  <form class="sc-gzOgki" name="billing" action="/booking/billing" method="post">
+    <h2>Billing address</h2>
+    <label for="bill-street">Street address</label><input id="bill-street" name="street" type="text" autocomplete="address-line1">
+    <label for="bill-apt">Apartment, suite (optional)</label><input id="bill-apt" name="apt" type="text" autocomplete="address-line2">
+    <label for="bill-city">City</label><input id="bill-city" name="city" type="text" autocomplete="address-level2">
+    <label for="bill-state">State or province</label><input id="bill-state" name="state" type="text" autocomplete="address-level1">
+    <label for="bill-postal">Postal code</label><input id="bill-postal" name="postal" type="text" autocomplete="postal-code">
+    <label for="bill-country">Country</label><select id="bill-country" name="country"><option>United States</option><option>Canada</option><option>Mexico</option></select>
+    <button type="submit" class="sc-EHOje">Continue to payment</button>
+  </form>
+  </main>
+  <footer class="sc-kgoBCf">
+    <div class="sc-kGXeez">
+      <section><h4>Company</h4><a href="/about">About Skylark</a> <a href="/careers">Jobs</a> <a href="/press">Press</a></section>
+      <section><h4>Help</h4><a href="/help">Help centre</a> <a href="/help/refunds">Refunds</a> <a href="/help/baggage">Baggage</a> <a href="/privacy">Privacy settings</a></section>
+      <section><h4>Explore</h4><a href="/destinations">Destinations</a> <a href="/airlines">Airlines</a> <a href="/airports">Airports</a></section>
+    </div>
+    <p>&copy; 2026 Skylark Travel Ltd. Skylark is a fictional travel site.</p>
+  </footer>
+  </div>
+</body>
+</html>

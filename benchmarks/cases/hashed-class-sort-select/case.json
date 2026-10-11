@@ -1,0 +1,8 @@
+{
+  "id": "hashed-class-sort-select",
+  "category": "hashed_class",
+  "description": "styled-components class names changed in a new build. The selector used the sort dropdown's generated class; the header also has a currency dropdown.",
+  "key": "sort_results",
+  "selector": "//select[contains(@class,'sc-mcGkxu')]",
+  "truth": "//select[@id='results-sort']"
+}

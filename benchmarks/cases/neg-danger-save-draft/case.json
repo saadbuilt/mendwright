@@ -1,0 +1,8 @@
+{
+  "id": "neg-danger-save-draft",
+  "category": "removed_near_danger",
+  "description": "The new editor autosaves, so \"Save Draft\" is gone. Publish, Schedule and \"Move to trash\" are on the same screen.",
+  "key": "save_draft",
+  "selector": "#save-draft",
+  "truth": null
+}

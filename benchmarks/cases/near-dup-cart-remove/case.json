@@ -1,0 +1,8 @@
+{
+  "id": "near-dup-cart-remove",
+  "category": "near_duplicate",
+  "description": "Three caps in the cart differ only by colour and size. The rows lost their data-sku attribute, so only the variant text (Red / M) identifies the row.",
+  "key": "remove_red_cap_m",
+  "selector": "//tr[@data-sku='CAP-RED-M']//button[normalize-space()='Remove']",
+  "truth": "//tr[.//p[normalize-space()='Red / M']]//button[normalize-space()='Remove']"
+}

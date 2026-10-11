@@ -1,0 +1,8 @@
+{
+  "id": "hidden-dup-subscribe-link",
+  "category": "hidden_duplicate",
+  "description": "The Subscribe link in the masthead lost its id. A paywall dialog, hidden until a reader hits the article limit, has its own Subscribe link.",
+  "key": "subscribe",
+  "selector": "#subscribe-btn",
+  "truth": "//header//a[@href='/subscribe']"
+}

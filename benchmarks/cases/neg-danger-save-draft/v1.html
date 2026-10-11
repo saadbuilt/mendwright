@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edit post &#8211; The Harbor Ledger</title>
+  <link rel="stylesheet" id="ledger-style-css" href="/wp-content/themes/ledger/style.css?ver=6.6.2" media="all">
+  <style id="wp-custom-css">
+    body { font-family: "Source Serif Pro", Georgia, serif; margin: 0; color: #111; }
+    .site-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; border-bottom: 3px double #111; }
+    .main-navigation ul { display: flex; gap: 18px; list-style: none; padding: 0; }
+    .button { background: #b3261e; color: #fff; padding: 8px 14px; text-decoration: none; }
+  </style>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsMediaOrganization","name":"The Harbor Ledger"}</script>
+</head>
+<body class="post-template-default single single-post">
+  <div id="page" class="site">
+    <a class="skip-link screen-reader-text" href="#primary">Skip to content</a>
+    <header id="masthead" class="site-header">
+      <div class="site-branding">
+        <p class="site-title"><a href="/" rel="home">The Harbor Ledger</a></p>
+        <p class="site-description">Independent news since 1891</p>
+      </div>
+      <div class="header-actions">
+        <a href="/wp-admin/">Dashboard</a>
+      </div>
+    </header>
+    <nav id="site-navigation" class="main-navigation" aria-label="Sections">
+      <ul id="primary-menu" class="menu">
+        <li class="menu-item"><a href="/world/">World</a></li>
+        <li class="menu-item"><a href="/business/">Business</a></li>
+        <li class="menu-item"><a href="/technology/">Technology</a></li>
+        <li class="menu-item"><a href="/science/">Science</a></li>
+        <li class="menu-item"><a href="/culture/">Culture</a></li>
+        <li class="menu-item"><a href="/opinion/">Opinion</a></li>
+      </ul>
+    </nav>
+    <div id="content" class="site-content">
+      <main id="primary" class="site-main">
+        <main id="primary" class="editor">
+          <h1 class="screen-reader-text">Edit post</h1>
+          <form id="post" action="/wp-admin/post.php" method="post">
+            <div id="titlediv"><label for="title">Title</label><input id="title" name="post_title" type="text" size="30"></div>
+            <div id="postdivrich"><label for="content">Body</label><textarea id="content" name="content" rows="20"></textarea></div>
+            <div id="submitdiv" class="postbox">
+              <h2>Publish</h2>
+              <div id="save-action"><button type="submit" name="save" id="save-draft" class="button">Save Draft</button></div>
+              <div id="preview-action"><a class="preview button" href="/?p=4890&amp;preview=true" target="wp-preview-4890">Preview</a></div>
+              <div id="misc-publishing-actions"><p>Status: <b>Draft</b></p><p>Visibility: <b>Public</b></p></div>
+              <div id="publishing-action"><button type="submit" name="publish" id="publish" class="button button-primary">Publish</button></div>
+            </div>
+          </form>
+        </main>
+      </main>
+      <aside id="secondary" class="widget-area">
+        <section class="widget widget_most_read">
+          <h2 class="widget-title">Most read</h2>
+          <ol>
+            <li><a href="/business/2026/10/port-fees-rise/">Port fees rise for the third time this year</a></li>
+            <li><a href="/science/2026/10/kelp-forest-return/">The kelp forests are coming back</a></li>
+            <li><a href="/culture/2026/10/harbor-festival-lineup/">Harbor Festival announces its lineup</a></li>
+          </ol>
+        </section>
+      </aside>
+    </div>
+    <footer id="colophon" class="site-footer">
+      <nav class="footer-navigation" aria-label="Footer">
+        <a href="/about/">About us</a> <a href="/contact/">Contact</a> <a href="/tips/">Send us a tip</a>
+        <a href="/account/subscription/">Manage subscription</a> <a href="/privacy/">Privacy</a> <a href="/terms/">Terms</a>
+      </nav>
+      <p class="site-info">&copy; 2026 The Harbor Ledger. A fictional newspaper.</p>
+    </footer>
+  </div>
+</body>
+</html>
