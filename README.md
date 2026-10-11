@@ -8,7 +8,7 @@
 Self-healing selectors for Playwright and Selenium.
 
 [![PyPI](https://img.shields.io/pypi/v/mendwright)](https://pypi.org/project/mendwright/)
-[![Python versions](https://img.shields.io/pypi/pyversions/mendwright)](https://pypi.org/project/mendwright/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mendwright?cacheSeconds=3600)](https://pypi.org/project/mendwright/)
 [![CI](https://github.com/saadbuilt/mendwright/actions/workflows/ci.yml/badge.svg)](https://github.com/saadbuilt/mendwright/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/saadbuilt/mendwright/blob/main/LICENSE)
 
