@@ -209,7 +209,7 @@ Where another tool fits better: Healenium needs no change per step (you wrap the
 - An element inside an iframe heals only when you open mendwright on the frame: a `Frame` from `page.frames` on Playwright, or the driver after `switch_to.frame()` on Selenium. On Playwright, a selector that matches only inside a child iframe raises `AttentionRequired` and says so, without a model call.
 - With a hosted provider, page HTML is sent to it. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, the rest is cut before it reaches the model. An element near the end is then visible to it only through the element inventory.
-- How often a model picks the right element hasn't been measured, for any model.
+- Accuracy has so far been measured only without a model: on the [43-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), a model-free similarity baseline healed 27 of 35 broken selectors correctly and healed 3 of the 43 cases onto the wrong element ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)), and no model numbers are published yet.
 - `--mendwright-strict` only fails the run that made the heal. Later runs pick up the saved heal and pass, which is why strict CI runs need a fresh store.
 
 ## Links

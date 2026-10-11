@@ -5,6 +5,10 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version starts with 0, a minor release can change the public API.
 
+## [Unreleased]
+
+- An accuracy benchmark in `benchmarks/`: 43 cases where a redesign breaks a selector (8 of them where the right answer is no heal), a harness that runs them through `mendwright.open()` with any provider or a model-free baseline, and the baseline results. It is not part of the package. See [docs/benchmark.md](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md).
+
 ## [0.3.0] - 2026-10-11
 
 First public release. Earlier versions were developed privately as selfheal and never published.
@@ -25,4 +29,5 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/saadbuilt/mendwright/releases/tag/v0.3.0
