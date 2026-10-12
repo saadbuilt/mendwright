@@ -16,6 +16,14 @@ On Selenium, driver.find_element(by, value) for By.XPATH, By.CSS_SELECTOR, By.ID
 By.NAME goes through heal.locator(f'{by}={value}', selector) and returns the WebElement.
 find_elements and everything else are the real driver's.
 
+The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
+and focus work on a hidden element in Playwright, and Selenium's find_element returns a
+hidden element or the first of several. For these, a selector that matches something
+mendwright cannot use (a hidden element, or several), with no saved heal that finds the
+element, goes to the real page or driver as written; only a selector that matches
+nothing is healed. The actions that need one visible element (click, fill, check, ...)
+heal a selector that does not match one, as heal.locator() does.
+
 The proxies pass isinstance() checks for the class they stand in for, so
 playwright's expect(heal.page) still works. .native is the real object.
 """
@@ -34,6 +42,9 @@ from .selectors import InvalidSelector, check_syntax
 READS = ('is_checked', 'text_content', 'inner_text', 'inner_html', 'get_attribute',
          'input_value', 'is_enabled', 'is_disabled', 'is_editable')
 HEALED_LOCATOR_METHODS = frozenset(ACTIONS) | frozenset(READS)
+# The ones Playwright runs on an element in any state, hidden included. A selector that
+# matches something goes to the real locator for these (see Healer._passes_through).
+ANY_STATE = frozenset(READS) | frozenset({'set_input_files', 'focus'})
 
 # Page methods that take a selector first and act on one element.
 PAGE_SHORTCUTS = ('click', 'dblclick', 'fill', 'check', 'uncheck', 'select_option', 'press',
@@ -108,8 +119,10 @@ class HealingLocator(_Proxy):
 
     def _mw_healed(self, name):
         def call(*args, **kwargs):
-            proxy = self._mw_healer.locator(self._mw_selector, self._mw_selector,
-                                            timeout_ms=_timeout_ms(kwargs))
+            healer, selector = self._mw_healer, self._mw_selector
+            if name in ANY_STATE and healer._passes_through(selector, selector):
+                return getattr(self._mw_target, name)(*args, **kwargs)
+            proxy = healer.locator(selector, selector, timeout_ms=_timeout_ms(kwargs))
             return getattr(proxy, name)(*args, **kwargs)
         call.__name__ = name
         return call
@@ -140,7 +153,8 @@ class HealingPage(_Proxy):
         return HealingLocator(self._mw_healer, target, selector)
 
     def _mw_shortcut(self, name, selector, args, kwargs):
-        if not _healable(selector):
+        if not _healable(selector) or (name in ANY_STATE
+                                       and self._mw_healer._passes_through(selector, selector)):
             return getattr(self._mw_target, name)(selector, *args, **kwargs)
         kwargs.pop('strict', None)   # a Locator is always strict and takes no strict=
         proxy = self._mw_healer.locator(selector, selector, timeout_ms=_timeout_ms(kwargs))
@@ -178,8 +192,10 @@ class AsyncHealingLocator(HealingLocator):
 
     def _mw_healed(self, name):
         async def call(*args, **kwargs):
-            proxy = self._mw_healer.locator(self._mw_selector, self._mw_selector,
-                                            timeout_ms=_timeout_ms(kwargs))
+            healer, selector = self._mw_healer, self._mw_selector
+            if name in ANY_STATE and await healer._passes_through(selector, selector):
+                return await getattr(self._mw_target, name)(*args, **kwargs)
+            proxy = healer.locator(selector, selector, timeout_ms=_timeout_ms(kwargs))
             return await getattr(proxy, name)(*args, **kwargs)
         call.__name__ = name
         return call
@@ -200,7 +216,8 @@ class AsyncHealingPage(HealingPage):
         return AsyncHealingLocator(self._mw_healer, target, selector)
 
     async def _mw_shortcut(self, name, selector, args, kwargs):
-        if not _healable(selector):
+        if not _healable(selector) or (
+                name in ANY_STATE and await self._mw_healer._passes_through(selector, selector)):
             return await getattr(self._mw_target, name)(selector, *args, **kwargs)
         kwargs.pop('strict', None)
         proxy = self._mw_healer.locator(selector, selector, timeout_ms=_timeout_ms(kwargs))
@@ -285,10 +302,11 @@ class HealingDriver(_Proxy):
         NoSuchElementException, so except clauses and WebDriverWait that expect one still
         work."""
         selector = selenium_selector(by, value)
-        if selector is None or not _healable(selector):
+        key = str(by) + '=' + str(value)
+        if (selector is None or not _healable(selector)
+                or self._mw_healer._passes_through(key, selector)):
             return self._mw_target.find_element(by, value)
         __tracebackhide__ = True
-        key = str(by) + '=' + str(value)
         try:
             return self._mw_healer.locator(key, selector).native
         except AttentionRequired as exc:

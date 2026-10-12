@@ -8,7 +8,7 @@ import importlib
 import pytest
 
 import mendwright
-from mw_engines import FAST_MS, SIGNUP_V1, SIGNUP_V2, STALE, V2_CHECKBOX, HEALED
+from mw_engines import FAST_MS, HEALED, SIGNUP_V1, SIGNUP_V2, STALE, V2_CHECKBOX, page
 
 pytestmark = pytest.mark.browser
 
@@ -90,3 +90,33 @@ def test_a_missing_element_is_still_a_no_such_element(tab, store_file, stub_prov
         error = exc
     assert isinstance(error, mendwright.AttentionRequired)
     assert str(error).startswith('No matching element for: id=promo-close')
+
+
+HIDDEN_BITS = page("""
+  <form><input type="hidden" name="csrf" value="tok-123">
+  <div id="tpl" style="display:none" data-x="hello">template</div>
+  <ul><li class="item">one</li><li class="item">two</li></ul></form>""")
+
+
+@pytest.mark.engine_family('playwright')
+def test_heal_page_reads_a_hidden_element_like_playwright(tab, store_file, stub_provider):
+    provider = stub_provider(HEALED)
+    page = _open(tab, provider, store_file).page
+    page.set_content(HIDDEN_BITS)
+    assert page.locator('input[name=csrf]').input_value() == 'tok-123'
+    assert page.get_attribute('#tpl', 'data-x') == 'hello'
+    assert page.text_content('#tpl') == 'template'
+    assert provider.bundles == []
+
+
+@pytest.mark.engine_family('selenium')
+def test_heal_driver_finds_the_first_match_and_hidden_elements_like_selenium(
+        tab, store_file, stub_provider):
+    from selenium.webdriver.common.by import By
+    provider = stub_provider(HEALED)
+    driver = _open(tab, provider, store_file).driver
+    tab.load(HIDDEN_BITS)
+    assert driver.find_element(By.CSS_SELECTOR, 'li.item').text == 'one'
+    assert driver.find_element(By.ID, 'tpl').get_attribute('data-x') == 'hello'
+    assert driver.find_element(By.NAME, 'csrf').get_attribute('value') == 'tok-123'
+    assert provider.bundles == []
