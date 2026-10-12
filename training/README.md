@@ -147,13 +147,12 @@ On the [benchmark](../docs/benchmark.md) (47 cases, StandInPage, with the finger
 
 | Provider | Correct | Wrong | Missed | Negatives declined | Wrong on negatives |
 |---|---|---|---|---|---|
-| fingerprint tier alone | 21/35 | 0 | 14 | 12/12 | 0 |
+| fingerprint tier alone | 20/35 | 0 | 15 | 12/12 | 0 |
 | similarity baseline with the fingerprint tier | 28/35 | 1 | 6 | 10/12 | 2 |
-| local model, threshold 0.8 (default) | 30/35 | 0 | 5 | 11/12 | 1 |
+| local model, threshold 0.8 (default) | 31/35 | 0 | 4 | 11/12 | 1 |
 | local model, no threshold | 31/35 | 1 | 3 | 11/12 | 1 |
-| round 2 model, no threshold | 28/35 | 3 | 4 | 11/12 | 1 |
 
-The run in headless Chromium gave the same counts as StandInPage. The page guard declines the four flow cases before any model call; with the threshold, the one wrong heal left is on `neg-ambiguous-invite-accept`, two invitations that nothing in the step tells apart.
+These local model runs are on mendwright 0.4.0's fingerprint tier, with Ollama keeping the model on the CPU (the GPU was needed elsewhere), which is why the results page shows seconds per call. In headless Chromium the default run healed 30 of 35, still with no wrong heal. On the GPU, with the fingerprint tier as it was before 0.4.0, the default model healed 30 of 35 with no wrong heal, and the round 2 model (no threshold) 28 of 35 with 3 wrong. The page guard declines the four flow cases before any model call; with the threshold, the one wrong heal left is on `neg-ambiguous-invite-accept`, two invitations that nothing in the step tells apart.
 
 Speed and size, on the laptop above with Ollama 0.40.3:
 
