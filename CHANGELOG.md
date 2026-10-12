@@ -7,6 +7,8 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-12
+
 - Heals without a model (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#heals-without-a-model)). Each time a key's selector matches, mendwright saves a fingerprint of the element: its tag, the attributes that survive redesigns, its text or label, and its ancestors, never an input's value. When the selector breaks, mendwright scores the page's elements against it first, and heals with no model call when one element scores at least 0.40, no other comes within 0.12, it shares an id, test id, name, link, label or text with the recorded element (the same numbers and words, allowing a typo, a plural or a filler word), and it sits inside the recorded containers that are still on the page. The pick goes through the same checks as a model's. With no provider configured, these heals still happen. It is on by default; `mendwright.open(fingerprint=False)`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1` turns it off. On the benchmark it healed 20 of 35 broken selectors with no wrong heal, with thresholds tuned on those same cases.
 - No changes per step (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step)): `page = mendwright.open(page).page` on Playwright, sync or async, and `driver = mendwright.open(driver).driver` on Selenium. `page.locator(selector)`, the page shortcuts that take a selector, and `find_element()` with `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` or `By.NAME` go through `heal.locator()`, with the selector as the key. Reads, `set_input_files`, `focus` and `find_element()` keep Playwright's and Selenium's own answer for a hidden element or several matches, and heal only a selector that matches nothing. Everything else goes to the real object, and `.native` is that object. A `find_element()` that can't find or heal the element raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`.
 - `heal.locator(..., intent="the terms checkbox in the signup form")` describes an element in words (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#describing-an-element-with-intent)). It is saved with the key, redacted, and given to the model on one line of the prompt (the reference gateway builds the same line). With `role=` and no selector, a model finds the element on first use, and the saved XPath is used from then on.
@@ -54,5 +56,6 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/saadbuilt/mendwright/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/saadbuilt/mendwright/releases/tag/v0.3.0
