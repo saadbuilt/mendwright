@@ -27,7 +27,22 @@ MAX_INTERRUPTIONS_PER_STEP = 3
 SETTLE_MS = 2000
 
 _UUID = re.compile(r'^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$')
+# Hex of 16 or more characters: database ids such as MongoDB's 24, hashes.
+_HEX = re.compile(r'^[0-9a-f]{16,}$')
+# A long token of letters, digits, '-' and '_': ULIDs, nanoids, many generated ids.
+_TOKEN = re.compile(r'^[a-z0-9_-]{16,}$')
 _NO_PATH = ('about:', 'data:', 'blob:', 'javascript:')
+
+
+def _is_id(part):
+    """True for a path segment that names one record rather than a page: all digits, a
+    uuid, 16 or more hex characters, or a token of 16 or more letters and digits with at
+    least two digits. Short segments such as 'v2', '2fa' or 'step-3' are page names."""
+    if part.isdigit() or _UUID.match(part) or _HEX.match(part):
+        return True
+    return (bool(_TOKEN.match(part)) and sum(c.isdigit() for c in part) >= 2
+            and any(c.isalpha() for c in part))
+
 
 class InterruptionLoop(AttentionRequired):
     """Raised when a step has handled MAX_INTERRUPTIONS_PER_STEP interruptions and one is
@@ -36,9 +51,10 @@ class InterruptionLoop(AttentionRequired):
 
 def page_path(url):
     """The page part of ``url`` that mendwright compares between runs: the path in
-    lower case, without scheme, host, query or fragment, with the trailing slash removed,
-    and with numeric and uuid-like segments replaced by '*'. None for about:blank, data:
-    URLs and pages with no path (the site root included)."""
+    lower case, without scheme, host, query or fragment, without empty segments (so a
+    trailing or doubled slash changes nothing), and with segments that look like record
+    ids (see _is_id) replaced by '*'. None for about:blank, data: URLs and pages with no
+    path (the site root included)."""
     if not isinstance(url, str) or not url.strip():
         return None
     text = url.strip()
@@ -48,15 +64,10 @@ def page_path(url):
         path = urlsplit(text).path
     except ValueError:
         return None
-    segments = []
-    for part in path.lower().split('/'):
-        if part.isdigit() or _UUID.match(part):
-            part = '*'
-        segments.append(part)
-    out = '/'.join(segments).rstrip('/')
-    if not out.strip('/'):
+    segments = ['*' if _is_id(part) else part for part in path.lower().split('/') if part]
+    if not segments:
         return None
-    return out if out.startswith('/') else '/' + out
+    return '/' + '/'.join(segments)
 
 
 def is_interception_error(exc):

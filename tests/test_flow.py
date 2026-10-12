@@ -716,7 +716,18 @@ def test_an_async_proxy_says_present_only_once_awaited(tmp_path):
     ('https://shop.example/u/0b5a3c1e-7d2f-4c55-9a0e-123456789abc', '/u/*'),
     ('https://shop.example/u/0b5a3c1e7d2f4c559a0e123456789abc/edit', '/u/*/edit'),
     ('file:///C:/tests/pages/signup.html', '/c:/tests/pages/signup.html'),
+    # Ids that are not numbers or uuids: a MongoDB ObjectId, a ULID, a long generated token.
+    ('https://shop.example/orders/507f1f77bcf86cd799439011', '/orders/*'),
+    ('https://shop.example/orders/507F191E810C19729DE860EA/track', '/orders/*/track'),
+    ('https://shop.example/o/01ARZ3NDEKTSV4RRFFQ69G5FAV', '/o/*'),
+    ('https://shop.example/pay/cs_test_a1b2c3d4e5f6g7h8', '/pay/*'),
+    # Page names stay: short ones with digits, and long slugs without two digits.
+    ('https://shop.example/v2/2fa/step-3', '/v2/2fa/step-3'),
+    ('https://shop.example/account/notification-settings', '/account/notification-settings'),
+    # A doubled or trailing slash changes nothing.
+    ('https://shop.example//signup//details/', '/signup/details'),
     ('https://shop.example/', None),
+    ('https://shop.example//', None),
     ('https://shop.example', None),
     ('about:blank', None),
     ('data:text/html,<p>x</p>', None),
@@ -776,6 +787,20 @@ def test_the_page_guard_declines_a_heal_on_another_page(side, tmp_path, caplog, 
     assert [(g['key'], g['last_page'], g['page']) for g in guard] == [
         ('continue', '/signup', '/signup/details')]
     assert not any(e['event'] == 'heal.requested' for e in _journal(tmp_path))
+
+
+def test_the_guard_reads_a_generated_id_in_the_path_as_the_same_page(side, tmp_path,
+                                                                     stub_provider):
+    page = _page('<button id="track" type="button">Track package</button>',
+                 url='https://shop.example/orders/507f1f77bcf86cd799439011')
+    provider = stub_provider("//button[normalize-space()='Track package']")
+    side.open(page, provider=provider, store_path=_store(tmp_path))
+    side.locate('track', '#track')
+    page.set_html('<html><body><button class="t" type="button">Track package</button></body></html>')
+    page.url = 'https://shop.example/orders/507f191e810c19729de860ea'   # the next order
+    side.locate('track', '#track')
+    assert len(provider.bundles) == 1                 # healed, not declined as a flow change
+    assert not [e for e in _events(tmp_path) if e['event'] == 'flow.page_guard']
 
 
 def test_heal_across_pages_turns_the_guard_off(side, tmp_path, stub_provider):
