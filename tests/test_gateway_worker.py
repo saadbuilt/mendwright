@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from mendwright.prompt import build_prompt, parse_proposal
+from mendwright.prompt import build_prompt, not_here_reason, parse_proposal
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKER = ROOT / 'examples' / 'heal_gateway.mjs'
@@ -27,7 +27,7 @@ NODE = shutil.which('node')
 needs_node = pytest.mark.skipif(NODE is None, reason='node is not installed')
 
 RUNNER = r"""
-import worker, { buildPrompt, parseProposal } from '__WORKER__';
+import worker, { buildPrompt, notHereReason, parseProposal } from '__WORKER__';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -36,6 +36,7 @@ const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
 const out = {
   prompts: input.bundles.map(buildPrompt),
   proposals: input.texts.map(parseProposal),
+  notHere: input.texts.map(notHereReason),
   responses: [],
 };
 for (const c of input.requests) {
@@ -86,6 +87,10 @@ BUNDLES = [
     {'key': 'falsy', 'expectedRole': 'button', 'inventory': {}, 'expectedText': None,
      'destructive': 0, 'html': '', 'rejectReason': ''},
     {'key': 7, 'expectedRole': 'button', 'destructive': 'yes', 'expectedText': ['A']},
+    {'key': 'continue', 'expectedRole': 'button', 'page': '/signup/details',
+     'lastPage': '/signup', 'html': '<button>Help</button>'},
+    {'key': 'continue', 'expectedRole': 'button', 'page': '', 'lastPage': None},
+    {'key': 'continue', 'expectedRole': 'button', 'page': '/caf\u00e9/*'},
 ]
 
 TEXTS = [
@@ -100,6 +105,12 @@ TEXTS = [
     '{"xpath": "//ü"}',
     '',
     None,
+    '{"xpath": null, "reason": "The Continue button moved to the next page."}',
+    'text {"reason": "  gone \u00fc  "} text',
+    '{"xpath": "", "reason": "gone"}',
+    '{"xpath": null, "reason": ""}',
+    '{"xpath": null, "reason": 3}',
+    '{"xpath": null, "reasoning": "only reasoning"}',
 ]
 
 
@@ -137,6 +148,24 @@ def test_parse_proposal_parity(tmp_path):
     out = _run_worker(tmp_path, texts=TEXTS)
     for text, js in zip(TEXTS, out['proposals'], strict=True):
         assert js == parse_proposal(text), text
+
+
+@needs_node
+def test_not_here_reason_parity(tmp_path):
+    out = _run_worker(tmp_path, texts=TEXTS)
+    for text, js in zip(TEXTS, out['notHere'], strict=True):
+        assert js == not_here_reason(text), text
+    assert any(out['notHere'])
+
+
+@needs_node
+def test_a_no_element_reply_comes_back_as_needs_human_with_the_reason(tmp_path):
+    reply = {'content': [{'type': 'text',
+                          'text': '{"xpath": null, "reason": "Continue is on the next page."}'}]}
+    out = _run_worker(tmp_path, requests=[_request(dict(ENV, MODEL='m'), reply=reply)])
+    assert out['responses'][0]['body'] == {
+        'status': 'needs_human',
+        'reason': 'the model says no element on this page fits: Continue is on the next page.'}
 
 
 ENV = {'HEAL_KEY': 'client-key', 'ANTHROPIC_API_KEY': 'test-key'}

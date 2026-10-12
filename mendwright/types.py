@@ -43,6 +43,8 @@ class HealBundle:
     url: Optional[str] = None
     stage: Optional[str] = None
     version: Optional[str] = None
+    page: Optional[str] = None          # the page path now (mendwright.flow.page_path)
+    lastPage: Optional[str] = None      # the page path the key was last found on
 
 
 @dataclass

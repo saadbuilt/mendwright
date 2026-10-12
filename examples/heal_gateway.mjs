@@ -2,9 +2,11 @@
 // Model-agnostic: set PROVIDER=anthropic|openai and MODEL=<model id>. The provider key
 // lives only here.
 //
-//   POST /heal          {key, expectedRole, expectedText?, destructive?, candidates?,
-//                        inventory?, html?, rejectedXpath?, rejectReason?}
+//   POST /heal          {key, expectedRole, expectedText?, destructive?, page?, lastPage?,
+//                        candidates?, inventory?, html?, rejectedXpath?, rejectReason?}
 //                        -> {status:'ok', xpath, fallbacks, reasoning} | {status:'needs_human', reason}
+//                        When the model says no element on the page fits the step, the
+//                        reason is 'the model says no element on this page fits: <its reason>'.
 //   POST /heal/outcome  {key, xpath, success} -> {status:'ok'}
 //
 // Settings (see wrangler.toml):
@@ -56,7 +58,7 @@ export function modelId(env) {
 }
 
 // --- Python parity helpers ------------------------------------------------------------
-// buildPrompt/parseProposal mirror mendwright/prompt.py exactly, so a heal through this
+// buildPrompt/parseProposal/notHereReason mirror mendwright/prompt.py exactly, so a heal through this
 // gateway sends the model the same text as a direct provider. These helpers reproduce the
 // Python behaviour the prompt relies on: str(), truthiness, json.dumps() defaults
 // (", " and ": " separators, non-ASCII escaped as \uXXXX) and slicing by code point.
@@ -130,7 +132,10 @@ export function buildPrompt(b) {
     '{"xpath":"...","fallbacks":["..."],"reasoning":"..."}. ' +
     'Prefer role + nearby visible label text + stable attributes (href, formcontrolname, type) ' +
     'over structure. NEVER return absolute positional paths like /div[3]/div[2]. ' +
-    "The xpath must match EXACTLY ONE element whose role is '" + pyStr(expectedRole) + "'.";
+    "The xpath must match EXACTLY ONE element whose role is '" + pyStr(expectedRole) + "'. " +
+    'If no element on this page is the one the step means, for example because the step ' +
+    'moved to another page or the element was removed, reply {"xpath":null,"reason":"..."} ' +
+    'instead. Do not pick an element that is only similar.';
   if (destructive) {
     system += ' This is a DESTRUCTIVE control: its exact visible text MUST be one of '
       + pyJson(expectedText) + '.';
@@ -140,6 +145,8 @@ export function buildPrompt(b) {
     '\nexpectedRole: ' + pyStr(expectedRole) +
     '\nexpectedText: ' + pyJson(expectedText) +
     '\ndestructive: ' + (destructive ? 'true' : 'false') +
+    (pyTruthy(b.page) ? '\npage: ' + pyStr(b.page) : '') +
+    (pyTruthy(b.lastPage) ? '\nlast found on page: ' + pyStr(b.lastPage) : '') +
     '\nbroken candidates:\n' + (pyTruthy(b.candidates) ? b.candidates : []).join('\n') +
     (pyTruthy(b.rejectReason)
       ? '\nYour previous proposal ' + pyStr(b.rejectedXpath) + ' was rejected: '
@@ -152,18 +159,43 @@ export function buildPrompt(b) {
   return { system, user };
 }
 
-export function parseProposal(text) {
+// The JSON object in a model reply (text around it is allowed), or null.
+function replyObject(text) {
   if (!text) return null;
   const match = String(text).match(/\{[\s\S]*\}/);
   if (!match) return null;
   let o;
   try { o = JSON.parse(match[0]); } catch { return null; }
-  if (o === null || typeof o !== 'object' || Array.isArray(o) || !pyTruthy(o.xpath)) return null;
+  if (o === null || typeof o !== 'object' || Array.isArray(o)) return null;
+  return o;
+}
+
+export function parseProposal(text) {
+  const o = replyObject(text);
+  if (o === null || !pyTruthy(o.xpath)) return null;
   return {
     xpath: pyStr(o.xpath),
     fallbacks: Array.isArray(o.fallbacks) ? o.fallbacks.slice(0, 4).map(pyStr) : [],
     reasoning: pyStr(pyTruthy(o.reasoning) ? o.reasoning : ''),
   };
+}
+
+// The model's reason when its reply says no element on the page fits the step
+// ({"xpath": null, "reason": "..."}), else null.
+export function notHereReason(text) {
+  const o = replyObject(text);
+  if (o === null || pyTruthy(o.xpath)) return null;
+  if (typeof o.reason === 'string' && o.reason.trim()) return o.reason.trim();
+  return null;
+}
+
+// What callModel() makes of a reply: {proposal} or {proposal: null, reason}.
+function readReply(text) {
+  const proposal = parseProposal(text);
+  if (proposal) return { proposal, reason: null };
+  const notHere = notHereReason(text);
+  return { proposal: null,
+           reason: notHere ? 'the model says no element on this page fits: ' + notHere.slice(0, 300) : null };
 }
 
 async function callModel(bundle, env, model) {
@@ -176,9 +208,9 @@ async function callModel(bundle, env, model) {
         response_format: { type: 'json_object' },
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
     });
-    if (!r.ok) return null;
+    if (!r.ok) return { proposal: null, reason: null };
     const data = await r.json();
-    return parseProposal(data.choices?.[0]?.message?.content || '');
+    return readReply(data.choices?.[0]?.message?.content || '');
   }
   // default: anthropic
   const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -187,9 +219,9 @@ async function callModel(bundle, env, model) {
     body: JSON.stringify({ model, max_tokens: 1024, system,
       messages: [{ role: 'user', content: user }] }),
   });
-  if (!r.ok) return null;
+  if (!r.ok) return { proposal: null, reason: null };
   const data = await r.json();
-  return parseProposal((data.content || []).map((p) => p.text || '').join(''));
+  return readReply((data.content || []).map((p) => p.text || '').join(''));
 }
 
 async function audit(env, kind, data) {
@@ -255,9 +287,9 @@ export default {
       await env.HEAL_KV.put(rk, String(used + 1), { expirationTtl: 3700 });
     }
 
-    const proposal = await callModel(bundle, env, model);
+    const { proposal, reason } = await callModel(bundle, env, model);
     await audit(env, 'heal', { key: safe(bundle.key), proposal: proposal ? proposal.xpath : null });
-    if (!proposal) return json({ status: 'needs_human', reason: 'no valid proposal' });
+    if (!proposal) return json({ status: 'needs_human', reason: reason || 'no valid proposal' });
     return json({ status: 'ok', ...proposal });
   },
 };

@@ -157,6 +157,10 @@ def build_bundle(key, meta, broken_candidates, inventory, html, context, row=Non
         'inventory': _redact_tree(inventory, forms),
         'html': page,
         'url': _scrub(redact(context.get('url') or '', row)) or None,
+        # The page path now, and the one the key's element was last found on (see
+        # mendwright.flow.page_path), so the model can tell a moved step from a renamed one.
+        'page': _scrub(redact(context.get('page') or '', row)) or None,
+        'lastPage': _scrub(redact(context.get('lastPage') or '', row)) or None,
         'stage': context.get('stage'),
         'version': context.get('version'),
     }

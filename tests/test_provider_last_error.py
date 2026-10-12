@@ -213,6 +213,54 @@ def test_model_json_without_an_xpath(name):
     assert provider.last_error.startswith('the model reply did not include an xpath')
 
 
+NOT_HERE = ('{"xpath": null, "reason": "The Continue button is not on this page; it seems to '
+            'have moved to the next step. sk-test-SECRETKEY0123456789"}')
+
+
+@pytest.mark.parametrize('name', [n for n in NAMES if n != 'gateway'])
+def test_a_model_that_says_no_element_fits(name):
+    spec = PROVIDERS[name]
+    provider, proposal = _run(name, FakeResp(200, spec['ok'](NOT_HERE)))
+    assert proposal is None
+    assert provider.last_error == (
+        'the model says no element on this page fits: The Continue button is not on this page; '
+        'it seems to have moved to the next step. [redacted]. If the step moved to another '
+        'page or the element was removed, update your script.')
+
+
+def test_a_gateway_that_passes_on_a_no_element_reply():
+    provider, _ = _run('gateway', FakeResp(200, {
+        'status': 'needs_human',
+        'reason': 'the model says no element on this page fits: the button moved'}))
+    assert provider.last_error == (
+        'the gateway did not return a selector (needs_human: the model says no element on this '
+        'page fits: the button moved). If the step moved to another page or the element was '
+        'removed, update your script.')
+
+
+def test_the_coordinator_quotes_a_no_element_reply(tmp_path):
+    from mendwright import HealCoordinator, load_store
+    from mendwright.exceptions import AttentionRequired
+    from mendwright.coordinator import resolve_with_heal
+
+    store = load_store(None, str(tmp_path / 'o.json'))
+    store.add_candidate('continue', '//button[@id="continue"]', source='code')
+    store.set_meta('continue', role='button')
+    provider = AnthropicProvider(model='m', api_key=KEY, http=FakeHttp(
+        FakeResp(200, PROVIDERS['anthropic']['ok']('{"xpath": null, "reason": "It moved."}'))))
+    coordinator = HealCoordinator(store, provider=provider, html_provider=lambda: '<p>x</p>',
+                                  inventory_provider=lambda: [], guard=lambda: True)
+
+    def missing():
+        raise AttentionRequired('No matching element for: continue (tried 1 candidate(s)).')
+    with pytest.raises(AttentionRequired) as caught:
+        resolve_with_heal(missing, coordinator, 'continue', store.meta('continue'), {})
+    assert str(caught.value).endswith(
+        "\n  -> AnthropicProvider returned no selector for 'continue': the model says no "
+        'element on this page fits: It moved. If the step moved to another page or the element '
+        'was removed, update your script.')
+
+
 @pytest.mark.parametrize('name', NAMES)
 def test_last_error_resets_to_none_after_a_success(name):
     spec = PROVIDERS[name]

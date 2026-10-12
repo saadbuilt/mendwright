@@ -10,7 +10,7 @@ returned None, for example "the gateway returned HTTP 401 (unauthorized): auth."
 """
 
 from ..client import DEFAULT_AUTH_HEADER, report_outcome, request_heal
-from ._errors import Describer, sentence
+from ._errors import NOT_HERE_HINT, Describer, sentence
 
 _HINTS = {
     'auth': 'Check MENDWRIGHT_KEY (download_key=) against the key the gateway expects.',
@@ -29,6 +29,8 @@ class _GatewayDescriber(Describer):
         if isinstance(reason, str) and reason.strip():
             text += ': ' + self._clean(reason)
         text += ')'
+        if isinstance(reason, str) and reason.startswith('the model says no element'):
+            return sentence(text, NOT_HERE_HINT)   # the gateway passed the model's answer on
         rate = isinstance(reason, str) and 'rate' in reason.lower()
         return sentence(text, self.hints.get('rate' if rate else 'human'))
 

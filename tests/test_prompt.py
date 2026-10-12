@@ -1,6 +1,6 @@
 """Canonical prompt builder + proposal parser (the single source every provider shares)."""
 
-from mendwright.prompt import build_prompt, parse_proposal
+from mendwright.prompt import build_prompt, not_here_reason, parse_proposal
 
 
 def test_build_prompt_includes_exactly_one_and_role_and_candidates():
@@ -35,3 +35,33 @@ def test_parse_proposal_rejects_missing_xpath_or_no_json():
     assert parse_proposal('{"reasoning":"no xpath here"}') is None
     assert parse_proposal('not json at all') is None
     assert parse_proposal('') is None
+
+
+def test_the_model_is_told_it_may_say_no_element_fits():
+    system = build_prompt({'key': 'continue', 'expectedRole': 'button'})['system']
+    assert ('If no element on this page is the one the step means, for example because the '
+            'step moved to another page or the element was removed, reply '
+            '{"xpath":null,"reason":"..."} instead. Do not pick an element that is only '
+            'similar.') in system
+
+
+def test_the_prompt_names_the_page_and_where_the_key_was_last_found():
+    user = build_prompt({'key': 'continue', 'expectedRole': 'button', 'page': '/signup/details',
+                         'lastPage': '/signup'})['user']
+    assert '\npage: /signup/details\nlast found on page: /signup\n' in user
+    plain = build_prompt({'key': 'continue', 'expectedRole': 'button'})['user']
+    assert 'page:' not in plain.split('DOM inventory')[0]
+
+
+def test_a_no_element_reply():
+    reply = 'Here: {"xpath": null, "reason": "The Continue button moved to another page."}'
+    assert parse_proposal(reply) is None
+    assert not_here_reason(reply) == 'The Continue button moved to another page.'
+    assert not_here_reason('{"reason": "  gone  "}') == 'gone'
+    assert not_here_reason('{"xpath": "", "reason": "gone"}') == 'gone'
+    assert not_here_reason('{"xpath": "//a", "reason": "x"}') is None
+    assert not_here_reason('{"xpath": null}') is None
+    assert not_here_reason('{"xpath": null, "reasoning": "old field"}') is None
+    assert not_here_reason('{"xpath": null, "reason": 5}') is None
+    assert not_here_reason('no json') is None
+    assert not_here_reason('') is None and not_here_reason(None) is None

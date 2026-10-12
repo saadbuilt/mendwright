@@ -23,7 +23,13 @@ import socket
 import urllib.error
 import urllib.parse
 
+from ..prompt import not_here_reason
+
 MAX_DETAIL = 200
+
+# The next step after a reply in which the model says no element on the page fits.
+NOT_HERE_HINT = ('If the step moved to another page or the element was removed, update '
+                 'your script.')
 
 _STATUS_WORDS = {
     400: 'bad request', 401: 'unauthorized', 403: 'forbidden', 404: 'not found',
@@ -358,7 +364,12 @@ class Describer:
         return sentence(text, self.hints.get('reply'))
 
     def reply(self, text):
-        """Why parse_proposal() found no proposal in the model's reply ``text``."""
+        """Why parse_proposal() found no proposal in the model's reply ``text``. A reply
+        in which the model says no element on the page fits the step gives its reason."""
+        not_here = not_here_reason(text) if isinstance(text, str) else None
+        if not_here:
+            return sentence('the model says no element on this page fits: '
+                            + self._clean(not_here).rstrip('.'), NOT_HERE_HINT)
         hint = self.hints.get('reply')
         if text is None or not str(text).strip():
             return sentence('the model returned an empty reply', hint)
