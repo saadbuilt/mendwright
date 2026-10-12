@@ -1,5 +1,8 @@
 """The `mendwright` command: demo, doctor, report, --version and --help.
 
+`mendwright fix` and `report --format html` have their own files: test_fix.py and
+test_report_html.py.
+
 Every test calls mendwright.cli.main([...]) in-process (or runs `python -m mendwright` in a
 subprocess) and reads the output. Offline: no network, no model, no browser. The one
 real-browser test is marked `browser` and is deselected by default.
@@ -91,7 +94,7 @@ def test_help_lists_the_commands(capsys):
     assert cli.main(["--help"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("usage: mendwright ")
-    for command in ("demo", "doctor", "report"):
+    for command in ("demo", "doctor", "report", "fix"):
         assert command in out
 
 
@@ -105,7 +108,7 @@ def test_unknown_command_is_a_usage_error(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["demo", "doctor", "report"])
+@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix"])
 def test_each_command_has_help(capsys, command):
     assert cli.main([command, "--help"]) == 0
     assert capsys.readouterr().out.startswith("usage: mendwright " + command)

@@ -2,7 +2,8 @@
 
     mendwright demo      watch a broken selector get healed, offline
     mendwright doctor    check the install, browser libraries, provider and store
-    mendwright report    list the selectors and heals in an override store
+    mendwright report    list the selectors and heals in an override store (text, md, json, html)
+    mendwright fix       write healed selectors back into your code (a diff, or --apply)
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
@@ -41,7 +42,7 @@ _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RU
                  'MENDWRIGHT_FINGERPRINT')
 _SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
 
-REPORT_FORMATS = ('text', 'md', 'json')
+REPORT_FORMATS = ('text', 'md', 'json', 'html')
 LAST_HEALS = 10
 
 
@@ -611,28 +612,113 @@ def _report_md(r):
     return lines
 
 
-def cmd_report(args):
+def _find_store(command, args):
+    """The store path for `mendwright <command>` (--store, MENDWRIGHT_STORE or the default),
+    or None after printing why there is none."""
     path = (os.path.abspath(os.path.expanduser(args.store)) if args.store
             else default_store_path())
-    if not os.path.isfile(path):
-        if args.store:
-            hint = 'Check the path given to --store; the file is created by the first heal'
-        else:
-            hint = ('Run your tests with mendwright first, or pass --store PATH (the default is '
-                    'MENDWRIGHT_STORE, else ./.mendwright/overrides.json)')
-        _err('mendwright report: no store at ' + path + '. ' + hint + '.')
+    if os.path.isfile(path):
+        return path
+    if args.store:
+        hint = 'Check the path given to --store; the file is created by the first heal'
+    else:
+        hint = ('Run your tests with mendwright first, or pass --store PATH (the default is '
+                'MENDWRIGHT_STORE, else ./.mendwright/overrides.json)')
+    _err('mendwright ' + command + ': no store at ' + path + '. ' + hint + '.')
+    return None
+
+
+def _write_text_file(command, path, text):
+    """Write text to path as UTF-8 through a temp file, creating the folder. Returns the
+    absolute path, or None after printing why it failed."""
+    import tempfile
+    target = os.path.abspath(os.path.expanduser(path))
+    folder = os.path.dirname(target)
+    tmp = None
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.mendwright-', dir=folder)
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as handle:
+            handle.write(text)
+        os.replace(tmp, target)
+        tmp = None
+        return target
+    except OSError as exc:
+        _err('mendwright ' + command + ': could not write ' + target + ' ('
+             + (exc.strerror or type(exc).__name__) + '). Check the folder and its permissions, '
+             'or leave out --out to print the report instead.')
+        return None
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def cmd_report(args):
+    path = _find_store('report', args)
+    if path is None:
         return 1
     try:
         report = collect_report(path)
     except ReportError as exc:
         _err('mendwright report: ' + str(exc))
         return 1
-    if args.format == 'json':
-        _out(json.dumps(report, indent=2))
+    if args.format == 'html':
+        from .report_html import render_html
+        events = _read_journal(report['journal']['path'])
+        lines = None
+        text = render_html(report, events or [], version=_version())
     else:
-        for line in (_report_md(report) if args.format == 'md' else _report_text(report)):
+        if args.format == 'json':
+            lines = json.dumps(report, indent=2).split('\n')
+        else:
+            lines = _report_md(report) if args.format == 'md' else _report_text(report)
+        text = ''.join(line + '\n' for line in lines)
+    if args.out:
+        target = _write_text_file('report', args.out, text)
+        if target is None:
+            return 1
+        _out('Wrote ' + target)
+    elif lines is None:
+        sys.stdout.write(text)      # ASCII only, so any console encoding takes it
+        sys.stdout.flush()
+    else:
+        for line in lines:
             _out(line)
     return 0
+
+
+# --- fix -------------------------------------------------------------------------------
+
+def _flatten(groups):
+    return [item for group in groups or () for item in group]
+
+
+def cmd_fix(args):
+    from . import fixback
+    path = _find_store('fix', args)
+    if path is None:
+        return 1
+    try:
+        store = _read_store(path)
+    except ReportError as exc:
+        _err('mendwright fix: ' + str(exc))
+        return 1
+    paths = _flatten(args.path) or ['.']
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        _err('mendwright fix: no such file or folder: ' + ', '.join(missing) + '. Check the '
+             '--path value; nothing was changed.')
+        return 1
+    events = _read_journal(os.path.join(os.path.dirname(path), 'journal.jsonl'))
+    plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed)
+    result = fixback.build_result(plan, paths, _flatten(args.glob))
+    if args.apply:
+        fixback.apply_result(result)
+    for line in fixback.format_lines(result, apply=args.apply):
+        _out(line)
+    for error in result.errors:
+        _err('mendwright fix: ' + error)
+    return 1 if result.errors else 0
 
 
 # --- demo ------------------------------------------------------------------------------
@@ -688,13 +774,47 @@ def build_parser():
         'report', help='list the selectors and heals in an override store',
         description='List each key in the store with its selectors (source, status, last '
                     'success), and the heal counts from journal.jsonl next to it. '
-                    '--format md pastes into $GITHUB_STEP_SUMMARY.')
+                    '--format md pastes into $GITHUB_STEP_SUMMARY. --format html makes one '
+                    'self-contained page (no scripts, no external files) with the keys, '
+                    'recent heals, flow events and quarantines; it goes to stdout, or to the '
+                    'file given with --out.')
     report.add_argument('--store', metavar='PATH',
                         help='the override store file (default: MENDWRIGHT_STORE, else '
                              './.mendwright/overrides.json)')
     report.add_argument('--format', choices=REPORT_FORMATS, default='text',
                         help='output format (default: text)')
+    report.add_argument('--out', metavar='FILE',
+                        help='write the report to FILE instead of stdout (the folder is '
+                             'created when it is missing)')
     report.set_defaults(handler=cmd_report)
+
+    fix = sub.add_parser(
+        'fix', help='write healed selectors back into your code',
+        description='For each key whose best selector is a heal, find its old selector as a '
+                    'string literal in your source files and replace it with the healed one. '
+                    'Prints a unified diff and changes nothing unless --apply is given. Only '
+                    'heals confirmed by a passing run are used (--include-unconfirmed adds '
+                    'the rest). Keys marked destructive, heals inside an iframe, and strings '
+                    'that belong to more than one key are never changed, and are listed. '
+                    'Once your code holds the new selector, mendwright tries it first on the '
+                    'next run. Exits 0 when there is nothing to do, after a dry run and after '
+                    '--apply; 1 on errors.')
+    fix.add_argument('--store', metavar='PATH',
+                     help='the override store file (default: MENDWRIGHT_STORE, else '
+                          './.mendwright/overrides.json); journal.jsonl is read from the '
+                          'same folder')
+    fix.add_argument('--path', metavar='PATH', action='append', nargs='+',
+                     help='a folder or file to search (default: the current folder); can be '
+                          'given more than once. Skipped: .git, .venv, node_modules, '
+                          '.mendwright, build, dist and similar')
+    fix.add_argument('--glob', metavar='GLOB', action='append', nargs='+',
+                     help='also search files matching GLOB, for example --glob "*.ts" '
+                          '"*.robot" (*.py is always searched)')
+    fix.add_argument('--include-unconfirmed', action='store_true',
+                     help='also use heals that no passing run has confirmed yet')
+    fix.add_argument('--apply', action='store_true',
+                     help='write the changes (default: print the diff only)')
+    fix.set_defaults(handler=cmd_fix)
     return parser
 
 
