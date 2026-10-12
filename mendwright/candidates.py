@@ -29,6 +29,7 @@ import re
 import lxml.etree
 import lxml.html
 
+from . import fingerprint as _fp
 from .fingerprint import generated_id, stable_classes
 from .validation import _role_of
 
@@ -572,11 +573,31 @@ def _score(features, words, fp_region):
             continue
         if any(len(h) >= 4 and (h.startswith(w[:4]) or w.startswith(h[:4])) for h in have):
             score += 0.4
-    if fp_region and features.get('region') == fp_region:
+    region = features.get('region') or ''
+    if fp_region and region == fp_region:
+        score += 1.0
+    elif fp_region and region.split('>')[-1].split('#')[0] == fp_region.split('>')[-1].split('#')[0]:
         score += 0.5
     if features.get('hidden') == 'hidden':
         score -= 0.3
     return score
+
+
+def _fingerprint_scores(fp, elements):
+    """How alike each element is to the saved fingerprint (mendwright.fingerprint.score,
+    0 to 1), or zeros without one. It keeps the right element among the closest when its
+    words changed (a translation), since its tag, classes and ancestors often did not."""
+    if not _fp.valid(fp):
+        return [0.0] * len(elements)
+    out = []
+    labels = _fp.label_index(elements[0].getroottree().getroot()) if elements else {}
+    for el in elements:
+        try:
+            new = _fp.of_element(el, labels)
+            out.append(_fp.score(fp, new).value if new else 0.0)
+        except Exception:
+            out.append(0.0)
+    return out
 
 
 def extract(bundle, limit=MAX_CANDIDATES):
@@ -600,8 +621,11 @@ def extract(bundle, limit=MAX_CANDIDATES):
         words = step_words(bundle)
         fp = bundle.get('fingerprint') if isinstance(bundle.get('fingerprint'), dict) else {}
         region = fp.get('region') if isinstance(fp.get('region'), str) else None
+        if region is None and isinstance(fp.get('ancestors'), list):
+            region = _chain(fp['ancestors'])[1] or None
+        similar = _fingerprint_scores(fp, [el for el, _ in described])
         ranked = sorted(range(len(described)),
-                        key=lambda i: (-_score(described[i][1], words, region), i))
+                        key=lambda i: (-(_score(described[i][1], words, region) + 3.0 * similar[i]), i))
         keep = sorted(ranked[:limit])
         described = [described[i] for i in keep]
     items = [Candidate(n, el, feats, feature_line(feats))
