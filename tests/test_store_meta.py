@@ -96,6 +96,45 @@ def test_role_and_text_survive_into_the_next_process(tmp_path, make_page, stub_p
     assert meta['expectedText'] == ['Go']
 
 
+def test_the_pages_a_key_was_found_on_are_saved_and_read_back(tmp_path):
+    path = tmp_path / 'o.json'
+    store = load_store(None, str(path))
+    store.add_candidate('next', '#next', source='code')
+    for page in ('/signup', '/checkout', '/signup', '/a', '/b', '/c', '/d'):
+        store.set_last_page('next', page)
+    assert store.meta('next')['lastPage'] == '/d'
+    assert store.meta('next')['pages'] == ['/d', '/c', '/b', '/a', '/signup']   # at most 5
+    saved = json.loads(path.read_text(encoding='utf-8'))['selectors']['next']
+    assert saved['lastPage'] == '/d' and saved['pages'] == ['/d', '/c', '/b', '/a', '/signup']
+    again = load_store(None, str(path))
+    assert again.meta('next')['lastPage'] == '/d'
+    assert again.meta('next')['pages'] == ['/d', '/c', '/b', '/a', '/signup']
+
+
+def test_set_last_page_writes_only_when_it_changes(tmp_path):
+    path = tmp_path / 'o.json'
+    store = load_store(None, str(path))
+    store.add_candidate('next', '#next', source='code')
+    store.set_last_page('next', '/signup')
+    writes = []
+    store._persist_override = lambda: writes.append(1)
+    store.set_last_page('next', '/signup')
+    store.set_last_page('next', None)
+    store.set_last_page('next', '')
+    assert writes == []
+    store.set_last_page('next', '/checkout')
+    assert writes == [1]
+
+
+def test_malformed_saved_pages_are_ignored(tmp_path):
+    path = tmp_path / 'o.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'lastPage': 5, 'pages': ['/a', 3], 'candidates': [
+            {'xpath': '#k', 'source': 'code', 'status': 'active'}]}}}), encoding='utf-8')
+    meta = load_store(None, str(path)).meta('k')
+    assert meta['lastPage'] is None and meta['pages'] == []
+
+
 def test_set_meta_writes_even_when_no_candidate_changes(tmp_path):
     sp = tmp_path / 'o.json'
     store = load_store(None, str(sp))

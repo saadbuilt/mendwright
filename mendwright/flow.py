@@ -1,0 +1,140 @@
+"""Flow changes: what mendwright does when the steps of a script, not the selectors on a
+page, have changed.
+
+- page_path(): the normalized path of a page, which the store keeps per key ('lastPage'
+  and 'pages'). A heal on a page where the key's element was never found is declined
+  before any model call (see flow_change_message), because a step that moved to another
+  page looks like a missing element and a model may still find a similar one.
+- is_interception_error(): whether an action failed because something covered the
+  element (a cookie banner, a modal). mendwright then looks for a registered interruption
+  and retries the action once, only after it handled one.
+- The texts mendwright logs or raises for interruptions, skipped steps and the page
+  guard. Sync and async healers use the same ones.
+"""
+
+import re
+from urllib.parse import urlsplit
+
+from .exceptions import AttentionRequired
+
+# How many interruptions mendwright handles for one step (one locator() call, or one
+# action) before it stops and raises AttentionRequired: an interruption that comes back
+# every time it is handled would otherwise loop forever.
+MAX_INTERRUPTIONS_PER_STEP = 3
+
+# After an interruption's action, how long mendwright waits for it to go away (a banner
+# that fades out), at most. The step's own timeout_ms is used when it is shorter.
+SETTLE_MS = 2000
+
+_UUID = re.compile(r'^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$')
+_NO_PATH = ('about:', 'data:', 'blob:', 'javascript:')
+
+class InterruptionLoop(AttentionRequired):
+    """Raised when a step has handled MAX_INTERRUPTIONS_PER_STEP interruptions and one is
+    still on the page. It is an AttentionRequired, and no heal is tried after it."""
+
+
+def page_path(url):
+    """The page part of ``url`` that mendwright compares between runs: the path in
+    lower case, without scheme, host, query or fragment, with the trailing slash removed,
+    and with numeric and uuid-like segments replaced by '*'. None for about:blank, data:
+    URLs and pages with no path (the site root included)."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    text = url.strip()
+    if text.lower().startswith(_NO_PATH):
+        return None
+    try:
+        path = urlsplit(text).path
+    except ValueError:
+        return None
+    segments = []
+    for part in path.lower().split('/'):
+        if part.isdigit() or _UUID.match(part):
+            part = '*'
+        segments.append(part)
+    out = '/'.join(segments).rstrip('/')
+    if not out.strip('/'):
+        return None
+    return out if out.startswith('/') else '/' + out
+
+
+def is_interception_error(exc):
+    """True when an action failed because another element covered the target or the
+    target could not be interacted with: Playwright's "intercepts pointer events" and
+    "element is not visible", Selenium's ElementClickInterceptedException and
+    ElementNotInteractableException. Matched by name and text, so selenium and playwright
+    need not be importable."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if names & {'ElementClickInterceptedException', 'ElementNotInteractableException'}:
+        return True
+    text = str(exc).lower()
+    return 'intercepts pointer events' in text or 'element is not visible' in text
+
+
+# --- messages ------------------------------------------------------------------------------
+
+def flow_change_message(key, last, here, entry='mendwright.open()'):
+    """Why a heal was declined because the page changed since the key was last found."""
+    return ("'" + key + "' was last found on " + last + ', and this page is ' + here + '. '
+            'That looks like a change in the flow, not a renamed element, so mendwright did '
+            'not heal it. If the step moved, update your script. If the URL itself changed '
+            'in a redesign, pass heal_across_pages=True to ' + entry + '.')
+
+
+def handled_message(key, before):
+    return 'handled interruption ' + repr(key) + ' before ' + repr(before)
+
+
+def unhandled_message(key, before, error):
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return ('could not handle interruption ' + repr(key) + ' before ' + repr(before) + ' ('
+            + type(error).__name__ + ': ' + first[:200] + '). Check the selector and action '
+            'passed to heal.interrupt(' + repr(key) + ', ...).')
+
+
+def loop_message(before, key, count):
+    return ('mendwright: ' + str(count) + ' interruptions were handled for ' + repr(before)
+            + ' and ' + repr(key) + ' is still on the page, so mendwright stopped instead of '
+            'handling it again. Check that the action registered with heal.interrupt('
+            + repr(key) + ', ...) really closes it, for example with action="press", '
+            'args=("Escape",) or a selector for its close button.')
+
+
+def skip_message(key, reason, before=None):
+    """The INFO line for a step that was skipped instead of healed."""
+    if reason == 'interruption handled':
+        where = (' before ' + repr(before)) if before else ''
+        return ('skipped ' + repr(key) + ': it was already handled as an interruption' + where
+                + ', and it is not on the page now.')
+    if reason == 'interruption absent':
+        return ('skipped ' + repr(key) + ': it is registered with heal.interrupt() and is not '
+                'on the page, so there was nothing to do.')
+    return 'skipped ' + repr(key) + ': it is optional (optional=True) and is not on the page.'
+
+
+def absent_message(key):
+    """The AttributeError text for reading from a step that was skipped."""
+    return ("mendwright: '" + key + "' was not on the page, so this step was skipped and "
+            'there is no element to read. Check proxy.present before reading from an '
+            'optional step.')
+
+
+_JOURNAL_HELPERS = {'flow.interrupt': 'interrupted', 'flow.skip': 'skipped',
+                    'flow.page_guard': 'page_guard'}
+
+
+def journal_event(journal, name, key, **fields):
+    """Write one flow.* event to ``journal``. A journal passed to open() that predates
+    these events (it has event() but not the named helper) still gets the line; one that
+    has neither is skipped. Never raises, like every journal write."""
+    try:
+        helper = getattr(journal, _JOURNAL_HELPERS.get(name, ''), None)
+        if callable(helper):
+            helper(key, **fields)
+            return
+        event = getattr(journal, 'event', None)
+        if callable(event):
+            event(name, key=key, **fields)
+    except Exception:
+        pass

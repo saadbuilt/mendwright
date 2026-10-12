@@ -6,6 +6,11 @@ SelectorStore), which keeps working as before. The facade adds the conveniences 
 a live page: the selector in your code wins over stored ones, the role is read from the
 element, and actions run through the driver so the same verbs work on Playwright and
 Selenium.
+
+It also handles changes in a script's flow (see mendwright.flow): interruptions that can
+appear at any point (heal.interrupt(), and the cookies= preset of open()), optional steps
+(locator(optional=True)), and a guard that does not heal a key on a page it was never
+found on (open(heal_across_pages=...)).
 """
 
 from __future__ import annotations
@@ -13,20 +18,26 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers import driver_describe, driver_inventory, wrap
+from .drivers import driver_act_on, driver_describe, driver_inventory, wrap
 from .exceptions import AttentionRequired
+from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, InterruptionLoop, absent_message,
+                   handled_message, is_interception_error, journal_event, loop_message,
+                   page_path, skip_message, unhandled_message)
+from .interruptions import (COOKIE_CHOICES, Budget, InterruptionEvent, cookie_choice_error,
+                            cookie_preset, make_interruption, nth_targets)
 from .journal import Journal
 from .limits import Guardrails, RateLimiter
 from .providers import GatewayProvider
 from .resolver import resolve
 from .roles import infer_role, role_choices
-from .selectors import InvalidSelector, check_syntax, normalize
+from .selectors import XPATH, InvalidSelector, check_syntax, classify, normalize
 from .store import load_store
 
 logger = logging.getLogger('mendwright')
@@ -183,7 +194,8 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          dry_run: bool | None = None, destructive_keys: Iterable[str] = frozenset(),
          guardrails: Guardrails | None = None, journal: Any = None,
          rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
-         timeout_ms: int | None = None) -> Healer:
+         timeout_ms: int | None = None, cookies: str | None = None,
+         heal_across_pages: bool = False) -> Healer:
     """Wrap a live page or driver into a Healer.
 
     - The driver is detected from the object (sync Playwright, camoufox, patchright,
@@ -194,6 +206,12 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     - store defaults to a JSON override file at store_path (no seed needed).
     - guard is a callable returning False while healing must wait (default: always True).
     - timeout_ms is how long locator() polls before treating a selector as broken.
+    - cookies='reject' or cookies='accept' registers an interruption (see
+      Healer.interrupt) for the consent banners of common consent managers, under the
+      key 'cookie_banner'. None (the default) clicks nothing you did not ask for.
+    - heal_across_pages=True lets a key heal on a page where its element was never found.
+      By default such a heal is declined before any model call, because it looks like a
+      step that moved to another page rather than a renamed element.
 
     Settings an argument leaves at None come from the environment:
     MENDWRIGHT_STORE (store_path, default ./.mendwright/overrides.json),
@@ -205,18 +223,33 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
     by every Healer on the same store file in this process.
     """
+    preset = _cookie_preset(cookies, 'mendwright.open()')
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
         driver, provider=provider, store=store, store_path=store_path, guard=guard,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,
         journal=journal, rate_per_key_per_hour=rate_per_key_per_hour,
-        rate_global_per_hour=rate_global_per_hour, timeout_ms=timeout_ms)
-    return Healer(page, driver, store, coord, timeout_ms=timeout_ms)
+        rate_global_per_hour=rate_global_per_hour, timeout_ms=timeout_ms,
+        heal_across_pages=heal_across_pages)
+    healer = Healer(page, driver, store, coord, timeout_ms=timeout_ms)
+    if preset is not None:
+        healer._interruptions[preset.key] = preset
+    return healer
+
+
+def _cookie_preset(cookies, entry):
+    """The Interruption for open(cookies=...), or None. Raises ValueError for a value
+    other than None, 'reject' and 'accept'."""
+    if cookies is None:
+        return None
+    if not isinstance(cookies, str) or cookies.strip().lower() not in COOKIE_CHOICES:
+        raise ValueError(cookie_choice_error(cookies, entry))
+    return cookie_preset(cookies.strip().lower())
 
 
 def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_keys,
            guardrails, journal, rate_per_key_per_hour, rate_global_per_hour, timeout_ms,
-           entry='mendwright.open()'):
+           entry='mendwright.open()', heal_across_pages=False):
     """Everything open() does once the driver is known: settings from the arguments and the
     environment, the provider, the store, the journal, the rate limit, and a
     HealCoordinator whose live gate runs through ``driver``. Returns
@@ -271,7 +304,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         html_provider=lambda: _outer_html(driver),
         inventory_provider=lambda: driver_inventory(driver),
         guard=guard or (lambda: True), dry_run=dry_run,
-        guardrails=guardrails, journal=journal)
+        guardrails=guardrails, journal=journal, heal_across_pages=heal_across_pages,
+        entry=entry)
     return store, coord, timeout_ms
 
 
@@ -360,12 +394,51 @@ class Healer:
         self.coordinator = coordinator
         self.timeout_ms = timeout_ms
         self._role_checked: set = set()
+        # Interruptions by key, in the order they were registered (see interrupt()).
+        self._interruptions: dict = {}
+        # key -> the step an interruption was first handled before, in this process.
+        self._handled: dict = {}
+        self._interrupt_log: list = []
         _register(self)
+
+    def interrupt(self, key: str, selector: Selector, *, action: str = 'click',
+                  args: Sequence[Any] = (), role: Role | None = None) -> None:
+        """Register a step that may appear at any point of the flow: a cookie banner, a
+        newsletter modal, an "are you still there?" dialog.
+
+        selector finds the element to act on (one selector, or a list tried in order), and
+        action with args is what to do with it (a click by default; for example
+        action='press', args=('Escape',)). role=, when given, is the role the element
+        must have before mendwright acts on it.
+
+        mendwright looks for it only when a step needs help: when a locator() misses
+        (before any heal or model call), before an action while the page shows it, and when
+        an action fails because something covered the element. If the element is there and
+        visible, mendwright performs the action, logs one WARNING line ("handled
+        interruption 'cookies' before 'email'"), writes a flow.interrupt journal event and
+        retries the step. A failed action is retried once, and only after an interruption
+        was handled. At most 3 interruptions are handled for one step.
+
+        An interruption is never healed by a model. A later heal.locator(key, ...) for the
+        same key is skipped (no heal, no error, its actions do nothing) when the element is
+        not there: it was handled earlier, or it did not appear this time. Registering a
+        key again replaces it. Raises TypeError, ValueError or InvalidSelector for
+        arguments that can never work."""
+        item = make_interruption(key, selector, action=action, args=args, role=role,
+                                 actions=ACTIONS)
+        self._interruptions.pop(item.key, None)
+        self._interruptions[item.key] = item
+
+    @property
+    def handled_interruptions(self) -> list:
+        """The interruptions this Healer handled, oldest first, as
+        InterruptionEvent(key, before): before is the step it was handled for."""
+        return list(self._interrupt_log)
 
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
                 text: str | Sequence[str] | None = None, destructive: bool | None = None,
                 timeout_ms: int | None = None, poll_ms: int = 200,
-                inline_xpath: Selector | None = None) -> ActionProxy:
+                inline_xpath: Selector | None = None, optional: bool = False) -> ActionProxy:
         """Resolve `key`, healing + retrying inline if its candidates miss, and return an
         ActionProxy wrapping the native locator. timeout_ms bounds how long each resolution
         polls for the element before it's treated as broken (and a heal is attempted).
@@ -390,6 +463,15 @@ class Healer:
         mendwright does not guess this from the key or the element's text: mark each
         control that must not be healed.
 
+        optional=True marks a step that may not be there, such as a promotion banner. If
+        its element does not appear within the timeout, it is not healed: you get a proxy
+        whose .present is False and whose actions do nothing and return None, and one INFO
+        line is logged. An optional step is never healed.
+
+        A key registered with interrupt() is never healed either, and is skipped the same
+        way when its element is not there. Registered interruptions are handled before
+        this step when its element is missing or covered (see interrupt()).
+
         inline_xpath is the old name of selector and still works as a keyword.
 
         Raises AttentionRequired when the element cannot be found or healed (the message
@@ -400,19 +482,28 @@ class Healer:
         roles, code = _locator_args(key, selector, role, inline_xpath)
         self._prime(key, roles, code, text, destructive)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        first_wait = self._first_wait(key, timeout)
         store = self.store
 
-        def attempt():
-            return resolve(store, self.page, key, timeout_ms=timeout, poll_ms=poll_ms)
+        def attempt(wait=timeout):
+            return resolve(store, self.page, key, timeout_ms=wait, poll_ms=poll_ms)
 
         try:
-            native = attempt()
+            native = self._resolve_step(key, lambda: attempt(first_wait), Budget(), timeout,
+                                        poll_ms)
+        except InterruptionLoop:
+            raise   # the page is blocked: a heal would not help
         except AttentionRequired as exc:
+            skip = self._skip_reason(key, optional)
+            if skip:
+                self._record_skip(key, skip)
+                return ActionProxy(self, key, None, present=False)
             self._stop_if_in_a_frame(key, exc)
             native = self._heal(key, exc, attempt)
         self._check_healed_target(key)
         self._learn(key, roles)
-        return ActionProxy(self, key, native)
+        self._remember_page(key)
+        return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms)
 
     def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
@@ -589,6 +680,158 @@ class Healer:
         if live:
             store.set_meta(key, role=live)
 
+    # --- flow: interruptions, skipped steps and pages ----------------------------------
+
+    def _others(self, before):
+        """The registered interruptions other than the step ``before`` itself."""
+        return [item for key, item in self._interruptions.items() if key != before]
+
+    def _first_wait(self, key, timeout):
+        """How long the first look for key waits: not at all for an interruption that
+        was already handled (its element is expected to be gone), else the timeout."""
+        return 0 if key in self._interruptions and key in self._handled else timeout
+
+    def _resolve_step(self, key, attempt, budget, timeout, poll_ms):
+        """attempt(), and after a miss, handle the registered interruptions and try again
+        while one was handled. Raises the last miss when none is left to handle."""
+        __tracebackhide__ = True
+        try:
+            return attempt()
+        except AttentionRequired as exc:
+            missed = exc
+        while self._interrupt(key, budget, timeout, poll_ms):
+            try:
+                return attempt()
+            except AttentionRequired as exc:
+                missed = exc
+        raise missed
+
+    def _skip_reason(self, key, optional):
+        """Why a step whose element is missing is skipped instead of healed, or None."""
+        if key in self._interruptions:
+            return 'interruption handled' if key in self._handled else 'interruption absent'
+        return 'optional' if optional else None
+
+    def _record_skip(self, key, reason):
+        self.coordinator._emit(logging.INFO, skip_message(key, reason, self._handled.get(key)))
+        journal_event(self.coordinator.journal, 'flow.skip', key, reason=reason)
+
+    def _interrupt(self, before, budget, timeout_ms, poll_ms, driver=None):
+        """Handle every registered interruption (other than ``before``) that the page
+        shows now. True if at least one was handled. Raises AttentionRequired when the
+        step's budget is used up and one is still there. driver is the driver to use (the
+        async healer passes its SyncBridge, from a worker thread)."""
+        __tracebackhide__ = True
+        others = self._others(before)
+        if not others:
+            return False
+        driver = driver or self.driver
+        handled = False
+        for item in others:
+            target = self._interruption_target(item, driver)
+            if target is None:
+                continue
+            if budget.used >= MAX_INTERRUPTIONS_PER_STEP:
+                raise InterruptionLoop(loop_message(before, item.key, budget.used))
+            budget.used += 1
+            if self._run_interruption(item, target, before, timeout_ms, poll_ms, driver):
+                budget.handled.append(item.key)
+                handled = True
+        return handled
+
+    def _interruption_target(self, item, driver):
+        """A selector that points at one visible element of the interruption right now
+        (and of its role, when it has one), or None. Any error reads as not there."""
+        selectors = item.selectors
+        if item.probe:
+            try:
+                if not driver.count(item.probe):
+                    selectors = [s for s in selectors if classify(s) != XPATH]
+            except Exception:
+                pass
+        for selector in selectors:
+            try:
+                count = driver.count(selector)
+            except Exception:
+                continue
+            for target in nth_targets(selector, count):
+                try:
+                    if driver.is_visible(target) and self._role_fits(item, target, driver):
+                        return target
+                except Exception:
+                    continue
+        return None
+
+    def _role_fits(self, item, target, driver):
+        if not item.roles:
+            return True
+        if not callable(getattr(driver, 'describe', None)):
+            return True     # the driver cannot read elements: the selector is all we have
+        described = driver_describe(driver, target)
+        return bool(described) and described.get('role') in item.roles
+
+    def _run_interruption(self, item, target, before, timeout_ms, poll_ms, driver):
+        """Perform the interruption's action on target, wait for it to go away, and record
+        it. False (with a WARNING) when the action failed in the browser."""
+        try:
+            native = driver.handle(target)
+            driver_act_on(driver, native, item.action, *item.args)
+        except _USAGE_ERRORS:
+            raise   # a wrong action or arguments in heal.interrupt(): the caller's to fix
+        except Exception as exc:
+            self.coordinator._emit(logging.WARNING, unhandled_message(item.key, before, exc))
+            return False
+        self._settle(item, timeout_ms, poll_ms, driver)
+        self._handled.setdefault(item.key, before)
+        self._interrupt_log.append(InterruptionEvent(item.key, before))
+        self.coordinator._emit(logging.WARNING, handled_message(item.key, before))
+        journal_event(self.coordinator.journal, 'flow.interrupt', item.key, before=before,
+                      action=item.action, preset=item.preset,
+                      selector=None if item.preset else target)
+        return True
+
+    def _settle(self, item, timeout_ms, poll_ms, driver):
+        """Wait, up to SETTLE_MS (or the step's timeout when shorter), for the
+        interruption to go away, for example while a banner fades out."""
+        limit = min(max(timeout_ms or 0, 0), SETTLE_MS) / 1000.0
+        if limit <= 0:
+            return
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline and self._interruption_target(item, driver) is not None:
+            time.sleep(max(poll_ms, 20) / 1000.0)
+
+    def _before_action(self, key, timeout_ms, poll_ms):
+        """Handle what the page shows before an action on key. Returns the step's budget,
+        which a retry after an interception error shares."""
+        __tracebackhide__ = True
+        budget = Budget()
+        self._interrupt(key, budget, timeout_ms, poll_ms)
+        return budget
+
+    def _url(self):
+        try:
+            return self.driver.url() or ''
+        except Exception:
+            return ''
+
+    def _remember_page(self, key, url=None):
+        """Save the page key's element was just found on (see mendwright.flow.page_path)."""
+        setter = getattr(self.store, 'set_last_page', None)
+        if not callable(setter):
+            return
+        path = page_path(self._url() if url is None else url)
+        if path:
+            setter(key, path)
+
+    def _flow_context(self, key, url):
+        """The heal context: the URL, and the pages the page guard compares."""
+        try:
+            meta = self.store.meta(key)
+        except Exception:
+            meta = {}
+        return {'url': url, 'page': page_path(url), 'lastPage': meta.get('lastPage'),
+                'pages': list(meta.get('pages') or ())}
+
     # --- healing -------------------------------------------------------------------
 
     def _frame_candidates(self, key):
@@ -630,7 +873,7 @@ class Healer:
             return attempt()
 
         return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                 {'url': self.driver.url()})
+                                 self._flow_context(key, self._url()))
 
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs
@@ -663,12 +906,23 @@ class ActionProxy:
     returning bool> to check the result, or call confirm(). Reads such as inner_text()
     or get_attribute() fall through to the native object. Use .native where a library
     wants the real object, for example Playwright's expect(proxy.native).
+
+    Before an action, registered interruptions the page shows are handled (see
+    Healer.interrupt). An action that fails because something covered the element is
+    retried once, and only after an interruption was handled.
+
+    .present is False for a step that was skipped (an optional step, or an interruption,
+    whose element was not there). Its actions then do nothing and return None.
     """
 
-    def __init__(self, healer: Healer, key: str, native: Any) -> None:
+    def __init__(self, healer: Healer, key: str, native: Any, *, present: bool = True,
+                 timeout_ms: int | None = None, poll_ms: int = 200) -> None:
         self._healer = healer
         self._key = key
         self._native = native
+        self._present = bool(present)
+        self._timeout_ms = healer.timeout_ms if timeout_ms is None else timeout_ms
+        self._poll_ms = poll_ms
 
     @property
     def native(self) -> Any:
@@ -679,15 +933,25 @@ class ActionProxy:
         A FramedElement switches into its frame itself, so do not call switch_to.frame()
         before using it. It is not a WebElement, so execute_script(..., el) and
         ActionChains reject it: run those through in_frame(), for example
-        proxy.native.in_frame(lambda el: driver.execute_script('arguments[0].click()', el))."""
+        proxy.native.in_frame(lambda el: driver.execute_script('arguments[0].click()', el)).
+
+        None for a skipped step (.present is False)."""
         return self._native
 
     @property
     def key(self) -> str:
         return self._key
 
+    @property
+    def present(self) -> bool:
+        """False when the step was skipped because its element was not there (an
+        optional step, or an interruption), else True."""
+        return self._present
+
     def _act(self, verb: str, args: tuple, kwargs: dict, expect: Expect | None) -> Any:
         __tracebackhide__ = True  # pytest shows the caller
+        if not self._present:
+            return None   # a skipped step: nothing to act on
         args = tuple(_unwrap(a) for a in args)
         kwargs = {k: _unwrap(v) for k, v in kwargs.items()}
         act_on = getattr(self._healer.driver, 'act_on', None)
@@ -698,14 +962,25 @@ class ActionProxy:
                 return act_on(self._native, verb, *a, **kw)
         else:
             run = getattr(self._native, verb)   # AttributeError here quarantines nothing
-        coordinator = self._healer.coordinator
+        healer = self._healer
+        coordinator = healer.coordinator
+        budget = healer._before_action(self._key, self._timeout_ms, self._poll_ms)
         try:
             result = run(*args, **kwargs)
         except _USAGE_ERRORS:
             raise
-        except Exception:
-            coordinator.confirm_pending(self._key, False)  # the browser action failed
-            raise
+        except Exception as exc:
+            if not (is_interception_error(exc)
+                    and healer._interrupt(self._key, budget, self._timeout_ms, self._poll_ms)):
+                coordinator.confirm_pending(self._key, False)  # the browser action failed
+                raise
+            try:
+                result = run(*args, **kwargs)   # once, after an interruption was handled
+            except _USAGE_ERRORS:
+                raise
+            except Exception:
+                coordinator.confirm_pending(self._key, False)
+                raise
         if expect is not None:
             try:
                 ok = bool(expect())
@@ -777,7 +1052,11 @@ class ActionProxy:
 
     def __getattr__(self, name: str) -> Any:
         # Reads and anything else not listed in ACTIONS go to the native object unchanged.
+        if not self.__dict__.get('_present', True) and not name.startswith('__'):
+            raise AttributeError(absent_message(self._key))
         return getattr(self._native, name)
 
     def __repr__(self) -> str:
+        if not self._present:
+            return '<ActionProxy key=' + repr(self._key) + ' skipped: not on the page>'
         return '<ActionProxy key=' + repr(self._key) + ' native=' + repr(self._native) + '>'

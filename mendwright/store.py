@@ -7,8 +7,9 @@ Tool-agnostic: the set of destructive keys is injected (``destructive_keys``) ra
 than hardcoded, so the store can serve any tool.
 
 Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive) is
-saved in the override file next to the candidates, so the next process sees it. The
-file stays schema 2; the fields are optional. A key is destructive when the seed says
+saved in the override file next to the candidates, so the next process sees it, and so is
+where the key's element was last found (``set_last_page``: lastPage and pages). The file
+stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these.
 
@@ -156,8 +157,12 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
         '"selectors": {...}}). Point mendwright at the right file, or delete this one.')
 
 
-# Metadata fields set_meta() saves in the override file.
-META_FIELDS = ('expectedRole', 'expectedText', 'destructive')
+# Metadata fields saved in the override file: the ones set_meta() sets, and the pages
+# set_last_page() records.
+META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages')
+
+# How many pages set_last_page() keeps per key, most recent first.
+MAX_PAGES = 5
 
 
 def _known_role(role):
@@ -177,7 +182,20 @@ def _meta_fields(entry):
         out['expectedText'] = list(text)
     if isinstance(entry.get('destructive'), bool):
         out['destructive'] = entry['destructive']
+    page = entry.get('lastPage')
+    if isinstance(page, str) and page:
+        out['lastPage'] = page
+    pages = _pages(entry.get('pages'))
+    if pages:
+        out['pages'] = pages
     return out
+
+
+def _pages(value):
+    """A saved 'pages' list, or [] when it is missing or malformed."""
+    if isinstance(value, list) and all(isinstance(p, str) and p for p in value):
+        return list(value)[:MAX_PAGES]
+    return []
 
 
 class SelectorStore:
@@ -256,6 +274,9 @@ class SelectorStore:
             e['expectedText'] = list(fields['expectedText'])
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
+        for name in ('lastPage', 'pages'):
+            if name in fields:
+                e[name] = list(fields[name]) if name == 'pages' else fields[name]
 
     def is_locked_destructive(self, key):
         """True when the seed or destructive_keys marks key destructive. set_meta() cannot
@@ -273,7 +294,9 @@ class SelectorStore:
                 'expectedText': e.get('expectedText', []),
                 'destructive': bool(e.get('destructive')) or self.is_locked_destructive(key),
                 'stage': e.get('stage'), 'action': e.get('action'),
-                'maxCandidates': e.get('maxCandidates', 5)}
+                'maxCandidates': e.get('maxCandidates', 5),
+                'lastPage': e['lastPage'] if isinstance(e.get('lastPage'), str) else None,
+                'pages': _pages(e.get('pages'))}
 
     def _by_recency(self, key):
         e = self._data['selectors'].get(key)
@@ -361,6 +384,23 @@ class SelectorStore:
         saved = self._meta.get(key, {})
         if any(saved.get(f) != v for f, v in changed.items()):
             self._meta[key] = dict(saved, **changed)
+            self._persist_override()
+
+    def set_last_page(self, key, path):
+        """Record that key's element was just found on the page ``path`` (a normalized
+        path, see mendwright.flow.page_path). lastPage becomes path, and pages keeps the
+        last few distinct paths, most recent first. Saved in the override file, which is
+        written only when either changes. A path of None or '' is ignored."""
+        if not isinstance(path, str) or not path:
+            return
+        e = self._entry(key)
+        pages = [path] + [p for p in (e.get('pages') or ()) if p != path]
+        pages = pages[:MAX_PAGES]
+        e['lastPage'] = path
+        e['pages'] = pages
+        saved = self._meta.get(key, {})
+        if saved.get('lastPage') != path or saved.get('pages') != pages:
+            self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
             self._persist_override()
 
     def guess_role(self, key, role, *, replace=False):

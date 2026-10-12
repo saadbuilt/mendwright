@@ -1,6 +1,7 @@
 """Append-only JSONL event journal for heal activity: one line per event
-(heal.requested / proposed / rejected / applied / canary / quarantine), recording the
-provider, model, latency and token counts when they are known. Writing is best-effort and
+(heal.requested / proposed / rejected / applied / canary / quarantine, and for flow
+changes flow.interrupt / skip / page_guard), recording the provider, model, latency and
+token counts when they are known. Writing is best-effort and
 never raises, so a bad path or a full disk cannot break a heal in progress.
 
 The journal writes only the fields the caller passes: keys, selectors, provider and model
@@ -27,6 +28,9 @@ REJECTED = 'heal.rejected'
 APPLIED = 'heal.applied'
 CANARY = 'heal.canary'
 QUARANTINE = 'heal.quarantine'
+FLOW_INTERRUPT = 'flow.interrupt'     # an interruption was handled before a step
+FLOW_SKIP = 'flow.skip'               # a step was skipped instead of healed
+FLOW_PAGE_GUARD = 'flow.page_guard'   # a heal was declined: the page is not one the key was found on
 
 # Default journal location, relative to the process cwd (like the override store's path).
 DEFAULT_PATH = '.mendwright/journal.jsonl'
@@ -111,6 +115,15 @@ class _BaseJournal:
 
     def quarantine(self, key=None, **f):
         return self.event(QUARANTINE, key=key, **f)
+
+    def interrupted(self, key=None, **f):
+        return self.event(FLOW_INTERRUPT, key=key, **f)
+
+    def skipped(self, key=None, **f):
+        return self.event(FLOW_SKIP, key=key, **f)
+
+    def page_guard(self, key=None, **f):
+        return self.event(FLOW_PAGE_GUARD, key=key, **f)
 
 
 class NullJournal(_BaseJournal):

@@ -1,8 +1,9 @@
 """The heal itself. When every candidate selector misses, HealCoordinator captures the
 page, asks a provider for a fix, checks and saves it, and resolve_with_heal() retries the
 step in the same call. A guard can block healing while a payment or registration is being
-submitted, keys marked destructive are never healed, and a failed canary quarantines the
-healed candidate. When a heal does not happen, the coordinator records a readable reason
+submitted, keys marked destructive are never healed, a key is not healed on a page where
+it was never found (a change in the flow, see mendwright.flow), and a failed canary
+quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
 """
 
@@ -12,6 +13,7 @@ import time
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
+from .flow import flow_change_message, journal_event
 from .journal import NullJournal
 from .providers import GatewayProvider
 from .validation import validate
@@ -52,12 +54,19 @@ class HealCoordinator:
     the application configured no logging. Pass log=<callable taking a str> to send the
     same lines (without the prefix) somewhere else instead, e.g. log=print. clock is the
     monotonic clock used to time a heal; tests inject a fake one.
+
+    The page guard: when the context passed to try_heal() names the current page
+    (context['page']) and the pages the key was found on before (context['pages'], or
+    context['lastPage']), and the current page is none of them, the heal is declined
+    before any model call, because that looks like a step that moved to another page.
+    heal_across_pages=True turns this off. entry is the function named in that message.
+    A context without 'page' (the low-level default) is never guarded.
     """
 
     def __init__(self, store, gateway=None, download_key=None, *, provider=None, http=None,
                  html_provider, inventory_provider, guard, dry_run=False, log=None,
                  auth_header=DEFAULT_AUTH_HEADER, driver=None, guardrails=None, journal=None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, heal_across_pages=False, entry='mendwright.open()'):
         self.store = store
         # Direct-mode guardrails (rate limit + spend cap) and the event journal. In gateway
         # mode these live server-side, so they default off / no-op here; the facade wires
@@ -80,6 +89,8 @@ class HealCoordinator:
         self.log = log
         self.clock = clock
         self.auth_header = auth_header
+        self.heal_across_pages = bool(heal_across_pages)
+        self.entry = entry
         # selector_key -> applied_xpath awaiting an action-outcome canary. A dict (not a
         # single slot) so healing several fields on one page never drops an earlier
         # unproven selector's canary.
@@ -120,6 +131,9 @@ class HealCoordinator:
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
             return self._decline(selector_key, _destructive_message(selector_key))
+        moved = self._flow_change(selector_key, context)
+        if moved:
+            return self._decline(selector_key, moved)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
         # stand-in) carries its own actionable reason; surface it verbatim. The str check
         # matters: a bare Mock()/MagicMock() test double answers every attribute with a
@@ -210,6 +224,22 @@ class HealCoordinator:
             "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
             "matches exactly one element of the expected role and is present on the live page.")
         return None
+
+    def _flow_change(self, selector_key, context):
+        """The reason to decline when the current page is not one the key was found on,
+        else ''. Journals the decision as flow.page_guard."""
+        if self.heal_across_pages or not isinstance(context, dict):
+            return ''
+        here = context.get('page')
+        last = context.get('lastPage')
+        seen = [p for p in (context.get('pages') or ()) if isinstance(p, str) and p]
+        if isinstance(last, str) and last and last not in seen:
+            seen.insert(0, last)
+        if not (isinstance(here, str) and here and seen) or here in seen:
+            return ''
+        last = seen[0]
+        journal_event(self.journal, 'flow.page_guard', selector_key, last_page=last, page=here)
+        return flow_change_message(selector_key, last, here, self.entry)
 
     def _provider_model(self):
         """The provider's model name when it has a str .model attribute, else None."""
