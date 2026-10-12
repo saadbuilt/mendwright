@@ -77,6 +77,7 @@ Redaction is **best-effort**. Visible text and most attribute values reach the m
 
 The inventory sent with the page never contains input values: the drivers don't read them, every string gets the same redaction, and keys named `value` are dropped.
 The broken selectors and the expected text in the bundle get the same redaction as the page.
+The key's saved fingerprint (the tag, stable attributes, text and label of the element the key last matched) goes into the bundle only for a provider that sets `wants_fingerprint = True`. Of the built-in providers only `LocalModelProvider` does, and it talks to Ollama on your machine. The fingerprint gets the same redaction.
 The page URL isn't part of the prompt, so direct providers never send it. `GatewayProvider` posts the whole bundle, in which an http(s) page URL is replaced with `[URL]`. A URL with another scheme, such as `file://`, is sent as it is.
 The local checks use the full, unredacted page; none of it is sent anywhere.
 
@@ -101,7 +102,7 @@ What isn't removed:
 
 Ways to send less:
 
-- Use a model served by Ollama on your own machine (`OLLAMA_MODEL`), so the page doesn't leave it.
+- Use a model served by Ollama on your own machine (`OLLAMA_MODEL`, or mendwright's own selector model with `MENDWRIGHT_LOCAL_MODEL`), so the page doesn't leave it. The selector model is sent a short list of candidate elements instead of the page.
 - On the low-level API, give `HealCoordinator` an `html_provider` that returns only the part of the page the key lives in.
 - Set `MENDWRIGHT_DISABLE=1` where no page content may leave the machine. Dry run (`MENDWRIGHT_DRY_RUN=1`) still calls the provider.
 

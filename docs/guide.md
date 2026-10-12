@@ -117,8 +117,9 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_TIMEOUT_MS` | Default `timeout_ms`, in whole milliseconds |
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
 | `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=` |
-| `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway` or `ollama`: use that provider instead of detecting one |
+| `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway`, `local` or `ollama`: use that provider instead of detecting one |
 | `MENDWRIGHT_GATEWAY` | Gateway URL, which selects `GatewayProvider` |
+| `MENDWRIGHT_LOCAL_MODEL` | The Ollama name of mendwright's local selector model, which selects `LocalModelProvider` |
 | `MENDWRIGHT_KEY` | The client key the gateway checks |
 | `MENDWRIGHT_AUTH_HEADER` | The header that carries it, `X-Heal-Key` by default |
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
@@ -138,10 +139,11 @@ With no `provider=`, `auto_provider()` reads the environment and takes the first
 | 2 | `OPENAI_API_KEY` | `OpenAICompatibleProvider` (api.openai.com) | `OPENAI_MODEL` |
 | 3 | `GEMINI_API_KEY` | `GeminiProvider` | `GEMINI_MODEL` |
 | 4 | `MENDWRIGHT_GATEWAY` | `GatewayProvider` | the gateway |
-| 5 | `OLLAMA_MODEL` or `OLLAMA_HOST` | Ollama, keyless | `OLLAMA_MODEL` |
+| 5 | `MENDWRIGHT_LOCAL_MODEL` | `LocalModelProvider`, mendwright's own model in Ollama | `MENDWRIGHT_LOCAL_MODEL` |
+| 6 | `OLLAMA_MODEL` or `OLLAMA_HOST` | Ollama, keyless | `OLLAMA_MODEL` |
 
 `OLLAMA_HOST` defaults to `http://localhost:11434`.
-`MENDWRIGHT_PROVIDER` skips the order and forces one of the five.
+`MENDWRIGHT_PROVIDER` skips the order and forces one of the six. `MENDWRIGHT_PROVIDER=local` uses `mendwright-selector` when `MENDWRIGHT_LOCAL_MODEL` isn't set.
 For a proxy or a compatible host, the Anthropic and OpenAI providers take a base URL from `base_url=`, or from `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. `base_url=` wins.
 
 mendwright has no default model. A key without its `*_MODEL` variable fails with an error that names the variable.
@@ -161,7 +163,7 @@ Bedrock, LiteLLM, Azure and other OpenAI-compatible hosts aren't detected from t
 ```python
 import mendwright
 from mendwright import (AnthropicProvider, BedrockProvider, GatewayProvider, GeminiProvider,
-                        LiteLLMProvider, OpenAICompatibleProvider)
+                        LiteLLMProvider, LocalModelProvider, OpenAICompatibleProvider)
 
 provider = AnthropicProvider(model="...")             # key from ANTHROPIC_API_KEY
 provider = OpenAICompatibleProvider(model="...")      # OpenAI, key from OPENAI_API_KEY
@@ -172,6 +174,7 @@ provider = GeminiProvider(model="...")                # key from GEMINI_API_KEY
 provider = BedrockProvider(model="...", region="us-east-1")  # AWS credentials from boto3
 provider = LiteLLMProvider(model="...")               # any model string LiteLLM routes
 provider = GatewayProvider("https://heal.example.workers.dev", "client-key")
+provider = LocalModelProvider()                       # mendwright-selector in Ollama, see below
 
 heal = mendwright.open(page, provider=provider)
 ```
@@ -185,6 +188,29 @@ LiteLLM needs the litellm package (`pip install "mendwright[litellm]"`), or an `
 The other extras are `[anthropic]`, `[openai]`, `[gemini]` and `[all]`. `[all]` installs every provider SDK and no browser library.
 
 Any object with `propose(bundle)` and `report_outcome(key, xpath, success)` works as a provider. [CONTRIBUTING.md](../CONTRIBUTING.md) describes the contract.
+
+### Local model
+
+`LocalModelProvider` asks mendwright's own selector model, which runs in Ollama on your machine, so the page never leaves it.
+It is Qwen2.5-1.5B-Instruct fine-tuned for one task, and it doesn't read the page or write XPath.
+mendwright lists at most 40 elements of the step's role from the captured page, one short line each (tag, text, label, id, name, test id, aria-label, link path, the row or heading it sits under, its landmark, whether it is hidden).
+The model gets that list and the step: the key, the role, the old selectors, the expected text and `intent=` if set, the fingerprint mendwright saved when the selector last matched, and the page path now and where the element was last found.
+It answers with the number of the element the step meant, or says that none fits and why.
+mendwright then builds the XPath for that element itself, from its id, test id, name, aria-label, label, text or the row or heading around it, never from its position, and checks it like any other heal.
+
+The model is built from this repository with the recipe in [training/README.md](../training/README.md), which also has its accuracy. Once it exists in Ollama:
+
+```bash
+export MENDWRIGHT_LOCAL_MODEL=mendwright-selector   # the name you gave it in `ollama create`
+mendwright doctor                                    # LocalModelProvider (mendwright selector model in Ollama)
+```
+
+In code, `LocalModelProvider(model="mendwright-selector", base_url="http://localhost:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST`.
+
+Two things differ from the other providers:
+
+- It is the only provider that gets the key's fingerprint. A model on your own machine needs it to compare, and the fingerprint never goes to a hosted model or a gateway.
+- When the model says no element fits, the heal is declined with `the local model says no element on this page fits:` and the reason (the element isn't on the page, several fit equally, or the step seems to have moved to another page). When mendwright's checks refuse the element it picked because it isn't visible or isn't unique on the live page, the model is asked once more without that element. After any other refusal it doesn't guess again.
 
 ### Direct or gateway
 
