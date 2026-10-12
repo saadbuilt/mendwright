@@ -1008,7 +1008,7 @@ def fam_grid(g):
     g.block = 'filters'
     brands = list(BRAND_NAMES)
     g.rng.shuffle(brands)
-    filters = [g.check('flt.' + slugify(b), 'in_stock', area='filters', text=b, item=b) for b in brands[:g.rng.randrange(3, 6)]]
+    filters = [g.check('flt.' + slugify(b), 'filter_option', area='filters', text=b, item=b) for b in brands[:g.rng.randrange(3, 6)]]
     side = h('aside', {'class': g.cls('filters'), 'aria-label': g.phrase('h_filters')},
              h('h2', None, g.phrase('h_filters')), h('fieldset', None, h('legend', None, g.phrase('h_brand')), *filters),
              g.check('flt.stock', 'in_stock', area='filters'),
@@ -1283,7 +1283,7 @@ def fam_search(g):
                          g.para('… ' + query + ' …'),
                          g.button(k + '.save', 'save_result', area='results', item=name, variant='', icon=g.rng.random() < 0.5)))
     filters = h('aside', {'class': g.cls('filters')}, h('h2', None, g.phrase('h_filters')),
-                *[g.check('sf.' + slugify(c), 'in_stock', area='filters', text=c, item=c) for c in CATEGORIES[:g.rng.randrange(2, 5)]],
+                *[g.check('sf.' + slugify(c), 'filter_option', area='filters', text=c, item=c) for c in CATEGORIES[:g.rng.randrange(2, 5)]],
                 g.button('sf.clear', 'clear_filters', area='filters', variant=''))
     more = g.button('srch.more', 'load_more', area='results', variant='secondary')
     return [site_header(g, shop=g.rng.random() < 0.5),

@@ -97,7 +97,13 @@ def informative(sc, bundle):
     """True when the step without its fingerprint still names the element: its key,
     selectors or expected text share a word with the control's meaning or its item."""
     words = step_words(dict(bundle, fingerprint=None))
-    return bool(words & _concept_words(sc))
+    return bool((words & _concept_words(sc)) - _STOP)
+
+
+# Words that say nothing about which control is meant.
+_STOP = {'with', 'your', 'the', 'for', 'and', 'you', 'our', 'this', 'that', 'to', 'in', 'on', 'of',
+         'my', 'me', 'an', 'or', 'now', 'all', 'new', 'is', 'it', 'by', 'at', 'from', 'us', 'we',
+         'more', 'here', 'get', 'go'}
 
 _MARK = re.compile(r'\s' + TRUTH_ATTR + r'="1"')
 SPLIT_BASE = {'train': 0, 'val': 50_000_000, 'test': 90_000_000}

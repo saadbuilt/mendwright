@@ -43,7 +43,7 @@ def hf_predict(rows, base, adapter, batch=8, max_new=16):
     from transformers import AutoTokenizer
 
     from train import load_model
-    tok = AutoTokenizer.from_pretrained(adapter or base)
+    tok = AutoTokenizer.from_pretrained(base)
     tok.padding_side = 'left'
     model = load_model(base, adapter=adapter, train=False)
     outs = [None] * len(rows)
@@ -82,7 +82,7 @@ def ollama_predict(rows, model, host='http://localhost:11434', options=None):
             data = json.loads(resp.read().decode('utf-8'))
         times.append(time.perf_counter() - t0)
         outs.append(((data.get('message') or {}).get('content')) or '')
-        if n % 200 == 0:
+        if n % 50 == 0:
             print('  %d/%d' % (n, len(rows)), flush=True)
     return outs, times
 

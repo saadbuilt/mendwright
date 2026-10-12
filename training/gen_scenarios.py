@@ -45,7 +45,7 @@ POSITIVE_MUTATIONS = {
     'tag': 6, 'attrs': 8, 'decoys': 7, 'hidden_dup': 5, 'ids_global': 4, 'label_mode': 3,
     'reorder_items': 4, 'overlay': 3,
 }
-NEGATIVE_KINDS = {'removed': 27, 'near_danger': 22, 'ambiguous': 13, 'moved': 26, 'interstitial': 12}
+NEGATIVE_KINDS = {'removed': 24, 'near_danger': 19, 'ambiguous': 11, 'moved': 50, 'interstitial': 12}
 
 KIND_WEIGHT = {'button': 34, 'link': 18, 'input': 24, 'checkbox': 9, 'switch': 4, 'radio': 4,
                'select': 7, 'textarea': 3}
@@ -636,7 +636,7 @@ class Scenario(dict):
 
 # Controls in the site chrome: they are on every page of the site, so a step on one of them
 # never moves to another page.
-CHROME = ('hdr.', 'ftr.', 'side.', 'top.', 'mob.', 'ck.', 'nl.')
+CHROME = ('hdr.', 'ftr.', 'side.', 'top.', 'mob.', 'mega.', 'ck.', 'nl.')
 
 
 def make(seed, split="train", twin_rate=0.2):
@@ -687,7 +687,7 @@ def make(seed, split="train", twin_rate=0.2):
                        with_urls, kind=kind)
         if sc:
             out.append(sc)
-    if out and out[0]['kind'] != 'ambiguous' and rng.random() < 0.06:
+    if out and out[0]['kind'] not in ('ambiguous', 'moved') and rng.random() < 0.06:
         # A few steps are a key met for the first time, described only by intent=.
         out[0] = first_use(out[0], rng)
     return out
@@ -719,6 +719,8 @@ def _positive(rng, seed, split, site, family, content, vocab, overlays1, uid, co
     pool = dict(POSITIVE_MUTATIONS)
     if item is None:
         pool.pop('reorder_items', None)
+    else:
+        pool.pop('move', None)   # into another row or card, it would belong to that item
     if len(CONCEPTS[concept].variants(site.lang)) < 2:
         pool.pop('reword', None)
     while len(muts) < n:
@@ -934,12 +936,19 @@ def _negative(rng, seed, split, site, family, content, vocab, overlays1, uid, co
         if not op(root, g2):
             if kind in ('near_danger', 'ambiguous'):
                 return None
-    # The target must be gone from v2 (the moved page may hold a control with the same uid).
+    # The target must be gone from v2: a page the step "moved" to that still has the same
+    # control (site chrome on every page) is not a negative.
     for el in root.walk():
-        if el.uid == uid and kind != 'moved' and target_family == family:
-            if kind in ('near_danger', 'ambiguous'):
-                return None
+        if el.uid == uid and kind in ('near_danger', 'ambiguous', 'moved', 'interstitial'):
+            return None
         el.attrs.pop(TRUTH_ATTR, None)
+    if kind in ('removed', 'near_danger') and item is None:
+        # Another control with the same meaning on the page (a second sign-in link, the
+        # hero and the header call to action) could fairly be picked: not a clean negative.
+        skip = ('decoy.', 'dup.', 'inject.', 'mob.', 'mega.')
+        if any(c['concept'] == concept and c['uid'] != uid and not c['uid'].startswith(skip)
+               and c.get('item') is None for c in g2.controls):
+            return None
     v2 = document(g2, root.kids)
     v2_doc = lxml.html.document_fromstring(v2)
     selectors, el1 = choose_selectors(rng, v1m, v2_doc, False)

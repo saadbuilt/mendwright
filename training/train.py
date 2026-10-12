@@ -135,6 +135,7 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=17)
     parser.add_argument('--mem-fraction', type=float, default=0.8)
     parser.add_argument('--resume', action='store_true', help='go on from RUN_DIR/checkpoint')
+    parser.add_argument('--init', help='start from this LoRA adapter (a later round) instead of a new one')
     args = parser.parse_args(argv)
 
     out = Path(args.out)
@@ -168,8 +169,10 @@ def main(argv=None):
     if args.resume and state_file.is_file():
         resume = json.loads(state_file.read_text(encoding='utf-8'))
         log(fh, 'resuming from %s at step %d (example %d)' % (ckpt, resume['step'], resume['micro']))
-    model = load_model(args.base, adapter=str(ckpt) if resume else None, train=True, rank=args.rank,
-                       alpha=args.alpha)
+    start = str(ckpt) if resume else (args.init or None)
+    if start and not resume:
+        log(fh, 'starting from adapter ' + start)
+    model = load_model(args.base, adapter=start, train=True, rank=args.rank, alpha=args.alpha)
     params = [p for p in model.parameters() if p.requires_grad]
     log(fh, 'trainable params %.1fM' % (sum(p.numel() for p in params) / 1e6))
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0, betas=(0.9, 0.999))

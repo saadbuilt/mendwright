@@ -79,6 +79,7 @@ load_more|button|load-more/show-more/more|Load more/Show more|Mehr laden/Mehr an
 search|input:search|search/q/search-input/query/site-search|Search/Search products/What are you looking for?|Suchen/Suche|Rechercher|Buscar|Pesquisar/Buscar|Cerca|Zoeken
 search_button|button|search-button/search-submit/do-search|Search/Go|Suchen|Rechercher|Buscar|Pesquisar|Cerca|Zoeken
 view_cart|link|cart/view-cart/bag/basket|Cart/View cart/Bag/Basket|Warenkorb|Panier|Carrito/Cesta|Carrinho|Carrello|Winkelwagen
+filter_option|checkbox|filter/facet/brand-filter/category-filter|Filter/Brand/Category|Filter|Filtre|Filtro|Filtro|Filtro|Filter
 in_stock|checkbox|in-stock/available/stock-only|In stock only/Hide out of stock items|Nur verfügbare Artikel|En stock uniquement|Solo en stock|Somente em estoque|Solo disponibili|Alleen op voorraad
 save_changes|button|save/save-changes/update-profile/save-settings|Save changes/Save/Update profile/Save settings|Änderungen speichern/Speichern|Enregistrer les modifications/Enregistrer|Guardar cambios/Guardar|Salvar alterações/Salvar|Salva modifiche/Salva|Wijzigingen opslaan/Opslaan
 save_address|button|save-address/address-save|Save address/Save this address|Adresse speichern|Enregistrer l'adresse|Guardar dirección|Salvar endereço|Salva indirizzo|Adres opslaan
