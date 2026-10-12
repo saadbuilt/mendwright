@@ -359,14 +359,22 @@ class AsyncHealer:
         return self._core._knows(key)
 
     async def _peek_visible(self, key):
-        """For heal.page's is_visible(): True when one of key's stored selectors shows one
-        visible element right now. No waiting and no heal."""
+        """Healer._peek_visible(), awaited: no wait, no heal, no scrolling, and nothing
+        recorded in the store."""
         async with self._lock:
-            try:
-                native = await self._resolve(key, 0, 0)
-                return bool(await _act_on(self._driver, native, 'is_visible'))
-            except Exception:
-                return False
+            require_visible = _require_visible(self.store, key)
+            runnable, _errors = _split_runnable(key, self.store.candidates(key))
+            for candidate in runnable:
+                try:
+                    native = await _match_handle(self._driver, candidate, require_visible)
+                except Exception:
+                    continue
+                if native is not None:
+                    try:
+                        return bool(await _act_on(self._driver, native, 'is_visible'))
+                    except Exception:
+                        return False
+            return False
 
     @property
     def timeout_ms(self) -> int:

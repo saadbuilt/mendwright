@@ -22,8 +22,10 @@ playwright's expect(heal.page) still works. .native is the real object.
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 
+from .exceptions import AttentionRequired
 from .facade import ACTIONS
 from .selectors import InvalidSelector, check_syntax
 
@@ -53,9 +55,11 @@ def _healable(selector):
 
 
 def _timeout_ms(kwargs):
-    """Playwright's timeout= (milliseconds) as the lookup's timeout_ms, or None."""
+    """Playwright's timeout= (milliseconds) as the lookup's timeout_ms, or None for the
+    Healer's own. timeout=0 means no limit in Playwright, so it gives None too: it must not
+    turn into a lookup that gives up at once and heals a page that is still loading."""
     value = kwargs.get('timeout')
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
         return int(value)
     return None
 
@@ -243,20 +247,52 @@ def selenium_selector(by, value):
     return None
 
 
+@functools.lru_cache(maxsize=None)
+def _not_found_class(selenium_error):
+    """An error class that is both AttentionRequired and selenium's
+    NoSuchElementException, so code that catches either still does."""
+
+    class ElementNotFound(AttentionRequired, selenium_error):
+        def __init__(self, message):
+            AttentionRequired.__init__(self, message)
+            self.msg, self.screen, self.stacktrace = message, None, None
+
+        def __str__(self):
+            return self.msg
+
+    ElementNotFound.__module__ = __name__
+    return ElementNotFound
+
+
+def not_found_error(exc):
+    """exc (an AttentionRequired) as one that is also selenium's NoSuchElementException,
+    or exc itself when selenium cannot be imported."""
+    try:
+        from selenium.common.exceptions import NoSuchElementException
+    except Exception:
+        return exc
+    return _not_found_class(NoSuchElementException)(str(exc))
+
+
 class HealingDriver(_Proxy):
     """What heal.driver returns for a Selenium WebDriver: see the module docstring."""
 
     def find_element(self, by=BY_ID, value=None):
         """driver.find_element(by, value), healed for By.XPATH, By.CSS_SELECTOR, By.ID and
         By.NAME: it waits up to the Healer's timeout_ms, heals a selector that broke, and
-        returns the WebElement (a FramedElement inside an iframe). It raises
-        AttentionRequired when the element cannot be found or healed."""
+        returns the WebElement (a FramedElement inside an iframe). When the element cannot
+        be found or healed it raises AttentionRequired, which is also a selenium
+        NoSuchElementException, so except clauses and WebDriverWait that expect one still
+        work."""
         selector = selenium_selector(by, value)
         if selector is None or not _healable(selector):
             return self._mw_target.find_element(by, value)
         __tracebackhide__ = True
         key = str(by) + '=' + str(value)
-        return self._mw_healer.locator(key, selector).native
+        try:
+            return self._mw_healer.locator(key, selector).native
+        except AttentionRequired as exc:
+            raise not_found_error(exc) from exc
 
     def __repr__(self):
         return '<HealingDriver ' + repr(self._mw_target) + '>'
@@ -265,4 +301,4 @@ class HealingDriver(_Proxy):
 _PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator, HealingDriver)
 
 __all__ = ['HealingPage', 'HealingLocator', 'AsyncHealingPage', 'AsyncHealingLocator',
-           'HealingDriver', 'selenium_selector', 'unwrap']
+           'HealingDriver', 'selenium_selector', 'not_found_error', 'unwrap']

@@ -481,13 +481,23 @@ class Healer:
             return False
 
     def _peek_visible(self, key):
-        """For heal.page's is_visible(): True when one of key's stored selectors shows one
-        visible element right now. No waiting and no heal."""
-        try:
-            native = resolve(self.store, self._driver, key, timeout_ms=0, poll_ms=0)
-            return bool(driver_act_on(self._driver, native, 'is_visible'))
-        except Exception:
-            return False
+        """For heal.page's is_visible(): True when the first of key's stored selectors that
+        matches one element shows it visible right now. Like Playwright's is_visible(): no
+        wait, no heal, no scrolling, and nothing recorded in the store."""
+        from .resolver import _match_handle, _require_visible, _split_runnable
+        require_visible = _require_visible(self.store, key)
+        runnable, _errors = _split_runnable(key, self.store.candidates(key))
+        for candidate in runnable:
+            try:
+                native = _match_handle(self._driver, candidate, require_visible)
+            except Exception:
+                continue
+            if native is not None:
+                try:
+                    return bool(driver_act_on(self._driver, native, 'is_visible'))
+                except Exception:
+                    return False
+        return False
 
     def interrupt(self, key: str, selector: Selector, *, action: str = 'click',
                   args: Sequence[Any] = (), role: Role | None = None) -> None:

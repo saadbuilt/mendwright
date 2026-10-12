@@ -76,3 +76,17 @@ def test_heal_driver_runs_an_unchanged_script(tab, store_file, stub_provider):
     assert tab.checked(V2_CHECKBOX) is True
     assert len(provider.bundles) == 1
     assert len(driver.find_elements(By.CSS_SELECTOR, 'input')) == 3   # passes through
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_missing_element_is_still_a_no_such_element(tab, store_file, stub_provider):
+    from selenium.common.exceptions import NoSuchElementException
+    from selenium.webdriver.common.by import By
+    tab.load(SIGNUP_V1)
+    driver = _open(tab, stub_provider(None), store_file).driver
+    try:
+        driver.find_element(By.ID, 'promo-close')       # an optional element, not there
+    except NoSuchElementException as exc:
+        error = exc
+    assert isinstance(error, mendwright.AttentionRequired)
+    assert str(error).startswith('No matching element for: id=promo-close')

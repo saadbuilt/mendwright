@@ -142,10 +142,32 @@ def test_is_visible_never_waits_or_heals(make_page, tmp_path, stub_provider):
     page.set_html(V2)
     assert heal.page.is_visible('#terms') is False            # broken, and no heal is tried
     assert provider.bundles == []
-    heal.page.check('#terms', timeout=0)                      # an action heals it
+    heal.page.check('#terms', timeout=1)                      # an action heals it
     assert heal.page.is_visible('#terms') is True             # now through the saved heal
     assert heal.page.locator('#terms').is_visible() is True
     assert page.visible_calls == ['#go']
+
+
+def test_is_visible_does_not_scroll_or_write_the_store(make_page, tmp_path, monkeypatch):
+    page = Page(make_page, V1)
+    heal = _open(page, tmp_path)
+    heal.page.check('#terms')
+    store_file = tmp_path / 'o.json'
+    before = store_file.read_bytes()
+    scrolls = []
+    locator_type = type(page.locator('#x'))
+    monkeypatch.setattr(locator_type, 'scroll_into_view_if_needed',
+                        lambda self, **kwargs: scrolls.append(self._selector), raising=False)
+    assert heal.page.is_visible('#terms') is True
+    assert heal.page.locator('#terms').is_visible() is True
+    assert scrolls == [] and store_file.read_bytes() == before
+
+
+def test_playwright_timeout_zero_means_the_healer_s_own_timeout():
+    from mendwright.proxies import _timeout_ms
+    assert _timeout_ms({'timeout': 0}) is None        # no limit in Playwright, not "give up now"
+    assert _timeout_ms({'timeout': 2500}) == 2500
+    assert _timeout_ms({}) is None and _timeout_ms({'timeout': True}) is None
 
 
 def test_a_step_that_cannot_heal_raises_attention_required(make_page, tmp_path, stub_provider):
@@ -348,3 +370,13 @@ def test_heal_driver_passes_everything_else_through(tmp_path):
     assert driver.current_url == 'https://example.test/'
     with pytest.raises(AttentionRequired, match='No matching element for: id=missing'):
         driver.find_element('id', 'missing')
+
+
+def test_a_missing_element_is_also_selenium_s_no_such_element(tmp_path):
+    exceptions = pytest.importorskip('selenium.common.exceptions')
+    heal = _open(WebDriver(V1), tmp_path)
+    with pytest.raises(exceptions.NoSuchElementException) as info:
+        heal.driver.find_element('id', 'missing')
+    assert isinstance(info.value, AttentionRequired)
+    assert str(info.value).startswith('No matching element for: id=missing')
+    assert '-> ' in str(info.value)               # the reason mendwright did not heal
