@@ -936,7 +936,11 @@ def _order_summary(g, items):
              h('h2', None, g.phrase('h_summary')), h('ul', None, *rows),
              h('div', {'class': g.cls('coupon')},
                g.field('co.coupon', 'coupon_code', area='checkout'),
-               g.button('co.apply', 'apply_coupon', area='checkout', variant='secondary')))
+               g.button('co.apply', 'apply_coupon', area='checkout', variant='secondary')),
+             h('div', {'class': g.cls('coupon', 'giftcard')},
+               g.field('co.gift', 'giftcard_code', area='checkout'),
+               g.button('co.giftapply', 'apply_giftcard', area='checkout', variant='secondary'))
+             if g.rng.random() < 0.45 else None)
 
 
 def fam_checkout(g):
@@ -978,18 +982,26 @@ def fam_checkout(g):
 def fam_cart(g):
     g.block = 'cart'
     items = products(g, g.rng.randrange(2, 6))
+    variants = [g.pick(('Red', 'Navy', 'Olive', 'Black', 'Sand'), 'v', n) + ' / ' + g.pick(('S', 'M', 'L', 'XL'), 's', n)
+                for n in range(len(items) + 1)]
+    pairs = [(name, variants[i]) for i, name in enumerate(items)]
+    if g.rng.random() < 0.35:
+        # the same product twice, in two variants: only the variant tells the rows apart
+        pairs.insert(1, (items[0], variants[-1] if variants[-1] != variants[0] else 'Grey / M'))
     rows = []
-    for i, name in enumerate(items):
-        k = 'cart.' + slugify(name)
+    for i, (name, variant) in enumerate(pairs):
+        item = name + ' (' + variant + ')' if [n for n, _ in pairs].count(name) > 1 else name
+        k = 'cart.' + slugify(item)
         g.block = 'cart-item'
         rows.append(h('li', {'class': g.cls('row', 'item'), 'data-sku': None if g.rng.random() < 0.5 else 'SKU-' + str(1000 + i)},
                       h('img', {'src': '/img/' + slugify(name) + '.jpg', 'alt': name}),
                       h('div', {'class': g.cls('item-info')},
-                        g.link(k + '.title', 'products', '/products/' + slugify(name), area='cart', item=name, text=name),
+                        g.link(k + '.title', 'products', '/products/' + slugify(name), area='cart', item=item, text=name),
+                        h('p', {'class': g.cls('variant')}, variant) if g.rng.random() < 0.7 or item != name else None,
                         h('span', {'class': g.cls('price')}, price(g))),
-                      g.field(k + '.qty', 'quantity', area='cart', item=name, value='1'),
-                      g.button(k + '.remove', 'remove_item', area='cart', item=name, variant='', icon=g.rng.random() < 0.4),
-                      g.button(k + '.later', 'save_for_later', area='cart', item=name, variant='') if g.rng.random() < 0.4 else None))
+                      g.field(k + '.qty', 'quantity', area='cart', item=item, value='1'),
+                      g.button(k + '.remove', 'remove_item', area='cart', item=item, variant='', icon=g.rng.random() < 0.4),
+                      g.button(k + '.later', 'save_for_later', area='cart', item=item, variant='') if g.rng.random() < 0.4 else None))
     g.block = 'cart'
     summary = h('aside', {'class': g.cls('summary')}, h('h2', None, g.phrase('h_summary')),
                 g.field('cart.coupon', 'coupon_code', area='cart') if g.rng.random() < 0.6 else None,
@@ -1015,7 +1027,12 @@ def fam_grid(g):
              g.button('flt.apply', 'apply_filters', area='filters'),
              g.button('flt.clear', 'clear_filters', area='filters', variant='secondary'))
     cards = []
-    for name in products(g, g.rng.randrange(12, 25) if g.dense else g.rng.randrange(4, 9)):
+    names = products(g, g.rng.randrange(12, 25) if g.dense else g.rng.randrange(4, 9))
+    if g.rng.random() < 0.35:
+        # a near twin of one product ('Trail Runner 2' and 'Trail Runner 2 GTX')
+        twin = names[0] + ' ' + g.pick(('GTX', 'Pro', 'Mini', 'Max', 'Lite', 'XL', 'Kids'), 'twin')
+        names.insert(g.rng.randrange(len(names) + 1), twin)
+    for name in names:
         k = 'card.' + slugify(name)
         g.block = 'product-card'
         cards.append(h('li' if g.rng.random() < 0.5 else 'article',
@@ -1093,7 +1110,10 @@ def fam_table(g):
         email = slugify(name).replace('-', '.') + '@' + g.site.brand.lower() + '.example'
         rows.append(h('tr', {'class': g.cls('row'), 'data-id': None if g.rng.random() < 0.6 else str(4000 + i * 13)},
                       h('td', None, g.check(k + '.select', 'select_all', area='row', item=name, text='') if head_cb is not None else None),
-                      h('td', None, h('div', {'class': g.cls('person')}, h('span', {'class': g.cls('name')}, name),
+                      h('td', None, h('div', {'class': g.cls('person')},
+                                      h('span', {'class': g.cls('avatar'), 'aria-hidden': 'true'},
+                                        ''.join(w[0] for w in name.split()[:2])) if g.style.icons else None,
+                                      h('span', {'class': g.cls('name')}, name),
                                       h('span', {'class': g.cls('email')}, email))),
                       h('td', None, g.pick(ROLES_TEXT, 'role', i)),
                       h('td', None, h('span', {'class': g.cls('badge')}, g.pick(STATUS_TEXT, 'st', i))),
@@ -1574,6 +1594,27 @@ def fam_orders(g):
             site_footer(g)], 'account/orders'
 
 
+def fam_review(g):
+    """The last checkout step: what was entered, one section per part with an Edit link."""
+    g.block = 'review'
+    sections = []
+    for key, text in (('h_contact_info', 'ada@example.com'), ('h_shipping', '12 Harbour Road, Bristol'),
+                      ('h_billing', 'Same as delivery'), ('h_payment', 'Visa ending 4242'),
+                      ('h_shipping_method', 'Standard, 3 to 5 days')):
+        if g.rng.random() < 0.15:
+            continue
+        name = g.phrase(key)
+        sections.append(h('section', {'class': g.cls('section', 'review'), 'id': key[2:] + '-review' if g.rng.random() < 0.4 else None},
+                          h('h2', None, name), g.para(text),
+                          g.link('rv.' + key[2:] + '.edit', 'edit_section', '/checkout#' + key[2:], area='review', item=name)))
+    actions = h('div', {'class': g.cls('actions')},
+                g.check('rv.terms', 'accept_terms', area='review') if g.rng.random() < 0.5 else None,
+                g.button('rv.place', 'place_order', area='review', submit=True))
+    return [site_header(g, shop=True, minimal=g.rng.random() < 0.5),
+            h('main', {'class': g.cls('main')}, g.heading(1, g.phrase('h_review')), *sections, actions,
+              _order_summary(g, products(g, g.rng.randrange(1, 3))))], 'checkout/review'
+
+
 FAMILIES = {
     'login': fam_login, 'signup': fam_signup, 'checkout': fam_checkout, 'cart': fam_cart,
     'grid': fam_grid, 'settings': fam_settings, 'table': fam_table, 'dashboard': fam_dashboard,
@@ -1581,13 +1622,14 @@ FAMILIES = {
     'article': fam_article, 'reset': fam_reset, 'twofactor': fam_twofactor,
     'contact': fam_contact, 'pricing': fam_pricing, 'inbox': fam_inbox, 'booking': fam_booking,
     'files': fam_files, 'board': fam_board, 'product': fam_product, 'orders': fam_orders,
+    'review': fam_review,
 }
 # Families held out of training: the test split uses them (with held-out names) to measure
 # how the model does on page layouts it never saw.
 TEST_FAMILIES = ('search', 'wizard', 'article')
 TRAIN_FAMILIES = ('login', 'signup', 'checkout', 'cart', 'grid', 'settings', 'table', 'dashboard',
                   'dialog', 'landing', 'reset', 'twofactor', 'contact', 'pricing', 'inbox', 'booking',
-                  'files', 'board', 'product', 'orders')
+                  'files', 'board', 'product', 'orders', 'review')
 # For a step that moved to another page: pages a flow goes to from each family.
 RELATED = {
     'login': ('twofactor', 'reset', 'signup', 'dashboard'),
@@ -1613,6 +1655,7 @@ RELATED = {
     'board': ('dashboard', 'files'),
     'product': ('cart', 'grid', 'checkout'),
     'orders': ('product', 'cart', 'checkout'),
+    'review': ('checkout', 'cart'),
 }
 
 

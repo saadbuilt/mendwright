@@ -255,21 +255,40 @@ def _inside(node, el):
     return any(a is el for a in node.iterancestors()) or any(a is node for a in el.iterancestors())
 
 
-def _item_label(item, el):
-    """A short name for the row, list item or card that holds el: its first heading, its
-    title link, the first piece of text outside the controls, or an image's alt text."""
+def _decorative(node, item):
+    """True when node is in a subtree marked aria-hidden="true" (an avatar's initials, an
+    icon) below item."""
+    for anc in [node] + list(node.iterancestors()):
+        if anc is item:
+            return False
+        if (anc.get('aria-hidden') or '').lower() == 'true':
+            return True
+    return False
+
+
+def _item_texts(item, el):
+    """The texts that name the row, list item or card that holds el, best first: its
+    headings, its link texts, then the other text outside controls, then image alt text."""
+    out = []
+
+    def add(text):
+        text = _SPACE.sub(' ', text or '').strip()
+        if text and text not in out:
+            out.append(text)
+
     for h in item.iter(*_HEADINGS):
-        if not _inside(h, el):
-            text = text_of(h)
-            if text:
-                return text
+        if not _inside(h, el) and not _decorative(h, item):
+            add(text_of(h))
     for node in item.iter('a'):
-        if not _inside(node, el):
+        if (node.get('role') or 'link').lower() != 'link':
+            continue   # a link styled as a button is an action, not the item's name
+        if not _inside(node, el) and not _decorative(node, item):
             text = text_of(node)
-            if text and len(text) > 1:
-                return text
+            if len(text) > 1:
+                add(text)
+    short = []
     for node in item.iter():
-        if not isinstance(node.tag, str) or _inside(node, el):
+        if not isinstance(node.tag, str) or _inside(node, el) or _decorative(node, item):
             continue
         if _is_control(node) or node.tag in ('option', 'script', 'style'):
             continue
@@ -277,12 +296,28 @@ def _item_label(item, el):
                if a is not item and any(b is item for b in a.iterancestors())):
             continue
         text = _SPACE.sub(' ', node.text or '').strip()
-        if text and len(text) > 1:
-            return text
+        if len(text) >= 3:
+            add(text)
+        elif len(text) > 1:
+            short.append(text)
     for img in item.iter('img'):
         if _usable(img.get('alt')):
-            return img.get('alt')
-    return ''
+            add(img.get('alt'))
+    for text in short:   # initials and the like, only when nothing else names the item
+        add(text)
+    return out
+
+
+def _item_label(item, el):
+    """A short name for the row, list item or card that holds el: its first text (see
+    _item_texts), and the second one too when the first is short, so two rows of the same
+    product in different variants ('Canvas cap · Red / M') stay apart."""
+    texts = _item_texts(item, el)
+    if not texts:
+        return ''
+    if len(texts) > 1 and len(texts[0]) < 24:
+        return texts[0] + ' \u00b7 ' + texts[1]
+    return texts[0]
 
 
 _HEADING_XPATH = './/h1|.//h2|.//h3|.//h4|.//h5|.//h6|.//legend|.//*[@role="heading"]'
@@ -316,10 +351,50 @@ _NAMED_ROLES = ('dialog', 'alertdialog', 'region', 'group', 'radiogroup', 'navig
                 'tabpanel', 'form', 'search')
 
 
+_FIELD_TAGS = ('input', 'select', 'textarea')
+
+
+def _paired_field(el):
+    """The label of the form field a button or link works on, when the field sits just
+    before it (a code box and its Apply button), else ''."""
+    if _role_of(el) not in ('button', 'link'):
+        return ''
+    levels = [el]
+    parent = el.getparent()
+    if parent is not None and len([k for k in parent if isinstance(k.tag, str)]) <= 2:
+        levels.append(parent)
+    for node in levels:
+        for sib in list(node.itersiblings(preceding=True))[:1]:
+            if not isinstance(sib.tag, str):
+                continue
+            fields = [sib] if sib.tag in _FIELD_TAGS else sib.xpath('.//input|.//select|.//textarea')
+            fields = [f for f in fields if (f.get('type') or '').lower() not in (
+                'hidden', 'submit', 'button', 'checkbox', 'radio', 'reset', 'image')]
+            if len(fields) == 1:
+                label = _field_label(fields[0]) or fields[0].get('placeholder') or fields[0].get('aria-label')
+                if label and _usable(label, 80):
+                    return label
+            if fields:
+                return ''
+    return ''
+
+
 def _context(el):
-    """What el sits in: the row, list item or card it belongs to, else the nearest heading
-    before it (looking outwards, but not past a header, nav, footer, aside or dialog), else
-    the name of the landmark or group around it."""
+    """What el sits in: the row, list item or card it belongs to, else the form field it
+    belongs to (the code box before an Apply button), else the nearest heading before it
+    (looking outwards, but not past a header, nav, footer, aside or dialog), else the name
+    of the landmark or group around it."""
+    for depth, anc in enumerate(el.iterancestors()):
+        if not isinstance(anc.tag, str) or anc.tag in ('body', 'html') or depth > 8:
+            break
+        if anc.tag in _ITEM_TAGS or (anc.get('role') or '').lower() in _ITEM_ROLES:
+            label = _item_label(anc, el)
+            if label:
+                return 'item ' + json.dumps(_clip(label, 32), ensure_ascii=False)
+            break
+    field = _paired_field(el)
+    if field:
+        return 'for ' + json.dumps(_clip(field, 32), ensure_ascii=False)
     node = el
     for depth, anc in enumerate(el.iterancestors()):
         if not isinstance(anc.tag, str) or anc.tag in ('body', 'html') or depth > 14:
@@ -479,8 +554,9 @@ def feature_line(features):
         else:
             parts.append(key + '=' + json.dumps(value, ensure_ascii=False))
     line = ' '.join(parts)
-    if features.get('in'):
-        line += ' | in ' + features['in']
+    ctx = features.get('in')
+    if ctx:
+        line += (' | ' if ctx.startswith('for ') else ' | in ') + ctx
     if features.get('region'):
         line += ' | ' + features['region']
     flags = [features[k] for k in ('hidden', 'disabled', 'current') if features.get(k)]

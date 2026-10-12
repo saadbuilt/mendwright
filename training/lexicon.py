@@ -193,6 +193,9 @@ switch_account|link|switch-account/other-account|Switch account/Use another acco
 age_yes|button|age-yes/over-18/enter-site|Yes, I am over 18/Enter site|Ja, ich bin über 18|Oui, j'ai plus de 18 ans|Sí, soy mayor de 18|Sim, tenho mais de 18|Sì, ho più di 18 anni|Ja, ik ben ouder dan 18
 age_no|button|age-no/under-18/leave-site|No, take me back/Leave|Nein|Non|No|Não|No|Nee
 stay_signed_in|button|stay-signed-in/keep-session/extend-session|Stay signed in/Keep me signed in|Angemeldet bleiben|Rester connecté|Seguir conectado|Continuar conectado|Resta connesso|Ingelogd blijven
+apply_giftcard|button|apply-giftcard/redeem-giftcard/giftcard-apply|Apply/Redeem|Einlösen/Anwenden|Appliquer|Aplicar|Aplicar|Applica|Toepassen
+giftcard_code|input:text|giftcard/gift-card/giftcard-number|Gift card number/Gift card code|Gutscheinkartennummer|Numéro de carte cadeau|Número de tarjeta regalo|Número do cartão-presente|Numero carta regalo|Cadeaukaartnummer
+edit_section|link|edit/change/edit-section|Edit/Change|Bearbeiten/Ändern|Modifier|Editar/Cambiar|Editar/Alterar|Modifica|Bewerken/Wijzigen
 subject|select|subject/topic/reason|Subject/Topic/What can we help with?|Betreff/Thema|Sujet/Objet|Asunto/Tema|Assunto|Oggetto/Argomento|Onderwerp
 message|textarea|message/body/your-message|Message/Your message/How can we help?|Nachricht/Ihre Nachricht|Message/Votre message|Mensaje/Tu mensaje|Mensagem/Sua mensagem|Messaggio/Il tuo messaggio|Bericht/Je bericht
 send_message|button|send/send-message/submit-message|Send message/Send/Submit request|Nachricht senden/Senden|Envoyer le message/Envoyer|Enviar mensaje/Enviar|Enviar mensagem/Enviar|Invia messaggio/Invia|Bericht versturen/Verzenden
@@ -243,7 +246,10 @@ NEIGHBOURS = {
     'buy_now': ('add_to_cart', 'add_to_wishlist'),
     'checkout': ('continue_shopping', 'update_cart', 'empty_cart'),
     'place_order': ('back', 'cancel', 'apply_coupon'),
-    'apply_coupon': ('remove_coupon', 'place_order'),
+    'apply_coupon': ('remove_coupon', 'place_order', 'apply_giftcard'),
+    'apply_giftcard': ('apply_coupon',),
+    'coupon_code': ('giftcard_code',),
+    'giftcard_code': ('coupon_code',),
     'continue': ('back', 'cancel', 'skip'),
     'back': ('continue', 'cancel'),
     'confirm': ('cancel', 'close', 'delete_project'),
@@ -386,6 +392,8 @@ h_comments|Comments/Join the discussion|Kommentare|Commentaires|Comentarios|Come
 h_reset|Reset your password/Forgot your password?|Passwort zurücksetzen|Réinitialiser votre mot de passe|Restablecer tu contraseña|Redefinir sua senha|Reimposta la password|Wachtwoord opnieuw instellen
 h_twofactor|Two-step verification/Enter your code|Bestätigung in zwei Schritten|Vérification en deux étapes|Verificación en dos pasos|Verificação em duas etapas|Verifica in due passaggi|Verificatie in twee stappen
 h_orders|Your orders/Order history|Ihre Bestellungen|Vos commandes|Tus pedidos|Seus pedidos|I tuoi ordini|Je bestellingen
+h_billing|Billing address/Invoice address|Rechnungsadresse|Adresse de facturation|Dirección de facturación|Endereço de cobrança|Indirizzo di fatturazione|Factuuradres
+h_review|Review your order/Check your details|Bestellung prüfen|Vérifiez votre commande|Revisa tu pedido|Revise seu pedido|Controlla il tuo ordine|Controleer je bestelling
 h_contact|Contact us/Get in touch/How can we help?|Kontakt/Kontaktieren Sie uns|Contactez-nous/Nous contacter|Contáctanos/Contacto|Fale conosco/Contato|Contattaci|Neem contact op
 h_pricing|Plans and pricing/Pricing/Choose your plan|Preise und Tarife/Preise|Tarifs/Nos offres|Planes y precios/Precios|Planos e preços/Preços|Piani e prezzi/Prezzi|Abonnementen en prijzen/Prijzen
 h_inbox|Inbox/Messages|Posteingang/Nachrichten|Boîte de réception/Messages|Bandeja de entrada/Mensajes|Caixa de entrada/Mensagens|Posta in arrivo/Messaggi|Inbox/Berichten

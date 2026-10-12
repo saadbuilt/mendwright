@@ -191,3 +191,28 @@ def test_redacted_values_are_never_used_in_an_xpath():
 @pytest.mark.parametrize('html', ['', '<html></html>', 'not html at all'])
 def test_an_empty_or_odd_page_gives_no_candidates(html):
     assert extract(bundle(html=html)) == []
+
+
+ROWS = """<html><body><main><table><tbody>
+<tr><td><span aria-hidden="true">CF</span><span>Canvas cap</span><p>Red / M</p></td>
+    <td><input type="number" aria-label="Quantity"><button>Remove</button></td></tr>
+<tr><td><span aria-hidden="true">CF</span><span>Canvas cap</span><p>Red / L</p></td>
+    <td><input type="number" aria-label="Quantity"><button>Remove</button></td></tr>
+</tbody></table>
+<aside><form><label for="gc">Gift card number</label><input id="gc"><button>Apply</button>
+<label for="pc">Promo code</label><input id="pc"><button>Apply</button>
+<input type="checkbox" id="t"><label for="t">Terms</label><button type="submit">Pay</button></form></aside>
+</main></body></html>"""
+
+
+def test_rows_are_named_by_their_text_without_decorative_initials():
+    lines = [c.line for c in extract({'key': 'remove', 'expectedRole': 'button', 'html': ROWS})]
+    assert lines[0] == 'button "Remove" | in item "Canvas cap · Red / M" | main'
+    assert lines[1] == 'button "Remove" | in item "Canvas cap · Red / L" | main'
+
+
+def test_a_button_next_to_a_text_field_names_that_field():
+    lines = [c.line for c in extract({'key': 'apply_coupon', 'expectedRole': 'button', 'html': ROWS})]
+    assert lines[2].startswith('button "Apply" | for "Gift card number" |')
+    assert lines[3].startswith('button "Apply" | for "Promo code" |')
+    assert ' for ' not in lines[4]   # a checkbox before a button is not what it works on
