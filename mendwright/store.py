@@ -6,10 +6,10 @@ writes to the seed file.
 Tool-agnostic: the set of destructive keys is injected (``destructive_keys``) rather
 than hardcoded, so the store can serve any tool.
 
-Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive) is
-saved in the override file next to the candidates, so the next process sees it, and so is
-where the key's element was last found (``set_last_page``: lastPage and pages). The file
-stays schema 2; the fields are optional. A key is destructive when the seed says
+Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive, intent
+and fingerprint) is saved in the override file next to the candidates, so the next process
+sees it, and so is where the key's element was last found (``set_last_page``: lastPage
+and pages). The file stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these.
 
@@ -28,6 +28,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .fingerprint import valid as _valid_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 
 logger = logging.getLogger('mendwright')
@@ -158,8 +159,11 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
 
 
 # Metadata fields saved in the override file: the ones set_meta() sets, and the pages
-# set_last_page() records.
-META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages')
+# set_last_page() records. intent is what the element is for, in words (locator(intent=));
+# fingerprint is what the element looked like the last time it matched (see
+# mendwright.fingerprint).
+META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
+               'fingerprint')
 
 # How many pages set_last_page() keeps per key, most recent first.
 MAX_PAGES = 5
@@ -188,6 +192,11 @@ def _meta_fields(entry):
     pages = _pages(entry.get('pages'))
     if pages:
         out['pages'] = pages
+    intent = entry.get('intent')
+    if isinstance(intent, str) and intent.strip():
+        out['intent'] = intent
+    if _valid_fingerprint(entry.get('fingerprint')):
+        out['fingerprint'] = entry['fingerprint']
     return out
 
 
@@ -274,7 +283,7 @@ class SelectorStore:
             e['expectedText'] = list(fields['expectedText'])
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
-        for name in ('lastPage', 'pages'):
+        for name in ('lastPage', 'pages', 'intent', 'fingerprint'):
             if name in fields:
                 e[name] = list(fields[name]) if name == 'pages' else fields[name]
 
@@ -296,7 +305,9 @@ class SelectorStore:
                 'stage': e.get('stage'), 'action': e.get('action'),
                 'maxCandidates': e.get('maxCandidates', 5),
                 'lastPage': e['lastPage'] if isinstance(e.get('lastPage'), str) else None,
-                'pages': _pages(e.get('pages'))}
+                'pages': _pages(e.get('pages')),
+                'intent': e['intent'] if isinstance(e.get('intent'), str) and e['intent'] else None,
+                'fingerprint': e['fingerprint'] if _valid_fingerprint(e.get('fingerprint')) else None}
 
     def _by_recency(self, key):
         e = self._data['selectors'].get(key)
@@ -357,16 +368,33 @@ class SelectorStore:
             'expectedRole': 'unknown', 'expectedText': [], 'destructive': key in self._destructive_keys,
             'maxCandidates': 5, 'stage': None, 'action': None, 'candidates': []})
 
-    def set_meta(self, key, *, role=None, text=None, destructive=None, stage=None, action=None):
+    def set_meta(self, key, *, role=None, text=None, destructive=None, stage=None, action=None,
+                 intent=None, fingerprint=None):
         """Set a key's metadata. None leaves a field as it is.
 
-        role, text and destructive are saved in the override file, so the next process
-        sees them; the file is written only when one of them changes. destructive=False
-        clears a flag an earlier set_meta() saved, but never one from the seed or from
-        destructive_keys: meta() still reports those keys as destructive. stage and
-        action stay in memory."""
+        role, text, destructive, intent and fingerprint are saved in the override file, so
+        the next process sees them; the file is written only when one of them changes.
+        destructive=False clears a flag an earlier set_meta() saved, but never one from the
+        seed or from destructive_keys: meta() still reports those keys as destructive.
+        intent is a description of the element in words; fingerprint a dict from
+        mendwright.fingerprint (anything else raises ValueError). stage and action stay in
+        memory."""
         e = self._entry(key)
         changed = {}
+        if intent is not None:
+            if not isinstance(intent, str) or not intent.strip():
+                raise ValueError('mendwright: intent must be a non-empty string, got '
+                                 + repr(intent) + '. Describe the element in words, for '
+                                 "example intent='the terms checkbox in the signup form'.")
+            e['intent'] = intent.strip()
+            changed['intent'] = e['intent']
+        if fingerprint is not None:
+            if not _valid_fingerprint(fingerprint):
+                raise ValueError('mendwright: set_meta(fingerprint=...) takes a fingerprint '
+                                 'from mendwright.fingerprint, got ' + type(fingerprint).__name__
+                                 + '. Build one with mendwright.fingerprint.of_element().')
+            e['fingerprint'] = fingerprint
+            changed['fingerprint'] = fingerprint
         if role is not None:
             e['expectedRole'] = role
             changed['expectedRole'] = role

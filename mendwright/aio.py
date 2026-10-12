@@ -46,6 +46,7 @@ from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
+from .fingerprint import valid as valid_fingerprint
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _cookie_preset, _healed_target_error,
                      _locator_args, _setup)
@@ -104,8 +105,9 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory), act_on for an interruption's action,
-    and run() for any other callable. describe is None when the async driver has none."""
+    handle, url, outer_html, describe, inventory, fingerprint), act_on for an
+    interruption's action, and run() for any other callable. describe and fingerprint are
+    None when the async driver has none."""
 
     timeout = 30.0
 
@@ -120,6 +122,8 @@ class SyncBridge:
             # and fails closed when that read fails. A custom async driver without one
             # keeps the count and visibility checks only.
             self.describe = None
+        if not callable(_member(driver, 'fingerprint')):
+            self.fingerprint = None
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -180,6 +184,9 @@ class SyncBridge:
     def inventory(self, limit=200):
         return self.run(self._driver.inventory, limit)
 
+    def fingerprint(self, selector, frame_chain=()):
+        return self.run(self._driver.fingerprint, selector, frame_chain)
+
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
         one, else as getattr(native, verb)(...), awaited on the event loop."""
@@ -237,15 +244,15 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                guardrails: Guardrails | None = None, journal: Any = None,
                rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
                timeout_ms: int | None = None, cookies: str | None = None,
-               heal_across_pages: bool = False) -> AsyncHealer:
+               heal_across_pages: bool = False, fingerprint: bool | None = None) -> AsyncHealer:
     """Wrap an async Playwright Page or Frame into an AsyncHealer. Await it inside the
     event loop that runs the page.
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
-    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE) and defaults as
-    mendwright.open(), cookies= and heal_across_pages= included. guard may be a plain or
-    an async callable; it runs on the event loop. The provider stays sync and is called in
-    a worker thread. A driver whose count, is_visible and handle are coroutine functions
+    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT)
+    and defaults as mendwright.open(), cookies=, heal_across_pages= and fingerprint=
+    included. guard may be a plain or an async callable; it runs on the event loop. The
+    provider stays sync and is called in a worker thread. A driver whose count, is_visible and handle are coroutine functions
     is used as it is.
     """
     preset = _cookie_preset(cookies, 'mendwright.aio.open()')
@@ -264,7 +271,8 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,
         journal=journal, rate_per_key_per_hour=rate_per_key_per_hour,
         rate_global_per_hour=rate_global_per_hour, timeout_ms=timeout_ms,
-        entry='mendwright.aio.open()', heal_across_pages=heal_across_pages)
+        entry='mendwright.aio.open()', heal_across_pages=heal_across_pages,
+        fingerprint=fingerprint)
     healer = AsyncHealer(page, driver, store, coord, timeout_ms=timeout_ms)
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
@@ -439,6 +447,7 @@ class AsyncHealer:
         await self._check_healed_target(key)
         await self._learn(key, roles)
         core._remember_page(key, await _url(self.driver))
+        await self._remember_fingerprint(key)
         return native
 
     async def _resolve_step(self, key, attempt, budget, timeout, poll_ms):
@@ -584,6 +593,20 @@ class AsyncHealer:
         if todo is None:
             return
         core._learn_from(key, roles, todo, await self._describe_winner(key))
+
+    async def _remember_fingerprint(self, key):
+        """Healer's fingerprint recording after a match, with the read awaited."""
+        core = self._core
+        target = core._fingerprint_target(key)
+        if target is None:
+            return
+        fp = None
+        if callable(_member(self.driver, 'fingerprint')):
+            try:
+                fp = await _awaited(self.driver.fingerprint(target, ()))
+            except Exception:
+                fp = None
+        core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)
 
     async def _describe_winner(self, key):
         target = self._core._winner_target(key)

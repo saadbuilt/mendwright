@@ -6,7 +6,10 @@ what it is given.
   not hidden; the pages stay small and load nothing from the network.
 - The grader: the oracle (it proposes the truth) gets every positive case right and
   declines every negative one; the none baseline misses every positive case and declines
-  every negative one; a proposer that picks another element is graded wrong.
+  every negative one; a proposer that picks another element is graded wrong. These run
+  with mendwright's fingerprint tier off, so only the proposer heals.
+- The fingerprint tier alone (the none baseline with the tier on, as mendwright.open()
+  runs it by default) makes no wrong heal and declines every negative case.
 - The flow cases (the step moved to another page) give each version its own address, and
   mendwright's page guard declines them before any model call.
 
@@ -117,7 +120,8 @@ def test_negative_cases_cover_removal_ambiguity_and_a_dangerous_neighbour():
 # --- the grader --------------------------------------------------------------------------------
 
 def test_the_oracle_gets_every_positive_case_and_declines_every_negative():
-    records = bench.run_cases(CASES, lambda case: bench.OracleProposer(case.truth))
+    records = bench.run_cases(CASES, lambda case: bench.OracleProposer(case.truth),
+                              fingerprint=False)
     outcomes = {r['id']: r['outcome'] for r in records}
     assert all(outcomes[c.id] == 'correct' for c in POSITIVE), outcomes
     assert all(outcomes[c.id] == 'declined' for c in NEGATIVE), outcomes
@@ -131,7 +135,7 @@ def test_the_oracle_gets_every_positive_case_and_declines_every_negative():
 
 
 def test_the_none_baseline_misses_every_positive_case_and_declines_every_negative():
-    records = bench.run_cases(CASES, bench.NoneProposer())
+    records = bench.run_cases(CASES, bench.NoneProposer(), fingerprint=False)
     for r in records:
         assert r['outcome'] == ('missed' if r['expected'] == 'heal' else 'declined'), r['id']
         assert r['healed_xpath'] is None
@@ -143,6 +147,36 @@ def test_the_none_baseline_misses_every_positive_case_and_declines_every_negativ
     summary = bench.summarize(records)
     assert (summary['correct'], summary['wrong'], summary['wrong_negative']) == (0, 0, 0)
     assert summary['missed'] == len(POSITIVE) and summary['declined'] == len(NEGATIVE)
+
+
+def test_the_fingerprint_tier_alone_makes_no_wrong_heal():
+    # The none baseline never proposes, so every heal here is the fingerprint tier's. It
+    # was tuned on these cases to make no wrong heal; the count of correct heals is the
+    # floor it reached then.
+    records = bench.run_cases(CASES, bench.NoneProposer())
+    summary = bench.summarize(records)
+    assert (summary['wrong'], summary['wrong_negative']) == (0, 0)
+    assert summary['declined'] == len(NEGATIVE)
+    assert summary['correct'] >= 21
+    assert summary['fingerprint_heals'] == summary['correct']
+    for r in records:
+        if r['outcome'] == 'correct':
+            assert r['healed_by'] == 'fingerprint' and r['model_calls'] == 0, r['id']
+            assert [p['source'] for p in r['proposals']] == ['fingerprint'], r['id']
+
+
+def test_the_fingerprint_tier_goes_before_the_model_and_leaves_it_the_rest():
+    records = bench.run_cases(CASES, lambda case: bench.OracleProposer(case.truth))
+    by_id = {r['id']: r for r in records}
+    assert all(by_id[c.id]['outcome'] == 'correct' for c in POSITIVE)
+    assert all(by_id[c.id]['outcome'] == 'declined' for c in NEGATIVE)
+    healed_by = {r['id']: r['healed_by'] for r in records if r['outcome'] == 'correct'}
+    assert set(healed_by.values()) == {'fingerprint', 'model'}
+    for r in records:
+        if r['healed_by'] == 'fingerprint':
+            assert r['model_calls'] == 0, r['id']
+        elif r['healed_by'] == 'model':
+            assert r['model_calls'] == 1, r['id']
 
 
 class OtherElement:
@@ -202,7 +236,8 @@ class HiddenFirst:
 def test_a_wrong_pick_the_gate_refuses_is_counted_and_the_retry_is_graded():
     case = BY_ID['hidden-dup-sticky-add-to-cart']
     hidden = "//div[@data-testid='sticky-buy-bar']//button"
-    record = bench.run_case(case, HiddenFirst(hidden, case.truth), bench.StandInPage())
+    record = bench.run_case(case, HiddenFirst(hidden, case.truth), bench.StandInPage(),
+                            fingerprint=False)
     assert record['outcome'] == 'correct'
     assert record['model_calls'] == 2
     assert record['gate_caught_wrong'] == 1
@@ -214,14 +249,16 @@ def test_a_wrong_pick_the_gate_refuses_is_counted_and_the_retry_is_graded():
 
 @pytest.mark.parametrize('case', FLOW, ids=lambda c: c.id)
 def test_the_page_guard_is_what_declines_a_flow_case(case):
-    # With the guard, no model call. Without it, the similarity baseline heals onto the
-    # similar element on the other page, which every check accepts.
+    # With the guard, no model call and no fingerprint heal. Without it, the similarity
+    # baseline heals onto the similar element on the other page, which every check
+    # accepts.
     guarded = bench.run_case(case, bench.SimilarityProposer(), bench.StandInPage())
     assert (guarded['outcome'], guarded['model_calls']) == ('declined', 0)
     assert guarded['decline_reason'].startswith("'" + case.key + "' was last found on "
                                                 + page_path(case.v1_url))
+    assert guarded['proposals'] == []
     across = bench.run_case(case, bench.SimilarityProposer(), bench.StandInPage(),
-                            heal_across_pages=True)
+                            heal_across_pages=True, fingerprint=False)
     assert (across['outcome'], across['model_calls']) == ('wrong_negative', 1)
 
 
@@ -294,7 +331,7 @@ def test_the_command_line_writes_results_and_the_report_reads_them(tmp_path, cap
     out = tmp_path / 'similarity.json'
     assert bench.main(['--provider', 'similarity', '--cases', 'near-dup-*', '--out', str(out)]) == 0
     printed = capsys.readouterr().out
-    assert '| similarity | standin |' in printed
+    assert '| similarity | on | standin |' in printed
     assert 'endpoint' not in printed   # a baseline makes no network call
     data = json.loads(out.read_text(encoding='utf-8'))
     assert data['format'] == 1 and data['provider_class'] == 'SimilarityProposer'
@@ -305,7 +342,7 @@ def test_the_command_line_writes_results_and_the_report_reads_them(tmp_path, cap
     md = tmp_path / 'RESULTS.md'
     assert report.main([str(out), '--out', str(md)]) == 0
     text = md.read_text(encoding='utf-8')
-    assert '| similarity baseline | StandInPage |' in text
+    assert '| similarity baseline + fingerprint | StandInPage |' in text
     assert 'python benchmarks/run.py --provider anthropic --model <model id>' in text
     assert '—' not in text
 

@@ -6,7 +6,7 @@ The corpus has 47 cases: 35 where a heal is the right answer and 12 where the ri
 
 ## Model runs
 
-None yet. The rows below are the two model-free baselines, which show what the harness and the gate do without a model. Model numbers will be added when the runs below have been made.
+None yet. The rows below are model-free runs, which show what the fingerprint tier, the harness and the gate do without a model. Model numbers will be added when the runs below have been made.
 
 To add a model run (the key and endpoint come from your environment, as in `mendwright doctor`):
 
@@ -18,26 +18,151 @@ python benchmarks/run.py --provider ollama --model <model name>
 python benchmarks/report.py
 ```
 
+Each of these runs the fingerprint tier first, as mendwright.open() does. Add --no-fingerprint
+to measure the model alone.
+
 ## All runs
 
-| Provider | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives | Avg model calls | Avg latency | Avg prompt chars (est. tokens) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| similarity baseline | StandInPage | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | 0.91 | 1 ms | 9,984 (~2,496) |
-| similarity baseline | headless chromium | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | 0.91 | 2 ms | 9,993 (~2,498) |
-| none baseline | StandInPage | 2026-10-12 | 0/35 (0.0%) | 0 (0.0%) | 35 (100.0%) | 12/12 | 0/12 | 0.91 | under 1 ms | 9,984 (~2,496) |
+| Provider | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives | Healed by fingerprint | Avg model calls | Avg latency | Avg prompt chars (est. tokens) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| fingerprint tier alone (no model) | StandInPage | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,271 (~2,568) |
+| fingerprint tier alone (no model) | headless chromium | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,281 (~2,570) |
+| similarity baseline + fingerprint | StandInPage | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 21 | 0.47 | 1 ms | 10,271 (~2,568) |
+| similarity baseline + fingerprint | headless chromium | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 21 | 0.47 | 1 ms | 10,281 (~2,570) |
+| similarity baseline | StandInPage | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | - | 0.91 | 1 ms | 9,984 (~2,496) |
+| similarity baseline | headless chromium | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | - | 0.91 | 1 ms | 9,993 (~2,498) |
+| none baseline | StandInPage | 2026-10-12 | 0/35 (0.0%) | 0 (0.0%) | 35 (100.0%) | 12/12 | 0/12 | - | 0.91 | under 1 ms | 9,984 (~2,496) |
 
 "Wrong" counts heals that landed on another element in a case where a heal was right. "Wrong on negatives" counts heals in cases where the right answer was to not heal. Both are heals mendwright accepted, after its checks, onto an element the step did not mean.
+
+The fingerprint tier is part of mendwright and on by default: while the old selector still matches, mendwright records the element, and when it breaks, mendwright looks for that element on the new page before it asks any provider. It heals only when one element matches with confidence, and its pick goes through the same checks as a model's. A row marked + fingerprint ran the tier before the provider; the fingerprint tier alone row has no provider behind it. Use --no-fingerprint for a run without it.
 
 The similarity baseline records the element while the old selector still matches, and later picks the most similar element on the new page. A model gets less: the key, the old selector and the new page, never the old page.
 
 ## Each run
 
-### similarity baseline, StandInPage, 2026-10-12
+### fingerprint tier alone (no model), StandInPage, 2026-10-12
+
+mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class NoneProposer.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-standin-20261012.json`.
+
+Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,488 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 3 | 0 | 1 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 2 | 0 | 1 | 0 | 0 |
+| tag change, same role | 3 | 1 | 0 | 2 | 0 | 0 |
+| near-duplicates | 4 | 0 | 0 | 4 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 0 | 0 | 3 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+No wrong heals.
+
+### fingerprint tier alone (no model), headless chromium, 2026-10-12
+
+mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class NoneProposer.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-chromium-20261012.json`.
+
+Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,543 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 3 | 0 | 1 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 2 | 0 | 1 | 0 | 0 |
+| tag change, same role | 3 | 1 | 0 | 2 | 0 | 0 |
+| near-duplicates | 4 | 0 | 0 | 4 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 0 | 0 | 3 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+No wrong heals.
+
+### similarity baseline + fingerprint, StandInPage, 2026-10-12
 
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-standin-20261012.json`.
 
-Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Prompt text for one pass over the cases: about 107,324 input tokens (characters / 4, an estimate).
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,488 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 4 | 0 | 0 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 3 | 0 | 0 | 0 | 0 |
+| label text reworded | 3 | 3 | 0 | 0 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 2 | 1 | 0 | 0 | 0 |
+| tag change, same role | 3 | 1 | 0 | 2 | 0 | 0 |
+| near-duplicates | 4 | 3 | 0 | 1 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 0 | 0 | 3 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 2 | 1 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 1 | 1 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+Wrong heals:
+
+- `attr-churn-coupon-apply`: healed to `//button[@data-testid='giftcard-apply']` (reached another element).
+- `neg-ambiguous-invite-accept`: healed to `//li[.//strong[normalize-space()='Globex']]//button[normalize-space()='Accept']` (negative case, should not heal).
+- `neg-removed-quarterly-report`: healed to `//li[.//h2[normalize-space()='Monthly summary: September']]//button` (negative case, should not heal).
+
+### similarity baseline + fingerprint, headless chromium, 2026-10-12
+
+mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-chromium-20261012.json`.
+
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,543 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 4 | 0 | 0 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 3 | 0 | 0 | 0 | 0 |
+| label text reworded | 3 | 3 | 0 | 0 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 2 | 1 | 0 | 0 | 0 |
+| tag change, same role | 3 | 1 | 0 | 2 | 0 | 0 |
+| near-duplicates | 4 | 3 | 0 | 1 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 0 | 0 | 3 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 2 | 1 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 1 | 1 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+Wrong heals:
+
+- `attr-churn-coupon-apply`: healed to `//button[@data-testid='giftcard-apply']` (reached another element).
+- `neg-ambiguous-invite-accept`: healed to `//li[.//strong[normalize-space()='Globex']]//button[normalize-space()='Accept']` (negative case, should not heal).
+- `neg-removed-quarterly-report`: healed to `//li[.//h2[normalize-space()='Monthly summary: September']]//button` (negative case, should not heal).
+
+### similarity baseline, StandInPage, 2026-10-12
+
+mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-nofp-standin-20261012.json`.
+
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Fingerprint tier: off. Prompt text for one pass over the cases: about 107,324 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
@@ -66,9 +191,9 @@ Wrong heals:
 ### similarity baseline, headless chromium, 2026-10-12
 
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
-47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-chromium-20261012.json`.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-nofp-chromium-20261012.json`.
 
-Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Prompt text for one pass over the cases: about 107,424 input tokens (characters / 4, an estimate).
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Fingerprint tier: off. Prompt text for one pass over the cases: about 107,424 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
@@ -97,9 +222,9 @@ Wrong heals:
 ### none baseline, StandInPage, 2026-10-12
 
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class NoneProposer.
-47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-standin-20261012.json`.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-nofp-standin-20261012.json`.
 
-Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Prompt text for one pass over the cases: about 107,324 input tokens (characters / 4, an estimate).
+Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Fingerprint tier: off. Prompt text for one pass over the cases: about 107,324 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|

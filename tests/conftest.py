@@ -2,13 +2,16 @@
 
 FakePage is detected as a Playwright page by mendwright.open(). Its locators count real
 matches in the HTML, answer describe() (evaluate_all) like a browser would, and record
-every action instead of running it. No browser, no network, no clock.
+every action instead of running it. No browser, no network, no clock. The fingerprint read
+answers only on a FakePage(..., fingerprints=True).
 """
 
 import re
 
 import lxml.html
 import pytest
+
+from mendwright.fingerprint import FINGERPRINT_JS, raw_of_element
 
 # tests/test_pytest_plugin.py runs pytest inside pytest through the pytester fixture.
 pytest_plugins = ['pytester']
@@ -52,6 +55,14 @@ class FakeLocator:
         pass
 
     def evaluate_all(self, js):
+        if js == FINGERPRINT_JS:
+            # The fingerprint read. Off unless the page was made with fingerprints=True, so
+            # tests written before the fingerprint tier still see the model heal.
+            self._page.fingerprint_reads += 1
+            els = self._elements()
+            if not self._page.fingerprints or len(els) != 1:
+                return None
+            return raw_of_element(els[0])
         self._page.describes += 1
         els = self._elements()
         if len(els) != 1:
@@ -84,8 +95,10 @@ class FakeLocator:
 class FakePage:
     """Playwright-shaped page over an lxml DOM. set_html() stands in for a navigation."""
 
-    def __init__(self, html, url='https://example.test/'):
+    def __init__(self, html, url='https://example.test/', fingerprints=False):
         self.url = url
+        self.fingerprints = fingerprints   # answer mendwright's fingerprint read
+        self.fingerprint_reads = 0
         self.actions = []     # (selector, verb, args, kwargs) for every action run
         self.fail = {}        # verb -> exception the action raises
         self.results = {}     # verb -> value the action returns
@@ -156,6 +169,7 @@ def stub_provider():
 # some of them set (a key, or a *_BASE_URL for a proxy), so every test starts without them.
 _ENV_SETTINGS = (
     'MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE',
+    'MENDWRIGHT_FINGERPRINT',
     'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL',

@@ -34,9 +34,11 @@ def test_resolve_and_act(tab, store_file, stub_provider):
 
 
 def test_heal_after_a_redesign(tab, store_file, stub_provider):
+    # The model's heal. With the fingerprint tier on, the fingerprint recorded on v1 would
+    # find the checkbox first (see test_browser_fingerprint.py).
     tab.load(SIGNUP_V1)
     provider = stub_provider(HEALED)
-    heal = _open(tab, provider, store_file)
+    heal = _open(tab, provider, store_file, fingerprint=False)
     heal.locator('accept_terms', STALE, role='checkbox').check()
 
     tab.load(SIGNUP_V2)   # the redesign: the checkbox lost its id
@@ -207,7 +209,7 @@ def test_the_role_is_read_from_the_live_element_and_used_for_a_heal(tab, store_f
 
     tab.load(country_page('country-v2'))
     provider = stub_provider("//select[@id='country-v2']")
-    second = _open(tab, provider, store_file)
+    second = _open(tab, provider, store_file, fingerprint=False)   # the model gets the role
     second.locator('country', '#country', timeout_ms=FAST_MS, poll_ms=POLL_MS).select_option('de')
 
     assert len(provider.bundles) == 1

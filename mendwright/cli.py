@@ -37,7 +37,8 @@ PROVIDER_VARS = (
 
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
-                 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER')
+                 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
+                 'MENDWRIGHT_FINGERPRINT')
 _SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
 
 REPORT_FORMATS = ('text', 'md', 'json')
@@ -127,6 +128,17 @@ def _flag_problem(name):
         return None, _env_flag(name)
     except ValueError as exc:
         return str(exc), None
+
+
+def _fingerprint_info():
+    """Whether mendwright.open() runs the fingerprint tier, and what decides it."""
+    _problem, disabled = _flag_problem('MENDWRIGHT_DISABLE')
+    problem, env = _flag_problem('MENDWRIGHT_FINGERPRINT')
+    if disabled:
+        return {'enabled': False, 'source': 'MENDWRIGHT_DISABLE'}
+    if problem is None and env is not None:
+        return {'enabled': bool(env), 'source': 'MENDWRIGHT_FINGERPRINT'}
+    return {'enabled': True, 'source': 'default'}
 
 
 def _provider_info():
@@ -223,7 +235,7 @@ def _env_info():
 def _settings_problems():
     from .facade import _env_timeout
     problems = []
-    for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE'):
+    for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT'):
         problem, _ = _flag_problem(name)
         if problem:
             problems.append(problem)
@@ -246,6 +258,7 @@ def collect_doctor():
         'lxml': {'version': getattr(lxml, '__version__', None), 'libxml2': libxml2 or None},
         'browser_libraries': _browser_libraries(),
         'provider': _provider_info(),
+        'fingerprint': _fingerprint_info(),
         'store': _store_info(),
         'env': _env_info(),
         'problems': [_scrub(p) for p in _settings_problems()],
@@ -283,7 +296,11 @@ def _doctor_text(d):
             lines.append('  chosen because ' + ' and '.join(p['selected_by'])
                          + (' is' if len(p['selected_by']) == 1 else ' are') + ' set')
     else:
-        lines.append('  none configured, so a broken selector is reported but not repaired.')
+        if d.get('fingerprint', {}).get('enabled'):
+            lines.append('  none configured, so only fingerprint healing (no model call) can '
+                         'repair a broken selector.')
+        else:
+            lines.append('  none configured, so a broken selector is reported but not repaired.')
         lines.append(_wrap('Why: ' + p['reason']))
         lines.append('  `mendwright demo` works without one (it uses a scripted reply).')
     if p['env_set']:
@@ -291,6 +308,20 @@ def _doctor_text(d):
     if p['disabled']:
         lines.append('  MENDWRIGHT_DISABLE is on, so mendwright.open() heals nothing and calls '
                      'no provider. Unset it to heal again.')
+    lines.append('')
+
+    f = d.get('fingerprint') or {}
+    lines.append('Fingerprint healing (no model)')
+    if f.get('enabled'):
+        lines.append(_wrap('on: each time a selector matches, mendwright records what the '
+                           'element looks like, and when the selector breaks it looks for that '
+                           'element first, before any model call. Set MENDWRIGHT_FINGERPRINT=0, '
+                           'or pass fingerprint=False to mendwright.open(), to turn it off.'))
+    elif f.get('source') == 'MENDWRIGHT_DISABLE':
+        lines.append('  off, because MENDWRIGHT_DISABLE is on. Unset it to heal again.')
+    else:
+        lines.append(_wrap('off (MENDWRIGHT_FINGERPRINT=0), so only a model provider can repair '
+                           'a broken selector. Unset MENDWRIGHT_FINGERPRINT to turn it on.'))
     lines.append('')
 
     s = d['store']

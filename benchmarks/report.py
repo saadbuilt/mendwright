@@ -46,7 +46,10 @@ python benchmarks/run.py --provider openai --model <model id>
 python benchmarks/run.py --provider gemini --model <model id>
 python benchmarks/run.py --provider ollama --model <model name>
 python benchmarks/report.py
-```"""
+```
+
+Each of these runs the fingerprint tier first, as mendwright.open() does. Add --no-fingerprint
+to measure the model alone."""
 
 
 def load(paths):
@@ -57,10 +60,14 @@ def load(paths):
             raise SystemExit('report: ' + str(path) + ' is not a results file from benchmarks/run.py')
         data['_file'] = Path(path).name
         runs.append(data)
-    # Model runs first, newest first. Then the baselines in a fixed order: similarity before
-    # none, StandInPage before a browser.
+    # Model runs first, newest first. Then the model-free runs in a fixed order: the
+    # fingerprint tier alone, the similarity baseline with and without it, and the none
+    # baseline without it; StandInPage before a browser.
     def baseline_order(run):
-        return BASELINES.index(run['provider']), run['page'] != 'standin', run['page'], run['date']
+        fp = bool(run.get('fingerprint'))
+        rank = {('none', True): 0, ('similarity', True): 1, ('similarity', False): 2,
+                ('none', False): 3}[(run['provider'], fp)]
+        return rank, run['page'] != 'standin', run['page'], run['date']
 
     models = sorted((r for r in runs if r['provider'] not in BASELINES), key=lambda r: r['date'], reverse=True)
     baselines = sorted((r for r in runs if r['provider'] in BASELINES), key=baseline_order)
@@ -68,9 +75,15 @@ def load(paths):
 
 
 def who(run):
+    """The row name. A run with the fingerprint tier on says so; files written before the
+    tier existed have no 'fingerprint' field and ran without it."""
+    fp = bool(run.get('fingerprint'))
+    if run['provider'] == 'none':
+        return 'fingerprint tier alone (no model)' if fp else 'none baseline'
     if run['provider'] in BASELINES:
-        return run['provider'] + ' baseline'
-    return run['provider'] + (' (' + run['model'] + ')' if run.get('model') else '')
+        return run['provider'] + ' baseline' + (' + fingerprint' if fp else '')
+    return (run['provider'] + (' (' + run['model'] + ')' if run.get('model') else '')
+            + (' + fingerprint' if fp else ''))
 
 
 def page(run):
@@ -99,8 +112,8 @@ def prompt(s):
 
 def summary_table(runs):
     rows = ['| Provider | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives '
-            '| Avg model calls | Avg latency | Avg prompt chars (est. tokens) |',
-            '|---|---|---|---|---|---|---|---|---|---|---|']
+            '| Healed by fingerprint | Avg model calls | Avg latency | Avg prompt chars (est. tokens) |',
+            '|---|---|---|---|---|---|---|---|---|---|---|---|']
     for run in runs:
         s = run['summary']
         rows.append('| ' + ' | '.join([
@@ -110,6 +123,7 @@ def summary_table(runs):
             str(s['missed']) + ' (' + pct(s['missed'], s['positives']) + ')',
             str(s['declined']) + '/' + str(s['negatives']),
             str(s['wrong_negative']) + '/' + str(s['negatives']),
+            str(s.get('fingerprint_heals', 0)) if run.get('fingerprint') else '-',
             format(s['avg_model_calls'], '.2f') if s['avg_model_calls'] is not None else '-',
             latency(s['avg_model_ms']),
             prompt(s),
@@ -157,7 +171,10 @@ def run_section(run):
     out.append('')
     out.append('Wrong heals: ' + str(s['wrong_heals']) + ' of ' + str(s['cases']) + ' cases. '
                'Wrong proposals the gate stopped: ' + str(s['gate_caught_wrong']) + '. '
-               'Prompt text for one pass over the cases: about ' + format(s['run_tokens_est'], ',')
+               + ('Heals by the fingerprint tier, with no model call: '
+                  + str(s.get('fingerprint_heals', 0)) + '. ' if run.get('fingerprint') else
+                  'Fingerprint tier: off. ')
+               + 'Prompt text for one pass over the cases: about ' + format(s['run_tokens_est'], ',')
                + ' input tokens (characters / ' + str(run.get('chars_per_token', 4)) + ', an estimate).')
     if s.get('provider_errors'):
         out.append('')
@@ -197,15 +214,22 @@ def render(runs):
         out.append('Each model row is one run on one date. Results vary between runs and model '
                    'versions, so compare rows from the same date where you can.')
     else:
-        out.append('None yet. The rows below are the two model-free baselines, which show what the '
-                   'harness and the gate do without a model. Model numbers will be added when the '
-                   'runs below have been made.')
+        out.append('None yet. The rows below are model-free runs, which show what the fingerprint '
+                   'tier, the harness and the gate do without a model. Model numbers will be added '
+                   'when the runs below have been made.')
     out += ['', 'To add a model run (the key and endpoint come from your environment, as in '
             '`mendwright doctor`):', '', COMMANDS, '', '## All runs', '', summary_table(runs), '',
             '"Wrong" counts heals that landed on another element in a case where a heal was right. '
             '"Wrong on negatives" counts heals in cases where the right answer was to not heal. '
             'Both are heals mendwright accepted, after its checks, onto an element the step did '
             'not mean.', '',
+            'The fingerprint tier is part of mendwright and on by default: while the old selector '
+            'still matches, mendwright records the element, and when it breaks, mendwright looks '
+            'for that element on the new page before it asks any provider. It heals only when one '
+            'element matches with confidence, and its pick goes through the same checks as a '
+            "model's. A row marked + fingerprint ran the tier before the provider; the "
+            'fingerprint tier alone row has no provider behind it. Use --no-fingerprint for a run '
+            'without it.', '',
             'The similarity baseline records the element while the old selector still matches, '
             'and later picks the most similar element on the new page. A model gets less: the '
             'key, the old selector and the new page, never the old page.', '',

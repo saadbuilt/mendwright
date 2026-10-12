@@ -17,9 +17,11 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   act_on(native, verb, *args, **kwargs)   run a Playwright-style verb on a handle() result
   describe(selector, frame_chain=())      {'tag', 'role', 'text', 'outer_html'} or None
   inventory(limit=200)                    [{'tag', 'role', 'id', 'name', 'text', 'aria_label'}]
+  fingerprint(selector, frame_chain=())   the matched element's fingerprint, or None
 
-Callers should go through driver_act_on, driver_describe and driver_inventory below, which
-fall back to getattr(native, verb)(...), None and [] when a driver lacks the method.
+Callers should go through driver_act_on, driver_describe, driver_inventory and
+driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
+when a driver lacks the method.
 """
 
 import inspect
@@ -83,6 +85,21 @@ def driver_describe(driver, selector, frame_chain=()):
     except Exception:
         return None
     return out if isinstance(out, dict) else None
+
+
+def driver_fingerprint(driver, selector, frame_chain=()):
+    """driver.fingerprint(selector, frame_chain) when the driver has it, else None: the
+    fingerprint (see mendwright.fingerprint) of the one element the selector matches. Any
+    error, or a result that is not a fingerprint, gives None."""
+    from ..fingerprint import valid
+    method = getattr(driver, 'fingerprint', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, frame_chain)
+    except Exception:
+        return None
+    return out if valid(out) else None
 
 
 def driver_inventory(driver, limit=200):

@@ -519,7 +519,7 @@ def test_the_store_can_be_moved_and_the_explicit_setting_wins(project, monkeypat
 
 @pytest.mark.parametrize('flag, variable, message, mode', [
     ('--mendwright-dry-run', 'MENDWRIGHT_DRY_RUN', 'dry-run mode is on',
-     'dry run (no provider: broken selectors will fail; see mendwright doctor)'),
+     'dry run (no provider: only fingerprint heals, no model; see mendwright doctor)'),
     ('--mendwright-disable', 'MENDWRIGHT_DISABLE', 'healing is turned off', 'disabled'),
 ])
 def test_dry_run_and_disable_reach_open(project, flag, variable, message, mode):
@@ -549,9 +549,17 @@ def test_the_header_line_shows_only_when_heal_is_used(project, monkeypatch):
     used = run(project, '--mendwright-strict')
     used.stdout.fnmatch_lines([
         'collected 1 item',
+        'mendwright: store .mendwright?overrides.json, mode heal, strict (no provider: only '
+        'fingerprint heals, no model; see mendwright doctor)',
+    ])
+    monkeypatch.setenv('MENDWRIGHT_FINGERPRINT', '0')
+    off = run(project, '--mendwright-strict')
+    off.stdout.fnmatch_lines([
+        'collected 1 item',
         'mendwright: store .mendwright?overrides.json, mode heal, strict (no provider: broken '
         'selectors will fail; see mendwright doctor)',
     ])
+    monkeypatch.delenv('MENDWRIGHT_FINGERPRINT')
     # With a provider in the environment (built only, never called) the note goes away.
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'not-a-real-key')
     monkeypatch.setenv('ANTHROPIC_MODEL', 'some-model')

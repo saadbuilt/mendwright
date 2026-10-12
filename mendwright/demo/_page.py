@@ -6,7 +6,9 @@ Playwright page, so the real driver, resolver, gate and store run unchanged. A s
 matches only when it really matches the HTML, and check() really changes the DOM.
 
 It understands XPath and '#id' CSS selectors, which is all the demo uses. Anything
-else is rejected the way a browser rejects a selector it cannot parse.
+else is rejected the way a browser rejects a selector it cannot parse. It runs
+mendwright's own page scripts (describe, inventory and fingerprint) with lxml, so the
+benchmark and the demo get the same answers a browser gives.
 
 It has no JavaScript, so it knows one kind of script itself: an overlay. An element with
 a data-overlay attribute that is not hidden covers the page, the way a cookie banner with
@@ -21,6 +23,7 @@ import lxml.etree
 import lxml.html
 
 from ..drivers.base import DESCRIBE_JS, INVENTORY_JS
+from ..fingerprint import FINGERPRINT_JS, raw_of_element
 
 _CSS_ID = re.compile(r'^#([A-Za-z_][\w-]*)$')
 _EMPTY = '<!doctype html><html><head></head><body></body></html>'
@@ -98,12 +101,15 @@ class StandInLocator:
         pass
 
     def evaluate_all(self, expression, arg=None):
-        if expression != DESCRIBE_JS:
-            raise NotImplementedError('the stand-in page only runs mendwright\'s describe script')
+        if expression not in (DESCRIBE_JS, FINGERPRINT_JS):
+            raise NotImplementedError('the stand-in page only runs mendwright\'s describe and '
+                                      'fingerprint scripts')
         els = self._elements()
         if len(els) != 1:
             return None
         el = els[0]
+        if expression == FINGERPRINT_JS:
+            return raw_of_element(el)
         return {'tag': el.tag.lower(),
                 'html': lxml.html.tostring(el, encoding='unicode', with_tail=False)}
 

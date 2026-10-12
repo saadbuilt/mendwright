@@ -27,6 +27,7 @@ driver.implicitly_wait(10) does not turn every missed candidate into a 10 second
 import contextlib
 import inspect
 
+from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import INVENTORY_JS, element_summary, inventory_rows, is_async_api
 
@@ -404,7 +405,8 @@ class SeleniumDriver:
     Required Driver methods: count, is_visible, scroll_into_view, handle, act, url,
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
-    through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory."""
+    through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
+    fingerprint."""
 
     def __init__(self, driver):
         self._driver = driver
@@ -563,6 +565,20 @@ class SeleniumDriver:
             if not isinstance(data, dict) or not isinstance(data.get('html'), str):
                 return None
             return element_summary(data.get('tag'), data['html'])
+
+        return self._read(selector, frame_chain, op, None)
+
+    def fingerprint(self, selector, frame_chain=()):
+        """The fingerprint of the one element the selector matches (see
+        mendwright.fingerprint), or None when it matches none or several. One round trip
+        (execute_script), inside the frame chain with the implicit wait at 0. Reads no input
+        value. A malformed selector raises InvalidSelector; any other error gives None."""
+        def op():
+            els = self._find_all(selector)
+            if len(els) != 1:
+                return None
+            return from_raw(self._driver.execute_script(
+                'return (' + FINGERPRINT_JS + ')([arguments[0]]);', els[0]))
 
         return self._read(selector, frame_chain, op, None)
 

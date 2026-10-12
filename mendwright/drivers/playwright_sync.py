@@ -12,6 +12,7 @@ a navigation in progress) fall back to a safe default so the resolver keeps poll
 
 import re
 
+from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, INVENTORY_JS, inventory_rows, is_async_api,
                    looks_like_locator, summary_from_js)
@@ -86,7 +87,7 @@ class PlaywrightSyncDriver:
     Required Driver methods: count, is_visible, scroll_into_view, handle, act, url,
     outer_html. All take a selector of any kind plus an optional frame chain (frame
     selectors, outermost first). Optional extras, which callers reach through the
-    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory."""
+    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint."""
 
     def __init__(self, page):
         self._page = page
@@ -158,6 +159,14 @@ class PlaywrightSyncDriver:
         A malformed selector raises InvalidSelector; any other error gives None."""
         return self._probe(selector, frame_chain,
                            lambda loc: summary_from_js(loc.evaluate_all(DESCRIBE_JS)), None)
+
+    def fingerprint(self, selector, frame_chain=()):
+        """The fingerprint of the one element the selector matches (see
+        mendwright.fingerprint), or None when it matches none or several. One round trip
+        (evaluate_all), which reads no input value. A malformed selector raises
+        InvalidSelector; any other error gives None."""
+        return self._probe(selector, frame_chain,
+                           lambda loc: from_raw(loc.evaluate_all(FINGERPRINT_JS)), None)
 
     def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one
