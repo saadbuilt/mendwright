@@ -152,12 +152,14 @@ def test_the_none_baseline_misses_every_positive_case_and_declines_every_negativ
 def test_the_fingerprint_tier_alone_makes_no_wrong_heal():
     # The none baseline never proposes, so every heal here is the fingerprint tier's. It
     # was tuned on these cases to make no wrong heal; the count of correct heals is the
-    # floor it reached then.
+    # floor it reached after the out-of-sample checks in test_fingerprint.py tightened
+    # what counts as the same text (20: the digest checkbox, whose label changed a word,
+    # is no longer healed).
     records = bench.run_cases(CASES, bench.NoneProposer())
     summary = bench.summarize(records)
     assert (summary['wrong'], summary['wrong_negative']) == (0, 0)
     assert summary['declined'] == len(NEGATIVE)
-    assert summary['correct'] >= 21
+    assert summary['correct'] >= 20
     assert summary['fingerprint_heals'] == summary['correct']
     for r in records:
         if r['outcome'] == 'correct':

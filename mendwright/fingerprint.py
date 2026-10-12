@@ -10,10 +10,11 @@ When the key's selectors stop matching, every element of the captured page that 
 key's role is scored against the fingerprint. A heal is proposed only when the best score
 reaches THRESHOLD, the best element carries at least one strong identity signal (the same
 id that is not a generated one, test id, name, link path or autocomplete value, or nearly
-the same text, label or aria-label), and no other visible element comes within MARGIN of
-it. The proposal is a unique, non-positional XPath, and it
-goes through the same checks as a model's proposal (client.apply: validate() against the
-captured HTML, then the live check).
+the same text, label or aria-label: the same numbers and words, with typos, plurals and
+filler words allowed), no other visible element comes within MARGIN of it, and it is
+inside every recorded ancestor that still has its id on the page. The proposal is a
+unique, non-positional XPath, and it goes through the same checks as a model's proposal
+(client.apply: validate() against the captured HTML, then the live check).
 
 The browser reads the element with FINGERPRINT_JS in one round trip; an lxml element goes
 through raw_of_element(). Both give the same raw shape, and from_raw() is the one place
@@ -338,8 +339,44 @@ def _ratio(a, b):
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
-def _same_text(text, ratio):
-    return ratio >= SAME_TEXT or (ratio >= LONG_SAME and len(text) >= LONG_TEXT)
+_WORD = re.compile(r'[^\W\d_]+|\d+')
+# Words a reworded text may drop without changing which control it names.
+_FILLER = frozenset({'a', 'an', 'the', 'this', 'that', 'these', 'your', 'my', 'our', 'please'})
+
+
+def _words(text):
+    return _WORD.findall(text.lower())
+
+
+def _typo(a, b):
+    """True when a and b are one word with a small edit: a typo fixed, or a plural."""
+    return (len(a) >= 4 and abs(len(a) - len(b)) <= 1 and a[0] == b[0]
+            and difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.8)
+
+
+def _same_text(old, new, ratio):
+    """True when ``new`` is ``old`` with small edits only, so it names the same control.
+    The characters must be alike (``ratio`` at least SAME_TEXT, or LONG_SAME for a text of
+    LONG_TEXT characters or more), the numbers must be the same, and every word of ``old``
+    must still be there, nearly the same (a typo or a plural), or be a filler word such as
+    'the'. 'Delete file 1' and 'Delete file 2', or 'Delete this file' and 'Delete this
+    site', are alike in characters but name different things."""
+    if not old or not new or len(old) < 2:
+        return False
+    if ratio < SAME_TEXT and not (ratio >= LONG_SAME and len(old) >= LONG_TEXT):
+        return False
+    a, b = _words(old), _words(new)
+    if [w for w in a if w.isdigit()] != [w for w in b if w.isdigit()]:
+        return False
+    if ''.join(a) == ''.join(b):
+        return True         # only spacing or punctuation changed: 'Log in' and 'Login'
+    theirs = {w for w in b if not w.isdigit()}
+    for word in a:
+        if word.isdigit() or word in theirs or word in _FILLER:
+            continue
+        if not any(_typo(word, other) for other in theirs):
+            return False
+    return True
 
 
 def _tokens(value):
@@ -393,7 +430,8 @@ def score(old, new):
     """How alike two fingerprints are, from 0 to 1, as a weighted average over what the
     recorded fingerprint ``old`` has. strong is True when ``new`` shares at least one
     identity signal with it: the same id (not a generated one), test id, name, link path
-    or autocomplete token, or nearly the same text, label or aria-label."""
+    or autocomplete token, or nearly the same text, label or aria-label (see
+    _same_text)."""
     old_attrs, new_attrs = old.get('attrs') or {}, new.get('attrs') or {}
     parts = [(WEIGHTS['tag'], 1.0 if old['tag'] == new.get('tag') else 0.0)]
     strong = False
@@ -428,9 +466,9 @@ def score(old, new):
     for weight, text in ((WEIGHTS['aria-label'], old_attrs.get('aria-label')),
                          (WEIGHTS['label'], old.get('label'))):
         if text:
-            ratio = max(_ratio(text, other) for other in names)
+            ratio, other = max((_ratio(text, other), other or '') for other in names)
             parts.append((weight, ratio))
-            strong = strong or (_same_text(text, ratio) and len(text) >= 2)
+            strong = strong or _same_text(text, other, ratio)
     if old_attrs.get('href'):
         same = old_attrs['href'] == new_attrs.get('href')
         parts.append((WEIGHTS['href'], 1.0 if same else _ratio(old_attrs['href'],
@@ -441,7 +479,7 @@ def score(old, new):
     if old.get('text'):
         ratio = _ratio(old['text'], new.get('text'))
         parts.append((WEIGHTS['text'], ratio))
-        strong = strong or (_same_text(old['text'], ratio) and len(old['text']) >= 2)
+        strong = strong or _same_text(old['text'], new.get('text'), ratio)
     chain = _chain_similarity(old.get('ancestors'), new.get('ancestors'))
     if chain is not None:
         parts.append((WEIGHTS['ancestors'], chain))
@@ -598,6 +636,31 @@ def _fmt(value):
     return format(value, '.2f')
 
 
+def _containers(fp, root):
+    """{id: element} for the recorded ancestors that are still on the page: an ancestor
+    whose id is not a generated one, where exactly one element of the page has that id."""
+    wanted = {a['id'] for a in fp.get('ancestors') or ()
+              if isinstance(a, dict) and a.get('id') and not generated_id(a['id'])}
+    if not wanted:
+        return {}
+    found = {}
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.get('id') is not None:
+            value = _norm(el.get('id'))[:VALUE_LIMIT]
+            if value in wanted:
+                found.setdefault(value, []).append(el)
+    return {value: els[0] for value, els in found.items() if len(els) == 1}
+
+
+def _outside(el, containers):
+    """The id of a container in ``containers`` that ``el`` is not inside, or ''."""
+    ancestors = set(el.iterancestors())
+    for value, container in sorted(containers.items()):
+        if container not in ancestors:
+            return value
+    return ''
+
+
 def find(fp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
          visible: Callable[[str], Any] | None = None):
     """Look for the element ``fp`` describes in ``html``, among the elements whose role
@@ -663,6 +726,11 @@ def find(fp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
                      'the best match (score ' + _fmt(best) + ') shares no id, test id, name, '
                      'link, autocomplete value, label or text with the element that was '
                      'recorded', el)
+    away = _outside(el, _containers(fp, root))
+    if away:
+        return Match(None, best, runner,
+                     "the best match is outside the element with id '" + away + "', which "
+                     'held the recorded element and is still on the page', el)
     if xpath is None:
         return Match(None, best, runner,
                      'no selector that is unique on the page could be built for the best '

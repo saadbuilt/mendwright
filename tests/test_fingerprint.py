@@ -196,6 +196,74 @@ def test_a_copy_hidden_on_the_live_page_is_not_a_rival():
     assert any('sticky' in x for x in checked)
 
 
+def _fp(html, xpath):
+    return of_element(_el(html, xpath))
+
+
+def test_a_text_with_another_number_is_another_control():
+    # Row 1 is gone and row 2 is left: 'Delete file 1' must not heal onto 'Delete file 2'.
+    old = _fp("<html><body><ul id='files'><li class='row'><button class='btn danger' "
+              "id='del-1'>Delete file 1</button></li><li class='row'><button class='btn "
+              "danger' id='del-2'>Delete file 2</button></li></ul></body></html>",
+              "//button[@id='del-1']")
+    match = find(old, "<html><body><ul id='files'><li class='row'><button class='btn danger' "
+                      "id='remove-2'>Delete file 2</button></li></ul></body></html>", 'button')
+    assert match.xpath is None
+    assert 'shares no id, test id, name, link, autocomplete value, label or text' in match.reason
+
+
+def test_a_text_with_another_word_is_another_control():
+    # Alike in characters (and in everything around it), but it names another thing.
+    old = _fp("<html><body><div id='danger-zone'><button class='btn'>Delete this file</button>"
+              "<button class='btn'>Rename it</button></div></body></html>", '//button[1]')
+    match = find(old, "<html><body><div id='danger-zone'><button class='btn'>Delete this site"
+                      "</button><button class='btn'>Rename it</button></div></body></html>",
+                 'button')
+    assert match.xpath is None
+    assert match.score >= fp_mod.THRESHOLD          # a high score is not enough on its own
+    assert 'shares no id' in match.reason
+
+
+@pytest.mark.parametrize('old, new, same', [
+    ('Sign in', 'Sign In', True),
+    ('Log in', 'Login', True),                          # spacing only
+    ('Delete this file', 'Delete file', True),          # a filler word dropped
+    ('Accept the terms', 'Accept the terms and conditions', False),   # too unlike in characters
+    ('Show the shipping adress', 'Show the shipping address', True),  # a typo fixed
+    ('Download the invoices', 'Download the invoice', True),          # a plural
+    ('Subscribe', 'Unsubscribe', False),
+    ('Cart (2)', 'Cart (3)', False),
+    ('Email me The Ledger Weekly digest', 'Send me The Ledger Weekly digest', False),
+])
+def test_nearly_the_same_text_keeps_its_numbers_and_words(old, new, same):
+    assert fp_mod._same_text(old, new, fp_mod._ratio(old, new)) is same
+
+
+def test_a_match_outside_the_recorded_container_is_not_taken():
+    # The profile form is still on the page; its Save button is gone, and the password
+    # form has one. That Save belongs to another form.
+    old = _fp("<html><body><form id='profile-form'><input name='nick'><button type='submit' "
+              "class='btn primary'>Save</button></form><form id='password-form'>"
+              "<input name='pw' type='password'></form></body></html>", '//button')
+    page = ("<html><body><form id='profile-form'><input name='nick'></form>"
+            "<form id='password-form'><input name='pw' type='password'><button type='submit' "
+            "class='btn primary'>Save</button></form></body></html>")
+    match = find(old, page, 'button')
+    assert match.xpath is None
+    assert match.reason == ("the best match is outside the element with id 'profile-form', "
+                            'which held the recorded element and is still on the page')
+    # When the container itself is gone (renamed in a redesign), the match can be taken.
+    moved = page.replace("id='profile-form'", "id='account-form'")
+    assert find(old, moved, 'button').xpath == '//button[@type=\'submit\']'
+
+
+def test_a_button_whose_container_was_renamed_still_heals():
+    old = _fp("<html><body><div id='a'><button>Continue</button></div></body></html>", '//button')
+    match = find(old, "<html><body><div id='b'><button>Continue</button></div></body></html>",
+                 'button')
+    assert match.xpath == "//button[normalize-space()='Continue']"
+
+
 def test_a_stored_fingerprint_of_another_version_is_not_read():
     old = of_element(_el(V1, '//button'))
     old['v'] = 99
@@ -378,6 +446,58 @@ def test_a_destructive_key_is_neither_fingerprinted_nor_healed(make_page, tmp_pa
     heal.locator('pay', '#pay', destructive=True, poll_ms=0)
     assert page.fingerprint_reads == 0
     assert heal.store.meta('pay')['fingerprint'] is None
+
+
+def test_a_key_marked_destructive_after_its_fingerprint_was_recorded_never_heals(
+        make_page, tmp_path):
+    page, heal = _broken(make_page, tmp_path)
+    assert heal.store.meta('terms')['fingerprint'] is not None
+    with pytest.raises(AttentionRequired, match='marked as a destructive control'):
+        heal.locator('terms', '#accept-terms', destructive=True, poll_ms=0)
+    assert heal.heals == []
+    other = _open(page, tmp_path, destructive_keys={'terms'})   # the same store, another way
+    with pytest.raises(AttentionRequired, match='marked as a destructive control'):
+        other.locator('terms', '#accept-terms', poll_ms=0)
+    assert other.heals == []
+    assert not [e for e in _journal(tmp_path) if e['event'] == 'heal.requested']
+
+
+def test_the_page_guard_stops_the_tier_on_another_page(make_page, tmp_path):
+    page = make_page(V1, url='https://example.test/checkout', fingerprints=True)
+    heal = _open(page, tmp_path)
+    heal.locator('terms', '#accept-terms', poll_ms=0)
+    page.set_html(V2)
+    page.url = 'https://example.test/account/settings'
+    with pytest.raises(AttentionRequired, match='was last found on /checkout'):
+        heal.locator('terms', '#accept-terms', poll_ms=0)
+    assert heal.heals == []
+    events = [e['event'] for e in _journal(tmp_path)]
+    assert 'flow.page_guard' in events and 'heal.requested' not in events
+
+
+def test_the_transaction_guard_stops_the_tier(make_page, tmp_path):
+    page, heal = _broken(make_page, tmp_path, guard=lambda: False)
+    with pytest.raises(AttentionRequired, match='transaction guard'):
+        heal.locator('terms', '#accept-terms', poll_ms=0)
+    assert heal.heals == []
+
+
+def test_interruptions_are_handled_before_the_tier_heals(make_page, tmp_path):
+    banner = V2.replace('<main>', "<main><div id='cookies'><button id='ok'>OK</button></div>")
+    page, heal = _broken(make_page, tmp_path, html=banner)
+
+    class Actions(list):
+        def append(self, item):          # clicking OK closes the banner
+            super().append(item)
+            if item[:2] == ('css=#ok', 'click'):
+                page.set_html(V2)
+    page.actions = Actions()
+    heal.interrupt('cookies', '#ok')
+    heal.locator('terms', '#accept-terms', poll_ms=0)
+    assert page.actions[0][:2] == ('css=#ok', 'click')
+    events = [e['event'] for e in _journal(tmp_path)]
+    assert events.index('flow.interrupt') < events.index('heal.requested')
+    assert heal.heals[-1].source == 'fingerprint'
 
 
 def test_an_unconfirmed_heal_does_not_replace_the_fingerprint(make_page, tmp_path):
