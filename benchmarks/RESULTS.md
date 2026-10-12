@@ -15,6 +15,7 @@ python benchmarks/run.py --provider anthropic --model <model id>
 python benchmarks/run.py --provider openai --model <model id>
 python benchmarks/run.py --provider gemini --model <model id>
 python benchmarks/run.py --provider ollama --model <model name>
+python benchmarks/run.py --provider local --model mendwright-selector
 python benchmarks/report.py
 ```
 

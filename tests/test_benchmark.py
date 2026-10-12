@@ -364,3 +364,18 @@ def test_the_published_results_page_matches_the_results_files():
     expected = report.render(report.load(files))
     assert (BENCH / 'RESULTS.md').read_text(encoding='utf-8') == expected, \
         'benchmarks/RESULTS.md is stale: run python benchmarks/report.py'
+
+
+def test_the_local_provider_is_built_and_measured_by_its_candidate_task(monkeypatch):
+    import mendwright
+    from mendwright.candidates import extract, format_task
+    from mendwright.prompt import build_prompt
+    monkeypatch.delenv('MENDWRIGHT_LOCAL_MODEL', raising=False)
+    prov = bench.build_provider('local', 'mendwright-selector')
+    assert isinstance(prov, mendwright.LocalModelProvider) and prov.model == 'mendwright-selector'
+    bundle = {'key': 'go', 'expectedRole': 'button', 'candidates': ['#go'],
+              'html': '<html><body><button>Go</button><a href="/x">X</a></body></html>'}
+    system, user = format_task(bundle, extract(bundle))
+    assert bench.prompt_chars(prov, bundle) == len(system) + len(user)
+    page = build_prompt(bundle)
+    assert bench.prompt_chars(bench.NoneProposer(), bundle) == len(page['system']) + len(page['user'])

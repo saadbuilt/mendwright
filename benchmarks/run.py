@@ -23,10 +23,13 @@ Usage:
     python benchmarks/run.py --provider similarity
     python benchmarks/run.py --provider anthropic --model <model id>
     python benchmarks/run.py --provider ollama --model <model> --cases "near-dup-*"
+    python benchmarks/run.py --provider local --model mendwright-selector
     python benchmarks/run.py --provider similarity --no-fingerprint
 
-Providers: anthropic, openai, gemini, ollama and auto call a model (keys and endpoints
-come from the environment, the same way mendwright.open() reads them). similarity and
+Providers: anthropic, openai, gemini, ollama, local and auto call a model (keys and
+endpoints come from the environment, the same way mendwright.open() reads them). local is
+LocalModelProvider: mendwright's own selector model in Ollama (see training/), which is
+sent a short candidate list instead of the page. similarity and
 none need no model. mendwright's fingerprint tier runs before the provider, as it does by
 default in mendwright.open(), so --provider none measures the fingerprint tier alone;
 --no-fingerprint turns it off to measure the provider alone. The page is a StandInPage
@@ -94,7 +97,7 @@ CATEGORIES = {
 # case (truth is null) is declined or wrong_negative. error is a harness or corpus fault.
 OUTCOMES = ('correct', 'wrong', 'missed', 'declined', 'wrong_negative', 'error')
 
-MODEL_PROVIDERS = ('anthropic', 'openai', 'gemini', 'ollama', 'auto')
+MODEL_PROVIDERS = ('anthropic', 'openai', 'gemini', 'ollama', 'local', 'auto')
 BASELINES = ('similarity', 'none')
 PROVIDERS = MODEL_PROVIDERS + BASELINES
 BROWSERS = ('chromium', 'firefox', 'webkit')
@@ -556,6 +559,8 @@ def build_provider(name, model=None):
         return mendwright.GeminiProvider(model=model)
     if name == 'ollama':
         return _ollama(model)
+    if name == 'local':
+        return mendwright.LocalModelProvider(model=model)
     if name == 'auto':
         return mendwright.auto_provider(model=model)
     raise ValueError('unknown provider ' + repr(name) + '. Use one of: ' + ', '.join(PROVIDERS))
@@ -585,6 +590,7 @@ ENDPOINT_VARS = {
     'anthropic': ('ANTHROPIC_BASE_URL',),
     'openai': ('OPENAI_BASE_URL',),
     'ollama': ('OLLAMA_HOST',),
+    'local': ('OLLAMA_HOST', 'MENDWRIGHT_LOCAL_MODEL'),
     'auto': ('MENDWRIGHT_PROVIDER', 'ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'MENDWRIGHT_GATEWAY',
              'OLLAMA_HOST'),
 }
@@ -604,10 +610,22 @@ def scrub(text):
 
 # --- one case ---------------------------------------------------------------------------------
 
+def prompt_chars(provider, bundle):
+    """The size of what ``provider`` sends for ``bundle``: the task with the candidate list
+    for LocalModelProvider (mendwright.candidates), else the page prompt
+    (mendwright.prompt.build_prompt)."""
+    if isinstance(provider, mendwright.LocalModelProvider):
+        from mendwright.candidates import extract, format_task
+        system, user = format_task(bundle, extract(bundle))
+        return len(system) + len(user)
+    prompt = build_prompt(bundle)
+    return len(prompt['system']) + len(prompt['user'])
+
+
 class Recorder:
     """Wraps a provider's propose() on the instance to count calls, time them and measure
-    the prompt each call would send (mendwright.prompt.build_prompt). The coordinator still
-    sees the provider's own class, model and last_error."""
+    the prompt each call would send (prompt_chars). The coordinator still sees the
+    provider's own class, model and last_error."""
 
     def __init__(self, provider):
         self.provider = provider
@@ -616,8 +634,7 @@ class Recorder:
         real = provider.propose
 
         def propose(bundle):
-            prompt = build_prompt(bundle)
-            chars = len(prompt['system']) + len(prompt['user'])
+            chars = prompt_chars(provider, bundle)
             started = time.perf_counter()
             try:
                 return real(bundle)
