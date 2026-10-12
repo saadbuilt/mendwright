@@ -40,7 +40,7 @@ import time
 import tokenize
 from dataclasses import dataclass, field
 
-from .selectors import normalize
+from .selectors import CSS, XPATH, classify, normalize
 
 # Folders that never hold your code. A folder is skipped by name, at any depth.
 SKIP_DIRS = frozenset({
@@ -60,6 +60,13 @@ ESCAPING_EXTS = C_LIKE_EXTS | {'.rb'}
 _NEEDLE_SPLIT = re.compile(r'''['"\\\s]''')
 _LINE = re.compile(r'[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+')
 _WRITE_TRIES = 8
+
+# An old selector that is one word ('button', 'input') equals strings that are not
+# selectors (role='button', a dict entry), so a key with one is never written back.
+_BARE_WORD = re.compile(r'^[A-Za-z][\w-]*$')
+# Keys that heal.driver makes for driver.find_element(by, value), and that By. The healed
+# selector is an XPath, which these Bys cannot run.
+_DRIVER_KEYS = (('css selector=', 'By.CSS_SELECTOR'), ('id=', 'By.ID'), ('name=', 'By.NAME'))
 
 
 # --- the plan: which keys to fix ---------------------------------------------------------
@@ -156,6 +163,20 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  'so there is no string in your code to replace. Update the seed '
                                  'file by hand, or pass the healed selector to heal.locator().'))
             continue
+        bare = [s for s in old if _BARE_WORD.match(s)]
+        if bare:
+            plan.skipped.append((key, 'its old selector ' + repr(bare[0]) + ' is a bare word, and '
+                                 'other strings in your code can be the same word (a role= '
+                                 'value, a dict entry), so mendwright cannot tell which ones '
+                                 'are the selector. Change it by hand to: ' + new))
+            continue
+        by = next((b for prefix, b in _DRIVER_KEYS if key.startswith(prefix)), None)
+        if by and classify(new) == XPATH and all(classify(s) == CSS for s in old):
+            plan.skipped.append((key, 'it comes from driver.find_element(' + by + ', ...) through '
+                                 'heal.driver, and ' + by + ' cannot run the healed XPath. '
+                                 'Change the call by hand to: find_element(By.XPATH, '
+                                 + repr(new) + ')'))
+            continue
         confirmed = canary.get((key, new)) is True
         if not confirmed and not include_unconfirmed:
             plan.skipped.append((key, 'its heal was never confirmed (journal.jsonl has no canary '
@@ -194,9 +215,25 @@ def _is_source_name(path, rel, globs):
     return False
 
 
+def _is_link(path):
+    """True for a symbolic link, or a Windows directory junction, which os.path.islink()
+    does not count, so a junction cannot lead the walk outside the folders given."""
+    if os.path.islink(path):
+        return True
+    isjunction = getattr(os.path, 'isjunction', None)      # Python 3.12 and newer
+    if isjunction is not None:
+        return isjunction(path)
+    try:
+        tag = getattr(os.lstat(path), 'st_reparse_tag', 0)
+    except OSError:
+        return False
+    return bool(tag) and tag == getattr(stat, 'IO_REPARSE_TAG_MOUNT_POINT', 0xA0000003)
+
+
 def collect_files(paths, extra_globs=()):
     """(files, errors): the source files under ``paths`` (folders are walked, a file path is
-    taken as it is), in a stable order. Folders in SKIP_DIRS and symbolic links are skipped."""
+    taken as it is), in a stable order. Folders in SKIP_DIRS, symbolic links and Windows
+    junctions are skipped."""
     globs = list(DEFAULT_GLOBS) + [g for g in extra_globs if g not in DEFAULT_GLOBS]
     files, errors, seen = [], [], set()
 
@@ -213,11 +250,11 @@ def collect_files(paths, extra_globs=()):
             for folder, dirs, names in os.walk(root):
                 dirs[:] = sorted(d for d in dirs
                                  if d not in SKIP_DIRS and not d.endswith('.egg-info')
-                                 and not os.path.islink(os.path.join(folder, d)))
+                                 and not _is_link(os.path.join(folder, d)))
                 for name in sorted(names):
                     path = os.path.join(folder, name)
                     rel = os.path.relpath(path, root)
-                    if not os.path.islink(path) and _is_source_name(path, rel, globs):
+                    if not _is_link(path) and _is_source_name(path, rel, globs):
                         add(path)
         else:
             errors.append('no such file or folder: ' + root + '. Check the --path value.')
@@ -248,6 +285,7 @@ class Literal:
     end: int
     source: str         # the literal as written, quotes and prefix included
     value: str          # what it evaluates to
+    col: int = 0        # 0-based character column of its first character
 
 
 _STRING_START = tuple(getattr(tokenize, n) for n in ('FSTRING_START', 'TSTRING_START')
@@ -289,7 +327,8 @@ def python_literals(text):
                 continue
             if isinstance(value, str):
                 out.append(Literal(tok.start[0], starts[tok.start[0] - 1] + tok.start[1],
-                                   starts[tok.end[0] - 1] + tok.end[1], tok.string, value))
+                                   starts[tok.end[0] - 1] + tok.end[1], tok.string, value,
+                                   tok.start[1]))
     return out
 
 
@@ -346,11 +385,107 @@ def generic_literals(text, ext):
                 body = line[i + 1:j]
                 if not (ch == '`' and '${' in body):
                     out.append(Literal(number, starts[number - 1] + i, starts[number - 1] + j + 1,
-                                       line[i:j + 1], _decode_body(body, escaping)))
+                                       line[i:j + 1], _decode_body(body, escaping), i))
                 i = j + 1
                 continue
             i += 1
     return out
+
+
+# --- where a literal sits ----------------------------------------------------------------
+
+# Keyword arguments whose value is never a selector: heal.locator()'s role=, text= and
+# intent=, interrupt()'s action=, Selenium's by=, get_attribute()'s name=.
+NOT_SELECTOR_KEYWORDS = frozenset({'role', 'text', 'intent', 'key', 'action', 'by', 'name'})
+# Calls whose first argument is a key, not a selector, when a selector comes after it.
+KEYED_CALLS = frozenset({'locator', 'interrupt'})
+# Selenium's By names and the strings they stand for.
+_BY_NAMES = {'XPATH': 'xpath', 'CSS_SELECTOR': 'css selector', 'ID': 'id', 'NAME': 'name',
+             'CLASS_NAME': 'class name', 'TAG_NAME': 'tag name', 'LINK_TEXT': 'link text',
+             'PARTIAL_LINK_TEXT': 'partial link text'}
+_BY_VALUES = {v: k for k, v in _BY_NAMES.items()}
+SKIP = 'skip'           # not a selector at all
+CSS_ONLY = 'css'        # a selector, but in a place that cannot run an XPath
+# The end of the code before a literal, in other languages, that takes a CSS selector only:
+# By.cssSelector(, By.CSS_SELECTOR, css: , querySelector(, By.id(, ...
+_CSS_CALL = re.compile(r'(?i)(?:css(?:[ _]?selector)?|queryselector(?:all)?|'
+                       r'by\.(?:id|name|class_?name|tag_?name|link_?text))$')
+
+
+def _by_of(node):
+    """'By.CSS_SELECTOR' (and so on) when node is a Selenium By value, else None."""
+    if isinstance(node, ast.Attribute) and node.attr in _BY_NAMES:
+        return 'By.' + node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in _BY_VALUES:
+        return 'By.' + _BY_VALUES[node.value]
+    return None
+
+
+def _func_name(call):
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else ''
+
+
+def python_contexts(text):
+    """{(line, column): context} for the string literals of Python source that are not a
+    plain selector. The context is SKIP for a literal that is no selector at all (a role=,
+    text= or intent= value, or the key in heal.locator(key, selector)), or (CSS_ONLY, by)
+    for one that sits where an XPath cannot run: the value next to a Selenium By other than
+    By.XPATH (in a call or a (By, value) pair), or an argument of a function with css in its
+    name. Columns count characters, as tokenize does. {} when the source does not parse."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    lines = _split_lines(text)
+    out = {}
+
+    def mark(node, context):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            return
+        line = lines[node.lineno - 1] if 0 < node.lineno <= len(lines) else ''
+        col = len(line.encode('utf-8')[:node.col_offset].decode('utf-8', 'replace'))
+        out.setdefault((node.lineno, col), context)
+
+    def by_pair(by_node, value_node):
+        by = _by_of(by_node)
+        if by is not None and by != 'By.XPATH':
+            mark(value_node, (CSS_ONLY, by))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = _func_name(node)
+            keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+            for arg, value in keywords.items():
+                if arg in NOT_SELECTOR_KEYWORDS:
+                    mark(value, SKIP)
+            args = node.args
+            keyed = name in KEYED_CALLS and (len(args) >= 2 or 'selector' in keywords
+                                             or 'inline_xpath' in keywords)
+            if keyed and args:
+                mark(args[0], SKIP)
+            elif len(args) >= 2:
+                by_pair(args[0], args[1])
+            if 'by' in keywords:
+                value = keywords.get('value', args[0] if args else None)
+                if value is not None:
+                    by_pair(keywords['by'], value)
+            if 'css' in name.lower():
+                for arg in list(args) + [keywords[k] for k in ('value', 'selector') if k in keywords]:
+                    mark(arg, (CSS_ONLY, name + '()'))
+        elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
+            by_pair(node.elts[0], node.elts[1])
+    return out
+
+
+def generic_context(line, col):
+    """(CSS_ONLY, what) when the code before column ``col`` of ``line`` takes a CSS selector
+    only (By.cssSelector(, querySelector(, css: ...), else None."""
+    before = re.sub(r'[\s(,:=>\'"`]+$', '', line[:col])
+    match = _CSS_CALL.search(before)
+    return (CSS_ONLY, match.group(0)) if match else None
 
 
 # --- writing a new literal ---------------------------------------------------------------
@@ -620,6 +755,8 @@ def scan_file(path, plan, result, needles):
 
     table = {**plan.new_for, **plan.ambiguous}
     healed = {fix.new: fix.new for fix in plan.fixes}
+    contexts = python_contexts(text) if python else {}
+    lines = None if python else _split_lines(text)
     hits, blocked = [], []
     for lit in literals:
         selector = _lookup(lit.value, table)
@@ -628,12 +765,24 @@ def scan_file(path, plan, result, needles):
             if already is not None:
                 result.holding.setdefault(already, []).append(shown + ':' + str(lit.line))
             continue
+        if python:
+            context = contexts.get((lit.line, lit.col))
+        else:
+            context = generic_context(lines[lit.line - 1].rstrip('\r\n'), lit.col)
+        if context == SKIP:
+            continue        # a key, or a role= value: equal to the selector, but not one
         found.add(selector)
         if selector in plan.ambiguous:
             blocked.append((lit.line, selector, plan.ambiguous[selector]))
             continue
         new = plan.new_for[selector]
         if lit.value == new:
+            continue
+        if context and context[0] == CSS_ONLY and classify(new) == XPATH:
+            result.notes.append(shown + ':' + str(lit.line) + ' was not changed: ' + lit.source
+                                + ' is passed to ' + context[1] + ', which cannot run the healed '
+                                'XPath. Change the call to take an XPath (By.XPATH in Selenium) '
+                                'and the selector to: ' + new)
             continue
         now = python_literal(new, lit.source) if python else generic_literal(new, lit.source, ext)
         if now is None:

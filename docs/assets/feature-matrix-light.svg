@@ -143,9 +143,9 @@
 <text x="729.67" y="725" font-size="12" fill="#52514e" text-anchor="middle">OpenAI only</text>
 <line x1="24" y1="748" x2="776" y2="748" stroke="#e1e0d9" stroke-width="1"/>
 <text x="24" y="772.5" font-size="13" fill="#0b0b0b">No change to each step</text>
-<circle class="mark" cx="266.33" cy="768" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
-<text x="266.33" y="793" font-size="12" fill="#52514e" text-anchor="middle">one line per</text>
-<text x="266.33" y="807" font-size="12" fill="#52514e" text-anchor="middle">step</text>
+<circle class="mark" cx="266.33" cy="768" r="7" fill="#2a78d6"/>
+<text x="266.33" y="793" font-size="12" fill="#52514e" text-anchor="middle">heal.page /</text>
+<text x="266.33" y="807" font-size="12" fill="#52514e" text-anchor="middle">heal.driver</text>
 <circle class="mark" cx="359" cy="768" r="7" fill="#2a78d6"/>
 <text x="359" y="793" font-size="12" fill="#52514e" text-anchor="middle">wrap the</text>
 <text x="359" y="807" font-size="12" fill="#52514e" text-anchor="middle">driver once</text>
@@ -162,9 +162,8 @@
 <text x="729.67" y="807" font-size="12" fill="#52514e" text-anchor="middle">rewritten</text>
 <line x1="24" y1="816" x2="776" y2="816" stroke="#e1e0d9" stroke-width="1"/>
 <text x="24" y="840.5" font-size="13" fill="#0b0b0b">Heals without any model</text>
-<circle class="mark" cx="266.33" cy="836" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
-<text x="266.33" y="861" font-size="12" fill="#52514e" text-anchor="middle">needs a</text>
-<text x="266.33" y="875" font-size="12" fill="#52514e" text-anchor="middle">model</text>
+<circle class="mark" cx="266.33" cy="836" r="7" fill="#2a78d6"/>
+<text x="266.33" y="861" font-size="12" fill="#52514e" text-anchor="middle">fingerprint first</text>
 <circle class="mark" cx="359" cy="836" r="7" fill="#2a78d6"/>
 <text x="359" y="861" font-size="12" fill="#52514e" text-anchor="middle">tree similarity</text>
 <circle class="mark" cx="451.67" cy="836" r="6.25" fill="none" stroke="#2a78d6" stroke-width="1.5"/>
@@ -184,8 +183,8 @@
 <text x="24" y="924.5" font-size="13" fill="#0b0b0b">machine</text>
 <circle class="mark" cx="266.33" cy="904" r="6.25" fill="none" stroke="#2a78d6" stroke-width="1.5"/>
 <path class="mark" d="M266.33 897.75A6.25 6.25 0 0 0 266.33 910.25Z" fill="#2a78d6"/>
-<text x="266.33" y="929" font-size="12" fill="#52514e" text-anchor="middle">local model</text>
-<text x="266.33" y="943" font-size="12" fill="#52514e" text-anchor="middle">only</text>
+<text x="266.33" y="929" font-size="12" fill="#52514e" text-anchor="middle">no provider or</text>
+<text x="266.33" y="943" font-size="12" fill="#52514e" text-anchor="middle">a local model</text>
 <circle class="mark" cx="359" cy="904" r="7" fill="#2a78d6"/>
 <text x="359" y="929" font-size="12" fill="#52514e" text-anchor="middle">no LLM in</text>
 <text x="359" y="943" font-size="12" fill="#52514e" text-anchor="middle">OSS</text>
@@ -195,9 +194,10 @@
 <text x="729.67" y="909" font-size="15" font-weight="600" fill="#52514e" text-anchor="middle">?</text>
 <line x1="24" y1="952" x2="776" y2="952" stroke="#e1e0d9" stroke-width="1"/>
 <text x="24" y="976.5" font-size="13" fill="#0b0b0b">Steps with no selector</text>
-<circle class="mark" cx="266.33" cy="972" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
-<text x="266.33" y="997" font-size="12" fill="#52514e" text-anchor="middle">needs a</text>
-<text x="266.33" y="1011" font-size="12" fill="#52514e" text-anchor="middle">selector</text>
+<circle class="mark" cx="266.33" cy="972" r="6.25" fill="none" stroke="#2a78d6" stroke-width="1.5"/>
+<path class="mark" d="M266.33 965.75A6.25 6.25 0 0 0 266.33 978.25Z" fill="#2a78d6"/>
+<text x="266.33" y="997" font-size="12" fill="#52514e" text-anchor="middle">intent= and</text>
+<text x="266.33" y="1011" font-size="12" fill="#52514e" text-anchor="middle">role=</text>
 <circle class="mark" cx="359" cy="972" r="6.25" fill="none" stroke="#898781" stroke-width="1.5"/>
 <text x="359" y="997" font-size="12" fill="#52514e" text-anchor="middle">needs a</text>
 <text x="359" y="1011" font-size="12" fill="#52514e" text-anchor="middle">locator</text>

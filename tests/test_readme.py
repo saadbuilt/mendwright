@@ -11,8 +11,12 @@ by a stub that answers with a fixed XPath. No browser, network or API key is nee
 The block marked readme-test: flow runs on a page that a OneTrust-style consent banner
 and a newsletter modal both cover: it is given that page as `page`, and a click on an
 element with data-closes="<id>" closes the element with that id, as the page's script
-would. The pytest block runs through pytester with the plugin loaded, the way pytest
-loads it for a user. The AttentionRequired text the README quotes is compared with what the code
+would. The block marked readme-test: wrappers runs twice, as two runs of one unchanged
+script: first on SIGNUP_V1_HTML, where every selector matches and mendwright records each
+element's fingerprint, then on the redesign, where the checkbox selectors heal from those
+fingerprints with no model call. It is given `page`, `driver` and Selenium's `By`. The
+pytest block runs through pytester with the plugin loaded, the way pytest loads it for a
+user. The AttentionRequired text the README quotes is compared with what the code
 raises today, and the links in README.md and docs/guide.md are checked.
 """
 
@@ -28,6 +32,7 @@ import pytest
 
 import mendwright
 import mendwright.providers
+from mendwright.fingerprint import FINGERPRINT_JS, raw_of_element
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / 'README.md'
@@ -36,10 +41,11 @@ SOURCES = ROOT / 'mendwright'
 
 # The README has this many ```python blocks, and all of them run. Change it together with
 # the README, so a new block cannot slip in untested.
-EXPECTED_PYTHON_BLOCKS = 5
+EXPECTED_PYTHON_BLOCKS = 6
 SKIP_MARK = '<!-- readme-test: skip -->'
 ATTENTION_MARK = '<!-- readme-test: attention-pay -->'
 FLOW_MARK = '<!-- readme-test: flow -->'
+WRAPPERS_MARK = '<!-- readme-test: wrappers -->'
 
 SIGNUP_URL = 'https://example.com/signup'
 SIGNUP_HTML = """<!doctype html>
@@ -54,6 +60,8 @@ SIGNUP_HTML = """<!doctype html>
     <button id="create-account" type="submit">Create account</button>
   </form>
 </body></html>"""
+# The signup page before the redesign: the checkbox still has the id the README uses.
+SIGNUP_V1_HTML = SIGNUP_HTML.replace('id="consent-7f3a"', 'id="terms"')
 # What the stub model proposes for each key. Any other key gets no proposal.
 PROPOSALS = {
     'accept_terms': "//label[contains(normalize-space(.), 'I accept the terms')]"
@@ -81,6 +89,8 @@ FLOW_HTML = """<!doctype html>
 PAGES = {SIGNUP_URL: SIGNUP_HTML}
 BLANK = '<!doctype html><html><head></head><body></body></html>'
 _CSS_ID = re.compile(r'^#([A-Za-z_][\w-]*)$')
+# The attribute selectors heal.driver makes for By.ID and By.NAME: [id="x"], [name="x"].
+_CSS_ATTR = re.compile(r'^\[(id|name)="([^"\\]*)"\]$')
 
 
 # --- README parsing -----------------------------------------------------------------------
@@ -137,6 +147,9 @@ class Site:
         m = _CSS_ID.match(value.strip())
         if kind == 'css' and m:
             return self.doc.xpath('//*[@id=$i]', i=m.group(1))
+        m = _CSS_ATTR.match(value.strip())
+        if kind == 'css' and m:
+            return self.doc.xpath('//*[@' + m.group(1) + '=$v]', v=m.group(2))
         self.unsupported.append((kind, value))
         raise ValueError('the README test fakes run XPath and #id CSS only, not ' + repr(value))
 
@@ -204,7 +217,11 @@ class SyncLocator:
 
     def evaluate_all(self, expression, arg=None):
         els = self._all()
-        return _describe(els[0]) if len(els) == 1 else None
+        if len(els) != 1:
+            return None
+        if expression == FINGERPRINT_JS:      # what the browser would read for it
+            return raw_of_element(els[0])
+        return _describe(els[0])
 
     def get_attribute(self, name, **kwargs):
         els = self._all()
@@ -456,6 +473,8 @@ def _selenium_modules(site):
             return [WebElement(site, el, value) for el in site.query(kind, value)]
 
         def execute_script(self, script, *args):
+            if FINGERPRINT_JS in script and args and isinstance(args[0], WebElement):
+                return raw_of_element(args[0]._el)
             if 'outerHTML' in script and args and isinstance(args[0], WebElement):
                 return _describe(args[0]._el)
             if 'scrollIntoView' in script:
@@ -536,7 +555,10 @@ def test_the_readme_has_the_python_blocks_this_file_runs():
 
 FLOW_BLOCKS = [(code, line) for lang, code, marker, line in BLOCKS
                if lang == 'python' and marker == FLOW_MARK]
-SCRIPT_BLOCKS = [b for b in PY_BLOCKS if 'def test_' not in b[0] and b not in FLOW_BLOCKS]
+WRAPPER_BLOCKS = [(code, line) for lang, code, marker, line in BLOCKS
+                  if lang == 'python' and marker == WRAPPERS_MARK]
+SCRIPT_BLOCKS = [b for b in PY_BLOCKS if 'def test_' not in b[0] and b not in FLOW_BLOCKS
+                 and b not in WRAPPER_BLOCKS]
 
 
 @pytest.mark.parametrize('code, line', SCRIPT_BLOCKS, ids=['line' + str(b[1]) for b in SCRIPT_BLOCKS])
@@ -579,6 +601,40 @@ def test_the_readme_flow_block_runs_as_written(world):
         ('cookie_banner', 'email'), ('newsletter', 'email')]
     events = [(e['event'], e.get('key')) for e in _journal(world.store)]
     assert events == [('flow.interrupt', 'cookie_banner'), ('flow.interrupt', 'newsletter')]
+
+
+def test_the_readme_wrapper_block_heals_an_unchanged_script_without_a_model(world):
+    assert len(WRAPPER_BLOCKS) == 1, 'README.md should mark the heal.page example with ' + WRAPPERS_MARK
+    code, line = WRAPPER_BLOCKS[0]
+    site = world.site
+    chrome = sys.modules['selenium.webdriver'].Chrome
+    by = types.SimpleNamespace(XPATH='xpath', CSS_SELECTOR='css selector', ID='id', NAME='name')
+
+    def run():
+        site.load(SIGNUP_URL)
+        namespace = {'__name__': '__readme__', 'mendwright': mendwright, 'By': by,
+                     'page': SyncPage(site), 'driver': chrome()}
+        exec(compile(code, 'README.md:' + str(line), 'exec'), namespace)
+        return namespace
+
+    site.pages[SIGNUP_URL] = SIGNUP_V1_HTML
+    first = run()                            # every selector matches, and is recorded
+    assert type(first['page']).__name__ == 'HealingPage'
+    assert type(first['driver']).__name__ == 'HealingDriver'
+    assert site.element("//input[@id='email']").get('value') == 'ada@example.com'
+    store = json.loads((world.store / 'overrides.json').read_text(encoding='utf-8'))
+    for key in ('#email', '#terms', 'id=terms'):
+        assert store['selectors'][key]['fingerprint']['tag'] == 'input', key
+
+    site.pages[SIGNUP_URL] = SIGNUP_HTML     # the redesign: the checkbox lost its id
+    run()                                    # the same script, unchanged
+    assert site.unsupported == []
+    assert world.stub.keys == []             # healed from the fingerprints, no model call
+    applied = [e for e in _journal(world.store) if e['event'] == 'heal.applied']
+    assert [(e['key'], e['source']) for e in applied] == [('#terms', 'fingerprint'),
+                                                          ('id=terms', 'fingerprint')]
+    assert {e['xpath'] for e in applied} == {"//input[@id='consent-7f3a']"}
+    assert ('check', "xpath=//input[@id='consent-7f3a']") in site.actions
 
 
 PYTEST_BLOCKS = [b for b in PY_BLOCKS if 'def test_' in b[0]]

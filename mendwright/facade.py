@@ -448,10 +448,13 @@ class Healer:
         page shortcuts that take a selector (click, dblclick, fill, check, uncheck,
         select_option, press, type, hover, is_checked, text_content, inner_text,
         get_attribute) go through heal.locator(selector, selector), so the selector is the
-        key its heals are saved under. is_visible(selector) answers at once and never
-        heals. Everything else, and a locator built with options or chained from another
-        one, is the real page's, not healed. For any other page or driver it is the object
-        mendwright was opened on."""
+        key its heals are saved under. The reads (get_attribute, text_content, ...),
+        set_input_files and focus work on hidden elements in Playwright, so for those a
+        selector that matches a hidden element or several, with no saved heal that finds
+        the element, goes to the real page as written; only one that matches nothing is
+        healed. is_visible(selector) answers at once and never heals. Everything else, and
+        a locator built with options or chained from another one, is the real page's, not
+        healed. For any other page or driver it is the object mendwright was opened on."""
         if 'page' not in self._proxies:
             from .drivers.playwright_sync import PlaywrightSyncDriver
             from .proxies import HealingPage
@@ -464,7 +467,9 @@ class Healer:
         """For a Selenium WebDriver, the driver to use in place of your own:
         driver = mendwright.open(driver).driver. Its find_element(by, value) goes through
         heal.locator(f'{by}={value}', ...) for By.XPATH, By.CSS_SELECTOR, By.ID and By.NAME
-        and returns the WebElement; everything else is the real driver's. For any other
+        and returns the WebElement, healing only a selector that matches nothing (a hidden
+        element, or the first of several, comes from the real driver as before);
+        everything else is the real driver's. For any other
         page it is mendwright's own Driver for it, as before."""
         if 'driver' not in self._proxies:
             from .drivers.selenium import SeleniumDriver
@@ -472,6 +477,31 @@ class Healer:
             healing = isinstance(self._driver, SeleniumDriver)
             self._proxies['driver'] = HealingDriver(self, self._page) if healing else self._driver
         return self._proxies['driver']
+
+    def _passes_through(self, key, selector):
+        """For heal.driver's find_element and heal.page's reads: True when the call should
+        go to the real page or driver as written. That is when selector matches something
+        on the page now, but not the one visible element mendwright looks for, and none of
+        key's saved selectors finds one either. Playwright's reads (get_attribute,
+        text_content, ...) work on a hidden element, and Selenium's find_element takes the
+        first of several matches, where mendwright would wait and then try to heal."""
+        driver = self._driver
+        try:
+            count = driver.count(selector)
+        except Exception:
+            return False        # heal.locator() raises InvalidSelector for a bad one
+        if not count:
+            return False
+        if count == 1:
+            try:
+                if driver.is_visible(selector):
+                    return False
+            except Exception:
+                return False
+        try:
+            return not self.present(key)
+        except Exception:
+            return True
 
     def _knows(self, key):
         """True when the store has an active selector for key."""

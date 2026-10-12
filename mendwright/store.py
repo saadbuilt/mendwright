@@ -386,7 +386,9 @@ class SelectorStore:
                 raise ValueError('mendwright: intent must be a non-empty string, got '
                                  + repr(intent) + '. Describe the element in words, for '
                                  "example intent='the terms checkbox in the signup form'.")
-            e['intent'] = intent.strip()
+            # One line: the prompt gives the model one 'intent:' line, so a line break in
+            # it must not start what looks like another field.
+            e['intent'] = ' '.join(intent.split())
             changed['intent'] = e['intent']
         if fingerprint is not None:
             if not _valid_fingerprint(fingerprint):

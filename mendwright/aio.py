@@ -358,6 +358,27 @@ class AsyncHealer:
     def _knows(self, key):
         return self._core._knows(key)
 
+    async def _passes_through(self, key, selector):
+        """Healer._passes_through(), awaited: True when selector matches something on the
+        page now, but not one visible element, and no saved selector of key finds one."""
+        driver = self._driver
+        try:
+            count = await _awaited(driver.count(selector))
+        except Exception:
+            return False
+        if not count:
+            return False
+        if count == 1:
+            try:
+                if await _awaited(driver.is_visible(selector)):
+                    return False
+            except Exception:
+                return False
+        try:
+            return not await self.present(key)
+        except Exception:
+            return True
+
     async def _peek_visible(self, key):
         """Healer._peek_visible(), awaited: no wait, no heal, no scrolling, and nothing
         recorded in the store."""

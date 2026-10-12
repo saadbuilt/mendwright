@@ -503,17 +503,19 @@ def chart_flow(data, theme):
     b = box(spine_x, spine_w, top, 40, 'A stored selector stops matching', kind='pill')
     down(b, b + gap)
     top = b + gap
-    b = box(spine_x, spine_w, top, 70, 'Refuse before asking the model?',
-            ['key marked destructive, role unknown,', 'or hourly limit used up'], kind='decision')
+    b = box(spine_x, spine_w, top, 70, 'Refuse before trying?',
+            ['key marked destructive, role unknown,', 'or a page the key was never found on'],
+            kind='decision')
     across(top + 35, 'yes')
-    exit_box(top + 35, 'Stop and raise AttentionRequired', ['The model is not called.'], 'bang')
+    exit_box(top + 35, 'Stop and raise AttentionRequired', ['Nothing is tried or saved.'], 'bang')
     down(b, b + gap, 'no')
     top = b + gap
-    b = box(spine_x, spine_w, top, 58, 'Capture the page', ['HTML snapshot, redacted first'])
+    b = box(spine_x, spine_w, top, 58, 'Capture the page', ['HTML snapshot, redacted for a model'])
     down(b, b + gap)
     top = b + gap
-    b = box(spine_x, spine_w, top, 58, 'The model proposes an XPath',
-            ['from the provider you configured'])
+    b = box(spine_x, spine_w, top, 76, 'Propose an XPath',
+            ['from the saved fingerprint, if one element', 'matches it with confidence (no model);',
+             'else the model, within the hourly limit'])
     down(b, b + gap)
     top = b + gap
     checks = ['not a brittle index path',
@@ -534,8 +536,9 @@ def chart_flow(data, theme):
     svg.add('</g>')
     b = top + h
     across(top + h / 2, 'fail')
-    exit_box(top + h / 2, 'One more try, with the reason',
-             ['If that fails too: AttentionRequired,', 'with the reason. Nothing is saved.'], 'bang')
+    exit_box(top + h / 2, 'Ask the model, with the reason',
+             ['A failed model pick gets one more try. Then:', 'AttentionRequired, nothing saved.'],
+             'bang')
     down(b, b + gap, 'pass')
     top = b + gap
     b = box(spine_x, spine_w, top, 58, 'Save it and retry the step',
@@ -545,15 +548,17 @@ def chart_flow(data, theme):
     down(b, b + gap, 'action works')
     top = b + gap
     b = box(spine_x, spine_w, top, 40, 'The step continues', kind='pill')
-    y = footer(svg, b + 4, ['Code: mendwright/facade.py, coordinator.py and gate.py.'])
-    desc = ('Flow: a selector misses; a key marked destructive, an unknown role or a used-up '
-            'hourly limit stops with AttentionRequired before any model call; otherwise the page '
-            'is captured and redacted, a model proposes an XPath, and local checks run (not a '
-            'brittle index path, not quarantined or superseded for this key, exactly one match, '
-            'expected role, unique, visible and the same role on the live page); a failure '
-            'gives the model the reason and one more try, and a '
-            'second failure raises AttentionRequired with nothing saved; a pass is saved and the '
-            'step retried; if the action then fails the healed selector is quarantined.')
+    y = footer(svg, b + 4, ['Code: mendwright/facade.py, coordinator.py, fingerprint.py and gate.py.'])
+    desc = ('Flow: a selector misses; a key marked destructive, an unknown role or a page the '
+            'key was never found on stops with AttentionRequired before anything is tried; '
+            'otherwise the page is captured, and an XPath is proposed from the saved fingerprint '
+            'when one element matches it with confidence, else by the model within the hourly '
+            'limit, from a redacted copy; local checks run (not a brittle index path, not '
+            'quarantined or superseded for this key, exactly one match, expected role, unique, '
+            'visible and the same role on the live page); a failed fingerprint pick goes to the '
+            'model, a failed model pick gets the reason and one more try, and a second failure '
+            'raises AttentionRequired with nothing saved; a pass is saved and the step retried; '
+            'if the action then fails the healed selector is quarantined.')
     return svg.render(y, title, desc)
 
 

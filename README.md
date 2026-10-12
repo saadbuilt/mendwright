@@ -14,9 +14,9 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-When a site update breaks a selector, mendwright asks a model for a new XPath, checks it against the live page, saves it, and retries the step. On the next run the saved selector is used and the model isn't called.
+mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
-Supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama, including mendwright's own small selector model.
+For the model it supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama, including mendwright's own small selector model.
 
 ## Install
 
@@ -75,8 +75,9 @@ with sync_playwright() as p:
 `heal.locator()` takes the selector you'd pass to `page.locator()`, plus a key: a name for the element that its heals are saved under.
 
 `role=` is optional. mendwright needs to know what kind of element it is looking for before it can check a heal, and it learns that the first time the selector matches. Pass `role=` when you add mendwright to a suite whose selectors might already be broken.
+`intent=` describes the element in words, such as `intent="the terms checkbox in the signup form"`. The model gets it with the page, and with `role=` and no selector, a model finds the element on first use.
 
-Then tell mendwright which model to ask:
+A selector that never matched has no fingerprint, and some changes are beyond one, so to let mendwright ask a model:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -87,11 +88,26 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 $env:ANTHROPIC_MODEL = "..."
 ```
 
-There is no default model. `OPENAI_API_KEY` with `OPENAI_MODEL`, `GEMINI_API_KEY` with `GEMINI_MODEL`, and `OLLAMA_MODEL` work the same way, and `MENDWRIGHT_LOCAL_MODEL` selects mendwright's own [local model](#local-model).
-For Bedrock, LiteLLM or another OpenAI-compatible host, pass `provider=` to `mendwright.open()`.
-`mendwright doctor` shows which provider it found. Without one, selectors still resolve, and a broken one raises an error that lists the variables to set.
+There is no default model. `OPENAI_API_KEY` with `OPENAI_MODEL`, `GEMINI_API_KEY` with `GEMINI_MODEL`, and `OLLAMA_MODEL` work the same way, and `MENDWRIGHT_LOCAL_MODEL` selects mendwright's own [local model](#local-model). For Bedrock, LiteLLM or another OpenAI-compatible host, pass `provider=` to `mendwright.open()`.
+`mendwright doctor` shows which provider it found. Without one, selectors still resolve and fingerprint heals still happen, and a selector the fingerprint can't place raises an error that lists the variables to set.
 
-A selector that stops matching is waited for 10 seconds (`MENDWRIGHT_TIMEOUT_MS`) before mendwright asks the model. Each applied heal prints one line to stderr, and `mendwright report` shows what was saved.
+A selector that stops matching is waited for 10 seconds (`MENDWRIGHT_TIMEOUT_MS`) before mendwright tries to heal it. Each applied heal prints one line to stderr, and `mendwright report` shows what was saved.
+
+## No changes per step
+
+To heal an existing script without touching its steps, change the line that makes the page or the driver:
+
+<!-- readme-test: wrappers -->
+```python
+page = mendwright.open(page).page          # Playwright
+page.fill("#email", "ada@example.com")
+page.check("#terms")
+
+driver = mendwright.open(driver).driver    # Selenium (By from selenium.webdriver.common.by)
+driver.find_element(By.ID, "terms").click()
+```
+
+Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
 
 ## Selenium
 
@@ -108,8 +124,7 @@ heal.locator("accept_terms", "//input[@id='terms']", role="checkbox").check()
 driver.quit()
 ```
 
-Playwright verbs such as `fill()`, `check()` and `select_option()` are mapped to WebElement calls, so step code reads the same on both libraries.
-Selenium runs XPath and CSS, so Playwright selectors such as `text=Save` raise `InvalidSelector` at once.
+Playwright verbs such as `fill()`, `check()` and `select_option()` are mapped to WebElement calls, so step code reads the same on both libraries. Selenium runs XPath and CSS, so Playwright selectors such as `text=Save` raise `InvalidSelector` at once.
 
 ## Async Playwright
 
@@ -151,13 +166,13 @@ To make CI show selector drift instead of quietly healing it, run `pytest --mend
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-dark.svg">
-  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-light.svg" width="800" alt="How a heal works: a selector misses; a key marked destructive, an unknown role or a used-up hourly limit stops with AttentionRequired before any model call; otherwise the page is captured and redacted, a model proposes an XPath and local checks run; a failure gives the model the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.">
+  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/how-it-works-light.svg" width="800" alt="How a heal works: a selector misses; a key marked destructive, an unknown role or a page the key was never found on stops with AttentionRequired before anything is tried; otherwise the page is captured, and an XPath comes from the saved fingerprint when one element matches it with confidence, else from the model within the hourly limit; local checks run; a failed fingerprint pick goes to the model, a failed model pick gets the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.">
 </picture>
 
-A step is refused before any model call when its key is marked destructive, when mendwright doesn't know what kind of element it is (see `role=` above), or when the hourly limit is used up: 3 heal attempts per key and 60 in all by default.
-mendwright doesn't guess which controls are destructive. Mark a pay, submit or delete step with `heal.locator(..., destructive=True)`, or pass its key in `mendwright.open(destructive_keys=...)`.
-A rejected attempt counts, and an attempt makes up to 2 model calls. Going through a gateway skips this limit, because the gateway meters on its side.
-Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at most 60,000 characters of HTML and 60,000 of element inventory per request), and uses the XPath it proposes only if:
+A step is refused before anything is tried when its key is marked destructive, when mendwright doesn't know what kind of element it is (see `role=` above), or when the page isn't one the key was found on. mendwright doesn't guess which controls are destructive. Mark a pay, submit or delete step with `heal.locator(..., destructive=True)`, or pass its key in `mendwright.open(destructive_keys=...)`.
+Next, mendwright scores the page's elements against the key's fingerprint. It takes the best one, with no model call, only when it shares an id, test id, name, link, label or text with the recorded element and no other element comes close.
+Otherwise it sends a cleaned, redacted copy of the page to the model (at most 60,000 characters of HTML and 60,000 of element inventory per request), within an hourly limit of 3 heal attempts per key and 60 in all. A rejected attempt counts, and an attempt makes up to 2 model calls. A gateway meters on its side instead.
+Either way, the XPath is used only if:
 
 - it isn't an index-only path such as `/html[1]/body[1]/div[3]/input[1]`
 - the store doesn't hold it as quarantined or superseded for this key, and it doesn't reach an element the key has quarantined
@@ -165,7 +180,7 @@ Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at
 - that element has the step's role (checkbox, button, link, and so on)
 - it matches exactly one element on the live page, and that element is visible (hidden checkboxes are allowed) and still has the role
 
-If the first proposal fails, the model gets the reason and one more try. Heals are saved in `.mendwright/overrides.json`, and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it.
+If a fingerprint pick fails, the model is asked. If the model's first proposal fails, it gets the reason and one more try. Heals are saved in `.mendwright/overrides.json`, and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it.
 On the next run the selector in your code is tried first and the saved heal right after it, in the same pass. That resolves without a wait or a model call. If the action on a healed element fails in the browser, the heal is quarantined and not used again.
 
 ## Local model
@@ -183,14 +198,14 @@ export MENDWRIGHT_LOCAL_MODEL=mendwright-selector
 The model file is about 1 GB. It answers in about a quarter of a second on a laptop GPU, or 1 to 2 seconds on the CPU alone.
 On 3,000 held-out synthetic redesigns it picked the right element for 97.1% of the broken selectors and a wrong one for 0.14%, and said no element fits for 97.1% of the steps where none did.
 A pick it is less than 80% sure of is declined rather than used (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes that).
-On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), behind the fingerprint tier, it healed 30 of 35 broken selectors correctly and none onto the wrong element, and declined 11 of the 12 cases where the right answer is no heal ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)).
+On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), behind the fingerprint tier, it healed 31 of 35 broken selectors correctly (30 in headless Chromium) and none onto the wrong element, and declined 11 of the 12 cases where the right answer is no heal ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)).
 
 ## What it can and can't fix
 
 mendwright repairs a selector on the page your script is on. It handles layout changes within that page:
 
 - ids and classes renamed, or replaced by build-generated ones
-- labels reworded or translated
+- labels reworded or translated (with a model)
 - elements wrapped in a new container or component
 - elements moved to another part of the page, or form fields put in a different order
 - lookalike elements where the surrounding text decides which one is meant
@@ -212,16 +227,13 @@ heal.locator("create_account", "#create-account").click()
 
 A step that moved to another page, steps in a new order, or a new required step still need a change to your script.
 mendwright remembers the last few pages each key was found on and doesn't heal a key on another page, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, or the same steps run under language paths such as `/en/` and `/de/`, pass `heal_across_pages=True` to `mendwright.open()`.
-The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`.
-The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
+The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
 
-Anchor selectors on ids, names, labels or text rather than position.
-A positional selector such as `(//form//input)[1]` that still matches after two fields swap now points at the wrong field, and since nothing broke, mendwright doesn't step in.
+Anchor selectors on ids, names, labels or text rather than position. A positional selector such as `(//form//input)[1]` that still matches after two fields swap now points at the wrong field, and since nothing broke, mendwright doesn't step in.
 
 ## Errors
 
-When mendwright can't or won't heal a step, it raises `mendwright.AttentionRequired` with the reason and a next step.
-This is the error from `heal.locator("pay", "#pay", destructive=True)` when `#pay` stopped matching:
+When mendwright can't or won't heal a step, it raises `mendwright.AttentionRequired` with the reason and a next step. This is the error from `heal.locator("pay", "#pay", destructive=True)` when `#pay` stopped matching:
 
 <!-- readme-test: attention-pay -->
 ```text
@@ -229,7 +241,8 @@ mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 c
   -> 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
 ```
 
-`mendwright doctor` checks the install, the provider and the store path. `mendwright report` lists each key with its selectors and recent heals; `--format md` prints a Markdown table you can append to `$GITHUB_STEP_SUMMARY`.
+`mendwright doctor` checks the install, the provider and the store path. `mendwright report` lists each key with its selectors and recent heals; `--format md` prints a Markdown table you can append to `$GITHUB_STEP_SUMMARY`, and `--format html --out report.html` writes one self-contained page.
+`mendwright fix` puts confirmed heals back into your code: it prints a diff of the string literals it would change, and `--apply` writes them.
 
 ## Compatibility
 
@@ -241,26 +254,24 @@ mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 c
 | Model providers | Anthropic, OpenAI, Azure OpenAI, OpenAI-compatible hosts (Groq, OpenRouter, vLLM, LM Studio), Ollama, Gemini, Bedrock, LiteLLM, your own gateway, or mendwright's own selector model in Ollama |
 | Python | 3.10 and newer, with lxml as the only dependency |
 
-The real-browser suite (`python -m pytest -m browser`) passed locally on Windows 11 with Python 3.12 on Playwright Chromium, Firefox and WebKit, patchright, camoufox, and Selenium with Chrome and Firefox. The async tests passed on all three Playwright browsers.
-CI runs the offline suite on Linux (Python 3.10 to 3.14), Windows and macOS, and the browser suite on Linux.
+The real-browser suite (`python -m pytest -m browser`) passed locally on Windows 11 with Python 3.12 on Playwright Chromium, Firefox and WebKit, patchright, camoufox, and Selenium with Chrome and Firefox. The async tests passed on all three Playwright browsers. CI runs the offline suite on Linux (Python 3.10 to 3.14), Windows and macOS, and the browser suite on Linux.
 
 ## Comparison
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/feature-matrix-dark.svg">
-  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/feature-matrix-light.svg" width="800" alt="Feature comparison of mendwright, Healenium, robotframework-heal, Skyvern, Stagehand and auto-playwright across thirteen features, including four where mendwright does not lead. The same data is in docs/comparison.md.">
+  <img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/feature-matrix-light.svg" width="800" alt="Feature comparison of mendwright, Healenium, robotframework-heal, Skyvern, Stagehand and auto-playwright across thirteen features, including two where mendwright does not lead. The same data is in docs/comparison.md.">
 </picture>
 
-Where another tool fits better: Healenium needs no change per step (you wrap the Java driver once, or point a Python, JS or C# Selenium client at its proxy), and its open source edition calls no model, which keeps page content on your machine. Robot Framework suites have robotframework-heal. Agent tools such as Stagehand and Skyvern handle steps that have no selector at all.
-[docs/comparison.md](https://github.com/saadbuilt/mendwright/blob/main/docs/comparison.md) has the full comparison, with a source for every cell and the footprint charts.
+Where another tool fits better: Healenium covers Java, and any Selenium client through its proxy, and its open source edition never calls a model in any setup. Robot Framework suites have robotframework-heal. Agent tools such as Stagehand and Skyvern handle steps written in plain English. [docs/comparison.md](https://github.com/saadbuilt/mendwright/blob/main/docs/comparison.md) has the full comparison, with a source for every cell and the footprint charts.
 
 ## Limitations
 
 - Heals are always XPath, even when your code used CSS or a Playwright selector.
 - An element inside an iframe heals only when you open mendwright on the frame: a `Frame` from `page.frames` on Playwright, or the driver after `switch_to.frame()` on Selenium. On Playwright, a selector that matches only inside a child iframe raises `AttentionRequired` and says so, without a model call.
-- With a hosted provider, page HTML is sent to it. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
+- With a hosted provider, page HTML is sent to it whenever a fingerprint match isn't confident. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, the rest is cut before it reaches the model. An element near the end is then visible to it only through the element inventory.
-- Accuracy has been measured without a hosted model only: on the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), for the model-free baselines and mendwright's own local model ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)). No hosted model numbers are published yet.
+- Accuracy has been measured without a hosted model only. On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), the fingerprint tier alone healed 20 of 35 broken selectors and none onto a wrong element, but its thresholds were tuned on those same cases, so expect it to be wrong now and then on yours. With a model-free similarity baseline behind it, 28 of 35 healed, and 3 of the 47 cases went to the wrong element. With mendwright's own [local model](#local-model) behind it, 31 of 35 healed and 1 of the 47 went to the wrong element ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)). No hosted model numbers are published yet.
 - `--mendwright-strict` only fails the run that made the heal. Later runs pick up the saved heal and pass, which is why strict CI runs need a fresh store.
 
 ## Links

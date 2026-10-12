@@ -442,6 +442,108 @@ def test_python_literals_finds_plain_strings_only():
         assert source[lit.start:lit.end] == lit.source
 
 
+# --- strings that equal the selector but must not change ---------------------------------
+
+def test_a_key_or_a_role_value_equal_to_the_selector_is_not_rewritten(root, capsys):
+    # heal.page saves a selector under itself as the key; the key and role= are not
+    # selectors, so only the selector argument changes.
+    new = "//button[@data-testid='login']"
+    confirmed_project(root, "#login", "#login", new, role="button")
+    source = write(root, "test_a.py", textwrap.dedent('''\
+        heal.locator("#login", "#login").click()
+        heal.locator("#login", selector="#login", text="#login")
+        heal.interrupt("#login", "#login", action="click")
+        page.locator("#login").click()
+    '''))
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
+        heal.locator("#login", "{0}").click()
+        heal.locator("#login", selector="{0}", text="#login")
+        heal.interrupt("#login", "{0}", action="click")
+        page.locator("{0}").click()
+    ''').format(new)
+
+
+def test_a_key_whose_old_selector_is_a_bare_word_is_left_alone(root, capsys):
+    confirmed_project(root, "go", "button", "//button[@id='go']", role="button")
+    source = write(root, "test_a.py", 'heal.locator("go", "button", role="button")\n'
+                                      'KIND = {"kind": "button"}\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  go: its old selector 'button' is a bare word, and other strings in your code can "
+            "be the same word (a role= value, a dict entry), so mendwright cannot tell which ones "
+            "are the selector. Change it by hand to: //button[@id='go']") in out.splitlines()
+
+
+@pytest.mark.parametrize("key, by", [("css selector=#login", "By.CSS_SELECTOR"),
+                                     ('id=login', "By.ID"), ('name=login', "By.NAME")])
+def test_a_heal_driver_key_for_a_css_id_or_name_lookup_is_left_alone(root, capsys, key, by):
+    old = {"By.CSS_SELECTOR": "#login", "By.ID": '[id="login"]', "By.NAME": '[name="login"]'}[by]
+    new = "//button[@data-testid='login']"
+    confirmed_project(root, key, old, new, role="button")
+    source = write(root, "test_a.py", 'driver.find_element(' + by + ', "#login").click()\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  " + key + ": it comes from driver.find_element(" + by + ", ...) through heal.driver, "
+            "and " + by + " cannot run the healed XPath. Change the call by hand to: "
+            "find_element(By.XPATH, \"" + new + "\")") in out.splitlines()
+
+
+def test_a_selector_passed_where_only_css_runs_is_left_alone_and_listed(root, capsys):
+    new = "//button[@data-testid='save']"
+    confirmed_project(root, "save", "#save", new, role="button")
+    source = write(root, "test_a.py", textwrap.dedent('''\
+        heal.locator("save", "#save").click()
+        driver.find_element(By.CSS_SELECTOR, "#save").click()
+        driver.find_element(
+            By.CSS_SELECTOR,
+            "#save",
+        )
+        SAVE = (By.CSS_SELECTOR, "#save")
+        driver.find_element(by="css selector", value="#save")
+        driver.find_element_by_css_selector("#save")
+        XPATH_ONE = (By.XPATH, "#save")
+    '''))
+    java = write(root, "src/SaveTest.java", textwrap.dedent('''\
+        driver.findElement(By.cssSelector("#save")).click();
+        page.locator("#save").click();
+        document.querySelector('#save');
+    '''))
+    code, out, err = run(capsys, "--apply", "--glob", "*.java")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
+        heal.locator("save", "{0}").click()
+        driver.find_element(By.CSS_SELECTOR, "#save").click()
+        driver.find_element(
+            By.CSS_SELECTOR,
+            "#save",
+        )
+        SAVE = (By.CSS_SELECTOR, "#save")
+        driver.find_element(by="css selector", value="#save")
+        driver.find_element_by_css_selector("#save")
+        XPATH_ONE = (By.XPATH, "{0}")
+    ''').format(new)
+    assert java.read_text(encoding="utf-8") == textwrap.dedent('''\
+        driver.findElement(By.cssSelector("#save")).click();
+        page.locator("{0}").click();
+        document.querySelector('#save');
+    ''').format(new)
+    lines = out.splitlines()
+    for where, by in (("test_a.py:2", "By.CSS_SELECTOR"), ("test_a.py:5", "By.CSS_SELECTOR"),
+                      ("test_a.py:7", "By.CSS_SELECTOR"), ("test_a.py:8", "By.CSS_SELECTOR"),
+                      ("test_a.py:9", "find_element_by_css_selector()"),
+                      ("src/SaveTest.java:1", "cssSelector"),
+                      ("src/SaveTest.java:3", "querySelector")):
+        assert any(line.startswith("  " + where + " was not changed: ") and " is passed to " + by
+                   + ", which cannot run the healed XPath. Change the call to take an XPath "
+                   "(By.XPATH in Selenium) and the selector to: " + new in line
+                   for line in lines), (where, out)
+
+
 # --- ambiguity ---------------------------------------------------------------------------
 
 def test_a_string_shared_by_two_keys_leaves_the_whole_file_alone_and_lists_it(root, capsys):
@@ -552,6 +654,25 @@ def test_symbolic_links_are_not_followed(root, capsys, tmp_path):
         pytest.skip("symbolic links are not available here")
     assert run(capsys, "--apply")[0] == 0
     assert target.read_text(encoding="utf-8") == 'x = "#save"\n'
+
+
+def test_a_windows_junction_is_not_followed_out_of_the_path(root, capsys, tmp_path):
+    # os.path.islink() is False for a junction, and os.walk() would go through it.
+    winapi = pytest.importorskip("_winapi")
+    if not hasattr(winapi, "CreateJunction"):
+        pytest.skip("directory junctions are Windows only")
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = write(outside, "test_x.py", 'x = "#save"\n')
+    winapi.CreateJunction(str(outside), str(root / "link"))
+    try:
+        files, errors = fixback.collect_files([str(root)])
+        assert files == [] and errors == []
+        assert run(capsys, "--apply")[0] == 0
+        assert target.read_text(encoding="utf-8") == 'x = "#save"\n'
+    finally:
+        os.rmdir(str(root / "link"))           # removes the junction, not its target
 
 
 def test_the_store_is_found_like_report_finds_it(root, capsys, tmp_path, monkeypatch):

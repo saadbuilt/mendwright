@@ -26,19 +26,21 @@ to measure the model alone.
 
 | Provider | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives | Healed by fingerprint | Avg model calls | Avg latency | Avg prompt chars (est. tokens) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| local (mendwright-selector) + fingerprint | headless chromium | 2026-10-12 | 30/35 (85.7%) | 0 (0.0%) | 5 (14.3%) | 11/12 | 1/12 | 21 | 0.47 | 202 ms | 1,544 (~386) |
-| local (mendwright-selector) + fingerprint | StandInPage | 2026-10-12 | 30/35 (85.7%) | 0 (0.0%) | 5 (14.3%) | 11/12 | 1/12 | 21 | 0.47 | 202 ms | 1,544 (~386) |
-| fingerprint tier alone (no model) | StandInPage | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,271 (~2,568) |
-| fingerprint tier alone (no model) | headless chromium | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,281 (~2,570) |
-| similarity baseline + fingerprint | StandInPage | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 21 | 0.47 | 1 ms | 10,271 (~2,568) |
-| similarity baseline + fingerprint | headless chromium | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 21 | 0.47 | 1 ms | 10,281 (~2,570) |
-| similarity baseline | StandInPage | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | - | 0.91 | 1 ms | 9,984 (~2,496) |
+| local (mendwright-selector) + fingerprint | headless chromium | 2026-10-12 | 30/35 (85.7%) | 0 (0.0%) | 5 (14.3%) | 11/12 | 1/12 | 20 | 0.49 | 401 ms | 1,522 (~381) |
+| local (mendwright-selector) + fingerprint | StandInPage | 2026-10-12 | 31/35 (88.6%) | 0 (0.0%) | 4 (11.4%) | 11/12 | 1/12 | 20 | 0.49 | 1.8 s | 1,522 (~381) |
+| fingerprint tier alone (no model) | StandInPage | 2026-10-12 | 20/35 (57.1%) | 0 (0.0%) | 15 (42.9%) | 12/12 | 0/12 | 20 | 0.49 | under 1 ms | 10,243 (~2,561) |
+| fingerprint tier alone (no model) | headless chromium | 2026-10-12 | 20/35 (57.1%) | 0 (0.0%) | 15 (42.9%) | 12/12 | 0/12 | 20 | 0.49 | under 1 ms | 10,252 (~2,563) |
+| similarity baseline + fingerprint | StandInPage | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 20 | 0.49 | 1 ms | 10,243 (~2,561) |
+| similarity baseline + fingerprint | headless chromium | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 20 | 0.49 | 1 ms | 10,252 (~2,563) |
+| similarity baseline | StandInPage | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | - | 0.91 | 2 ms | 9,984 (~2,496) |
 | similarity baseline | headless chromium | 2026-10-12 | 27/35 (77.1%) | 1 (2.9%) | 7 (20.0%) | 10/12 | 2/12 | - | 0.91 | 1 ms | 9,993 (~2,498) |
 | none baseline | StandInPage | 2026-10-12 | 0/35 (0.0%) | 0 (0.0%) | 35 (100.0%) | 12/12 | 0/12 | - | 0.91 | under 1 ms | 9,984 (~2,496) |
 
 "Wrong" counts heals that landed on another element in a case where a heal was right. "Wrong on negatives" counts heals in cases where the right answer was to not heal. Both are heals mendwright accepted, after its checks, onto an element the step did not mean.
 
 The fingerprint tier is part of mendwright and on by default: while the old selector still matches, mendwright records the element, and when it breaks, mendwright looks for that element on the new page before it asks any provider. It heals only when one element matches with confidence, and its pick goes through the same checks as a model's. A row marked + fingerprint ran the tier before the provider; the fingerprint tier alone row has no provider behind it. Use --no-fingerprint for a run without it.
+
+The fingerprint tier's numbers are in-sample. Its thresholds (a score of 0.40, a margin of 0.12 over the next element, and a shared id, test id, name, link, label or text) were tuned on these same 47 cases until it made no wrong heal here. That shows the tier can be set to make no wrong heal on this corpus, not that it makes none on your pages. Pages written to probe it after the tuning did find wrong heals (a row button for another row, a button whose text changed one word, a Save button in another form), and the rules were tightened until it declined them; those pages are tests in tests/test_fingerprint.py, not cases here, so they are not counted above. Its pick goes through the same checks as a model's, and those checks cannot tell a plausible wrong element from the right one.
 
 The similarity baseline records the element while the old selector still matches, and later picks the most similar element on the new page. A model gets less: the key, the old selector and the new page, never the old page.
 
@@ -49,7 +51,7 @@ The similarity baseline records the element while the old selector still matches
 mendwright 0.4.0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/local-mendwright-selector-chromium-20261012.json`.
 
-Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 8,489 input tokens (characters / 4, an estimate).
+Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 8,753 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
@@ -78,13 +80,13 @@ Wrong heals:
 mendwright 0.4.0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/local-mendwright-selector-standin-20261012.json`.
 
-Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 8,489 input tokens (characters / 4, an estimate).
+Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 8,753 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
 | id renamed or removed | 4 | 4 | 0 | 0 | 0 | 0 |
 | hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
-| wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
+| wrapped in a new element | 3 | 3 | 0 | 0 | 0 | 0 |
 | label text reworded | 3 | 2 | 0 | 1 | 0 | 0 |
 | moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
 | attribute churn | 3 | 3 | 0 | 0 | 0 | 0 |
@@ -107,11 +109,11 @@ Wrong heals:
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class NoneProposer.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-standin-20261012.json`.
 
-Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,488 input tokens (characters / 4, an estimate).
+Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 58,894 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
-| id renamed or removed | 4 | 3 | 0 | 1 | 0 | 0 |
+| id renamed or removed | 4 | 2 | 0 | 2 | 0 | 0 |
 | hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
 | wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
 | label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
@@ -134,11 +136,11 @@ No wrong heals.
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class NoneProposer.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/none-chromium-20261012.json`.
 
-Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,543 input tokens (characters / 4, an estimate).
+Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 58,949 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
-| id renamed or removed | 4 | 3 | 0 | 1 | 0 | 0 |
+| id renamed or removed | 4 | 2 | 0 | 2 | 0 | 0 |
 | hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
 | wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
 | label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
@@ -161,7 +163,7 @@ No wrong heals.
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-standin-20261012.json`.
 
-Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,488 input tokens (characters / 4, an estimate).
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 58,894 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|
@@ -192,7 +194,7 @@ Wrong heals:
 mendwright 0.3.0, Python 3.12.10, Windows-11. Provider class SimilarityProposer.
 47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/similarity-chromium-20261012.json`.
 
-Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 56,543 input tokens (characters / 4, an estimate).
+Wrong heals: 3 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 20. Prompt text for one pass over the cases: about 58,949 input tokens (characters / 4, an estimate).
 
 | Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
 |---|---|---|---|---|---|---|

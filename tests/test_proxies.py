@@ -179,6 +179,62 @@ def test_a_step_that_cannot_heal_raises_attention_required(make_page, tmp_path, 
         heal.page.click('#go')
 
 
+HIDDEN = ("<form><div hidden><input type='hidden' id='csrf' name='csrf' value='tok'></div>"
+          "<div id='tpl' style='display:none' title='template'>x</div>"
+          "<ul><li class='i'>one</li><li class='i'>two</li></ul>"
+          "<button id='go' type='button' title='Go now'>Go</button></form>")
+
+
+def _raw_selectors(page):
+    """Let the fake page run a selector as written ('#id', '//xpath'), as Playwright does
+    for page.locator(selector) and the page shortcuts on the real page."""
+    query = page.query
+
+    def run(selector):
+        if selector.startswith(('//', '(')):
+            selector = 'xpath=' + selector
+        elif selector.startswith('#'):
+            selector = 'css=' + selector
+        return query(selector)
+    page.query = run
+    page.get_attribute = lambda selector, name, **kw: page.locator(selector).get_attribute(name)
+    return page
+
+
+def test_a_read_of_a_hidden_element_or_of_several_goes_to_the_real_page(make_page, tmp_path,
+                                                                       stub_provider):
+    # Playwright reads a hidden element's attribute or text; mendwright would wait for a
+    # visible one and then try to heal, perhaps onto another element.
+    page = _raw_selectors(Page(make_page, HIDDEN))
+    provider = stub_provider(HEALED)
+    heal = _open(page, tmp_path, provider, timeout_ms=5000)
+    assert heal.page.locator('#tpl').get_attribute('title') == 'template'
+    assert heal.page.get_attribute('#csrf', 'value') == 'tok'
+    assert heal.page.locator('//li').inner_text() == 'one'     # the real locator's answer
+    assert provider.bundles == []
+    assert heal.store.candidates('#tpl') == heal.store.candidates('#csrf') == []
+    # A visible match still goes through heal.locator(), which records it.
+    assert heal.page.get_attribute('#go', 'title') == 'Go now'
+    assert [c['xpath'] for c in heal.store.candidates('#go')] == ['#go']
+
+
+def test_an_action_on_a_hidden_element_still_heals(make_page, tmp_path, stub_provider):
+    # click needs one visible element in Playwright too, so a selector that matches only a
+    # hidden leftover of the redesign is healed, as heal.locator() does.
+    page = _raw_selectors(Page(make_page, V1))
+    provider = stub_provider("//button[@title='Go now']")
+    heal = _open(page, tmp_path, provider)
+    heal.page.click('#go')
+    page.set_html("<form><button id='go' style='display:none'>Go</button>"
+                  "<button type='button' title='Go now'>Go</button></form>")
+    heal.page.click('#go')
+    assert page.actions[-1][:2] == ("xpath=//button[@title='Go now']", 'click')
+    assert len(provider.bundles) == 1
+    # From now on a read finds the element through the saved heal, not the hidden copy.
+    assert heal.page.get_attribute('#go', 'title') == 'Go now'
+    assert len(provider.bundles) == 1
+
+
 # --- async Playwright -------------------------------------------------------------------------------
 
 class AsyncLocator:
@@ -262,6 +318,26 @@ def test_async_heal_page(make_page, tmp_path, stub_provider):
     assert heal.heals[-1].key == '#terms' and len(provider.bundles) == 1
 
 
+def test_async_reads_of_a_hidden_element_go_to_the_real_page(make_page, tmp_path,
+                                                            stub_provider):
+    sync = _raw_selectors(make_page(HIDDEN))
+    apage = AsyncPage(sync)
+    provider = stub_provider(HEALED)
+
+    async def main():
+        heal = await mendwright.aio.open(apage, provider=provider, timeout_ms=5000,
+                                         store_path=str(tmp_path / 'o.json'), fingerprint=False)
+        title = await heal.page.locator('#tpl').get_attribute('title')
+        first = await heal.page.locator('//li').inner_text()
+        go = await heal.page.locator('#go').get_attribute('title')
+        return heal, title, first, go
+
+    heal, title, first, go = asyncio.run(main())
+    assert (title, first, go) == ('template', 'one', 'Go now')
+    assert provider.bundles == [] and heal.store.candidates('#tpl') == []
+    assert [c['xpath'] for c in heal.store.candidates('#go')] == ['#go']
+
+
 # --- Selenium ---------------------------------------------------------------------------------------
 
 _ATTR = re.compile(r'^\[(id|name)="((?:[^"\\]|\\.)*)"\]$')
@@ -276,6 +352,13 @@ class WebElement:
         return self.el.tag
 
     def is_displayed(self):
+        el = self.el
+        if (el.get('type') or '').lower() == 'hidden':
+            return False
+        while el is not None:
+            if 'display:none' in (el.get('style') or '').replace(' ', '') or el.get('hidden') is not None:
+                return False
+            el = el.getparent()
         return True
 
     def is_selected(self):
@@ -380,3 +463,18 @@ def test_a_missing_element_is_also_selenium_s_no_such_element(tmp_path):
     assert isinstance(info.value, AttentionRequired)
     assert str(info.value).startswith('No matching element for: id=missing')
     assert '-> ' in str(info.value)               # the reason mendwright did not heal
+
+
+def test_find_element_keeps_selenium_s_first_match_and_hidden_elements(tmp_path, stub_provider):
+    # Selenium's find_element returns a hidden element, or the first of several; healing
+    # those would change what an unchanged script gets back.
+    web = WebDriver(HIDDEN)
+    provider = stub_provider(HEALED)
+    driver = _open(web, tmp_path, provider, timeout_ms=5000).driver
+    assert driver.find_element('xpath', '//li') == 'direct'
+    assert driver.find_element('id', 'csrf') == 'direct'
+    assert driver.find_element('css selector', '#tpl') == 'direct'
+    assert web.direct == [('xpath', '//li'), ('id', 'csrf'), ('css selector', '#tpl')]
+    assert provider.bundles == []
+    assert driver.find_element('id', 'go').get_attribute('title') == 'Go now'   # healed path
+    assert web.direct == [('xpath', '//li'), ('id', 'csrf'), ('css selector', '#tpl')]

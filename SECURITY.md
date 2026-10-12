@@ -129,7 +129,8 @@ out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see
 
 ## Files mendwright writes
 
-- `./.mendwright/overrides.json` (or `MENDWRIGHT_STORE`): selectors, their status, and each key's role, expected text and destructive flag. It holds no page HTML, but selectors can quote page text: a healed XPath often anchors on a label (for example `contains(normalize-space(.),'accept the terms')`), and a `text=` you pass is saved as `expectedText`. Review the file before you commit it.
+- `./.mendwright/overrides.json` (or `MENDWRIGHT_STORE`): selectors, their status, and each key's role, expected text, destructive flag, `intent=` text and fingerprint. It holds no page HTML, but it can quote page text: a healed XPath often anchors on a label (for example `contains(normalize-space(.),'accept the terms')`), and a `text=` you pass is saved as `expectedText`.
+- The fingerprint is saved for every key whose selector matched, not only for healed ones, while the fingerprint tier is on (the default). It holds the element's tag, its id, name, type, role, test ids, `aria-label`, `placeholder`, `title`, `alt` and `autocomplete`, the path of its link (no host, query or fragment), its non-generated class names, up to 80 characters of its visible text or of a form field's label (runs of 12 to 19 digits become `#`), and the tag, id, classes and role of up to 4 ancestors. It never holds an input's value. Visible text can still be personal, such as a name on an account page, so review the file before you commit it, or set `MENDWRIGHT_FINGERPRINT=0`. The fingerprint is never sent to a model.
 - `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. On POSIX it's created with mode 0600.
 - `overrides.json.lock` while a write is in progress.
 
@@ -138,7 +139,7 @@ A store file that is corrupt or can't be read raises an error. mendwright never 
 ## Residual risks
 
 - The live check and the retried action are separate calls. The page can change between them.
-- Only keys you mark are refused as destructive. An unmarked key can be healed onto a control that pays, submits or deletes, as long as it has the key's role.
+- Only keys you mark are refused as destructive. An unmarked key can be healed onto a control that pays, submits or deletes, as long as it has the key's role. That holds for a fingerprint heal too, which needs no model and no key, though its rules ask for the same numbers and words in a text and refuse a match outside the recorded containers.
 - A hostile page can steer the model toward a different element with the same role. The checks limit the role, the match count and visibility, but can't judge intent. Use `expect=` on actions that matter.
 - A direct provider holds its API key in your process. Without the google-genai SDK, `GeminiProvider` falls back to a REST call that puts the key in the URL query (`?key=`), so a proxy that logs URLs can record it. Install `mendwright[gemini]` to have the SDK make the call instead. `GatewayProvider` keeps the model key on your server.
 - `mendwright doctor` prints absolute paths for Python, the package and the store, which can contain your user name.
