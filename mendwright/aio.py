@@ -709,8 +709,11 @@ class AsyncActionProxy:
         except _USAGE_ERRORS:
             raise
         except Exception as exc:
-            if not (is_interception_error(exc)
+            intercepted, used = is_interception_error(exc), budget.used
+            if not (intercepted
                     and await healer._interrupt_for_action(self._key, budget, timeout, poll_ms)):
+                if intercepted and budget.used == used:
+                    healer._core._report_nothing_matched(self._key)
                 await healer._confirm(self._key, False)  # the browser action failed
                 raise
             try:

@@ -124,6 +124,16 @@ def loop_message(before, key, count):
             'args=("Escape",) or a selector for its close button.')
 
 
+def nothing_matched_message(before, keys):
+    """The WARNING for an action that failed because something covered its element, when
+    none of the registered interruptions matched a visible element."""
+    return ('an element covered ' + repr(before) + ', and none of the interruptions '
+            'registered with heal.interrupt() (' + ', '.join(repr(k) for k in keys) + ') '
+            'matched a visible element, so mendwright did not try the action again. If the '
+            'element in the way is one of them, its selector no longer matches: update it. '
+            'If not, register the element in the way with heal.interrupt().')
+
+
 def skip_message(key, reason, before=None):
     """The INFO line for a step that was skipped instead of healed."""
     if reason == 'interruption handled':

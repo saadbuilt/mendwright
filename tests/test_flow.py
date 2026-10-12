@@ -538,6 +538,24 @@ def test_an_action_that_reached_the_page_is_not_retried_after_an_interception(si
     assert heal.handled_interruptions == []
 
 
+def test_an_interruption_whose_selector_broke_is_named_when_it_blocks_a_step(side, tmp_path,
+                                                                             caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _page(BANNER.replace('id="cookie-accept"', 'id="accept-all"') + SIGNUP)
+    heal = side.open(page, provider=None, store_path=_store(tmp_path))
+    heal.interrupt('cookies', '#cookie-accept')
+    assert side.locate('cookies', '#cookie-accept').present is False   # skipped, at INFO
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('email', '#email', 'fill', 'ada@example.com')
+    assert page.clicks('css=#accept-all') == 0
+    assert [a for a in page.actions if a[1] == 'fill'] == [('css=#email', 'fill', ('ada@example.com',))]
+    assert ("mendwright: an element covered 'email', and none of the interruptions registered "
+            "with heal.interrupt() ('cookies') matched a visible element, so mendwright did not "
+            "try the action again. If the element in the way is one of them, its selector no "
+            "longer matches: update it. If not, register the element in the way with "
+            "heal.interrupt().") in _lines(caplog, logging.WARNING)
+
+
 def test_an_intercepted_action_with_nothing_registered_is_not_retried(side, tmp_path):
     page = _page(SIGNUP)
     side.open(page, provider=None, store_path=_store(tmp_path))

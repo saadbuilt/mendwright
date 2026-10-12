@@ -29,7 +29,7 @@ from .drivers import driver_act_on, driver_describe, driver_inventory, wrap
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, InterruptionLoop, absent_message,
                    handled_message, is_interception_error, journal_event, loop_message,
-                   page_path, skip_message, unhandled_message)
+                   nothing_matched_message, page_path, skip_message, unhandled_message)
 from .interruptions import (COOKIE_CHOICES, Budget, InterruptionEvent, cookie_choice_error,
                             cookie_preset, make_interruption, nth_targets)
 from .journal import Journal
@@ -810,6 +810,14 @@ class Healer:
         self._interrupt(key, budget, timeout_ms, poll_ms)
         return budget
 
+    def _report_nothing_matched(self, key):
+        """After an action on key was intercepted and no registered interruption matched a
+        visible element: say so, because the likeliest cause is an interruption whose
+        selector no longer matches (its own step, if any, was skipped with an INFO line)."""
+        others = [item.key for item in self._others(key)]
+        if others:
+            self.coordinator._emit(logging.WARNING, nothing_matched_message(key, others))
+
     def _url(self):
         try:
             return self.driver.url() or ''
@@ -972,8 +980,11 @@ class ActionProxy:
         except _USAGE_ERRORS:
             raise
         except Exception as exc:
-            if not (is_interception_error(exc)
+            intercepted, used = is_interception_error(exc), budget.used
+            if not (intercepted
                     and healer._interrupt(self._key, budget, self._timeout_ms, self._poll_ms)):
+                if intercepted and budget.used == used:
+                    healer._report_nothing_matched(self._key)
                 coordinator.confirm_pending(self._key, False)  # the browser action failed
                 raise
             try:
