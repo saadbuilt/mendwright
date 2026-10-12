@@ -237,6 +237,55 @@ def test_the_fallback_needs_a_cookie_or_consent_container():
     assert doc.xpath(generic_xpath('reject')) == []
 
 
+NOT_BANNERS = [
+    # (page body, the preset choice): none of these buttons is a cookie banner's.
+    ('<div id="oauth-consent" class="consent-screen"><h1>Example App wants to read your email'
+     '</h1><button id="deny">Deny</button><button id="allow">Allow</button></div>', 'accept'),
+    ('<div id="oauth-consent" class="consent-screen"><h1>Example App wants to read your email'
+     '</h1><button id="deny">Deny</button><button id="allow">Allow</button></div>', 'reject'),
+    ('<form class="terms-consent"><p>Do you accept the terms of service?</p><button>Decline'
+     '</button><button>I agree</button></form>', 'reject'),
+    ('<section class="terms-consent"><p>By paying you agree to the terms.</p>'
+     '<button id="pay">Agree and pay</button></section>', 'accept'),
+    ('<div id="app" class="layout cookie-consent-given"><nav><a href="/">Home</a></nav><section>'
+     '<h2>Account</h2><button>Close account</button><input id="name"><button>Save</button>'
+     '</section></div>', 'reject'),
+    ('<div id="app" class="cookie-consent-given"><nav><a href="/">Home</a></nav><section>'
+     '<button>Accept invitation</button><button>Decline invitation</button></section><footer>'
+     '<a href="/cookies">Cookie policy</a></footer></div>', 'accept'),
+    ('<div id="app" class="cookie-consent-given"><nav><a href="/">Home</a></nav><section>'
+     '<button>Accept invitation</button><button>Decline invitation</button></section><footer>'
+     '<a href="/cookies">Cookie policy</a></footer></div>', 'reject'),
+    ('<div class="cookies-ok"><p>' + 'Your order history. ' * 80 + '</p><button>Decline order'
+     '</button><a href="/cookies">Cookie policy</a></div>', 'reject'),
+    ('<div class="cookie-notice"><p>We use cookies.</p><button>Close account</button></div>',
+     'reject'),
+]
+
+
+@pytest.mark.parametrize('body, choice', NOT_BANNERS, ids=[
+    'oauth-allow', 'oauth-deny', 'terms-decline', 'terms-agree-and-pay', 'wrapper-close-account',
+    'shell-accept-invitation', 'shell-decline-invitation', 'long-text', 'close-account-in-banner'])
+def test_the_fallback_clicks_nothing_outside_a_cookie_banner(body, choice, tmp_path):
+    page = StandInPage('<html><body>' + body + '</body></html>')
+    heal = mendwright.open(page, provider=None, store_path=str(tmp_path / 'o.json'))
+    assert heal._interruption_target(cookie_preset(choice), heal.driver) is None
+
+
+@pytest.mark.parametrize('button, picked', [
+    ('<button>Close</button>', 'Close'),
+    ('<button>close!</button>', 'close!'),
+    ('<button>Close banner</button>', 'Close banner'),
+    ('<button value="dismiss">Close</button>', 'Close'),
+    ('<input type="button" value="Close">', 'Close'),
+    ('<button title="Close">X</button>', 'X'),
+])
+def test_a_plain_close_button_in_a_banner_still_counts(button, picked, tmp_path):
+    banner = '<div class="cookie-notice"><p>We use cookies.</p>' + button + '</div>'
+    heal, page = _healer(banner, tmp_path)
+    assert _picked(heal, page, cookie_preset('reject')) == picked
+
+
 def test_the_preset_selectors_are_xpath_except_one_css_for_shadow_roots():
     for choice in ('reject', 'accept'):
         selectors = preset_selectors(choice)

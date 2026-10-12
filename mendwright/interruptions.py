@@ -13,10 +13,14 @@ consent banners of common consent managers. This module holds its selectors:
   cookieconsent library (Osano's and orestbida's), CookieYes (and the older Cookie Law
   Info plugin) and Complianz, by the ids and classes of their buttons;
 - a generic fallback: a button or link whose own text, aria-label or title says reject,
-  decline, deny, necessary only or close ('reject'), or accept, allow or agree
-  ('accept'), inside an element whose id, class or aria label mentions cookie or consent.
-  The html, body and main elements do not count as that element, so a page-wide class
-  such as <body class="cookie-banner-open"> does not make every Close button a match.
+  decline, deny or necessary only ('reject'), or accept, allow or agree ('accept'),
+  inside a banner. A Close button counts for 'reject' only when its label is just Close
+  (or an icon whose aria-label or title says close). The banner is one element that
+  meets all of these: its id, class or aria label mentions cookie or consent, its text
+  mentions cookies, its text is at most 1500 characters, and it holds no main or nav
+  element and no text field. It is never html, body or main. So a consent screen that is
+  not about cookies (an OAuth "Allow", a terms step), or a page-wide wrapper with a class
+  such as "cookie-consent-given", is not a banner, and its buttons are never clicked.
 
 The selectors are XPath, so they also run on Selenium. Usercentrics draws its banner
 inside a shadow root, which XPath cannot reach; a CSS selector for its buttons is tried as
@@ -138,12 +142,23 @@ _LABEL = ("concat(' ', translate(concat(normalize-space(.), ' ', @value, ' ', @a
           '@title), "' + _UPPER + _PUNCT + '", "' + _LOWER + ' ' * len(_PUNCT) + "\"), ' ')")
 _BUTTONISH = ("(self::button or self::a or @role='button' or "
               "(self::input and (@type='button' or @type='submit')))")
+
+# The longest text a banner may have. A cookie banner has a sentence or two and its
+# buttons; an element with more text than this is the page, not a banner.
+BANNER_MAX_TEXT = 1500
+
+_ATTRS = ("translate(concat(@id, ' ', @class, ' ', @aria-label, ' ', @aria-labelledby, ' ', "
+          "@data-testid), '" + _UPPER + "', '" + _LOWER + "')")
+# A field you type into: a page has them, a cookie banner does not.
+_TEXT_FIELD = (".//textarea or .//input[not(@type) or @type='text' or @type='email' or "
+               "@type='password' or @type='search' or @type='tel' or @type='url' or "
+               "@type='number']")
+# The banner a fallback button must be in. Every condition is on the same element.
 _CONTAINER = ("ancestor-or-self::*[not(self::html or self::body or self::main)]"
-              "[contains(translate(concat(@id, ' ', @class, ' ', @aria-label, ' ', "
-              "@aria-labelledby, ' ', @data-testid), '" + _UPPER + "', '" + _LOWER + "'), "
-              "'cookie') or contains(translate(concat(@id, ' ', @class, ' ', @aria-label, ' ', "
-              "@aria-labelledby, ' ', @data-testid), '" + _UPPER + "', '" + _LOWER + "'), "
-              "'consent')]")
+              "[contains(" + _ATTRS + ", 'cookie') or contains(" + _ATTRS + ", 'consent')]"
+              "[contains(translate(., '" + _UPPER + "', '" + _LOWER + "'), 'cookie')]"
+              "[string-length(normalize-space(.)) <= " + str(BANNER_MAX_TEXT) + "]"
+              "[not(.//main or .//nav or " + _TEXT_FIELD + ")]")
 
 
 def _says(words):
@@ -154,10 +169,23 @@ def _says_none(words):
     return 'not(' + _says(words) + ')'
 
 
+# A button's visible text (or an input's value), in lower case, with punctuation turned
+# into spaces and the spaces normalized: "Close!" reads as 'close', "×" as ''.
+_SHOWN = ("normalize-space(translate(concat(normalize-space(.), ' ', self::input/@value), \""
+          + _UPPER + _PUNCT + '", "' + _LOWER + ' ' * len(_PUNCT) + '"))')
+_CLOSE_PHRASES = ('close', 'close banner', 'close notice', 'close message', 'close dialog',
+                  'close popup')
+# A Close button: its whole label is a close phrase, or it shows one glyph or none (an
+# icon) and its aria-label or title says close. "Close account" is not a Close button.
+_CLOSE = ('(' + ' or '.join(_SHOWN + " = '" + p + "'" for p in _CLOSE_PHRASES)
+          + " or (" + _SHOWN + " = '' or string-length(normalize-space(.)) <= 1) and "
+          "contains(concat(' ', translate(concat(@aria-label, ' ', @title), \"" + _UPPER + _PUNCT
+          + '", "' + _LOWER + ' ' * len(_PUNCT) + "\"), ' '), ' close '))")
+
+
 _REJECT_WORDS = ('reject', 'decline', 'deny', 'disagree', 'necessary only', 'only necessary',
                  'necessary cookies only', 'essential only', 'only essential',
                  'without accepting', 'without agreeing')
-_CLOSE_WORDS = ('close',)
 _ACCEPT_WORDS = ('accept', 'allow', 'agree')
 _NOT_ACCEPT = ('accept', 'allow', 'agree')
 _NOT_REJECT = ('reject', 'decline', 'deny', 'disagree', 'necessary', 'essential', 'not',
@@ -167,7 +195,8 @@ _NOT_REJECT = ('reject', 'decline', 'deny', 'disagree', 'necessary', 'essential'
 def generic_xpath(choice):
     """The fallback for consent banners no listed manager made (see the module docs)."""
     if choice == 'reject':
-        says = _says(_REJECT_WORDS + _CLOSE_WORDS) + ' and ' + _says_none(_NOT_ACCEPT)
+        says = ('(' + _says(_REJECT_WORDS) + ' or ' + _CLOSE + ') and '
+                + _says_none(_NOT_ACCEPT))
     else:
         says = _says(_ACCEPT_WORDS) + ' and ' + _says_none(_NOT_REJECT)
     return ('//*[' + _BUTTONISH + ' and string-length(normalize-space(.)) <= 40 and ' + says

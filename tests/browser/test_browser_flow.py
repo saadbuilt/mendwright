@@ -159,6 +159,30 @@ def test_the_cookies_preset_on_a_onetrust_banner(tab, store_file, stub_provider,
     assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
 
 
+_OAUTH = page("""
+<div id="oauth-consent" class="consent-screen">
+  <h1>Example App wants to read your email</h1>
+  <p>Answer: <span id="answer">none</span></p>
+  <button id="deny" type="button" onclick="answer('denied')">Deny</button>
+  <button id="allow" type="button" onclick="answer('allowed')">Allow</button>
+</div>
+<script>
+function answer(text) { document.getElementById('answer').textContent += ' ' + text; }
+</script>""", 'oauth')
+
+
+@pytest.mark.parametrize('choice', ['reject', 'accept'])
+def test_the_cookies_preset_leaves_a_consent_screen_about_something_else_alone(
+        tab, store_file, stub_provider, choice):
+    tab.load(_OAUTH)
+    heal = _open(tab, stub_provider(None), store_file, cookies=choice)
+
+    _step(heal, 'deny', '#deny').click()
+
+    assert tab.text('#answer') == 'none denied'       # never Allow, never a second Deny
+    assert heal.handled_interruptions == []
+
+
 def test_an_optional_step_that_is_not_there(tab, store_file, stub_provider):
     tab.load(_signup('never'))
     provider = stub_provider("//button[@id='create']")
