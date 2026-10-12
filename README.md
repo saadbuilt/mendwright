@@ -198,7 +198,7 @@ export MENDWRIGHT_LOCAL_MODEL=mendwright-selector
 The model file is about 1 GB. It answers in about a quarter of a second on a laptop GPU, or 1 to 2 seconds on the CPU alone.
 On 3,000 held-out synthetic redesigns it picked the right element for 97.1% of the broken selectors and a wrong one for 0.14%, and said no element fits for 97.1% of the steps where none did.
 A pick it is less than 80% sure of is declined rather than used (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes that).
-On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), behind the fingerprint tier, it healed 31 of 35 broken selectors correctly (30 in headless Chromium) and none onto the wrong element, and declined 11 of the 12 cases where the right answer is no heal ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)).
+On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), behind the fingerprint tier, it healed 31 of 35 broken selectors correctly (30 in headless Chromium) and none onto the wrong element, and declined 11 of the 12 cases where the right answer is no heal ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)). Its last training round was shaped by its failures on those same cases, so expect it to do a little worse on your pages.
 
 ## What it can and can't fix
 

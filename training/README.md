@@ -81,7 +81,7 @@ cmake --build llama.cpp/build-mingw --target llama-quantize
 
 ## The data
 
-All examples are synthetic and generated here. No page was scraped, no cloud model wrote or labelled anything, and [`benchmarks/cases`](../benchmarks/cases) is never read: it stays the final test.
+All examples are synthetic and generated here. No page was scraped, no cloud model wrote or labelled anything, and no script here reads [`benchmarks/cases`](../benchmarks/cases). The benchmark is not a clean held-out test for this model, though: after round 2, its failures were looked at to see what the candidate lines lacked, and round 3's changes came from that (see [Training](#training)). A few people and product names in the generator's lists also appear in benchmark cases. The 3,000-case synthetic test split is the held-out measure.
 
 [`gen_scenarios.py`](gen_scenarios.py) builds a page before a redesign (v1), the page after it (v2) and a step: a key and the selector a test author might have written for one control on v1. [`pages.py`](pages.py) has the page families and [`lexicon.py`](lexicon.py) the words.
 
@@ -152,7 +152,7 @@ On the [benchmark](../docs/benchmark.md) (47 cases, StandInPage, with the finger
 | local model, threshold 0.8 (default) | 31/35 | 0 | 4 | 11/12 | 1 |
 | local model, no threshold | 31/35 | 1 | 3 | 11/12 | 1 |
 
-These local model runs are on mendwright 0.4.0's fingerprint tier, with Ollama keeping the model on the CPU (the GPU was needed elsewhere), which is why the results page shows seconds per call. In headless Chromium the default run healed 30 of 35, still with no wrong heal. On the GPU, with the fingerprint tier as it was before 0.4.0, the default model healed 30 of 35 with no wrong heal, and the round 2 model (no threshold) 28 of 35 with 3 wrong. The page guard declines the four flow cases before any model call; with the threshold, the one wrong heal left is on `neg-ambiguous-invite-accept`, two invitations that nothing in the step tells apart.
+These local model runs are on mendwright 0.4.0's fingerprint tier, with Ollama keeping the model on the CPU (the GPU was needed elsewhere), which is why the results page shows seconds per call. In headless Chromium the default run healed 30 of 35, still with no wrong heal. On the GPU, with the fingerprint tier as it was before 0.4.0, the default model healed 30 of 35 with no wrong heal, and the round 2 model (no threshold) 28 of 35 with 3 wrong. The page guard declines the four flow cases before any model call; with the threshold, the one wrong heal left is on `neg-ambiguous-invite-accept`, two invitations that nothing in the step tells apart. Round 2's failures on these cases guided round 3's feature and generator changes, so read these counts as a check, not a held-out score.
 
 Speed and size, on the laptop above with Ollama 0.40.3:
 
