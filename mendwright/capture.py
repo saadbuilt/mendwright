@@ -7,6 +7,10 @@ broken selectors, the expected text, the intent and every string of the DOM inve
 and other attribute values (aria-label, title, placeholder, data-*) are sent as they are;
 SECURITY.md lists the gaps.
 
+The key's saved fingerprint (mendwright.fingerprint) goes into the bundle only for a provider
+that asks for it with ``wants_fingerprint = True``, which LocalModelProvider does: a model on
+your own machine. It is redacted the same way.
+
 The HTML that goes into the bundle is also cleaned first. Scripts, styles, <noscript>,
 <template>, comments, the inside of <svg> and everything in <head> except <title> are
 removed, and runs of whitespace are collapsed. Real pages are often mostly inline
@@ -20,6 +24,8 @@ import re
 
 import lxml.html
 from lxml import etree
+
+from . import fingerprint as _fingerprint
 
 _VALUE_ATTR = re.compile(r"""\svalue=("[^"]*"|'[^']*')""")
 _URL = re.compile(r'https?://[^\s"\'<>]+')
@@ -135,7 +141,10 @@ def clean_html(text):
         return text
 
 
-def build_bundle(key, meta, broken_candidates, inventory, html, context, row=None):
+def build_bundle(key, meta, broken_candidates, inventory, html, context, row=None,
+                 with_fingerprint=False):
+    """The redacted bundle for one heal. with_fingerprint=True adds the key's saved
+    fingerprint (meta['fingerprint']), redacted; otherwise it stays out."""
     forms = _secret_forms(_secret_values(row))
     # Redact before and after cleaning: collapsing whitespace could split a multi-line
     # secret, and re-serializing can turn an entity-encoded secret into plain text.
@@ -149,7 +158,8 @@ def build_bundle(key, meta, broken_candidates, inventory, html, context, row=Non
         text = [text]
     xpaths = [c.get('xpath') if isinstance(c, dict) else c for c in (broken_candidates or [])]
     intent = meta.get('intent')
-    return {
+    fp = meta.get('fingerprint') if with_fingerprint else None
+    bundle = {
         'key': key,
         'expectedRole': meta.get('expectedRole'),
         'expectedText': [_redact_text(t, forms) if isinstance(t, str) else t for t in text],
@@ -167,3 +177,7 @@ def build_bundle(key, meta, broken_candidates, inventory, html, context, row=Non
         'stage': context.get('stage'),
         'version': context.get('version'),
     }
+    if _fingerprint.valid(fp):
+        # The element the key matched last time, redacted like the expected text.
+        bundle['fingerprint'] = _redact_tree(fp, forms)
+    return bundle

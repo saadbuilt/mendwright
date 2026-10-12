@@ -19,6 +19,10 @@ model again without that element only when the reason says the element was not u
 present or not visible on the live page (a hidden copy, say); for any other reason it does
 not guess a second time, so a wrong first pick cannot turn into a wrong second one.
 
+The bundle this provider gets also carries the key's saved fingerprint (the element the
+key matched last time), because it sets wants_fingerprint; the coordinator leaves the
+fingerprint out for every other provider.
+
 The model is set with model= or MENDWRIGHT_LOCAL_MODEL (default 'mendwright-selector'), and
 the host with base_url= or OLLAMA_HOST (default http://localhost:11434). training/ in the
 repository has the recipe that builds the model.
@@ -58,6 +62,10 @@ def _host(value):
 class LocalModelProvider:
     """Ask mendwright's local selector model (in Ollama) which candidate element a broken
     step meant, and turn its pick into a validated-shape proposal."""
+
+    # The coordinator adds the key's saved fingerprint to the bundle for this provider only:
+    # the model runs on this machine, and the fingerprint is what it was trained to compare.
+    wants_fingerprint = True
 
     def __init__(self, model=None, base_url=None, *, http=None, timeout=60, num_ctx=4096,
                  keep_alive='10m', max_candidates=MAX_CANDIDATES):

@@ -687,6 +687,9 @@ def make(seed, split="train", twin_rate=0.2):
                        with_urls, kind=kind)
         if sc:
             out.append(sc)
+    if out and out[0]['kind'] != 'ambiguous' and rng.random() < 0.06:
+        # A few steps are a key met for the first time, described only by intent=.
+        out[0] = first_use(out[0], rng)
     return out
 
 
@@ -973,6 +976,47 @@ def _negative(rng, seed, split, site, family, content, vocab, overlays1, uid, co
                      base=base)
 
 
+AREA_WORDS = {
+    'login': 'login form', 'signup': 'sign-up form', 'checkout': 'checkout form',
+    'shipping': 'shipping address form', 'payment': 'payment section', 'header': 'header',
+    'nav': 'main navigation', 'footer': 'footer', 'sidebar': 'sidebar', 'cookie': 'cookie banner',
+    'newsletter': 'newsletter form', 'popup': 'newsletter popup', 'dialog': 'dialog',
+    'row': 'members table', 'grid': 'product grid', 'cart': 'cart', 'filters': 'filters',
+    'profile': 'profile settings', 'notifications': 'notification settings',
+    'security': 'security settings', 'danger': 'danger zone', 'table': 'members table',
+    'dashboard': 'dashboard', 'hero': 'hero section', 'features': 'features section',
+    'onboarding': 'onboarding form', 'reset': 'password reset form', 'mfa': 'verification form',
+    'results': 'search results', 'search': 'search form', 'share': 'share buttons',
+    'comment': 'comment form', 'tabs': 'settings tabs', 'stats': 'stats cards',
+    'activity': 'recent activity list', 'pagination': 'pagination', 'invite': 'invite form',
+    'plan': 'plan picker', 'byline': 'article byline', 'related': 'related articles',
+    'pager': 'article navigation', 'tags': 'tag list', 'banner': 'upgrade banner',
+}
+KIND_WORDS = {'button': 'button', 'link': 'link', 'input': 'field', 'checkbox': 'checkbox',
+              'switch': 'toggle', 'radio': 'option', 'select': 'dropdown', 'textarea': 'text box'}
+
+
+def make_intent(rng, concept, area, item):
+    """What a test author might write in intent=: the control's English words, its kind,
+    and where it is or which item it belongs to."""
+    words = rng.choice(CONCEPTS[concept].variants('en'))
+    kind = KIND_WORDS.get(_kind_of(concept), 'control')
+    style = rng.random()
+    if style < 0.35:
+        text = 'the ' + words + ' ' + kind
+    elif style < 0.6:
+        text = words + ' ' + kind
+    elif style < 0.8:
+        text = 'the ' + kind + ' that says ' + words
+    else:
+        text = 'the ' + kind + ' to ' + words[0].lower() + words[1:]
+    if item:
+        text += rng.choice((' for ', ' in the row for ', ' on the card for ')) + item
+    elif area in AREA_WORDS and rng.random() < 0.6:
+        text += ' in the ' + AREA_WORDS[area]
+    return text
+
+
 def _scenario(rng, seed, split, site, family, uid, concept, area, item, el1, selectors, v1, v2, v1_url, v2_url,
               url_mode, truth, why, kind, muts, lang2, base=None):
     from mendwright.validation import _role_of
@@ -983,12 +1027,33 @@ def _scenario(rng, seed, split, site, family, uid, concept, area, item, el1, sel
         t = _text(el1)
         if t and len(t) <= 60:
             text = t
+    intent = base.get('intent') if base else None
+    if base is None and rng.random() < 0.15:
+        intent = make_intent(rng, concept, area, item)
     sid = split + '-' + str(seed) + ('-' + kind if base else '')
     return Scenario(id=sid, seed=seed, split=split, family=family, kind=kind, mutations=muts,
                     key=key, selectors=selectors, role=role, pass_role=rng.random() < 0.4, text=text,
+                    intent=intent, first_use=False,
                     concept=concept, uid=uid, item=item, lang1=site.lang, lang2=lang2,
                     v1=v1, v2=v2, v1_url=v1_url, v2_url=v2_url, url_mode=url_mode,
                     positive=truth, why=why)
+
+
+def first_use(sc, rng):
+    """The scenario as a key with no selector yet: intent= and role= only, on the v2 page.
+    The model finds the element from the words alone (or says it is not there)."""
+    out = Scenario(sc)
+    out['id'] = sc['id'] + '-intent'
+    out['first_use'] = True
+    out['selectors'] = []
+    out['text'] = None
+    out['pass_role'] = True
+    out['intent'] = make_intent(rng, sc['concept'], None if sc['item'] else None, sc['item']) \
+        if rng.random() < 0.5 else (sc.get('intent') or make_intent(rng, sc['concept'], None, sc['item']))
+    out['mutations'] = list(sc['mutations']) + ['first_use']
+    if not sc['positive'] and sc['why'] == 'moved':
+        out['why'] = 'removed'
+    return out
 
 
 def main(argv=None):

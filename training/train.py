@@ -9,8 +9,10 @@ gradient accumulation, cosine learning rate with warmup, gradient checkpointing.
 
     python training/train.py --data DATA_DIR --out RUN_DIR [--epochs 1] [--limit N]
 
-Writes RUN_DIR/adapter (the LoRA weights), checkpoints, and a log. Progress lines go to
-stdout and RUN_DIR/train.log; run it in the background and read the log.
+Writes RUN_DIR/adapter (the LoRA weights), a checkpoint every --save-every optimizer steps
+(adapter, optimizer state and position) and a log. Progress lines go to stdout and
+RUN_DIR/train.log; run it in the background and read the log. --resume goes on from the
+last checkpoint after an interruption (the example order is fixed by --seed).
 """
 
 import argparse
@@ -132,6 +134,7 @@ def main(argv=None):
     parser.add_argument('--save-every', type=int, default=400)
     parser.add_argument('--seed', type=int, default=17)
     parser.add_argument('--mem-fraction', type=float, default=0.8)
+    parser.add_argument('--resume', action='store_true', help='go on from RUN_DIR/checkpoint')
     args = parser.parse_args(argv)
 
     out = Path(args.out)
@@ -159,10 +162,19 @@ def main(argv=None):
     log(fh, 'train examples %d (dropped %d over %d tokens); tokens median %d p99 %d max %d' % (
         len(data), dropped, args.max_len, lengths[len(lengths) // 2], lengths[int(len(lengths) * 0.99)], lengths[-1]))
 
-    model = load_model(args.base, train=True, rank=args.rank, alpha=args.alpha)
+    ckpt = out / 'checkpoint'
+    state_file = ckpt / 'trainer_state.json'
+    resume = None
+    if args.resume and state_file.is_file():
+        resume = json.loads(state_file.read_text(encoding='utf-8'))
+        log(fh, 'resuming from %s at step %d (example %d)' % (ckpt, resume['step'], resume['micro']))
+    model = load_model(args.base, adapter=str(ckpt) if resume else None, train=True, rank=args.rank,
+                       alpha=args.alpha)
     params = [p for p in model.parameters() if p.requires_grad]
     log(fh, 'trainable params %.1fM' % (sum(p.numel() for p in params) / 1e6))
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0, betas=(0.9, 0.999))
+    if resume and (ckpt / 'optimizer.pt').is_file():
+        opt.load_state_dict(torch.load(ckpt / 'optimizer.pt', map_location='cuda', weights_only=True))
     total_micro = int(len(data) * args.epochs)
     total_steps = max(1, total_micro // args.accum)
     warm = max(1, int(total_steps * args.warmup))
@@ -182,8 +194,10 @@ def main(argv=None):
     order = order[:total_micro]
     log(fh, 'optimizer steps %d (accum %d), warmup %d' % (total_steps, args.accum, warm))
 
-    step = 0
-    micro = 0
+    step = resume['step'] if resume else 0
+    micro = resume['micro'] if resume else 0
+    if micro:
+        order = order[micro:]
     loss_sum = 0.0
     tok_count = 0
     started = time.time()
@@ -210,7 +224,8 @@ def main(argv=None):
             step += 1
             if step % 10 == 0 or step == total_steps:
                 spent = time.time() - started
-                eta = spent / micro * (total_micro - micro)
+                done = micro - (resume['micro'] if resume else 0)
+                eta = spent / max(done, 1) * (total_micro - micro)
                 log(fh, 'step %d/%d loss %.4f lr %.2e %.2fs/ex %.0f tok/s elapsed %.1fm eta %.1fm mem %.2fG' % (
                     step, total_steps, loss_sum / (10 * args.accum), lr_at(step), (time.time() - window) / (10 * args.accum),
                     tok_count / (time.time() - window), spent / 60, eta / 60, torch.cuda.max_memory_allocated() / 1e9))
@@ -221,7 +236,10 @@ def main(argv=None):
                 acc, ok, n = quick_eval(model, tok, val_rows)
                 log(fh, 'eval step %d: val pick accuracy %.4f json %.4f (n=%d)' % (step, acc, ok, n))
             if args.save_every and step % args.save_every == 0:
-                model.save_pretrained(out / 'checkpoint')
+                # Adapter, optimizer and position, so --resume can go on from here.
+                model.save_pretrained(ckpt)
+                torch.save(opt.state_dict(), ckpt / 'optimizer.pt')
+                state_file.write_text(json.dumps({'step': step, 'micro': micro}), encoding='utf-8')
                 log(fh, 'saved checkpoint at step %d' % step)
     model.save_pretrained(out / 'adapter')
     tok.save_pretrained(out / 'adapter')

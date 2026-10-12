@@ -370,20 +370,19 @@ def meaningful_class(token):
     return True
 
 
+_UTILITY = re.compile(r'^(?:p|m|px|py|mx|my|pt|pb|pl|pr|mt|mb|ml|mr|w|h|gap|text|bg|flex|grid|'
+                      r'items|justify|rounded|border|shadow|font|leading|tracking|col|row|ring|'
+                      r'space|inset|z|top|left|right|bottom|min|max|sm|md|lg|xl|hover|focus)-')
+
+
+def _class_ok(token):
+    """A class name worth showing: one a person chose, not a utility class."""
+    return meaningful_class(token) and not _UTILITY.match(token)
+
+
 def _classes(el):
     """Up to two class names that mean something (no hashes, no utility soup)."""
-    out = []
-    for token in (el.get('class') or '').split():
-        if len(out) >= 2:
-            break
-        if not meaningful_class(token):
-            continue
-        if re.match(r'^(?:p|m|px|py|mx|my|pt|pb|pl|pr|mt|mb|ml|mr|w|h|gap|text|bg|flex|grid|'
-                    r'items|justify|rounded|border|shadow|font|leading|tracking|col|row)-',
-                    token):
-            continue
-        out.append(token)
-    return out
+    return [t for t in (el.get('class') or '').split() if _class_ok(t)][:2]
 
 
 def describe(el):
@@ -610,19 +609,28 @@ def extract(bundle, limit=MAX_CANDIDATES):
 
 # --- the task ----------------------------------------------------------------------------------
 
+def _landmark_id(ident):
+    if (isinstance(ident, str) and ident and _usable(ident, 30) and not generated(ident)
+            and re.match(r'^[A-Za-z][\w-]*$', ident)):
+        return ident
+    return ''
+
+
 def _chain(ancestors):
-    """The ancestors of a fingerprint as 'li.cart-item < ul < main', at most three, and the
-    landmark among them (header, nav, form, dialog, ...) if any."""
+    """The ancestors of a fingerprint as 'li.cart-item < ul < main' (at most three), and
+    the landmarks among them written like a candidate's region ('main>form#login')."""
     parts = []
-    region = ''
+    found = []
     for anc in ancestors[:4]:
         if not isinstance(anc, dict) or not isinstance(anc.get('tag'), str):
             continue
         tag = anc['tag']
         role = anc.get('role') if isinstance(anc.get('role'), str) else ''
         for name, tags, roles in _LANDMARKS:
-            if not region and (tag in tags or role in roles):
-                region = name
+            if tag in tags or role in roles:
+                if not found or found[-1][0] != name:
+                    found.append((name, _landmark_id(anc.get('id'))))
+                break
         if len(parts) >= 3:
             continue
         part = tag
@@ -630,9 +638,18 @@ def _chain(ancestors):
         if isinstance(ident, str) and _usable(ident, 40) and not generated(ident):
             part += '#' + ident
         classes = anc.get('classes')
-        if isinstance(classes, list) and classes and isinstance(classes[0], str):
+        if isinstance(classes, list) and classes and isinstance(classes[0], str) \
+                and _class_ok(classes[0]):
             part += '.' + classes[0]
         parts.append(part)
+    found.reverse()
+    region = ''
+    for name, ident in found:
+        if name == 'dialog':
+            region = 'dialog' + ('#' + ident if ident else '')
+            break
+    else:
+        region = '>'.join(name + ('#' + ident if ident else '') for name, ident in found[-2:])
     return ' < '.join(parts), region
 
 
@@ -679,7 +696,7 @@ def fingerprint_line(fp):
         feats['href'] = _href(href)
     classes = fp.get('classes')
     if isinstance(classes, list):
-        good = [c for c in classes if isinstance(c, str) and meaningful_class(c)][:2]
+        good = [c for c in classes if isinstance(c, str) and _class_ok(c)][:2]
         if good:
             feats['cls'] = ' '.join(good)
     ctx = pick('in', 'context', 'heading')

@@ -49,6 +49,7 @@ import lxml.html  # noqa: E402
 import mendwright  # noqa: E402
 from mendwright.candidates import (answer_text, extract, format_task, robust_xpaths,  # noqa: E402
                                    step_words, tokens)
+from mendwright import fingerprint as _fingerprint  # noqa: E402
 from mendwright.demo import StandInPage  # noqa: E402
 from mendwright.exceptions import AttentionRequired  # noqa: E402
 from mendwright.validation import validate  # noqa: E402
@@ -75,6 +76,23 @@ def _concept_words(sc):
     return words
 
 
+def fp_tier(bundle, sc):
+    """What mendwright's fingerprint tier would have done before any model: 'none' (no
+    fingerprint), 'unsure' (no confident match: the model is asked), 'right' or 'wrong'
+    (a confident match on the truth, or on another element or on a negative)."""
+    fp = bundle.get('fingerprint')
+    if not _fingerprint.valid(fp):
+        return 'none'
+    html = _MARK.sub('', sc['v2'])
+    match = _fingerprint.find(fp, html, bundle.get('expectedRole'))
+    if not match.xpath:
+        return 'unsure'
+    if not sc['positive']:
+        return 'wrong'
+    hits = lxml.html.document_fromstring(sc['v2']).xpath(match.xpath)
+    return 'right' if len(hits) == 1 and hits[0].get(TRUTH_ATTR) == '1' else 'wrong'
+
+
 def informative(sc, bundle):
     """True when the step without its fingerprint still names the element: its key,
     selectors or expected text share a word with the control's meaning or its item."""
@@ -89,6 +107,7 @@ class CaptureProvider:
     """Keeps the bundle of the first propose() call and proposes nothing."""
 
     model = None
+    wants_fingerprint = True   # as LocalModelProvider: the bundle carries the fingerprint
 
     def __init__(self):
         self.bundle = None
@@ -112,20 +131,38 @@ def capture(sc):
         page = StandInPage(url=sc['v1_url'] or 'about:blank')
         page.set_content(sc['v1'])
         provider = CaptureProvider()
+        # The fingerprint tier is on, as in mendwright.open() by default, so matching on v1
+        # records the key's fingerprint. It is turned off before v2, so every scenario reaches
+        # the provider; example() works out what the tier would have done.
         heal = mendwright.open(page, provider=provider, store_path=os.path.join(folder, 'o.json'),
                                dry_run=False, timeout_ms=0, rate_per_key_per_hour=None,
-                               rate_global_per_hour=None, heal_across_pages=True)
+                               rate_global_per_hour=None, heal_across_pages=True, fingerprint=True)
         heal.coordinator.log = lambda line: None
         kwargs = {'poll_ms': 0}
         if sc['pass_role']:
             kwargs['role'] = sc['role']
         if sc['text']:
             kwargs['text'] = sc['text']
+        if sc.get('intent'):
+            kwargs['intent'] = sc['intent']
+        if sc.get('first_use'):
+            heal.coordinator.fingerprint = False
+            page.url = sc['v2_url'] or 'about:blank'
+            page.set_content(sc['v2'])
+            try:
+                heal.locator(sc['key'], **kwargs)
+                return None, 'first use resolved'
+            except AttentionRequired:
+                pass
+            if provider.bundle is None:
+                return None, 'no heal asked'
+            return provider.bundle, None
         selector = sc['selectors'] if len(sc['selectors']) > 1 else sc['selectors'][0]
         try:
             heal.locator(sc['key'], selector, **kwargs)
         except AttentionRequired:
             return None, 'v1 miss'
+        heal.coordinator.fingerprint = False
         page.url = sc['v2_url'] or 'about:blank'
         page.set_content(sc['v2'])
         try:
@@ -184,6 +221,7 @@ def example(sc, bundle):
             if not ok:
                 info['gate_detail'] = xpaths[0] + ' -> ' + res.reason
     why = sc['why']
+    info['fp_tier'] = fp_tier(bundle, sc)
     if pick is not None and len(cands) > 1 and not bundle.get('fingerprint') \
             and not informative(sc, bundle):
         # Nothing in the step says which element it is (a key such as 'step3', a positional
@@ -198,6 +236,8 @@ def example(sc, bundle):
         'lang2': sc['lang2'], 'role': bundle.get('expectedRole'), 'n_cand': len(cands),
         'total': cands.total, 'label': pick, 'why': None if pick else why,
         'has_fp': bool(bundle.get('fingerprint')), 'twin_of': sc.get('twin_of'),
+        'fp_tier': info['fp_tier'], 'intent': bool(bundle.get('intent')),
+        'first_use': bool(sc.get('first_use')),
         'system': system, 'user': user, 'answer': answer,
     }
     return rec, info
@@ -288,6 +328,9 @@ def build(out_dir, sizes, workers, start=0):
             'roles': dict(Counter(r['role'] for r in recs)),
             'n_cand_max': max((r['n_cand'] for r in recs), default=0),
             'with_fingerprint': sum(1 for r in recs if r['has_fp']),
+            'fp_tier': dict(Counter(r['fp_tier'] for r in recs)),
+            'with_intent': sum(1 for r in recs if r['intent']),
+            'first_use': sum(1 for r in recs if r['first_use']),
             'seconds': round(time.time() - started, 1),
         }
         print(split, json.dumps({k: v for k, v in stats[split].items() if k not in ('details',)}), flush=True)

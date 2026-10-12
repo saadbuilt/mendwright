@@ -112,7 +112,7 @@ def test_format_task_includes_the_saved_fingerprint():
           'classes': ['btn', 'btn-primary'], 'text': 'Sign in',
           'ancestors': [{'tag': 'form', 'id': 'login'}, {'tag': 'main'}]}
     _, user = format_task(bundle(fingerprint=fp), extract(bundle()))
-    assert ('it was: button "Sign in" id="login-btn" class="btn btn-primary" | form'
+    assert ('it was: button "Sign in" id="login-btn" class="btn btn-primary" | main>form#login'
             ' | within form#login < main') in user
     assert fingerprint_line({}) == ''
     assert fingerprint_line({'tag': 'input', 'attrs': {'type': 'email', 'name': 'email'},

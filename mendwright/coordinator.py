@@ -219,8 +219,12 @@ class HealCoordinator:
             self.journal.requested(selector_key)
         if html is None:
             html = self.html_provider()
+        # A provider that asks for it (LocalModelProvider, a model on this machine) also gets
+        # the key's saved fingerprint; other providers and gateways never do.
+        wants = getattr(self.provider, 'wants_fingerprint', False) is True
         bundle = build_bundle(selector_key, meta, broken_candidates,
-                              self.inventory_provider(), html, context, row)
+                              self.inventory_provider(), html, context, row,
+                              with_fingerprint=wants)
         for _ in range(2):  # initial heal + one re-prompt on validation failure
             proposal = self.provider.propose(bundle)
             if not proposal:

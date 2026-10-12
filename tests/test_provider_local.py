@@ -226,7 +226,8 @@ V2 = """<html><body><main><form>
 
 def test_a_heal_through_mendwright_open_uses_the_pick(tmp_path):
     page = StandInPage(V1)
-    prov = LocalModelProvider(http=FakeOllama(pick_text('"Log in"')))
+    http = FakeOllama(pick_text('"Log in"'))
+    prov = LocalModelProvider(http=http)
     heal = mendwright.open(page, provider=prov, store_path=tmp_path / 'o.json', timeout_ms=0,
                            rate_per_key_per_hour=None, rate_global_per_hour=None)
     heal.coordinator.log = lambda line: None
@@ -234,6 +235,22 @@ def test_a_heal_through_mendwright_open_uses_the_pick(tmp_path):
     page.set_content(V2)
     heal.locator('login.submit', '#sign-in', poll_ms=0)
     assert heal.heals[-1].new == "//button[normalize-space()='Log in']"
+    assert heal.heals[-1].source == 'model'
+    # The fingerprint recorded on v1 reaches this provider (it sets wants_fingerprint).
+    user = http.calls[0]['json']['messages'][1]['content']
+    assert '\nit was: button "Sign in" id="sign-in" | main>form' in user
+
+
+def test_only_a_provider_that_asks_gets_the_fingerprint():
+    from mendwright.capture import build_bundle
+    fp = {'v': 1, 'tag': 'button', 'attrs': {'id': 'go'},
+          'text': 'Pay 4111111111111111 at https://pay.example/x'}
+    meta = {'expectedRole': 'button', 'fingerprint': fp}
+    plain = build_bundle('pay', meta, ['#go'], [], '<html></html>', {})
+    assert 'fingerprint' not in plain
+    local = build_bundle('pay', meta, ['#go'], [], '<html></html>', {}, with_fingerprint=True)
+    assert local['fingerprint']['text'] == 'Pay [redacted number] at [URL]'
+    assert LocalModelProvider.wants_fingerprint is True
 
 
 def test_a_null_pick_through_mendwright_open_says_why(tmp_path):
