@@ -82,6 +82,8 @@ addopts = "-m 'not browser' -p no:mendwright"
 
 [tool.ruff]
 line-length = 112
+# Agent worktrees live under .claude/; they are other checkouts, not this project's code.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
