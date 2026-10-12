@@ -998,7 +998,11 @@ def _anchor_predicates(anc, el):
                 continue
             text = text_of(node)
             if 0 < len(text) <= 60 and _usable(text, 60):
-                preds.append('.//' + node.tag + '[normalize-space()=' + xpath_literal(text) + ']')
+                literal = '[normalize-space()=' + xpath_literal(text) + ']'
+                if node.getparent() is anc:
+                    # a direct child: the card or section itself, not a grid that holds it
+                    preds.append(node.tag + literal)
+                preds.append('.//' + node.tag + literal)
                 seen += 1
                 if seen >= 2:
                     break
@@ -1024,7 +1028,7 @@ def robust_xpaths(el, doc=None, limit=4):
         hits = _hits(doc, xpath)
         if hits and len(hits) == 1 and hits[0] is el:
             out.append(xpath)
-        elif hits and len(near) < 12 and any(h is el for h in hits):
+        elif hits and len(near) < 40 and any(h is el for h in hits):
             near.append(xpath)
         return len(out) >= limit
 
