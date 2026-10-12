@@ -11,6 +11,8 @@ Contents:
 - [Async Playwright](#async-playwright)
 - [Selenium](#selenium)
 - [Iframes](#iframes)
+- [Layout changes](#layout-changes)
+- [Flow changes](#flow-changes)
 - [Selectors](#selectors)
 - [Roles](#roles)
 - [Destructive controls](#destructive-controls)
@@ -42,6 +44,8 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `rate_global_per_hour` | 60 | Heal attempts per hour across all keys for a direct provider. `None` removes the limit. |
 | `guardrails` | built from the two rates | A `mendwright.limits.Guardrails`, for example with a `SpendCap(max_calls=...)` added |
 | `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
+| `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
+| `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -50,7 +54,7 @@ The two rates are shared by every Healer in one process that uses the same store
 
 ```python
 heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
-             timeout_ms=None, poll_ms=200)
+             timeout_ms=None, poll_ms=200, optional=False)
 ```
 
 | Argument | Meaning |
@@ -62,12 +66,15 @@ heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
 | `destructive` | `True` means never heal this key, and is saved for later runs. `False` clears a flag saved that way. `None` keeps what was saved. See [Destructive controls](#destructive-controls). |
 | `timeout_ms` | Overrides the Healer's timeout for this call |
 | `poll_ms` | How often to poll while waiting |
+| `optional` | `True` means the step may not be there. If the element doesn't appear, it isn't healed, and the proxy's `.present` is False. See [Optional steps](#optional-steps). |
 
-It returns an `ActionProxy` once the element is found, healed or not.
+It returns an `ActionProxy` once the element is found, healed or not, or a proxy with `.present` False for a step that was skipped.
 It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work, and `ValueError` for an unknown role.
 
 Other `Healer` members:
 
+- `heal.interrupt(key, selector, *, action="click", args=(), role=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions).
+- `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`.
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed)`.
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
@@ -78,7 +85,8 @@ Other `Healer` members:
 The proxy runs these actions through the driver: `click`, `dblclick`, `fill`, `type`, `press`, `press_sequentially`, `check`, `uncheck`, `set_checked`, `select_option`, `hover`, `tap`, `clear`, `focus`, `set_input_files`, `drag_to`, `send_keys` and `submit`.
 Keyword arguments pass through, and the return value is what the native call returned.
 Anything else, such as `inner_text()`, `get_attribute()` or `is_checked()`, goes to the native object unchanged.
-`proxy.native` is the Playwright `Locator` or Selenium `WebElement` itself, for APIs that check the type:
+`proxy.native` is the Playwright `Locator` or Selenium `WebElement` itself, for APIs that check the type.
+`proxy.present` is False for a skipped step; its actions then do nothing and return `None`:
 
 ```python
 from playwright.sync_api import expect
@@ -323,6 +331,7 @@ print(await heal.present("newsletter"))
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` raises `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
+- `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
@@ -411,16 +420,114 @@ If a selector matches nothing on the page but would match inside a child iframe,
 
 Both cases are covered by the real-browser test `test_the_iframe_workaround`, which also checks that the captured HTML is the frame's.
 
-## Layout changes and flow changes
+## Layout changes
 
 A heal happens when a stored selector stops matching on the page mendwright was opened on. That makes it a fit for layout changes inside one page: renamed or generated ids and classes, reworded or translated labels, new wrapper elements, elements moved to another region, and form fields in a new order. The benchmark has cases for each of these ([docs/benchmark.md](benchmark.md)).
 
-Flow changes are different. When a step moves to the next page, a confirmation modal is added, or two steps swap order, the element your step wants is not on the current page. mendwright does not navigate or reorder your script. It asks the model for a replacement on the page it has, and a model may propose a similar element that is unique, visible and of the right role, for example a Help button in place of a Continue button that moved away. That passes the checks. Two things limit the damage:
-
-- Mark steps that submit, pay or delete with `destructive=True`, so they are never healed (see [Destructive controls](#destructive-controls)).
-- Run CI with `--mendwright-strict`, so a heal fails the test and someone looks at it before it is trusted (see [Strict mode](#strict-mode)).
-
 Positional selectors are a blind spot. `(//form//input)[1]` keeps matching after the email and password fields swap places, so it now points at the password field. No selector broke, so mendwright never runs. Anchor selectors on something that travels with the element: an id, a name, a label or its text.
+
+## Flow changes
+
+A flow change is a change in the steps, not in the page: a cookie banner that opens before signup instead of after it, a step that moved to the next page, a new step in the middle. A heal can't fix these, and a model that is asked anyway may find a similar element that passes every check, such as a Help button where a Continue button used to be.
+
+What mendwright does with each kind:
+
+| Change | What mendwright does |
+|---|---|
+| A step that can show up anywhere: a cookie banner, a newsletter modal, an "are you still there?" dialog | Handles it when it is in the way, if you registered it with `heal.interrupt()` or `cookies=` |
+| A step that may not be there | Skips it, if you pass `optional=True` |
+| A step that moved to another page | Declines to heal the key on a page where it was never found, before any model call |
+| A step that moved away while the address stayed the same | Leaves it to the model, which is told it may answer that no element fits. The error then gives the model's reason. |
+
+Steps in a new order across pages, and a new required step such as a field you must fill before you can continue, still need a change to your script.
+
+### Interruptions
+
+```python
+heal = mendwright.open(page)
+heal.interrupt("cookies", "#cookie-accept")
+heal.interrupt("newsletter", "//div[@id='newsletter']//button[@aria-label='Close']")
+heal.interrupt("still_there", "#idle-dialog", action="press", args=("Escape",))
+
+heal.locator("email", "#email").fill("ada@example.com")
+```
+
+`heal.interrupt(key, selector, *, action="click", args=(), role=None)` registers a step that can show up at any point.
+`selector` finds the element to act on: one selector, or a list tried in order. `action` and `args` say what to do with it, with the same verbs as a proxy action. With `role=`, mendwright acts only on an element of that role (on drivers that can read elements).
+
+mendwright looks for registered interruptions only when a step needs help:
+
+- when a `locator()` misses, before any heal and before any model call
+- before an action, when the page shows one of them (a quick check for each registered interruption, only when you registered any)
+- when an action fails because something covered the element: Playwright's "intercepts pointer events" or "element is not visible", Selenium's `ElementClickInterceptedException` or `ElementNotInteractableException`
+
+When one is there and visible, mendwright performs its action, waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
+A failed action is tried again once, and only after an interception error and a handled interruption, so an action that may already have taken effect is never repeated.
+At most 3 interruptions are handled for one step (one `locator()` call, or one action). If one is still there after that, mendwright raises `AttentionRequired` and tries no heal. That stops an interruption that comes back each time it is closed, for example when its action doesn't close it.
+
+An interruption is never healed by a model. If your script also has a step of its own for it, keep it: `heal.locator("cookies", "#cookie-accept").click()` is skipped when the element isn't there, either because the interruption was handled earlier in the run (no wait) or because it didn't appear this time (after `timeout_ms`). A skipped step logs one INFO line, its proxy has `.present` False, and its actions do nothing. When the banner does come at its old place in the flow, the step clicks it as before.
+
+An interruption that hides the element instead of covering it, such as a consent wall that replaces the page until you answer, is found when the step misses, so the step first waits its `timeout_ms`.
+
+### Cookie banners
+
+`mendwright.open(page, cookies="reject")` registers an interruption under the key `cookie_banner` that closes consent banners without accepting. `cookies="accept"` accepts them instead. It is off by default, so mendwright never clicks anything you didn't ask for.
+
+It knows the reject, decline, necessary-only and close buttons (or the accept buttons) of these consent managers by their ids and classes: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, the cookieconsent library (Osano's and orestbida's), CookieYes (and its older Cookie Law Info plugin) and Complianz.
+For other banners there is a fallback: a button or link whose text, aria-label or title says reject, decline, deny, disagree, necessary only, essential only, continue without accepting or close (for `"reject"`), or accept, allow or agree (for `"accept"`), inside an element whose id, class or aria label mentions cookie or consent. The `html`, `body` and `main` elements don't count as that element, so a page-wide class such as `cookie-banner-open` doesn't turn every Close button into a match.
+The selectors are XPath, so they run on Playwright and Selenium. Usercentrics draws its banner in a shadow root, which XPath can't reach, so its buttons are also looked for with CSS, which Playwright reaches and Selenium doesn't.
+The selector lists are in `mendwright/interruptions.py`.
+
+If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way.
+
+### Optional steps
+
+```python
+promo = heal.locator("promo_close", "#promo-close", optional=True)
+promo.click()          # does nothing when the promotion isn't shown
+if promo.present:
+    print("closed the promotion")
+```
+
+With `optional=True`, a step whose element doesn't appear within `timeout_ms` isn't healed. You get a proxy whose `.present` is False, whose actions do nothing and return `None`, and whose `.native` is `None`. Reading from it, for example `promo.inner_text()`, raises `AttributeError`. One INFO line is logged and a `flow.skip` journal event is written. An optional step is never healed, even when its selector broke.
+
+### Steps that moved to another page
+
+mendwright saves the page where each key's element was found, in the store next to its selectors: `lastPage` (the most recent) and `pages` (the last 5). A page is its path in lower case, without the scheme, host, query or fragment, with the trailing slash removed, and with numeric and uuid-like parts replaced by `*`, so `https://shop.example/Orders/10482/?tab=2` is `/orders/*`. `about:blank`, `data:` URLs and the site root have no page, and are never compared.
+
+When a key's selector misses on a page where its element was never found, mendwright declines the heal before any model call, raises `AttentionRequired` and writes a `flow.page_guard` journal event:
+
+```text
+'continue' was last found on /signup, and this page is /signup/details. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open().
+```
+
+If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on.
+
+The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the browser stays on the same address, as in a single-page app. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
+
+### When the model finds no element
+
+The prompt tells the model it may answer `{"xpath": null, "reason": "..."}` when no element on the page is the one the step means, and that it must not pick an element that is only similar. That answer is not a heal. The error says:
+
+```text
+AnthropicProvider returned no selector for 'continue': the model says no element on this page fits: The Continue button is not on this page. If the step moved to another page or the element was removed, update your script.
+```
+
+Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes the same reason on in its `needs_human` reply.
+
+### Log lines and journal events
+
+```text
+WARNING mendwright: handled interruption 'cookies' before 'email'
+INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
+INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
+```
+
+| Event | Fields |
+|---|---|
+| `flow.interrupt` | `key`, `before` (the step it was handled for), `action`, and `selector` or `preset` |
+| `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
+| `flow.page_guard` | `key`, `last_page`, `page` |
 
 ## Selectors
 
@@ -535,7 +642,7 @@ The real file is a single line; it is wrapped here.
 
 - `source` is `code` (passed to `locator()`), `heal` or `seed`.
 - `status` is `active`, `quarantined` or `superseded`. Only active candidates are tried.
-- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`.
+- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, and `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)).
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
 
@@ -574,7 +681,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 {"ts":"2026-10-10T19:07:53+00:00","event":"heal.canary","key":"accept_terms","xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","success":true}
 ```
 
-The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`.
+The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.skip` and `flow.page_guard` (see [Log lines and journal events](#log-lines-and-journal-events)).
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -626,7 +733,7 @@ Give a strict job its own fresh store:
 
 mendwright logs to `logging.getLogger("mendwright")`.
 Each applied heal prints one line to stderr, logged at WARNING so it shows with no logging setup.
-A declined heal logs one WARNING too, or an INFO line in dry run. With a format that shows the level, they look like this:
+A declined heal logs one WARNING too, or an INFO line in dry run. A handled interruption logs one WARNING line, and a skipped step one INFO line. With a format that shows the level, they look like this:
 
 ```text
 WARNING mendwright: healed 'accept_terms': #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (Stub, 0.0s)
@@ -751,6 +858,9 @@ The first line names the key. The line after `->` says why there was no heal:
 | is marked as a destructive control | Fix the selector by hand. If you marked it with `destructive=True` and the control is safe to heal, pass `destructive=False` |
 | no provider configured | Set a key and its model variable, or pass `provider=` |
 | `<Provider> returned no selector for '<key>': <reason>` | The reason is the provider's own error, such as an HTTP 401 for a bad key, an unknown model or no network. Fix what it names, or try another model. |
+| the model says no element on this page fits | The model saw no element for the step on this page. If the step moved or the element was removed, update your script. See [When the model finds no element](#when-the-model-finds-no-element). |
+| That looks like a change in the flow, not a renamed element | The key was found on another page before. Update your script if the step moved, or pass `heal_across_pages=True` if only the URL changed. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
+| interruptions were handled for '<key>' and '<interruption>' is still on the page | The interruption came back each time it was handled. Check the selector and `action=` you passed to `heal.interrupt()`. |
 | does not know what kind of element | Pass `role=` |
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |

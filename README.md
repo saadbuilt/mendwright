@@ -178,8 +178,25 @@ mendwright repairs a selector on the page your script is on. It handles layout c
 - elements moved to another part of the page, or form fields put in a different order
 - lookalike elements where the surrounding text decides which one is meant
 
-It doesn't change your script's flow. If a step moves to another page, a new step or modal is added, or steps swap order, fix the script by hand.
-In those cases the element isn't on the current page, and a model may still propose a similar-looking one that passes the checks, so mark irreversible steps with `destructive=True`.
+It also handles some changes in your script's flow:
+
+- A step that can show up at any point, such as a cookie banner, a newsletter modal or an "are you still there?" dialog. Register it once with `heal.interrupt()`. When it is in the way of a step (the step's element is missing, or the page shows the interruption), mendwright handles it first (a click, unless you register another action) and goes on with the step. If your script also has its own step for it, that step is skipped once the interruption was handled, so a cookie banner that now appears before signup instead of after it needs no other change.
+- The consent banners of common consent managers, with `cookies="reject"` or `cookies="accept"`. This is off by default.
+- A step that may not be there, with `heal.locator(..., optional=True)`.
+
+<!-- readme-test: flow -->
+```python
+heal = mendwright.open(page, cookies="reject")      # close common consent banners
+heal.interrupt("newsletter", "#newsletter-close")   # your own modal, wherever it opens
+
+heal.locator("email", "#email").fill("ada@example.com")
+heal.locator("create_account", "#create-account").click()
+```
+
+A step that moved to another page, steps in a new order, or a new required step still need a change to your script.
+mendwright remembers the page each key was found on and doesn't heal a key on a page where it was never found, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, pass `heal_across_pages=True` to `mendwright.open()`.
+The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`.
+The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
 
 Anchor selectors on ids, names, labels or text rather than position.
 A positional selector such as `(//form//input)[1]` that still matches after two fields swap now points at the wrong field, and since nothing broke, mendwright doesn't step in.

@@ -8,8 +8,11 @@ SIGNUP_HTML, a redesign of the page in which the checkbox lost its id, so the RE
 "//input[@id='terms']" matches nothing and has to be healed. auto_provider() is replaced
 by a stub that answers with a fixed XPath. No browser, network or API key is needed.
 
-The pytest block runs through pytester with the plugin loaded, the way pytest loads it
-for a user. The AttentionRequired text the README quotes is compared with what the code
+The block marked readme-test: flow runs on a page that a OneTrust-style consent banner
+and a newsletter modal both cover: it is given that page as `page`, and a click on an
+element with data-closes="<id>" closes the element with that id, as the page's script
+would. The pytest block runs through pytester with the plugin loaded, the way pytest
+loads it for a user. The AttentionRequired text the README quotes is compared with what the code
 raises today, and the links in README.md and docs/guide.md are checked.
 """
 
@@ -33,9 +36,10 @@ SOURCES = ROOT / 'mendwright'
 
 # The README has this many ```python blocks, and all of them run. Change it together with
 # the README, so a new block cannot slip in untested.
-EXPECTED_PYTHON_BLOCKS = 4
+EXPECTED_PYTHON_BLOCKS = 5
 SKIP_MARK = '<!-- readme-test: skip -->'
 ATTENTION_MARK = '<!-- readme-test: attention-pay -->'
+FLOW_MARK = '<!-- readme-test: flow -->'
 
 SIGNUP_URL = 'https://example.com/signup'
 SIGNUP_HTML = """<!doctype html>
@@ -55,6 +59,25 @@ PROPOSALS = {
     'accept_terms': "//label[contains(normalize-space(.), 'I accept the terms')]"
                     "//input[@type='checkbox']",
 }
+# The signup page, with a consent banner and a newsletter modal on top of it.
+FLOW_HTML = """<!doctype html>
+<html><head><title>Sign up</title></head>
+<body>
+  <form class="signup">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email">
+    <button id="create-account" type="submit">Create account</button>
+  </form>
+  <div id="newsletter" role="dialog" aria-label="Newsletter">
+    <p>Get 10% off your first order.</p>
+    <button id="newsletter-close" data-closes="newsletter" aria-label="Close">x</button>
+  </div>
+  <div id="onetrust-consent-sdk"><div id="onetrust-banner-sdk" role="region" aria-label="Cookie banner">
+    <p>We use cookies.</p>
+    <button id="onetrust-reject-all-handler" data-closes="onetrust-consent-sdk">Reject All</button>
+    <button id="onetrust-accept-btn-handler" data-closes="onetrust-consent-sdk">Accept All</button>
+  </div></div>
+</body></html>"""
 PAGES = {SIGNUP_URL: SIGNUP_HTML}
 BLANK = '<!doctype html><html><head></head><body></body></html>'
 _CSS_ID = re.compile(r'^#([A-Za-z_][\w-]*)$')
@@ -198,6 +221,9 @@ class SyncLocator:
 
     def click(self, **kwargs):
         el = self._one('click')
+        closes = el.get('data-closes')
+        if closes:
+            self._site.element('//*[@id=' + repr(closes) + ']').drop_tree()
         if _is_checkbox(el):
             if el.get('checked') is None:
                 el.set('checked', '')
@@ -508,7 +534,9 @@ def test_the_readme_has_the_python_blocks_this_file_runs():
     assert len(PY_BLOCKS) == EXPECTED_PYTHON_BLOCKS
 
 
-SCRIPT_BLOCKS = [b for b in PY_BLOCKS if 'def test_' not in b[0]]
+FLOW_BLOCKS = [(code, line) for lang, code, marker, line in BLOCKS
+               if lang == 'python' and marker == FLOW_MARK]
+SCRIPT_BLOCKS = [b for b in PY_BLOCKS if 'def test_' not in b[0] and b not in FLOW_BLOCKS]
 
 
 @pytest.mark.parametrize('code, line', SCRIPT_BLOCKS, ids=['line' + str(b[1]) for b in SCRIPT_BLOCKS])
@@ -527,6 +555,30 @@ def test_readme_python_block_runs_as_written(world, code, line):
     if 'create_account' in code:
         assert ('click', 'css=#create-account') in site.actions
     _check_the_heal(world.store)
+
+
+def test_the_readme_flow_block_runs_as_written(world):
+    assert len(FLOW_BLOCKS) == 1, 'README.md should mark the flow example with ' + FLOW_MARK
+    code, line = FLOW_BLOCKS[0]
+    site = world.site
+    site.pages[SIGNUP_URL] = FLOW_HTML
+    site.load(SIGNUP_URL)
+    namespace = {'__name__': '__readme__', 'mendwright': mendwright, 'page': SyncPage(site)}
+    exec(compile(code, 'README.md:' + str(line), 'exec'), namespace)
+
+    # The banner was rejected and the modal closed before the first step, then the
+    # steps ran. No model call was needed.
+    clicks = [selector for verb, selector in site.actions if verb == 'click']
+    assert len(clicks) == 3
+    assert site.doc.xpath("//*[@id='onetrust-consent-sdk'] | //*[@id='newsletter']") == []
+    assert clicks[1:] == ['css=#newsletter-close', 'css=#create-account']
+    assert site.element("//input[@id='email']").get('value') == 'ada@example.com'
+    assert world.stub.keys == []
+    heal = namespace['heal']
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookie_banner', 'email'), ('newsletter', 'email')]
+    events = [(e['event'], e.get('key')) for e in _journal(world.store)]
+    assert events == [('flow.interrupt', 'cookie_banner'), ('flow.interrupt', 'newsletter')]
 
 
 PYTEST_BLOCKS = [b for b in PY_BLOCKS if 'def test_' in b[0]]
