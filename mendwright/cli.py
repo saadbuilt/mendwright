@@ -793,8 +793,9 @@ def build_parser():
         description='For each key whose best selector is a heal, find its old selector as a '
                     'string literal in your source files and replace it with the healed one. '
                     'Prints a unified diff and changes nothing unless --apply is given. Only '
-                    'heals confirmed by a passing run are used (--include-unconfirmed adds '
-                    'the rest). Keys marked destructive, heals inside an iframe, and strings '
+                    'confirmed heals are used, those with a canary success in journal.jsonl '
+                    '(--include-unconfirmed adds the rest). Keys marked destructive, heals '
+                    'inside an iframe, and strings '
                     'that belong to more than one key are never changed, and are listed. '
                     'Once your code holds the new selector, mendwright tries it first on the '
                     'next run. Exits 0 when there is nothing to do, after a dry run and after '
@@ -811,7 +812,7 @@ def build_parser():
                      help='also search files matching GLOB, for example --glob "*.ts" '
                           '"*.robot" (*.py is always searched)')
     fix.add_argument('--include-unconfirmed', action='store_true',
-                     help='also use heals that no passing run has confirmed yet')
+                     help='also use heals with no canary success in journal.jsonl')
     fix.add_argument('--apply', action='store_true',
                      help='write the changes (default: print the diff only)')
     fix.set_defaults(handler=cmd_fix)

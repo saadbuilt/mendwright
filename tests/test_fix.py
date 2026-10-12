@@ -109,7 +109,7 @@ def test_dry_run_prints_a_diff_and_changes_nothing(root, capsys):
     assert "+++ b/tests/test_checkout.py" in lines
     assert '-    heal.locator("accept_terms", "#accept-terms").check()' in lines
     assert '+    heal.locator("accept_terms", "' + TERMS + '").check()' in lines
-    assert "accept_terms  (checkbox)  healed, confirmed by a passing run" in lines
+    assert "accept_terms  (checkbox)  healed, confirmed" in lines
     assert "  was  #accept-terms" in lines
     assert "  now  " + TERMS in lines
     assert "  tests/test_checkout.py:2" in lines
@@ -160,14 +160,15 @@ def test_an_unconfirmed_heal_is_left_out_until_asked_for(root, capsys):
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
     assert source.read_text(encoding="utf-8") == 'heal.locator("accept_terms", "#accept-terms")\n'
-    assert ("  accept_terms: its heal is not confirmed by a passing run yet (no canary success for "
-            "it in journal.jsonl). Run your tests again, or add --include-unconfirmed to write "
-            "it anyway.") in out.splitlines()
+    assert ("  accept_terms: its heal was never confirmed (journal.jsonl has no canary success for "
+            "it; the pytest plugin or an expect= or confirm(True) check writes one in the run "
+            "that makes the heal). Check that the selector finds the right element, then add "
+            "--include-unconfirmed to write it anyway.") in out.splitlines()
 
     code, out, err = run(capsys, "--apply", "--include-unconfirmed")
     assert (code, err) == (0, "")
     assert source.read_text(encoding="utf-8") == 'heal.locator("accept_terms", "' + TERMS + '")\n'
-    assert "accept_terms  (checkbox)  healed, NOT confirmed by a passing run" in out
+    assert "accept_terms  (checkbox)  healed, NOT confirmed" in out
 
 
 def test_a_failed_canary_does_not_confirm_and_the_latest_one_counts(root, capsys):
@@ -185,7 +186,7 @@ def test_without_a_journal_no_heal_is_confirmed(root, capsys):
     write_store(root, {"k": healed("#a", TERMS)}, events=None)
     write(root, "test_a.py", 'heal.locator("k", "#a")\n')
     out = run(capsys)[1]
-    assert "k: its heal is not confirmed by a passing run yet" in out
+    assert "k: its heal was never confirmed (journal.jsonl has no canary" in out
     assert "mendwright fix: nothing to write back." in out
 
 
@@ -851,7 +852,7 @@ def test_a_real_heal_is_written_back_and_then_wins_on_the_next_run(root, capsys,
 
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
-    assert "go  (button)  healed, confirmed by a passing run" in out
+    assert "go  (button)  healed, confirmed" in out
     text = source.read_text(encoding="utf-8")
     assert text == ('def test_go(heal):\n    heal.locator("go", "' + healed_xpath
                     + '", role="button").click()\n')

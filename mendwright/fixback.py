@@ -9,7 +9,8 @@ candidate on the next run.
 What it will and will not touch:
 
 - Only keys whose most recently successful active selector came from a heal, and (unless
-  asked) only heals a passing run confirmed with a canary success in journal.jsonl.
+  asked) only heals that journal.jsonl shows a canary success for (the pytest plugin writes
+  one when the test that made the heal passes, and an expect= or confirm(True) check does too).
 - Never a key marked destructive, never a heal that sits inside an iframe, and never a key
   whose selectors came only from a seed file (there is no string in your code to replace).
 - Only a string literal whose whole value is the old selector (compared as stored, so
@@ -157,8 +158,10 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
             continue
         confirmed = canary.get((key, new)) is True
         if not confirmed and not include_unconfirmed:
-            plan.skipped.append((key, 'its heal is not confirmed by a passing run yet (no canary '
-                                 'success for it in journal.jsonl). Run your tests again, or add '
+            plan.skipped.append((key, 'its heal was never confirmed (journal.jsonl has no canary '
+                                 'success for it; the pytest plugin or an expect= or confirm(True) '
+                                 'check writes one in the run that makes the heal). Check that '
+                                 'the selector finds the right element, then add '
                                  '--include-unconfirmed to write it anyway.'))
             continue
         role = entry.get('expectedRole')
@@ -763,8 +766,8 @@ def format_lines(result, *, apply):
                 continue
             lines.append('')
             lines.append(fix.key + ('  (' + fix.role + ')' if fix.role else '') + '  '
-                         + ('healed, confirmed by a passing run' if fix.confirmed
-                            else 'healed, NOT confirmed by a passing run'))
+                         + ('healed, confirmed' if fix.confirmed
+                            else 'healed, NOT confirmed'))
             for selector in fix.old:
                 lines.append('  was  ' + selector)
             lines.append('  now  ' + fix.new)

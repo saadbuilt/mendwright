@@ -146,7 +146,7 @@ def _summary(report, records, quarantines, flow_counts):
               'selectors the store will not try'),
         _card(count['requested'] if have else '-', 'heals asked for', 'model calls'),
         _card(count['applied'] if have else '-', 'heals applied'),
-        _card(confirmed if have else '-', 'confirmed', 'by a passing step or test'),
+        _card(confirmed if have else '-', 'confirmed', 'by a passing test or check'),
         _card(count['rejected'] if have else '-', 'proposals rejected', 'by the local checks'),
         _card(flow_counts['flow.interrupt'] if have else '-', 'interruptions handled'),
         _card(flow_counts['flow.skip'] if have else '-', 'steps skipped'),
@@ -218,7 +218,8 @@ def _heals_section(report, records):
     shown = records[-LAST_HEALS:][::-1]
     out.append('<p class="lead">Newest first' + (', the last ' + str(LAST_HEALS) + ' of '
                + str(len(records)) if len(records) > LAST_HEALS else '')
-               + '. A heal is confirmed when the step that used it, or the test, passed.</p>')
+               + '. A heal is confirmed when the test that made it passed (the pytest plugin '
+               'reports that), or when an expect= check or confirm(True) said so.</p>')
     rows = []
     for r in shown:
         old = r['old']
