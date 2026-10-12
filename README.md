@@ -188,7 +188,7 @@ On the next run the selector in your code is tried first and the saved heal righ
 mendwright repairs a selector on the page your script is on. It handles layout changes within that page:
 
 - ids and classes renamed, or replaced by build-generated ones
-- labels reworded or translated
+- labels reworded or translated (with a model)
 - elements wrapped in a new container or component
 - elements moved to another part of the page, or form fields put in a different order
 - lookalike elements where the surrounding text decides which one is meant
