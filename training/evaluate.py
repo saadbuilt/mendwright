@@ -102,6 +102,14 @@ def score(rows, outs, times):
         groups += [('mut', m) for m in row.get('mutations') or ()]
         if row.get('has_fp') is not None:
             groups.append(('fp', row['has_fp']))
+        if row.get('fp_tier'):
+            # 'unsure' and 'none' are what reaches the model at run time: the fingerprint
+            # tier heals the 'right' ones (and the 'wrong' ones, through the gate) first.
+            groups.append(('tier', row['fp_tier']))
+            groups.append(('reaches_model', row['fp_tier'] in ('unsure', 'none')))
+        for flag in ('intent', 'first_use'):
+            if row.get(flag):
+                groups.append((flag, True))
         if label is not None:
             if ans is None:
                 field = 'pos_invalid'

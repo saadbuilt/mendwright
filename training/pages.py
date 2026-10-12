@@ -467,8 +467,17 @@ class Gen:
             attrs[tattr] = tval
         if aria is None and o.get('aria') == 'add':
             aria = label + ((' ' + item) if item else '')
-        if icon:
-            aria = aria or (label + ((' ' + item) if item else ''))
+        if icon and not aria:
+            # An icon button in a row or card often has a label that does not name the
+            # item ("Edit member"), so only the row or card around it tells them apart.
+            roll = srng(self.seed, area, concept, 'aria-item').random() if item else 1.0
+            if roll < 0.25:
+                aria = label
+            elif roll < 0.5:
+                aria = label + ' ' + {'row': 'member', 'cart': 'item', 'grid': 'product',
+                                      'results': 'result'}.get(area, 'item')
+            else:
+                aria = label + ((' ' + item) if item else '')
         if o.get('aria') == 'change' and aria:
             aria = aria + ' ' + srng(uid, 'aria').choice(('now', 'item', 'this'))
         if aria:
