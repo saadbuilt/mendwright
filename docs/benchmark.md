@@ -4,7 +4,7 @@ When a redesign breaks a selector, how often does a heal land on the right eleme
 The benchmark in [`benchmarks/`](../benchmarks/) answers that for any provider mendwright supports, with a fixed set of cases you can rerun.
 
 Results so far are in [benchmarks/RESULTS.md](../benchmarks/RESULTS.md).
-Only the two model-free baselines have been run. No model numbers are published yet.
+Only model-free runs have been made: mendwright's fingerprint tier alone, and two baselines with and without it. No model numbers are published yet.
 
 Contents:
 
@@ -12,6 +12,7 @@ Contents:
 - [The cases](#the-cases)
 - [How a case runs](#how-a-case-runs)
 - [Grading](#grading)
+- [The fingerprint tier](#the-fingerprint-tier)
 - [The baselines](#the-baselines)
 - [Running it with your model](#running-it-with-your-model)
 - [Cost of a run](#cost-of-a-run)
@@ -93,13 +94,13 @@ No case marks its key `destructive=True`. mendwright refuses such keys before an
 `benchmarks/run.py` runs each case through the public API, the way a test suite meets a redesign:
 
 1. `mendwright.open(page, provider=..., store_path=<temporary folder>)` on v1, then `heal.locator(key, selector)`. The selector matches, and mendwright learns the element's role.
-2. The same page and Healer on v2 (loaded with `page.set_content()`, or shown at `v2_url` for a flow case), and `heal.locator(key, selector)` again. The selector misses, so mendwright captures and redacts the page, asks the provider, and runs every check it runs in a real test: the static checks against the captured HTML, then one match on the live page that is visible and still has the role. A rejected proposal gets one retry with the reason.
+2. The same page and Healer on v2 (loaded with `page.set_content()`, or shown at `v2_url` for a flow case), and `heal.locator(key, selector)` again. The selector misses, so mendwright looks for the element from the fingerprint it recorded on v1 (the [fingerprint tier](#the-fingerprint-tier), on unless the run passes `--no-fingerprint`). When that match isn't confident, it captures and redacts the page and asks the provider. Either way, the pick goes through every check mendwright runs in a real test: the static checks against the captured HTML, then one match on the live page that is visible and still has the role. A rejected proposal from the provider gets one retry with the reason.
 3. The harness grades whatever mendwright applied.
 
 The page is `StandInPage` from `mendwright.demo` by default: an lxml page with the shape of a sync Playwright page, so no browser is needed.
 `--browser chromium` runs the same cases in headless Chromium through Playwright instead.
 A version with an address is shown there: `StandInPage` reports it as `page.url`, and a browser page navigates to it while a route answers from the case file, so nothing is fetched from the network.
-For the similarity baseline, the two modes gave the same outcome and the same healed selector in all 47 cases.
+For the fingerprint tier and the similarity baseline, the two modes gave the same outcome and the same healed selector in all 47 cases.
 
 Hourly heal limits are turned off for the run, `MENDWRIGHT_DISABLE` is set aside while the Healer opens, and each case gets a fresh store, so cases do not affect each other.
 Nothing else in your environment is changed.
@@ -117,9 +118,29 @@ A proposer that returns the truth gets every positive case right and declines ev
 The `none` baseline misses every positive case and declines every negative case.
 A proposer that picks another visible element with the right role is graded wrong, and one that proposes a hidden duplicate first is refused by the gate and counted.
 
+## The fingerprint tier
+
+The fingerprint tier is part of mendwright and on by default (see [the guide](guide.md#heals-without-a-model)).
+While the old selector still matches, mendwright records the element: its tag, the attributes that survive redesigns, its text or label, and its ancestors.
+When the selector breaks, it scores the elements of the new page that have the key's role, and heals only when one of them scores at least 0.40, no other comes within 0.12 of it, it shares an id, test id, name, link, label or text with the recorded element, and it sits inside every recorded ancestor whose id is still on the page.
+Its pick goes through the same checks as a provider's.
+
+`--provider none` with the tier on measures the tier alone, since nothing is behind it. On the 47 cases it healed 20 of 35 positive cases correctly, missed 15, healed none onto the wrong element, and declined all 12 negative cases, with no model call. StandInPage and headless Chromium gave the same results.
+
+These numbers are in-sample, and should be read that way:
+
+- The thresholds and the rules for a strong match were tuned on these same 47 cases, until the tier made no wrong heal on them.
+- That shows the tier can be set so it makes no wrong heal on this corpus. It doesn't show that it makes none on pages it was not tuned on.
+- After the tuning, pages written to probe it did find wrong heals: "Delete file 1" healed onto "Delete file 2" after row 1 was gone, "Delete this file" onto "Delete this site", and a Save button that left its form onto the Save button of another form that was still on the page. The rules were tightened until it declined all three: numbers and words in a text must match, and the pick must sit inside the recorded containers that are still there. That tightening cost one correct heal here, the digest checkbox, whose label changed one word ("Email me" became "Send me"); it was 21 of 35 before.
+- Those probe pages are tests in [`tests/test_fingerprint.py`](../tests/test_fingerprint.py), not cases here, so the corpus stays as it was when the thresholds were set.
+- A number that is not in-sample needs cases written after the tuning, by someone who did not tune it.
+
+It misses 15: the 3 translated cases, 2 of the 3 tag changes, the 4 near-duplicate cases, 2 of the 3 reworded labels, an id rename, an attribute change on a coupon button, the digest checkbox, and a quantity input wrapped in a new component.
+On those it hands over to the provider, which is where the similarity baseline (or a model) adds heals.
+
 ## The baselines
 
-`--provider none` never proposes anything. It shows the floor: no wrong heals and no correct ones.
+`--provider none` never proposes anything. With `--no-fingerprint` it shows the floor: no wrong heals and no correct ones. With the tier on, it measures the tier alone (see above).
 
 `--provider similarity` works without a model, in the style of Healenium.
 While the old selector still matches, it records the element: tag, attributes, text, label, the words around it and its ancestor path.
@@ -131,10 +152,12 @@ It never sees the truth.
 It does see the v1 page, which a model never gets: a model receives the key, the old selector and the redacted v2 page.
 It is a short reimplementation of the idea for this benchmark, not Healenium itself, and its numbers say nothing about how Healenium would score.
 
-On the 47 cases it healed 27 of 35 positive cases correctly, missed 7, and healed 1 onto the wrong element.
+On the 47 cases, with the fingerprint tier off, it healed 27 of 35 positive cases correctly, missed 7, and healed 1 onto the wrong element.
 It declined 10 of the 12 negative cases and healed the other 2 onto an element the step did not mean.
 Every one of those 3 wrong heals passed mendwright's checks: the element was unique, visible and of the right role.
 The checks guard against brittle, ambiguous and hidden targets. They cannot tell whether a plausible element is the one the step meant.
+
+With the tier on in front of it, the two healed 28 of 35 correctly (20 by the tier, 8 by the baseline) with half the provider calls, and made the same 3 wrong heals, all of them the baseline's, on cases the tier declined.
 
 The 4 flow cases were declined by mendwright's page guard before the baseline was asked: the key was last found on another page.
 With the guard off (`mendwright.open(heal_across_pages=True)`), the baseline healed all 4 onto the similar element on the new page, and every check accepted it. [`tests/test_benchmark.py`](../tests/test_benchmark.py) runs both.
@@ -165,6 +188,7 @@ Options:
 | `--cases GLOB` | run only the cases whose id matches, for example `"near-dup-*"` |
 | `--repeat N` | run every case N times. Repeats count as separate attempts in the totals. |
 | `--browser chromium` | use headless Playwright instead of StandInPage (also `firefox` or `webkit`) |
+| `--no-fingerprint` | turn the fingerprint tier off, to measure the provider alone. The results file name gets `-nofp`. |
 | `--out FILE` | where to write the results. The default is `benchmarks/results/<provider>-<model>-<page>-<date>.json`. |
 
 The results file holds the date, mendwright and Python versions, the provider class, model id and endpoint, the page mode, a hash of the cases, a summary and one record per case.
@@ -178,9 +202,11 @@ The pages are fictional, so sending them to a hosted model exposes nothing about
 The prompt mendwright sends is the redacted page HTML plus an inventory of its interactive elements.
 Measured on the 47 cases, one prompt is 3,737 to 19,608 characters, 9,984 on average, which is about 2,500 tokens at 4 characters per token.
 
-One pass makes 43 to 86 model calls: one per case except the 4 flow cases, which the page guard declines before any call, plus a retry for each proposal the gate rejects.
+With `--no-fingerprint`, one pass makes 43 to 86 model calls: one per case except the 4 flow cases, which the page guard declines before any call, plus a retry for each proposal the gate rejects.
 That is about 107,000 input tokens when every first proposal passes or is declined, and up to about 215,000 when every case needs a retry.
 Replies are a short JSON object; at 100 to 200 tokens each, output is about 4,000 to 17,000 tokens.
+
+With the fingerprint tier on (the default), the 20 cases it heals make no call, so a pass makes 23 to 46 calls, about 59,000 to 118,000 input tokens.
 
 To price a run, multiply by your provider's current rates:
 
@@ -188,7 +214,7 @@ To price a run, multiply by your provider's current rates:
 cost = input_tokens / 1,000,000 * input_price + output_tokens / 1,000,000 * output_price
 ```
 
-For example, at $3 per million input tokens and $15 per million output tokens, one pass costs roughly $0.40 to $0.90.
+For example, at $3 per million input tokens and $15 per million output tokens, one pass with `--no-fingerprint` costs roughly $0.40 to $0.90, and about half that with the tier on.
 Those rates are an example to show the arithmetic, not a quote for any model. `--repeat 3` triples the cost.
 HTML often comes out at fewer than 4 characters per token, so the real token count can be higher than this estimate; your provider's usage page has the exact figure.
 
@@ -198,7 +224,8 @@ HTML often comes out at fewer than 4 characters per token, so the real token cou
 - The categories cover failure modes that are known to break selectors. How often each happens in practice is not modelled.
 - A single run varies. The built-in Anthropic, OpenAI-compatible and Gemini providers do not set a temperature, so the provider's default applies and two runs can disagree. Use `--repeat` to see how much.
 - The model and the date matter. A results file records the model id, the mendwright version, the date and a hash of the cases; compare runs that match on those.
-- The similarity baseline sees the old page and a model does not, so the two are not on equal terms.
+- The similarity baseline sees the old page and a model does not, so the two are not on equal terms. The fingerprint tier sees what it recorded from the old page too.
+- The fingerprint tier's thresholds were tuned on these cases, so its numbers are in-sample (see [The fingerprint tier](#the-fingerprint-tier)).
 - mendwright's prompt tells the model that it may answer that no element on the page fits the step (`{"xpath": null, "reason": "..."}`) and that it must not pick an element that is only similar. On the negative cases, how often a model does that, rather than proposing a plausible element the checks then accept, is what is measured.
 - The pages are static. There is no single-page-app re-rendering, no iframes, no shadow DOM and no timing.
 - StandInPage only knows inline visibility (`display:none`, `visibility:hidden`, the `hidden` attribute). The cases hide things that way, so both page modes agree.
@@ -209,10 +236,14 @@ Make a folder under `benchmarks/cases/` with `case.json`, `v1.html` and `v2.html
 
 ```bash
 python -m pytest tests/test_benchmark.py -q
-python benchmarks/run.py --provider similarity
 python benchmarks/run.py --provider none
+python benchmarks/run.py --provider similarity
+python benchmarks/run.py --provider similarity --no-fingerprint
+python benchmarks/run.py --provider none --no-fingerprint
 python benchmarks/report.py
 ```
+
+Add `--browser chromium` to rerun the Chromium rows too.
 
 `tests/test_benchmark.py` enforces the rules for a case:
 

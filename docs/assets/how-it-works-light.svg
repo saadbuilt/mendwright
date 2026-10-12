@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="747" viewBox="0 0 800 747" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="765" viewBox="0 0 800 765" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title id="title">How a heal works</title>
-<desc id="desc">Flow: a selector misses; a key marked destructive, an unknown role or a used-up hourly limit stops with AttentionRequired before any model call; otherwise the page is captured and redacted, a model proposes an XPath, and local checks run (not a brittle index path, not quarantined or superseded for this key, exactly one match, expected role, unique, visible and the same role on the live page); a failure gives the model the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.</desc>
-<rect x="0.5" y="0.5" width="799" height="746" rx="12" fill="#fcfcfb" stroke="#0b0b0b" stroke-opacity="0.1"/>
+<desc id="desc">Flow: a selector misses; a key marked destructive, an unknown role or a page the key was never found on stops with AttentionRequired before anything is tried; otherwise the page is captured, and an XPath is proposed from the saved fingerprint when one element matches it with confidence, else by the model within the hourly limit, from a redacted copy; local checks run (not a brittle index path, not quarantined or superseded for this key, exactly one match, expected role, unique, visible and the same role on the live page); a failed fingerprint pick goes to the model, a failed model pick gets the reason and one more try, and a second failure raises AttentionRequired with nothing saved; a pass is saved and the step retried; if the action then fails the healed selector is quarantined.</desc>
+<rect x="0.5" y="0.5" width="799" height="764" rx="12" fill="#fcfcfb" stroke="#0b0b0b" stroke-opacity="0.1"/>
 <text x="24" y="42" font-size="18" font-weight="600" fill="#0b0b0b">How a heal works</text>
 <text x="24" y="66" font-size="13" fill="#52514e">What mendwright does when a stored selector stops matching.</text>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#898781"/></marker></defs>
@@ -12,9 +12,9 @@
 <line x1="194" y1="132" x2="194" y2="157" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
 <g class="node">
 <rect x="24" y="158" width="340" height="70" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.5"/>
-<text x="194" y="180" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Refuse before asking the model?</text>
+<text x="194" y="180" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Refuse before trying?</text>
 <text x="194" y="198" font-size="12" fill="#52514e" text-anchor="middle">key marked destructive, role unknown,</text>
-<text x="194" y="215" font-size="12" fill="#52514e" text-anchor="middle">or hourly limit used up</text>
+<text x="194" y="215" font-size="12" fill="#52514e" text-anchor="middle">or a page the key was never found on</text>
 </g>
 <line x1="364" y1="193" x2="469" y2="193" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
 <text x="417" y="185" font-size="12" fill="#52514e" text-anchor="middle">yes</text>
@@ -24,68 +24,70 @@
 <line x1="492" y1="188.5" x2="492" y2="194" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
 <circle cx="492" cy="197.3" r="1.2" fill="#ffffff"/>
 <text x="512" y="188.5" font-size="14" font-weight="600" fill="#0b0b0b">Stop and raise AttentionRequired</text>
-<text x="512" y="206.5" font-size="12" fill="#52514e">The model is not called.</text>
+<text x="512" y="206.5" font-size="12" fill="#52514e">Nothing is tried or saved.</text>
 </g>
 <line x1="194" y1="228" x2="194" y2="253" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
 <text x="204" y="245" font-size="12" fill="#52514e">no</text>
 <g class="node">
 <rect x="24" y="254" width="340" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
 <text x="194" y="278.5" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Capture the page</text>
-<text x="194" y="296.5" font-size="12" fill="#52514e" text-anchor="middle">HTML snapshot, redacted first</text>
+<text x="194" y="296.5" font-size="12" fill="#52514e" text-anchor="middle">HTML snapshot, redacted for a model</text>
 </g>
 <line x1="194" y1="312" x2="194" y2="337" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
 <g class="node">
-<rect x="24" y="338" width="340" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
-<text x="194" y="362.5" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">The model proposes an XPath</text>
-<text x="194" y="380.5" font-size="12" fill="#52514e" text-anchor="middle">from the provider you configured</text>
+<rect x="24" y="338" width="340" height="76" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<text x="194" y="354.5" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Propose an XPath</text>
+<text x="194" y="372.5" font-size="12" fill="#52514e" text-anchor="middle">from the saved fingerprint, if one element</text>
+<text x="194" y="389.5" font-size="12" fill="#52514e" text-anchor="middle">matches it with confidence (no model);</text>
+<text x="194" y="406.5" font-size="12" fill="#52514e" text-anchor="middle">else the model, within the hourly limit</text>
 </g>
-<line x1="194" y1="396" x2="194" y2="421" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="194" y1="414" x2="194" y2="439" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
 <g class="node">
-<rect x="24" y="422" width="340" height="139" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.5"/>
-<text x="44" y="447" font-size="14" font-weight="600" fill="#0b0b0b">Local checks, all must pass</text>
-<circle cx="49" cy="465" r="2.5" fill="#2a78d6"/>
-<text x="60" y="469" font-size="13" fill="#52514e">not a brittle index path</text>
-<circle cx="49" cy="484" r="2.5" fill="#2a78d6"/>
-<text x="60" y="488" font-size="13" fill="#52514e">not quarantined or superseded for this key</text>
-<circle cx="49" cy="503" r="2.5" fill="#2a78d6"/>
-<text x="60" y="507" font-size="13" fill="#52514e">exactly one match in the snapshot</text>
-<circle cx="49" cy="522" r="2.5" fill="#2a78d6"/>
-<text x="60" y="526" font-size="13" fill="#52514e">the expected role</text>
-<circle cx="49" cy="541" r="2.5" fill="#2a78d6"/>
-<text x="60" y="545" font-size="13" fill="#52514e">unique, visible and the same role on the live page</text>
+<rect x="24" y="440" width="340" height="139" rx="10" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.5"/>
+<text x="44" y="465" font-size="14" font-weight="600" fill="#0b0b0b">Local checks, all must pass</text>
+<circle cx="49" cy="483" r="2.5" fill="#2a78d6"/>
+<text x="60" y="487" font-size="13" fill="#52514e">not a brittle index path</text>
+<circle cx="49" cy="502" r="2.5" fill="#2a78d6"/>
+<text x="60" y="506" font-size="13" fill="#52514e">not quarantined or superseded for this key</text>
+<circle cx="49" cy="521" r="2.5" fill="#2a78d6"/>
+<text x="60" y="525" font-size="13" fill="#52514e">exactly one match in the snapshot</text>
+<circle cx="49" cy="540" r="2.5" fill="#2a78d6"/>
+<text x="60" y="544" font-size="13" fill="#52514e">the expected role</text>
+<circle cx="49" cy="559" r="2.5" fill="#2a78d6"/>
+<text x="60" y="563" font-size="13" fill="#52514e">unique, visible and the same role on the live page</text>
 </g>
-<line x1="364" y1="491.5" x2="469" y2="491.5" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="417" y="483.5" font-size="12" fill="#52514e" text-anchor="middle">fail</text>
+<line x1="364" y1="509.5" x2="469" y2="509.5" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="417" y="501.5" font-size="12" fill="#52514e" text-anchor="middle">fail</text>
 <g class="node">
-<rect x="470" y="456.5" width="306" height="70" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
-<circle cx="492" cy="491.5" r="9" fill="#d03b3b"/>
-<line x1="492" y1="487" x2="492" y2="492.5" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
-<circle cx="492" cy="495.8" r="1.2" fill="#ffffff"/>
-<text x="512" y="478.5" font-size="14" font-weight="600" fill="#0b0b0b">One more try, with the reason</text>
-<text x="512" y="496.5" font-size="12" fill="#52514e">If that fails too: AttentionRequired,</text>
-<text x="512" y="513.5" font-size="12" fill="#52514e">with the reason. Nothing is saved.</text>
+<rect x="470" y="474.5" width="306" height="70" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="492" cy="509.5" r="9" fill="#d03b3b"/>
+<line x1="492" y1="505" x2="492" y2="510.5" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+<circle cx="492" cy="513.8" r="1.2" fill="#ffffff"/>
+<text x="512" y="496.5" font-size="14" font-weight="600" fill="#0b0b0b">Ask the model, with the reason</text>
+<text x="512" y="514.5" font-size="12" fill="#52514e">A failed model pick gets one more try. Then:</text>
+<text x="512" y="531.5" font-size="12" fill="#52514e">AttentionRequired, nothing saved.</text>
 </g>
-<line x1="194" y1="561" x2="194" y2="586" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="204" y="578" font-size="12" fill="#52514e">pass</text>
+<line x1="194" y1="579" x2="194" y2="604" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="204" y="596" font-size="12" fill="#52514e">pass</text>
 <g class="node">
-<rect x="24" y="587" width="340" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
-<text x="194" y="611.5" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Save it and retry the step</text>
-<text x="194" y="629.5" font-size="12" fill="#52514e" text-anchor="middle">in .mendwright/overrides.json</text>
+<rect x="24" y="605" width="340" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<text x="194" y="629.5" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">Save it and retry the step</text>
+<text x="194" y="647.5" font-size="12" fill="#52514e" text-anchor="middle">in .mendwright/overrides.json</text>
 </g>
-<line x1="364" y1="616" x2="469" y2="616" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="417" y="608" font-size="12" fill="#52514e" text-anchor="middle">action fails</text>
+<line x1="364" y1="634" x2="469" y2="634" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="417" y="626" font-size="12" fill="#52514e" text-anchor="middle">action fails</text>
 <g class="node">
-<rect x="470" y="587" width="306" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
-<circle cx="492" cy="616" r="9" fill="#d03b3b"/>
-<line x1="487.5" y1="616" x2="496.5" y2="616" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
-<text x="512" y="611.5" font-size="14" font-weight="600" fill="#0b0b0b">Quarantine the healed selector</text>
-<text x="512" y="629.5" font-size="12" fill="#52514e">so it is not used again</text>
+<rect x="470" y="605" width="306" height="58" rx="10" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<circle cx="492" cy="634" r="9" fill="#d03b3b"/>
+<line x1="487.5" y1="634" x2="496.5" y2="634" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+<text x="512" y="629.5" font-size="14" font-weight="600" fill="#0b0b0b">Quarantine the healed selector</text>
+<text x="512" y="647.5" font-size="12" fill="#52514e">so it is not used again</text>
 </g>
-<line x1="194" y1="645" x2="194" y2="670" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="204" y="662" font-size="12" fill="#52514e">action works</text>
+<line x1="194" y1="663" x2="194" y2="688" stroke="#898781" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="204" y="680" font-size="12" fill="#52514e">action works</text>
 <g class="node">
-<rect x="24" y="671" width="340" height="40" rx="20" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
-<text x="194" y="695" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">The step continues</text>
+<rect x="24" y="689" width="340" height="40" rx="20" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<text x="194" y="713" font-size="14" font-weight="600" fill="#0b0b0b" text-anchor="middle">The step continues</text>
 </g>
-<text x="24" y="727" font-size="12" fill="#52514e">Code: mendwright/facade.py, coordinator.py and gate.py.</text>
+<text x="24" y="745" font-size="12" fill="#52514e">Code: mendwright/facade.py, coordinator.py, fingerprint.py and gate.py.</text>
 </svg>

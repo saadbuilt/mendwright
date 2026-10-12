@@ -1,5 +1,5 @@
 {
-  "about": "Every number and every feature-matrix cell behind docs/assets/*.svg and docs/comparison.md. build_charts.py reads this file and nothing else. Competitor facts were read from each project's own README, docs, compose files, PyPI JSON or the Docker Hub API on the date below. Nothing here measures repair accuracy; that was not measured.",
+  "about": "Every number and every feature-matrix cell behind docs/assets/*.svg and docs/comparison.md. build_charts.py reads this file and nothing else. Competitor facts were read from each project's own README, docs, compose files, PyPI JSON or the Docker Hub API on the date below. Nothing here compares repair accuracy between tools. mendwright's own model-free numbers are in benchmarks/RESULTS.md.",
   "date": "2026-10-10",
   "units": {
     "MB": "1,000,000 bytes (decimal). Docker Hub reports bytes; spot check: postgres:15.5-alpine linux/amd64 is 94,821,839 B, hlm-backend:3.5.1 is 317,362,138 B."
@@ -682,9 +682,10 @@
         "rule": "Existing steps keep working with a one-time setup. no = every step is rewritten or gets an extra argument. Counted in integration_effort below.",
         "cells": {
           "mendwright": {
-            "state": "no",
-            "note": "one line per step",
-            "source": "README.md, Quickstart: page.locator(xpath) becomes heal.locator(key, xpath, role=...)"
+            "state": "yes",
+            "note": "heal.page / heal.driver",
+            "source": "README.md, No changes per step; mendwright/proxies.py",
+            "detail": "page = mendwright.open(page).page, or driver = mendwright.open(driver).driver. page.locator(selector), the page shortcuts that take a selector, and find_element with By.XPATH, CSS_SELECTOR, ID or NAME heal. Chained locators, get_by_* and the other By values pass through unhealed."
           },
           "healenium": {
             "state": "yes",
@@ -716,12 +717,13 @@
       {
         "id": "no_model",
         "label": "Heals without any model",
-        "rule": "Can repair a selector with no LLM call. partial = deterministic repair first, a model only when that fails. na = the tool asks a model for every step.",
+        "rule": "Can repair a selector with no LLM call and no model configured. partial = a deterministic repair runs first, but the setup needs a model. na = the tool asks a model for every step.",
         "cells": {
           "mendwright": {
-            "state": "no",
-            "note": "needs a model",
-            "source": "README.md, How it works"
+            "state": "yes",
+            "note": "fingerprint first",
+            "source": "mendwright/fingerprint.py; docs/guide.md, Heals without a model; benchmarks/RESULTS.md",
+            "detail": "A fingerprint of each element is saved when its selector matches. When the selector breaks, a confident fingerprint match heals with no model and no API key; a model is asked only when the match is not confident and one is configured. 20 of 35 benchmark cases, 0 wrong, with thresholds tuned on those cases (in-sample)."
           },
           "healenium": {
             "state": "yes",
@@ -757,8 +759,9 @@
         "cells": {
           "mendwright": {
             "state": "partial",
-            "note": "local model only",
-            "source": "SECURITY.md, Redaction"
+            "note": "no provider or a local model",
+            "source": "SECURITY.md, Redaction; docs/guide.md, Heals without a model",
+            "detail": "With no provider, only fingerprint heals run and no page content is sent. With a hosted provider, a redacted page is sent when a fingerprint match is not confident."
           },
           "healenium": {
             "state": "yes",
@@ -793,9 +796,10 @@
         "rule": "A step can be written as plain English with no selector at all.",
         "cells": {
           "mendwright": {
-            "state": "no",
-            "note": "needs a selector",
-            "source": "README.md, Limitations"
+            "state": "partial",
+            "note": "intent= and role=",
+            "source": "docs/guide.md, Describing an element with intent=; mendwright/facade.py",
+            "detail": "heal.locator(key, intent='...', role=...) with no selector: a model finds the element on first use, and the saved XPath is used from then on. It needs role= and a model provider."
           },
           "healenium": {
             "state": "no",
@@ -831,11 +835,11 @@
     "rows": [
       {
         "tool": "mendwright",
-        "one_time": "2 lines: import mendwright, heal = mendwright.open(page)",
-        "per_step": "1 line: page.locator(xpath) becomes heal.locator(key, xpath, role=...)",
-        "config": "2 env vars: <PROVIDER>_API_KEY and <PROVIDER>_MODEL",
+        "one_time": "2 lines: import mendwright, page = mendwright.open(page).page (or heal = mendwright.open(page))",
+        "per_step": "none with heal.page or heal.driver; with heal.locator(), page.locator(xpath) becomes heal.locator(key, xpath, role=...)",
+        "config": "none for fingerprint heals; for a model, 2 env vars: <PROVIDER>_API_KEY and <PROVIDER>_MODEL",
         "services": "0",
-        "source": "README.md, Using it in your own script"
+        "source": "README.md, Quickstart and No changes per step"
       },
       {
         "tool": "Healenium-Web",

@@ -6,13 +6,14 @@ Every fact about another tool links to the README, docs page, compose file or pa
 The numbers behind the charts are in [charts/data.json](charts/data.json), each with its source and method.
 [charts/build_charts.py](charts/build_charts.py) draws the charts from that file and nothing else.
 
-Repair accuracy (how often a heal picks the right element) wasn't measured for any tool, mendwright included.
+Repair accuracy (how often a heal picks the right element) wasn't compared between tools.
+mendwright's own accuracy without a model is measured on its [47-case benchmark](benchmark.md), with thresholds tuned on those same cases.
 
 ## What was compared
 
 | Tool | Version | What it is |
 |---|---|---|
-| mendwright | 0.3.0 | Python library. Repairs a broken selector at run time with a model, checks the new XPath locally, saves it. |
+| mendwright | 0.3.0, plus the unreleased changes on main | Python library. Repairs a broken selector at run time from a saved fingerprint of the element, or with a model when that match isn't confident, checks the new XPath locally, saves it. |
 | [Healenium](https://healenium.io/docs/overview) (open source) | healenium-web 3.6.0, hlm-proxy 2.2.1 | Java library, or a proxy for any Selenium client. Tree similarity against a stored baseline, no LLM. |
 | [robotframework-heal](https://github.com/manykarim/robotframework-heal) | 0.4.0 | Robot Framework listener. Deterministic candidates first, then an LLM pick. |
 | [robotframework-selfhealing-agents](https://github.com/MarketSquare/robotframework-selfhealing-agents) | 0.1.7 | Robot Framework library. An LLM multi-agent workflow repairs locators. |
@@ -28,7 +29,7 @@ Their public pages don't say enough to fill in the rows below.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/feature-matrix-dark.svg">
-  <img alt="Feature comparison of mendwright, Healenium, robotframework-heal, Skyvern, Stagehand and auto-playwright across thirteen features, including four where mendwright does not lead. The same data is in the table below." src="assets/feature-matrix-light.svg" width="800">
+  <img alt="Feature comparison of mendwright, Healenium, robotframework-heal, Skyvern, Stagehand and auto-playwright across thirteen features, including two where mendwright does not lead. The same data is in the table below." src="assets/feature-matrix-light.svg" width="800">
 </picture>
 
 "Partial" means partly, opt-in, or with a stated limit.
@@ -45,10 +46,10 @@ Their public pages don't say enough to fill in the rows below.
 | Playwright | yes, [sync and async](../mendwright/aio.py) | no, [Pro only](https://healenium.io/docs/playwright_proxy) | yes, [Browser library](https://github.com/manykarim/robotframework-heal) | yes, [launched by Skyvern](https://github.com/Skyvern-AI/skyvern) | no, [own driver](https://github.com/browserbase/stagehand) | [yes](https://github.com/lucgagan/auto-playwright) |
 | Selenium | [yes](../mendwright/drivers/selenium.py) | [yes](https://github.com/healenium/healenium-web) | yes, [SeleniumLibrary](https://github.com/manykarim/robotframework-heal) | [no](https://github.com/Skyvern-AI/skyvern) | [no](https://github.com/browserbase/stagehand) | [no](https://github.com/lucgagan/auto-playwright) |
 | Choice of LLM provider | yes, [see Providers](../README.md) | n/a, [no LLM in open source](https://healenium.io/docs/ai) | [yes](https://github.com/manykarim/robotframework-heal) | [yes](https://github.com/Skyvern-AI/skyvern) | [yes](https://github.com/browserbase/stagehand) | no, [OpenAI only](https://github.com/lucgagan/auto-playwright) |
-| No change to each step | no, [one line per step](../README.md) | yes, [wrap the driver once](https://github.com/healenium/healenium-web) | yes, [one Library line](https://github.com/manykarim/robotframework-heal) | no, [prompt= per step](https://github.com/Skyvern-AI/skyvern) | no, [act() per step](https://github.com/browserbase/stagehand/blob/main/packages/sdk-python/README.md) | no, [each step rewritten](https://github.com/lucgagan/auto-playwright) |
-| Heals without any model | no, [needs a model](../README.md) | yes, [tree similarity](https://healenium.io/docs/how_healenium_works) | partial, [model is the last step](https://github.com/manykarim/robotframework-heal) | no, [AI fallback](https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md) | n/a, [model runs each step](https://github.com/browserbase/stagehand) | n/a, [model runs each step](https://github.com/lucgagan/auto-playwright) |
-| Page content stays on your machine | partial, [local model only](../SECURITY.md#redaction) | yes, [no LLM in open source](https://healenium.io/docs/how_healenium_works) | [not documented](https://github.com/manykarim/robotframework-heal) | [not documented](https://github.com/Skyvern-AI/skyvern) | [not documented](https://github.com/browserbase/stagehand) | [not documented](https://github.com/lucgagan/auto-playwright) |
-| Steps with no selector | no, [needs a selector](../README.md) | no, [needs a locator](https://github.com/healenium/healenium-web) | no, [needs a locator](https://github.com/manykarim/robotframework-heal) | yes, [prompt-only steps](https://github.com/Skyvern-AI/skyvern) | yes, [act('...')](https://github.com/browserbase/stagehand) | yes, [English steps](https://github.com/lucgagan/auto-playwright) |
+| No change to each step | yes, [heal.page / heal.driver](guide.md#no-changes-per-step) (chained locators, `get_by_*` and other `By` values pass through unhealed) | yes, [wrap the driver once](https://github.com/healenium/healenium-web) | yes, [one Library line](https://github.com/manykarim/robotframework-heal) | no, [prompt= per step](https://github.com/Skyvern-AI/skyvern) | no, [act() per step](https://github.com/browserbase/stagehand/blob/main/packages/sdk-python/README.md) | no, [each step rewritten](https://github.com/lucgagan/auto-playwright) |
+| Heals without any model | yes, [fingerprint first](guide.md#heals-without-a-model), a model only when the match isn't confident | yes, [tree similarity](https://healenium.io/docs/how_healenium_works) | partial, [model is the last step](https://github.com/manykarim/robotframework-heal) | no, [AI fallback](https://www.skyvern.com/docs/sdk-reference/browser-automation/click.md) | n/a, [model runs each step](https://github.com/browserbase/stagehand) | n/a, [model runs each step](https://github.com/lucgagan/auto-playwright) |
+| Page content stays on your machine | partial, [with no provider or a local model](../SECURITY.md#redaction) | yes, [no LLM in open source](https://healenium.io/docs/how_healenium_works) | [not documented](https://github.com/manykarim/robotframework-heal) | [not documented](https://github.com/Skyvern-AI/skyvern) | [not documented](https://github.com/browserbase/stagehand) | [not documented](https://github.com/lucgagan/auto-playwright) |
+| Steps with no selector | partial, [`intent=` and `role=`](guide.md#describing-an-element-with-intent): a model finds it once | no, [needs a locator](https://github.com/healenium/healenium-web) | no, [needs a locator](https://github.com/manykarim/robotframework-heal) | yes, [prompt-only steps](https://github.com/Skyvern-AI/skyvern) | yes, [act('...')](https://github.com/browserbase/stagehand) | yes, [English steps](https://github.com/lucgagan/auto-playwright) |
 
 How each row was judged:
 
@@ -58,19 +59,19 @@ How each row was judged:
 - Refuses destructive controls: "yes" means pay, submit or delete style controls are refused without marking each one. "Partial" means only steps you mark are refused. The same rule was applied to every tool, so Healenium's `@DisableHealing` and mendwright's `destructive=True` both count as partial.
 - No backend services: no separately run service or container. An LLM API doesn't count.
 - No change to each step: existing steps keep working after a one-time setup. "No" means every step is rewritten or gets an extra argument. See [Integration effort](#integration-effort).
-- Heals without any model: the repair needs no LLM call. "Partial" means a deterministic repair runs first and a model only when that fails. "n/a" means the tool asks a model for every step.
-- Page content stays on your machine: no page content goes to a model provider. "Partial" means only with a local model. Judged on the open source edition.
-- Steps with no selector: a step can be written in plain English, with no selector at all.
+- Heals without any model: the repair needs no LLM call and no model set up. "Partial" means a deterministic repair runs first, but the setup needs a model. "n/a" means the tool asks a model for every step. mendwright's fingerprint tier heals with no provider at all, and asks a model only when one is configured and the match isn't confident.
+- Page content stays on your machine: no page content goes to a model provider. "Partial" means only in some setups: for mendwright, with no provider (fingerprint heals only) or a local model. Judged on the open source edition.
+- Steps with no selector: a step can be written in plain English, with no selector at all. mendwright's `intent=` counts as partial, because it also needs `role=` and a model, and the element is found once and then saved as an XPath.
 - Healenium Pro adds a bring-your-own LLM and Playwright support ([AI](https://healenium.io/docs/ai), [Playwright](https://healenium.io/docs/playwright_proxy)). Only the open source edition is rated here.
 
 ## Integration effort
 
-The result here is mixed.
-mendwright runs no services, but every step changes by one line, while Healenium and the Robot Framework libraries need no per-step changes.
+mendwright runs no services and, with `heal.page` or `heal.driver`, needs no per-step change, like Healenium and the Robot Framework libraries.
+`heal.locator()` is the per-step form, for a key name, `role=` or `destructive=` on a step.
 
 | Tool | One-time code | Per-step change | Config | Services |
 |---|---|---|---|---|
-| mendwright | 2 lines: `import mendwright`, `heal = mendwright.open(page)` | 1 line: `page.locator(xpath)` becomes `heal.locator(key, xpath, role=...)` | 2 env vars: `<PROVIDER>_API_KEY`, `<PROVIDER>_MODEL` | 0 |
+| mendwright | 2 lines: `import mendwright`, `page = mendwright.open(page).page` (or `heal = mendwright.open(page)`) | none with `heal.page` or `heal.driver`; with `heal.locator()`, `page.locator(xpath)` becomes `heal.locator(key, xpath, role=...)` | none for fingerprint heals; for a model, 2 env vars: `<PROVIDER>_API_KEY`, `<PROVIDER>_MODEL` | 0 |
 | [Healenium-Web](https://github.com/healenium/healenium-web) | an import, and driver creation replaced by 2 lines (`SelfHealingDriver.create(delegate)`) | none | a dependency block (Maven 5 lines or Gradle 1) and a 5-line `healenium.properties` | 3 |
 | [Healenium-Proxy, Python](https://github.com/healenium/healenium-example-python) | about 2 lines: the local driver becomes `webdriver.Remote('http://localhost:8085', options=...)` | none | the docker-compose file | 6 |
 | [robotframework-heal](https://github.com/manykarim/robotframework-heal) | 1 line in Settings: `Library    Heal` | none | 3 `.env` lines: `HEAL_MODEL`, `HEAL_BASE_URL`, `HEAL_API_KEY` | 0 |
@@ -90,7 +91,7 @@ mendwright runs no services, but every step changes by one line, while Healenium
 
 | Tool | Services | Which | Calls an LLM API |
 |---|---|---|---|
-| mendwright, direct mode | 0 | none; healed selectors go to `./.mendwright/overrides.json` | yes |
+| mendwright, direct mode | 0 | none; healed selectors go to `./.mendwright/overrides.json` | only when a fingerprint match isn't confident and a provider is set up |
 | [robotframework-heal](https://github.com/manykarim/robotframework-heal) | 0 | none; history goes to a local SQLite file | yes |
 | [Healenium-Web](https://github.com/healenium/healenium/blob/master/docker-compose-web.yaml) (Java only) | 3 | PostgreSQL, hlm-backend, selector-imitator | no |
 | [Healenium-Proxy](https://github.com/healenium/healenium/blob/master/docker-compose.yaml) (Python, JS or C# Selenium) | 6 | the 3 above, hlm-proxy, a Selenium hub, 1 browser node | no |
@@ -172,10 +173,12 @@ Each cell was read from the project's README or docs, linked in the table above 
 mendwright's cells come from its code and from runs with a stub model provider and no network. Those runs showed:
 - a first-ever heal works with no stored success
 - a key marked destructive is refused with 0 model calls
+- with no provider, a selector broken after its element was recorded heals from the fingerprint ([benchmark](benchmark.md#the-fingerprint-tier))
+- `heal.page` and `heal.driver` heal an unchanged script ([tests/test_proxies.py](../tests/test_proxies.py))
 
 ### Not measured
 
-Repair accuracy, heal latency, cost per heal, and any run against a real LLM.
+Repair accuracy of the other tools, mendwright's accuracy with a model, heal latency, cost per heal, and any run against a real LLM.
 
 ### Charts
 
@@ -184,8 +187,8 @@ Repair accuracy, heal latency, cost per heal, and any run against a real LLM.
 
 ## Where other tools are better
 
-- Healenium: you wrap the driver once and change no steps.
-  - The open source edition uses no LLM, so no page content goes to a model provider and there is no per-heal API cost ([how it works](https://healenium.io/docs/how_healenium_works)).
+- Healenium: you wrap the driver once and change no steps, in Java or, through its proxy, from any Selenium client.
+  - The open source edition never uses an LLM, so no page content goes to a model provider in any setup and there is no per-heal API cost ([how it works](https://healenium.io/docs/how_healenium_works)). mendwright's fingerprint tier also heals without one, but falls back to a model when a provider is set up.
   - Healenium-Proxy serves Java, Python, JS and C# Selenium clients from one setup ([healenium-proxy](https://github.com/healenium/healenium-proxy)).
 - robotframework-heal: fits Robot Framework suites with one `Library` line.
   - It also recovers timing, viewport and overlay failures without an LLM.
@@ -197,9 +200,9 @@ Repair accuracy, heal latency, cost per heal, and any run against a real LLM.
 
 ## When not to use mendwright
 
-- Your suite is Java, or you want no per-step changes: use Healenium.
+- Your suite is Java: use Healenium.
 - Your suite is Robot Framework: use robotframework-heal or robotframework-selfhealing-agents.
-- Page HTML must not leave your machine, even redacted, and you can't run a local model: use Healenium's open source edition or Scrapling. With a hosted provider, mendwright sends a redacted snapshot to it (a local model through Ollama keeps it on your machine), and [SECURITY.md](../SECURITY.md#redaction) lists what redaction misses.
+- Page HTML must not leave your machine, even redacted, and you can't run a local model: run mendwright with no provider, so only fingerprint heals happen, or use Healenium's open source edition or Scrapling. With a hosted provider, mendwright sends a redacted snapshot to it when a fingerprint match isn't confident (a local model through Ollama keeps it on your machine), and [SECURITY.md](../SECURITY.md#redaction) lists what redaction misses.
 - You want heals written back as CSS, role or test-id selectors: mendwright accepts those as input, but a heal is always an XPath.
 - Your code is JavaScript or TypeScript: look at Stagehand, auto-playwright or Playwright Test Agents.
 - You would rather describe steps in English than maintain selectors: look at Stagehand, Skyvern or browser-use.

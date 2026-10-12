@@ -6,6 +6,9 @@ This page covers the rest: settings, providers, the pytest plugin, async and Sel
 Contents:
 
 - [Configuration](#configuration)
+- [Heals without a model](#heals-without-a-model)
+- [No changes per step](#no-changes-per-step)
+- [Describing an element with intent=](#describing-an-element-with-intent)
 - [Providers](#providers)
 - [pytest plugin](#pytest-plugin)
 - [Async Playwright](#async-playwright)
@@ -33,7 +36,8 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | Argument | Default | Meaning |
 |---|---|---|
 | `page` | required | A sync Playwright `Page` or `Frame` (patchright and camoufox too), a Selenium WebDriver, or a driver you registered with `register_driver` |
-| `provider` | `auto_provider()` | The model provider. If none can be built, selectors still resolve, heals are declined with the reason, and one WARNING is logged. |
+| `provider` | `auto_provider()` | The model provider. If none can be built, selectors still resolve, only [fingerprint heals](#heals-without-a-model) happen, other heals are declined with the reason, and one WARNING is logged. |
+| `fingerprint` | `MENDWRIGHT_FINGERPRINT`, else on | Look for the element from its saved fingerprint before any model call. `False` turns it off. See [Heals without a model](#heals-without-a-model). |
 | `store_path` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | Where heals are saved. `~` is expanded. Relative paths are relative to the current directory. |
 | `store` | built from `store_path` | A `SelectorStore`, for example from `load_store()` with a seed file |
 | `timeout_ms` | `MENDWRIGHT_TIMEOUT_MS`, else 10000 | How long `locator()` polls before it treats a selector as broken |
@@ -54,7 +58,7 @@ The two rates are shared by every Healer in one process that uses the same store
 
 ```python
 heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
-             timeout_ms=None, poll_ms=200, optional=False)
+             timeout_ms=None, poll_ms=200, optional=False, intent=None)
 ```
 
 | Argument | Meaning |
@@ -67,16 +71,18 @@ heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
 | `timeout_ms` | Overrides the Healer's timeout for this call |
 | `poll_ms` | How often to poll while waiting |
 | `optional` | `True` means the step may not be there. If the element doesn't appear, it isn't healed, and the proxy's `.present` is False. See [Optional steps](#optional-steps). |
+| `intent` | What the element is for, in words, such as `"the terms checkbox in the signup form"`. It is saved with the key, and the model gets it when it heals the key. With `role=` and no selector, a model looks for the element on first use. See [Describing an element with intent=](#describing-an-element-with-intent). |
 
 It returns an `ActionProxy` once the element is found, healed or not, or a proxy with `.present` False for a step that was skipped.
-It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work, and `ValueError` for an unknown role.
+It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work (or an `intent=` that is not a non-empty string), and `ValueError` for an unknown role or for `intent=` with no selector and no role.
 
 Other `Healer` members:
 
 - `heal.interrupt(key, selector, *, action="click", args=(), role=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions).
 - `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`.
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
-- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed)`.
+- `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
+- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, or `"intent"` for a key that had no selector and was found from its `intent=`.
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
 - `heal.confirm_all(True)` or `heal.confirm_all(False)`: confirm or quarantine every pending heal.
 
@@ -116,7 +122,8 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_STORE` | Store path, the default for `store_path` |
 | `MENDWRIGHT_TIMEOUT_MS` | Default `timeout_ms`, in whole milliseconds |
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
-| `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=` |
+| `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=`. The fingerprint tier is off too. |
+| `MENDWRIGHT_FINGERPRINT` | `0` turns the fingerprint tier off, the default for `fingerprint=` |
 | `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway` or `ollama`: use that provider instead of detecting one |
 | `MENDWRIGHT_GATEWAY` | Gateway URL, which selects `GatewayProvider` |
 | `MENDWRIGHT_KEY` | The client key the gateway checks |
@@ -125,6 +132,154 @@ An unconfirmed heal stays active and is used on later runs.
 
 Flags take `1`, `true`, `yes` or `on`, and `0`, `false`, `no`, `off` or empty.
 Any other value makes `open()` raise `ValueError` (for `MENDWRIGHT_DRY_RUN`, only when `dry_run=` isn't passed).
+
+## Heals without a model
+
+mendwright heals many broken selectors with no model and no API key.
+Each time a key's selector matches, it saves a fingerprint of the element in `overrides.json`. When the selector breaks, mendwright looks for that element on the page first, and asks a model only when that match isn't confident.
+
+### What a fingerprint holds
+
+- the tag, and the attributes that tend to survive a redesign: `id`, `name`, `type`, `role`, the test ids (`data-testid`, `data-test`, `data-qa`), `aria-label`, `placeholder`, `title`, `alt`, `autocomplete`, and the path of `href` (no host, query or fragment)
+- the class names that don't look generated. `css-1x2y3`, `Header_link__a1B2c` and state words such as `active` are left out.
+- the visible text, or for a form field the text of its label, with spaces collapsed, cut to 80 characters, and runs of 12 to 19 digits replaced by `#`
+- the tag, id, classes and role of up to 4 ancestors
+
+It never reads an input's value.
+It is read in one round trip after the selector matches, once per key and selector per Healer, and the store file is written only when the fingerprint changed.
+It isn't recorded for a key marked destructive, a match inside an iframe, a skipped step, or a heal made in this run that isn't confirmed yet.
+In a later run it is refreshed through whichever selector matches, so after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
+
+### When it heals
+
+When every selector of a key misses, mendwright scores each element of the page that has the key's role against the fingerprint, from 0 to 1.
+It heals only when all of these hold:
+
+- The best score is at least 0.40.
+- No other visible element scores within 0.12 of it.
+- The best element shares a strong sign of identity with the recorded one: the same id (not a generated one), test id, name, link path or `autocomplete` value, or nearly the same text, label or aria-label. Nearly the same means the same numbers and the same words, with a typo, a plural, a filler word such as "the", or a change in spacing allowed. "Delete file 1" and "Delete file 2" are not the same, and neither are "Delete this file" and "Delete this site".
+- It sits inside every recorded ancestor whose id is still on the page. A Save button that left its form, while the form is still there, is not taken.
+- A unique XPath without positions can be built for it.
+
+That XPath then goes through the same checks as a model's proposal (see [How it works](../README.md#how-it-works)): one match of the step's role in the captured HTML, not quarantined, and one visible match on the live page that still has the role.
+
+Everything that stops a heal before a model call stops it before the fingerprint too: a key marked destructive, a page where the key was never found (the page guard), an unknown role, and a `guard=` that returns False.
+Interruptions registered with `heal.interrupt()` are handled first.
+Dry run checks the match and applies nothing.
+A fingerprint heal doesn't count toward the hourly limit, and it isn't reported to the provider, which didn't propose it.
+
+### With and without a provider
+
+| Provider | Fingerprint match | What happens |
+|---|---|---|
+| none | confident | healed, no model call |
+| none | not confident, or no fingerprint yet | `AttentionRequired`, saying why and which variables to set for a model |
+| configured | confident | healed, no model call |
+| configured | not confident, or no fingerprint yet | the model is asked |
+
+A key that never matched has no fingerprint, so a selector that is already broken the first time mendwright sees it needs a model.
+
+`fingerprint=False` in `mendwright.open()` or `MENDWRIGHT_FINGERPRINT=0` turns the tier off, and `MENDWRIGHT_DISABLE=1` turns it off with every other heal.
+`HealCoordinator` in the low-level API leaves it off unless you pass `fingerprint=True`.
+
+### What you see
+
+A fingerprint heal logs one line:
+
+```text
+mendwright: healed 'terms': #accept-terms -> //input[@data-testid='legal-consent'] (fingerprint, 0.0s)
+```
+
+In the journal, its `heal.proposed` has `"source": "fingerprint"` and a reasoning such as `"fingerprint score 0.83, next best 0.41"`, and its `heal.applied` has `"provider": "fingerprint"` and `"source": "fingerprint"`.
+`heal.heals` lists it with `source="fingerprint"`.
+
+When the tier doesn't heal, the error says why, for example:
+
+- `'terms' has no fingerprint yet (mendwright records one each time its selector matches)`
+- `the fingerprint match for 'terms' was not confident: two elements score alike (0.52 and 0.52), so the fingerprint does not tell them apart`
+- `the fingerprint match for 'terms' was not confident: the best match (score 0.61) shares no id, test id, name, link, autocomplete value, label or text with the element that was recorded`
+- `the fingerprint match for 'save' was not confident: the best match is outside the element with id 'profile-form', which held the recorded element and is still on the page`
+
+With no provider, the message goes on with `and no model provider is configured to try instead.` and the variables to set.
+
+### How well it works
+
+On the [47-case benchmark](benchmark.md) with no model, the tier healed 20 of 35 broken selectors correctly, healed none onto the wrong element, and declined all 12 cases where no heal was right ([results](../benchmarks/RESULTS.md)).
+Those numbers are in-sample: its thresholds were tuned on the same 47 cases.
+Pages written afterwards to probe it did find wrong heals, and the rules were tightened until it declined them.
+Expect it to be wrong now and then on your own pages, and mark pay, submit and delete steps with `destructive=True`.
+It misses translated text, an element whose tag changed, look-alike rows and cards, and labels that changed a word. A model can still heal those.
+
+## No changes per step
+
+`heal.page` and `heal.driver` stand in for the page or driver your script already uses, so an existing script heals when you change the line that makes it:
+
+```python
+page = mendwright.open(page).page          # Playwright
+page.fill("#email", "ada@example.com")
+page.locator("#terms").check()
+
+driver = mendwright.open(driver).driver    # Selenium
+driver.find_element(By.ID, "terms").click()
+```
+
+With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcuts and locator methods are awaited, as on the real page.
+
+### Playwright
+
+`page.locator(selector)` and the page methods that take a selector go through `heal.locator(selector, selector)`, so the selector is also the key its heals are saved under.
+
+- The locator actions heal: `click`, `fill`, `check`, `select_option`, `press`, `hover` and the rest of the list in [Actions and confirmation](#actions-and-confirmation). So do the page shortcuts `click`, `dblclick`, `fill`, `check`, `uncheck`, `select_option`, `press`, `type` and `hover`.
+- The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text` and `get_attribute` on the page.
+- Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
+- `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
+- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
+- The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
+- `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
+- `strict=` is dropped, because a mendwright lookup is always strict.
+
+`mendwright.open()` and `mendwright.aio.open()` also take a proxy, and use the real page behind it.
+On a Playwright healer, `heal.driver` is still mendwright's own driver object.
+
+### Selenium
+
+`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the `WebElement` (a `FramedElement` inside an iframe).
+`By.ID` and `By.NAME` become `[id="..."]` and `[name="..."]` CSS selectors, and the key for `find_element(By.ID, "terms")` is `id=terms`.
+
+- A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
+- When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
+- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, `find_element()` on a returned element, and every other driver method.
+- A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)` or `driver.native`.
+- Actions on the returned `WebElement` are Selenium's own, so a wrong heal isn't quarantined when the action fails. The pytest plugin confirms it when the test passes, and `heal.confirm_all(False)` quarantines it.
+
+On a Selenium healer, `heal.page` is still the WebDriver.
+
+## Describing an element with intent=
+
+`intent=` says what an element is for, in words:
+
+```python
+heal.locator("terms", "#accept-terms", role="checkbox",
+             intent="the terms checkbox in the signup form").check()
+```
+
+It is saved with the key (the `intent` field in `overrides.json`), so later calls don't need to repeat it, and the model gets it as one line of the prompt when it heals the key.
+It is redacted like the expected text: absolute URLs, long numbers and the row secrets you pass are replaced. Line breaks are folded into spaces.
+
+With `role=` and no selector, and nothing saved for the key yet, a model looks for the element from the intent on the first call:
+
+```python
+heal.locator("newsletter", intent="the newsletter checkbox under the email field",
+             role="checkbox").check()
+```
+
+What the model finds goes through the same checks as a heal. It is saved and used from then on, with no model call.
+The log line is `found 'newsletter' from its intent: //input[@name='news'] (AnthropicProvider, 1.2s)`, and the journal events carry `"source": "intent"`.
+
+- This needs a model provider. Without one, the error says `'newsletter' has no selector yet, and only a model can find it from intent=, but no model provider is configured.`
+- Without `role=`, it raises `ValueError` before it looks at the page, because mendwright checks what the model finds against the role. In `mendwright.aio`, `locator()` raises it before anything is awaited.
+- An `intent=` that is empty or not a string raises `TypeError`.
+- The fingerprint tier is skipped for such a key, since nothing was recorded for it yet.
 
 ## Providers
 
@@ -657,7 +812,7 @@ The real file is a single line; it is wrapped here.
 
 - `source` is `code` (passed to `locator()`), `heal` or `seed`.
 - `status` is `active`, `quarantined` or `superseded`. Only active candidates are tried.
-- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, and `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)).
+- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), and `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)).
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
 
@@ -697,6 +852,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 ```
 
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.skip` and `flow.page_guard` (see [Log lines and journal events](#log-lines-and-journal-events)).
+`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). A model heal of a key that had a selector has no `source`.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -770,7 +926,7 @@ pytest shows the lines in the captured output of a failed test.
 
 ## Command line
 
-`mendwright` (or `python -m mendwright`) has three commands, plus `--version`.
+`mendwright` (or `python -m mendwright`) has four commands, plus `--version`.
 
 ### mendwright demo
 
@@ -790,7 +946,7 @@ It never prints key values and always exits 0. `--json` prints the same as JSON.
 
 ```text
 Model provider
-  none configured, so a broken selector is reported but not repaired.
+  none configured, so only fingerprint healing (no model call) can repair a broken selector.
   Why: mendwright.auto_provider: no provider configured. Set one of these, checked in
   this order: ANTHROPIC_API_KEY and ANTHROPIC_MODEL (Anthropic); OPENAI_API_KEY and
   OPENAI_MODEL (OpenAI-compatible); GEMINI_API_KEY and GEMINI_MODEL (Gemini);
@@ -800,17 +956,26 @@ Model provider
   anthropic, openai, gemini, gateway, ollama, or pass provider=... to mendwright.open().
   `mendwright demo` works without one (it uses a scripted reply).
 
+Fingerprint healing (no model)
+  on: each time a selector matches, mendwright records what the element looks like, and
+  when the selector breaks it looks for that element first, before any model call. Set
+  MENDWRIGHT_FINGERPRINT=0, or pass fingerprint=False to mendwright.open(), to turn it
+  off.
+
 Store (where mendwright.open() saves heals)
   C:\work\shop\.mendwright\overrides.json
   (default, relative to this folder; set MENDWRIGHT_STORE to change it)
-  the folder does not exist yet; it is created on the first heal
+  the folder does not exist yet; it is created the first time mendwright.open() records a selector
   C:\work\shop is writable
 ```
+
+`--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
 
 ### mendwright report
 
 Lists each key in a store with its selectors, and the heal counts from the journal.
-`--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`). `--format` is `text`, `md` or `json`.
+`--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`). `--format` is `text`, `md`, `json` or `html`.
+`--out FILE` writes the report to a file instead of stdout, creating the folder if it is missing, and prints `Wrote <path>`.
 
 ```text
 Store: C:\work\shop\.mendwright\overrides.json
@@ -829,6 +994,81 @@ Last applied heals, newest first:
   2026-10-10 19:07:59 UTC  accept_terms  (ScriptedProvider)
     #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']
 ```
+
+`--format html` makes one page you can open in a browser or keep as a CI artifact:
+
+```bash
+mendwright report --format html --out mendwright-report.html
+```
+
+- It has a summary (keys, selectors, quarantined selectors, heals asked for, applied and confirmed, proposals rejected, interruptions, skipped steps and page guard stops), each key with its selectors, the last 25 heals with their old and new selector, state, provider and latency, the last 50 flow events, and the quarantined selectors.
+- A heal shows as confirmed when the test that made it passed (the pytest plugin reports that), or when an `expect=` check or `confirm(True)` said so. A fingerprint heal shows `fingerprint` as its provider.
+- The page is self-contained: inline CSS only, no scripts, no fonts, no images, and nothing loaded from the network. It follows the system's light or dark theme and stacks its tables on a narrow screen.
+- Every value from the store and journal is escaped, and the output is ASCII, so any console encoding can print it.
+- Selectors and reasons can quote your pages, so check who can open the file before you share it.
+
+### mendwright fix
+
+Writes healed selectors back into your code, so the code says what the store says.
+It finds each key whose best selector is a heal, looks for the key's old selector as a string literal in your source files, and replaces it with the healed one.
+Without `--apply` it prints a unified diff and changes nothing:
+
+```text
+$ mendwright fix
+mendwright fix: 1 replacement in 1 file would put 1 healed selector into your code. Dry run, nothing was changed.
+
+--- a/tests/test_checkout.py
++++ b/tests/test_checkout.py
+@@ -1,4 +1,4 @@
+ def test_checkout(heal):
+     heal.locator("email", "#email").fill("ada@example.com")
+-    heal.locator("accept_terms", "#accept-terms", role="checkbox").check()
++    heal.locator("accept_terms", "//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']", role="checkbox").check()
+
+accept_terms  (checkbox)  healed, confirmed
+  was  #accept-terms
+  now  //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']
+  tests/test_checkout.py:3
+
+Left alone:
+  email: its heal was never confirmed (journal.jsonl has no canary success for it; the pytest plugin or an expect= or confirm(True) check writes one in the run that makes the heal). Check that the selector finds the right element, then add --include-unconfirmed to write it anyway.
+
+Run the same command with --apply to write these changes.
+
+Once your code holds the new selector, mendwright tries it first on the next run, because selectors in your code win over saved heals.
+```
+
+| Option | Meaning |
+|---|---|
+| `--store PATH` | The store, found as `report` finds it. `journal.jsonl` is read from the same folder. |
+| `--path PATH [PATH ...]` | Folders or files to search, the current folder by default. Can be given more than once. A file named here is searched whatever its extension. |
+| `--glob GLOB [GLOB ...]` | Also search files that match, for example `--glob "*.ts" "*.robot"`. `*.py` is always searched. A glob with `/` in it is matched against the path under the `--path` folder. |
+| `--include-unconfirmed` | Also write heals that were never confirmed |
+| `--apply` | Write the changes |
+
+Which keys it changes:
+
+- The key's most recently successful active selector is a heal, and that heal matched at least once.
+- The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
+- Never a key marked destructive, a heal inside an iframe, or a key whose selectors came only from a seed file.
+- Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
+- Never a key from `heal.driver`'s `find_element(By.CSS_SELECTOR, ...)`, `By.ID` or `By.NAME`, since those calls can't run the healed XPath. The reason says what to change the call to.
+
+Which strings it changes:
+
+- In Python files, only plain string literals whose whole value is the old selector, as the store keeps it (`"xpath=//a"` and `" //a "` both match a stored `//a`). Not an f-string or bytes, not part of an implicit concatenation such as `"a" "b"`, not a comment, not a substring.
+- Not the key in `heal.locator(key, selector)` or `heal.interrupt(key, selector)`, and not a `role=`, `text=`, `intent=`, `action=` or `by=` value, even when it equals the selector.
+- Not a value passed with a Selenium `By` other than `By.XPATH` (in a call, or a `(By.CSS_SELECTOR, "#x")` pair), or to a function with `css` in its name. Those are listed with the healed selector to put in by hand.
+- In other files (`--glob`), quoted strings on one line. Comments are skipped in C-like languages, and template strings with `${` and strings that span lines are left alone. A string right after `By.cssSelector(`, `querySelector(`, `css:` and the like is listed, not changed.
+- A file in which the same string belongs to more than one key is left alone whole, and listed, because mendwright can't tell which healed selector goes where.
+
+Each rewritten Python file must still parse, have the same structure, and differ only in the planned strings, or it isn't written.
+The original quote style and prefix are kept where they can hold the new selector, and a BOM, a coding comment and the line endings are kept.
+A file is written through a temporary file next to it and then replaced, and a file that changed since it was read is not overwritten.
+`.git`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files.
+
+It exits 0 when there is nothing to do, after a dry run and after `--apply`, and 1 when there is no store, a `--path` doesn't exist, or a file couldn't be written.
+Once your code holds the healed selector, mendwright tries it first on the next run.
 
 ## Low-level API
 
@@ -860,7 +1100,7 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
 - These paths skip what the facade adds: the code-first selector order and role learning. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
-- `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`.
+- `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
 
 ## Troubleshooting
 
@@ -871,7 +1111,10 @@ The first line names the key. The line after `->` says why there was no heal:
 | The message says | What to do |
 |---|---|
 | is marked as a destructive control | Fix the selector by hand. If you marked it with `destructive=True` and the control is safe to heal, pass `destructive=False` |
-| no provider configured | Set a key and its model variable, or pass `provider=` |
+| no provider configured | Set a key and its model variable, or pass `provider=`. Without one, only fingerprint heals happen. |
+| has no fingerprint yet | The key never matched while the fingerprint tier was on, so there is nothing to look for. With no provider, fix the selector by hand or set one up. |
+| the fingerprint match for '<key>' was not confident | The reason after it says why (two elements alike, no shared id or text, a score too low, outside the recorded container). With a provider the model is asked next; without one, fix the selector or set one up. |
+| has no selector yet, and only a model can find it from intent= | Set up a provider, or pass a selector |
 | `<Provider> returned no selector for '<key>': <reason>` | The reason is the provider's own error, such as an HTTP 401 for a bad key, an unknown model or no network. Fix what it names, or try another model. |
 | the model says no element on this page fits | The model saw no element for the step on this page. If the step moved or the element was removed, update your script. See [When the model finds no element](#when-the-model-finds-no-element). |
 | That looks like a change in the flow, not a renamed element | The key was found on another page before. Update your script if the step moved, or pass `heal_across_pages=True` if only the URL changed. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
@@ -884,7 +1127,7 @@ The first line names the key. The line after `->` says why there was no heal:
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
 | turned off by MENDWRIGHT_DISABLE=1 | Unset it, or drop `--mendwright-disable` |
 | a transaction guard is currently blocking heals | Your `guard=` returned False. Run the step again once it allows heals. |
-| there is no stored selector | Pass a selector on the first call for that key |
+| there is no stored selector | Pass a selector on the first call for that key, or `intent=` and `role=` |
 
 A heal that picked the wrong element is quarantined when the action fails or `expect=` is false.
 To remove it by hand, delete the candidate from `overrides.json`. `mendwright report` shows what is stored.

@@ -129,18 +129,20 @@ The modules:
 
 - `selectors.py`: `classify()` (XPath, CSS or Playwright engine selector), `check_syntax()`, `normalize()` and `InvalidSelector`.
 - `drivers/`: `base.py` holds the `Driver` protocol, the shared describe and inventory scripts, and the fallback helpers. `registry.py` has `wrap()` and `register_driver()`. The built-in drivers are `playwright_sync.py`, `playwright_async.py` (used by `mendwright.aio`) and `selenium.py`, which handles frames, implicit waits and the verb mapping.
+- `fingerprint.py`: the fingerprint tier. `FINGERPRINT_JS` reads an element in one round trip and `from_raw()` normalizes it; `find()` scores the elements of a captured page against a stored fingerprint and returns a unique XPath only for a confident match.
+- `proxies.py`: `heal.page` and `heal.driver`, the page and driver stand-ins that send selector lookups through `heal.locator()` and everything else to the real object.
 - `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run.
 - `facade.py`: `mendwright.open()`, `Healer` and `ActionProxy`. Puts the selectors from your code first, reads the role from the page, never acts through a saved heal on a key marked destructive, and runs actions, quarantining a heal whose action fails. It also handles interruptions, optional steps and the page guard.
 - `flow.py` and `interruptions.py`: page paths, interception errors and the texts for flow changes; `heal.interrupt()`'s checks and the selectors of the `cookies=` preset.
 - `aio.py`: `mendwright.aio.open()` and `AsyncHealer`. A heal runs the sync coordinator in a worker thread, which reaches the page through `SyncBridge`.
-- `coordinator.py`: `HealCoordinator` and `resolve_with_heal()`. Runs the checks before any model call, builds the bundle, asks the provider (with one re-prompt on rejection), applies, journals, and keeps the reason for `explain()`.
+- `coordinator.py`: `HealCoordinator` and `resolve_with_heal()`. Runs the checks before any heal, tries the fingerprint tier, builds the bundle, asks the provider (with one re-prompt on rejection), applies, journals, and keeps the reason for `explain()`.
 - `validation.py` and `gate.py`: `validate()` checks a proposal against the captured HTML with lxml; `live_match()` checks it against the page through the driver. `client.apply()` runs both.
 - `store.py` and `roles.py`: the seed and override layers, candidate status, per-key metadata, the lock file and the merge; and the role vocabulary.
 - `capture.py`: `build_bundle()`, `redact()` and `clean_html()`.
 - `providers/`: the `HealProvider` protocol (`base.py`), the built-in providers, `auto_provider()` (`detect.py`) and the error text (`_errors.py`). `prompt.py` holds the one prompt every provider uses.
 - `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal.
 - `publish.py`: writes a confirmed selector into a seed JSON file.
-- `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel.
+- `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel. `fixback.py` is `mendwright fix`, and `report_html.py` is `mendwright report --format html`.
 - `pytest_plugin.py`: the `heal` fixture, confirmation from test results, strict mode and the summary.
 
 ## Writing a driver
@@ -159,6 +161,7 @@ A driver wraps one live page or session.
 | `outer_html(scope=None)` | expected | The HTML the checks run against. |
 | `act_on(native, verb, *args, **kwargs)` | optional | Run a Playwright-style verb on a `handle()` result. Without it, `driver_act_on()` calls `getattr(native, verb)(*args, **kwargs)`. |
 | `describe(selector, frame_chain=())` | optional | `{'tag', 'role', 'text', 'outer_html'}` for a single match, else `None`. Without it, `driver_describe()` returns `None` and the role is guessed from the selector text. |
+| `fingerprint(selector, frame_chain=())` | optional | The fingerprint (see `mendwright/fingerprint.py`) of the one element the selector matches, else `None`. Run `FINGERPRINT_JS` on the match and pass the result through `from_raw()`. Without it, `driver_fingerprint()` returns `None` and the fingerprint tier never has anything to look for. |
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
 
 Rules:
