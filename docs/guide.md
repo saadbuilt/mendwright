@@ -120,6 +120,7 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway`, `local` or `ollama`: use that provider instead of detecting one |
 | `MENDWRIGHT_GATEWAY` | Gateway URL, which selects `GatewayProvider` |
 | `MENDWRIGHT_LOCAL_MODEL` | The Ollama name of mendwright's local selector model, which selects `LocalModelProvider` |
+| `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` | The least probability a pick of the local model needs to be used, from 0 to 1 (default 0.8, 0 turns the check off) |
 | `MENDWRIGHT_KEY` | The client key the gateway checks |
 | `MENDWRIGHT_AUTH_HEADER` | The header that carries it, `X-Heal-Key` by default |
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
@@ -207,10 +208,11 @@ mendwright doctor                                    # LocalModelProvider (mendw
 
 In code, `LocalModelProvider(model="mendwright-selector", base_url="http://127.0.0.1:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST` and then `http://127.0.0.1:11434`. `localhost` is read as `127.0.0.1`, because on Windows a request to `localhost` tries IPv6 first and waits about 2 seconds before Ollama answers on IPv4.
 
-Two things differ from the other providers:
+Three things differ from the other providers:
 
 - It is the only provider that gets the key's fingerprint. A model on your own machine needs it to compare, and the fingerprint never goes to a hosted model or a gateway.
 - When the model says no element fits, the heal is declined with `the local model says no element on this page fits:` and the reason (the element isn't on the page, several fit equally, or the step seems to have moved to another page). When mendwright's checks refuse the element it picked because it isn't visible or isn't unique on the live page, the model is asked once more without that element. After any other refusal it doesn't guess again.
+- It declines a pick the model isn't sure of. The provider asks Ollama for the probabilities of the reply's tokens, and a pick under 0.8 is declined with `the local model was not sure which element the step meant`, the element it picked and the confidence. On held-out test pages this cut wrong picks from 1.2% to 0.14% of broken selectors, for one point fewer correct ones. `min_confidence=` or `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes the threshold, and 0 turns it off. An Ollama that returns no probabilities skips the check.
 
 ### Direct or gateway
 

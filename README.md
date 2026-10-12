@@ -16,7 +16,7 @@ Self-healing selectors for Playwright and Selenium.
 
 When a site update breaks a selector, mendwright asks a model for a new XPath, checks it against the live page, saves it, and retries the step. On the next run the saved selector is used and the model isn't called.
 
-Supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama.
+Supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama, including mendwright's own small selector model.
 
 ## Install
 
@@ -87,7 +87,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 $env:ANTHROPIC_MODEL = "..."
 ```
 
-There is no default model. `OPENAI_API_KEY` with `OPENAI_MODEL`, `GEMINI_API_KEY` with `GEMINI_MODEL`, and `OLLAMA_MODEL` work the same way.
+There is no default model. `OPENAI_API_KEY` with `OPENAI_MODEL`, `GEMINI_API_KEY` with `GEMINI_MODEL`, and `OLLAMA_MODEL` work the same way, and `MENDWRIGHT_LOCAL_MODEL` selects mendwright's own [local model](#local-model).
 For Bedrock, LiteLLM or another OpenAI-compatible host, pass `provider=` to `mendwright.open()`.
 `mendwright doctor` shows which provider it found. Without one, selectors still resolve, and a broken one raises an error that lists the variables to set.
 
@@ -168,6 +168,23 @@ Otherwise mendwright sends a cleaned, redacted copy of the page to the model (at
 If the first proposal fails, the model gets the reason and one more try. Heals are saved in `.mendwright/overrides.json`, and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it.
 On the next run the selector in your code is tried first and the saved heal right after it, in the same pass. That resolves without a wait or a model call. If the action on a healed element fails in the browser, the heal is quarantined and not used again.
 
+## Local model
+
+mendwright has its own small model, so a heal can run without the page leaving your machine.
+`mendwright-selector` is Qwen2.5-1.5B-Instruct fine-tuned for one question: given the broken step and a numbered list of the elements of its role on the current page, which one did the step mean, if any.
+It answers with a number, or says that no element fits and why. mendwright then builds the XPath for that element itself and runs it through the same checks as any heal, so the model never writes a selector.
+
+Build it with the recipe in [training/README.md](https://github.com/saadbuilt/mendwright/blob/main/training/README.md) (about 6 hours of training on a laptop GPU with 6 GB), import it into Ollama, and select it:
+
+```bash
+export MENDWRIGHT_LOCAL_MODEL=mendwright-selector
+```
+
+The model file is about 1 GB. It answers in about a quarter of a second on a laptop GPU, or 1 to 2 seconds on the CPU alone.
+On 3,000 held-out synthetic redesigns it picked the right element for 97.1% of the broken selectors and a wrong one for 0.14%, and said no element fits for 97.1% of the steps where none did.
+A pick it is less than 80% sure of is declined rather than used (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes that).
+On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), behind the fingerprint tier, it healed 30 of 35 broken selectors correctly and none onto the wrong element, and declined 11 of the 12 cases where the right answer is no heal ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)).
+
 ## What it can and can't fix
 
 mendwright repairs a selector on the page your script is on. It handles layout changes within that page:
@@ -221,7 +238,7 @@ mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 c
 | Browser libraries | Playwright sync and async (Chromium, Firefox, WebKit), patchright, camoufox, Selenium (Chrome, Firefox), or your own driver through `register_driver` |
 | Selectors in your code | XPath, CSS, and Playwright selectors such as `role=button[name='Save']` (Playwright only) |
 | Selectors mendwright saves | XPath |
-| Model providers | Anthropic, OpenAI, Azure OpenAI, OpenAI-compatible hosts (Groq, OpenRouter, vLLM, LM Studio), Ollama, Gemini, Bedrock, LiteLLM, or your own gateway |
+| Model providers | Anthropic, OpenAI, Azure OpenAI, OpenAI-compatible hosts (Groq, OpenRouter, vLLM, LM Studio), Ollama, Gemini, Bedrock, LiteLLM, your own gateway, or mendwright's own selector model in Ollama |
 | Python | 3.10 and newer, with lxml as the only dependency |
 
 The real-browser suite (`python -m pytest -m browser`) passed locally on Windows 11 with Python 3.12 on Playwright Chromium, Firefox and WebKit, patchright, camoufox, and Selenium with Chrome and Firefox. The async tests passed on all three Playwright browsers.
@@ -243,7 +260,7 @@ Where another tool fits better: Healenium needs no change per step (you wrap the
 - An element inside an iframe heals only when you open mendwright on the frame: a `Frame` from `page.frames` on Playwright, or the driver after `switch_to.frame()` on Selenium. On Playwright, a selector that matches only inside a child iframe raises `AttentionRequired` and says so, without a model call.
 - With a hosted provider, page HTML is sent to it. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, the rest is cut before it reaches the model. An element near the end is then visible to it only through the element inventory.
-- Accuracy has so far been measured only without a model: on the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), a model-free similarity baseline healed 27 of 35 broken selectors correctly and healed 3 of the 47 cases onto the wrong element ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)), and no model numbers are published yet.
+- Accuracy has been measured without a hosted model only: on the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), for the model-free baselines and mendwright's own local model ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)). No hosted model numbers are published yet.
 - `--mendwright-strict` only fails the run that made the heal. Later runs pick up the saved heal and pass, which is why strict CI runs need a fresh store.
 
 ## Links

@@ -4,7 +4,7 @@ When a redesign breaks a selector, how often does a heal land on the right eleme
 The benchmark in [`benchmarks/`](../benchmarks/) answers that for any provider mendwright supports, with a fixed set of cases you can rerun.
 
 Results so far are in [benchmarks/RESULTS.md](../benchmarks/RESULTS.md).
-Only the two model-free baselines have been run. No model numbers are published yet.
+The model-free baselines and mendwright's own local model ([training/README.md](../training/README.md)) have been run. No hosted model numbers are published yet.
 
 Contents:
 
@@ -40,7 +40,7 @@ Each case also records:
 - how many wrong proposals the gate refused (for example a hidden duplicate, or a selector that matched two elements)
 - model calls (a proposal, plus one retry when the gate rejects it)
 - time spent in the provider's `propose()` call
-- the prompt size in characters, from `mendwright.prompt.build_prompt()`, and an estimated token count (characters divided by 4)
+- the prompt size in characters, from `mendwright.prompt.build_prompt()` (for `--provider local`, the candidate task it sends instead), and an estimated token count (characters divided by 4)
 - the reason when no heal was applied, and whether that reason was a failed call (an HTTP error, a bad key) rather than an answer
 
 ## The cases
@@ -149,11 +149,13 @@ python benchmarks/run.py --provider anthropic --model <model id>
 python benchmarks/run.py --provider openai --model <model id>
 python benchmarks/run.py --provider gemini --model <model id>
 python benchmarks/run.py --provider ollama --model <model name>
+python benchmarks/run.py --provider local --model mendwright-selector   # mendwright's own model in Ollama
 python benchmarks/run.py --provider auto          # whatever mendwright.auto_provider() picks
 python benchmarks/report.py                        # rebuild benchmarks/RESULTS.md
 ```
 
 Run it from the repository root, with mendwright installed (`pip install -e .` in a clone).
+For `--provider local`, `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` sets the provider's confidence threshold (0.8 by default; 0 turns it off).
 Before the first case it prints the provider, the model and the endpoint the pages are sent to, and says when a variable such as `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` is set, so a proxy in your environment is visible before anything is sent.
 It never prints or stores a key.
 
