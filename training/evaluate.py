@@ -68,7 +68,7 @@ def hf_predict(rows, base, adapter, batch=8, max_new=16):
     return outs, times
 
 
-def ollama_predict(rows, model, host='http://localhost:11434', options=None):
+def ollama_predict(rows, model, host='http://127.0.0.1:11434', options=None):
     outs, times = [], []
     for n, row in enumerate(rows):
         body = {'model': model, 'stream': False, 'format': 'json',
@@ -161,7 +161,7 @@ def main(argv=None):
     parser.add_argument('--base', default=os.environ.get('MW_BASE', r'C:\Users\Omen\mendwright-train\base\Qwen2.5-1.5B-Instruct'))
     parser.add_argument('--adapter')
     parser.add_argument('--ollama', help='Ollama model name')
-    parser.add_argument('--host', default='http://localhost:11434')
+    parser.add_argument('--host', default='http://127.0.0.1:11434')
     parser.add_argument('--num-gpu', type=int, default=None, help='Ollama num_gpu option (0 = CPU only)')
     parser.add_argument('--out', help='output prefix (default: next to the data)')
     args = parser.parse_args(argv)
