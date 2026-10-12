@@ -55,6 +55,7 @@ from .providers import (
     GeminiProvider,
     HealProvider,
     LiteLLMProvider,
+    LocalModelProvider,
     OpenAICompatibleProvider,
     auto_provider,
 )
@@ -67,7 +68,7 @@ __all__ = [
     'AttentionRequired', 'InvalidSelector',
     'Driver', 'PlaywrightSyncDriver', 'SeleniumDriver', 'wrap', 'register_driver', 'register_driver_front',
     'HealProvider', 'GatewayProvider', 'AnthropicProvider', 'OpenAICompatibleProvider',
-    'GeminiProvider', 'BedrockProvider', 'LiteLLMProvider', 'auto_provider',
+    'GeminiProvider', 'BedrockProvider', 'LiteLLMProvider', 'LocalModelProvider', 'auto_provider',
     'Healer', 'HealEvent',
     'SelectorStore', 'load_store', 'merge', 'migrate_schema1', 'infer_role',
     'validate', 'Result',

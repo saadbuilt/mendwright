@@ -12,6 +12,8 @@ Selection, in priority order when several are set:
     GEMINI_API_KEY                 -> GeminiProvider           (model: GEMINI_MODEL)
     MENDWRIGHT_GATEWAY             -> GatewayProvider          (key: MENDWRIGHT_KEY; the model
                                                                 lives server-side)
+    MENDWRIGHT_LOCAL_MODEL         -> LocalModelProvider       (mendwright's own selector model
+                                                                in Ollama; host: OLLAMA_HOST)
     OLLAMA_MODEL or OLLAMA_HOST    -> OpenAICompatibleProvider.for_ollama
                                       (keyless; model: OLLAMA_MODEL; host: OLLAMA_HOST,
                                        default http://localhost:11434)
@@ -19,10 +21,12 @@ Selection, in priority order when several are set:
 Cloud keys and the gateway win over Ollama, so a shell that has OLLAMA_MODEL set for
 other tools still uses ANTHROPIC_API_KEY when that is set too.
 
-``MENDWRIGHT_PROVIDER`` forces one branch (anthropic|openai|gemini|gateway|ollama),
-overriding auto-detection. No model ID is ever hardcoded: a direct provider's model
-comes from the ``model`` argument or its ``*_MODEL`` env var, and a clear error names
-the var when neither is set. With nothing configured, the error lists every env var
+``MENDWRIGHT_PROVIDER`` forces one branch (anthropic|openai|gemini|gateway|local|ollama),
+overriding auto-detection. No vendor model ID is ever hardcoded: a direct provider's
+model comes from the ``model`` argument or its ``*_MODEL`` env var, and a clear error
+names the var when neither is set. The one default is the name of mendwright's own local
+model: MENDWRIGHT_PROVIDER=local uses MENDWRIGHT_LOCAL_MODEL, or 'mendwright-selector'
+when that is unset. With nothing configured, the error lists every env var
 auto_provider reads. Like every provider, the result only proposes; the coordinator
 re-validates before anything is applied.
 """
@@ -36,6 +40,7 @@ _SELECT_ENV = (
     ('openai', ('OPENAI_API_KEY',)),
     ('gemini', ('GEMINI_API_KEY',)),
     ('gateway', ('MENDWRIGHT_GATEWAY',)),
+    ('local', ('MENDWRIGHT_LOCAL_MODEL',)),
     ('ollama', ('OLLAMA_MODEL', 'OLLAMA_HOST')),
 )
 _NAMES = tuple(name for name, _ in _SELECT_ENV)
@@ -45,7 +50,8 @@ _NOTHING_CONFIGURED = (
     'order: ANTHROPIC_API_KEY and ANTHROPIC_MODEL (Anthropic); OPENAI_API_KEY and '
     'OPENAI_MODEL (OpenAI-compatible); GEMINI_API_KEY and GEMINI_MODEL (Gemini); '
     'MENDWRIGHT_GATEWAY and MENDWRIGHT_KEY, plus MENDWRIGHT_AUTH_HEADER if your gateway '
-    'uses another header (mendwright gateway); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama '
+    'uses another header (mendwright gateway); MENDWRIGHT_LOCAL_MODEL (mendwright\'s local '
+    'selector model in Ollama); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama '
     'is not on http://localhost:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one '
     'of: ' + ', '.join(_NAMES) + ', or pass provider=... to mendwright.open().')
 
@@ -140,11 +146,22 @@ def _ollama(model, kwargs):
     return cls.for_ollama(model, **kwargs)
 
 
+def _local(model, kwargs):
+    # mendwright's own selector model in Ollama. Keyless and local; the model name has a
+    # default, so MENDWRIGHT_PROVIDER=local works with nothing else set.
+    cls = _load('local', 'LocalModelProvider')
+    host = _env('OLLAMA_HOST')
+    if host:
+        kwargs.setdefault('base_url', host)
+    return cls(model=model or _env('MENDWRIGHT_LOCAL_MODEL'), **kwargs)
+
+
 _BUILDERS = {
     'anthropic': _anthropic,
     'openai': _openai,
     'gemini': _gemini,
     'gateway': _gateway,
+    'local': _local,
     'ollama': _ollama,
 }
 

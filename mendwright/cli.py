@@ -31,8 +31,8 @@ BROWSER_LIBRARIES = ('playwright', 'selenium', 'patchright', 'camoufox')
 PROVIDER_VARS = (
     'MENDWRIGHT_PROVIDER', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL', 'GEMINI_API_KEY', 'GEMINI_MODEL',
-    'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER', 'OLLAMA_MODEL',
-    'OLLAMA_HOST',
+    'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER', 'MENDWRIGHT_LOCAL_MODEL',
+    'OLLAMA_MODEL', 'OLLAMA_HOST',
 )
 
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
@@ -159,6 +159,8 @@ def _provider_info():
     info['name'] = type(provider).__name__
     if getattr(provider, '_ollama', False) is True:
         info['name'] = 'Ollama (OpenAI-compatible)'
+    if type(provider).__name__ == 'LocalModelProvider':
+        info['name'] = 'LocalModelProvider (mendwright selector model in Ollama)'
     model = getattr(provider, 'model', None)
     info['model'] = model if isinstance(model, str) and model else None
     if isinstance(provider, GatewayProvider):
