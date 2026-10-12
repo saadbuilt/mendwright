@@ -172,7 +172,9 @@ def coloured(plain, ansi):
                  + SGR.sub('', a_line))
         segs, pos = [], 0
         for text, cls in ansi_spans(a_line):
-            at = p_line.find(text, pos)
+            # As a whole word, so the status 'ok' is not found inside 'cookies'.
+            found = re.compile(r'(?<!\w)' + re.escape(text) + r'(?!\w)').search(p_line, pos)
+            at = found.start() if found else -1
             if at < 0:
                 fail('cannot find the coloured text ' + repr(text) + ' in: ' + p_line)
             if at > pos:

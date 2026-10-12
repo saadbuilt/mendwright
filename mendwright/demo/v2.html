@@ -29,5 +29,19 @@
       <button class="ds-button ds-button--primary" type="submit" data-testid="checkout-submit">Pay now</button>
     </form>
   </main>
+
+  <!-- Also new in v2: a cookie banner that opens with the page and covers the form until
+       it is closed. In v1 it came later, so the script never met it here.
+       data-overlay tells mendwright's stand-in page (which runs no JavaScript) that this
+       element covers the page, and that a click inside it closes it, as onclick does in
+       a browser. -->
+  <div id="cookie-banner" role="dialog" aria-label="Cookie consent" data-overlay
+       style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+    <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+      <p>We use cookies to keep you signed in and to measure how the shop is used.</p>
+      <button id="cookie-accept" type="button"
+              onclick="document.getElementById('cookie-banner').remove()">Accept all</button>
+    </div>
+  </div>
 </body>
 </html>

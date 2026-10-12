@@ -7,6 +7,12 @@ matches only when it really matches the HTML, and check() really changes the DOM
 
 It understands XPath and '#id' CSS selectors, which is all the demo uses. Anything
 else is rejected the way a browser rejects a selector it cannot parse.
+
+It has no JavaScript, so it knows one kind of script itself: an overlay. An element with
+a data-overlay attribute that is not hidden covers the page, the way a cookie banner with
+a full-screen backdrop does. Clicking or checking anything outside it fails the way
+Playwright fails when another element intercepts pointer events, and a click on an
+element inside it closes it (removes it), as the page's own script does in a browser.
 """
 
 import re
@@ -38,6 +44,21 @@ def _norm(text):
     return ' '.join((text or '').split())
 
 
+def _overlay_of(el):
+    """The data-overlay element that el is in, or None."""
+    while el is not None:
+        if el.get('data-overlay') is not None:
+            return el
+        el = el.getparent()
+    return None
+
+
+def _opening_tag(el):
+    """'<div id="x">': how Playwright names an element in its call log."""
+    attrs = ''.join(' ' + k + '="' + v + '"' for k, v in el.attrib.items() if k in ('id', 'class'))
+    return '<' + el.tag + attrs + '>'
+
+
 class StandInLocator:
     """What StandInPage.locator() returns: a lazy query, like a Playwright Locator."""
 
@@ -55,6 +76,16 @@ class StandInLocator:
             raise RuntimeError('Locator.' + action + ': ' + self._selector + ' matched '
                                + str(len(els)) + ' elements on the stand-in page')
         return els[0]
+
+    def _reachable(self, action):
+        """The one element, for a pointer action: an overlay that covers it stops the
+        action with the words Playwright uses."""
+        el = self._one(action)
+        cover = self._page.overlay()
+        if cover is not None and _overlay_of(el) is not cover:
+            raise RuntimeError('Locator.' + action + ': ' + _opening_tag(cover)
+                               + ' intercepts pointer events')
+        return el
 
     def count(self):
         return len(self._elements())
@@ -87,15 +118,19 @@ class StandInLocator:
         return self._one('is_checked').get('checked') is not None
 
     def check(self, **kwargs):
-        self._one('check').set('checked', '')
+        self._reachable('check').set('checked', '')
 
     def uncheck(self, **kwargs):
-        el = self._one('uncheck')
+        el = self._reachable('uncheck')
         if el.get('checked') is not None:
             del el.attrib['checked']
 
     def click(self, **kwargs):
-        el = self._one('click')
+        el = self._reachable('click')
+        cover = _overlay_of(el)
+        if cover is not None:
+            cover.drop_tree()   # the banner's own script closes it
+            return
         if el.tag == 'input' and (el.get('type') or '').lower() in ('checkbox', 'radio'):
             if el.get('checked') is None:
                 el.set('checked', '')
@@ -108,15 +143,22 @@ class StandInLocator:
 
 class StandInPage:
     """A sync-Playwright-shaped page over an lxml DOM. set_content() loads new HTML, the
-    way page.set_content() does on a real page."""
+    way page.set_content() does on a real page. url is what page.url reports; set it to
+    give a version of the page its own address (the benchmark does)."""
 
-    url = 'about:blank'
-
-    def __init__(self, html=None):
+    def __init__(self, html=None, url='about:blank'):
+        self.url = url
         self.set_content(html or _EMPTY)
 
     def set_content(self, html, **kwargs):
         self._doc = lxml.html.document_fromstring(html if html.strip() else _EMPTY)
+
+    def overlay(self):
+        """The first data-overlay element that is not hidden, or None."""
+        for el in self._doc.xpath('//*[@data-overlay]'):
+            if not _hidden(el):
+                return el
+        return None
 
     def query(self, selector):
         """The elements a driver-level selector ('xpath=...' or 'css=#id') matches."""

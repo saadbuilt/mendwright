@@ -27,28 +27,29 @@ mendwright demo
 
 If the `mendwright` command isn't on your PATH (common on Windows), run `python -m mendwright demo`.
 
-The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors. mendwright heals the checkbox, and refuses to heal the pay button because the demo marks it `destructive=True`.
+The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors, and a cookie banner that used to come later now opens first and covers the form. mendwright clicks the banner away because the demo registered it with `heal.interrupt()`, heals the checkbox, and refuses to heal the pay button because the demo marks it `destructive=True`.
 
-<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page the accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector, marked destructive=True, also misses and is refused without a model call.">
+<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page a cookie banner covers the form and is clicked away as a registered interruption. The accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector, marked destructive=True, also misses and is refused without a model call.">
 
 <details>
 <summary>The same output as text</summary>
 
 ```text
-mendwright demo: a redesign breaks two selectors on a checkout page.
+mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie banner.
 Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).
 
-  v1  accept_terms  #accept-terms  ok     matched, box checked
-  v1  pay           #pay           ok     matched (not clicked)
-      -- v2: a redesign ships and both ids are gone --
-  v2  accept_terms  #accept-terms  MISS   no element matches
+  v1  accept_terms  #accept-terms   ok     matched, box checked
+  v1  pay           #pay            ok     matched (not clicked)
+      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --
+  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it (heal.interrupt)
+  v2  accept_terms  #accept-terms   MISS   no element matches
       model    proposed //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (scripted reply, no API call)
       checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
       retry    ok: box checked with the healed selector, heal confirmed
-  v2  pay           #pay           MISS   no element matches
+  v2  pay           #pay            MISS   no element matches
       refused  'pay' is marked destructive=True. Not healed, no model call.
 
-Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.
+Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in total.
 ```
 
 </details>

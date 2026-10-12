@@ -41,20 +41,24 @@ def _child_env():
 
 
 DEMO_LINES = [
-    "mendwright demo: a redesign breaks two selectors on a checkout page.",
+    "mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie "
+    "banner.",
     "Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).",
     "",
-    "  v1  accept_terms  #accept-terms  ok     matched, box checked",
-    "  v1  pay           #pay           ok     matched (not clicked)",
-    "      -- v2: a redesign ships and both ids are gone --",
-    "  v2  accept_terms  #accept-terms  MISS   no element matches",
+    "  v1  accept_terms  #accept-terms   ok     matched, box checked",
+    "  v1  pay           #pay            ok     matched (not clicked)",
+    "      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --",
+    "  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it "
+    "(heal.interrupt)",
+    "  v2  accept_terms  #accept-terms   MISS   no element matches",
     "      model    proposed " + HEALED_XPATH + " (scripted reply, no API call)",
     "      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page",
     "      retry    ok: box checked with the healed selector, heal confirmed",
-    "  v2  pay           #pay           MISS   no element matches",
+    "  v2  pay           #pay            MISS   no element matches",
     "      refused  'pay' is marked destructive=True. Not healed, no model call.",
     "",
-    "Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.",
+    "Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in "
+    "total.",
 ]
 
 
@@ -220,7 +224,9 @@ def test_demo_exits_1_when_the_heal_does_not_happen(capsys, monkeypatch, temp_ro
     monkeypatch.setattr(story_module, "SCRIPTED_REPLY", json.dumps({"xpath": "//button"}))
     assert cli.main(["demo"]) == 1
     captured = capsys.readouterr()
-    assert "  v2  accept_terms  #accept-terms  MISS   not healed" in captured.out
+    assert "  v2  accept_terms  #accept-terms   MISS   not healed" in captured.out
+    # The banner was still handled before the heal was tried.
+    assert "  v2  cookies       #cookie-accept  ok" in captured.out
     assert "passed mendwright's local gate" in captured.out
     assert "this is a bug" in captured.err
     assert list(temp_root.iterdir()) == []
@@ -256,9 +262,9 @@ def test_demo_live_asks_the_provider_from_the_environment(capsys, monkeypatch, t
     lines = captured.out.splitlines()
     assert lines[1] == ("A stand-in page (lxml, no browser) and a live model: LiveStub, model "
                         "stub-model (real API calls).")
-    assert lines[7] == ("      model    proposed " + HEALED_XPATH
+    assert lines[8] == ("      model    proposed " + HEALED_XPATH
                         + " (LiveStub, a real API call)")
-    assert lines[2:7] == DEMO_LINES[2:7] and lines[8:] == DEMO_LINES[8:]
+    assert lines[2:8] == DEMO_LINES[2:8] and lines[9:] == DEMO_LINES[9:]
     assert [b["key"] for b in stub.bundles] == ["accept_terms"]   # pay: no call
     assert captured.err == ""
 
@@ -294,7 +300,17 @@ def test_story_result(tmp_path):
     assert result.healed_xpath == HEALED_XPATH
     assert (result.retried, result.confirmed) == (True, True)
     assert (result.pay_refused, result.pay_model_calls, result.model_calls) == (True, 0, 1)
+    assert result.banner_handled is True
     assert lines == DEMO_LINES[3:-2]
+
+
+def test_story_needs_the_banner_handled(tmp_path, monkeypatch):
+    # Without the interruption the banner covers the form, the retried check() fails
+    # in the stand-in page as it would in a browser, and the story is not ok.
+    monkeypatch.setattr(story_module, "COOKIE_SELECTOR", "#no-such-button")
+    lines = []
+    with pytest.raises(RuntimeError, match="intercepts pointer events"):
+        story(StandInPage(), str(tmp_path / "overrides.json"), say=lines.append)
 
 
 def test_scripted_provider_runs_the_real_prompt_and_parser():
@@ -317,6 +333,7 @@ def test_demo_pages_ship_inside_the_package():
     assert 'id="accept-terms"' in v1 and 'id="pay"' in v1
     assert 'id="accept-terms"' not in v2 and 'id="pay"' not in v2
     assert "Pay now" in v2 and "I accept the terms and conditions" in v2
+    assert 'id="cookie-accept"' in v2 and 'id="cookie-accept"' not in v1
     with pytest.raises(ValueError, match="'v1' or 'v2'"):
         page_html("v3")
 
@@ -350,6 +367,24 @@ def test_stand_in_page_behaves_like_a_page():
     page.set_content(page_html("v2"))
     assert driver.count("#accept-terms") == 0
     assert driver.count(HEALED_XPATH) == 1
+
+    # The v2 cookie banner covers the form until a click inside it closes it.
+    box = page.locator("xpath=" + HEALED_XPATH)
+    with pytest.raises(RuntimeError, match='<div id="cookie-banner"> intercepts pointer events'):
+        box.check()
+    assert box.is_checked() is False
+    page.locator("css=#cookie-accept").click()
+    assert driver.count("#cookie-banner") == 0
+    box.check()
+    assert box.is_checked() is True
+
+
+def test_stand_in_page_has_a_url_you_can_set():
+    assert StandInPage().url == "about:blank"
+    page = StandInPage(page_html("v1"), url="https://shop.example/checkout")
+    assert page.url == "https://shop.example/checkout"
+    page.url = "https://shop.example/checkout/review"
+    assert mendwright.wrap(page).url() == "https://shop.example/checkout/review"
 
 
 def test_demo_browser_without_playwright(capsys, monkeypatch, temp_root):

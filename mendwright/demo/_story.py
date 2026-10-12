@@ -1,14 +1,17 @@
 """The story `mendwright demo` tells, written against the public facade.
 
     heal = mendwright.open(page, provider=..., store_path=<temp dir>)
+    heal.interrupt('cookies', '#cookie-accept')
     heal.locator('accept_terms', '#accept-terms').check(...)
     heal.locator('pay', '#pay', destructive=True)
 
-v1 of a checkout page matches both selectors. v2 (a redesign) removed both ids. The
-checkbox misses, the provider proposes an XPath, mendwright's local checks pass it, the
-step is retried and the box is checked. The pay button misses too, and is refused
-without a model call, because its key is marked destructive=True and mendwright never
-heals a key marked destructive.
+v1 of a checkout page matches both selectors. v2 (a redesign) removed both ids, and a
+cookie banner now opens first and covers the form. The checkbox misses; before any heal,
+mendwright finds the banner the story registered with heal.interrupt() and clicks it
+away. The checkbox still misses, so the provider proposes an XPath, mendwright's local
+checks pass it, the step is retried and the box is checked. The pay button misses too,
+and is refused without a model call, because its key is marked destructive=True and
+mendwright never heals a key marked destructive.
 
 The provider here is ScriptedProvider: it builds the real prompt and parses a canned
 reply with the real parser, but makes no API call. The page is StandInPage, or a real
@@ -35,6 +38,8 @@ TERMS_KEY = 'accept_terms'
 TERMS_SELECTOR = '#accept-terms'
 PAY_KEY = 'pay'
 PAY_SELECTOR = '#pay'
+COOKIE_KEY = 'cookies'
+COOKIE_SELECTOR = '#cookie-accept'
 
 # The XPath the scripted reply proposes: anchored on the checkbox and its visible label,
 # both of which survived the redesign.
@@ -108,6 +113,7 @@ class StoryResult:
     confirmed: bool | None = None   # the canary result for the heal
     pay_refused: bool = False       # the pay heal was refused: the key is marked destructive
     pay_model_calls: int = 0        # model calls spent on pay (must stay 0)
+    banner_handled: bool = False    # the v2 cookie banner was handled as an interruption
     model_calls: int = 0
     store_path: str = ''
     problems: list = field(default_factory=list)
@@ -116,7 +122,7 @@ class StoryResult:
     def ok(self):
         return (self.v1_terms and self.v1_pay and self.v2_terms_missed and self.retried
                 and self.confirmed is True and self.pay_refused and self.pay_model_calls == 0
-                and not self.problems)
+                and self.banner_handled and not self.problems)
 
 
 # --- output ----------------------------------------------------------------------------
@@ -230,10 +236,12 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
         heal = _open_healer(page, provider=provider, store_path=store_path, dry_run=False,
                             timeout_ms=timeout_ms)
     # The story prints its own lines. mendwright's log line for each heal applied or
-    # refused would repeat them on stderr.
+    # refused, or interruption handled, would repeat them on stderr.
     heal.coordinator.log = _silent
-    width = max(len(TERMS_KEY), len(PAY_KEY))
-    sel_width = max(len(TERMS_SELECTOR), len(PAY_SELECTOR))
+    # A step that may now come at any point: registered once, handled wherever it shows up.
+    heal.interrupt(COOKIE_KEY, COOKIE_SELECTOR)
+    width = max(len(TERMS_KEY), len(PAY_KEY), len(COOKIE_KEY))
+    sel_width = max(len(TERMS_SELECTOR), len(PAY_SELECTOR), len(COOKIE_SELECTOR))
 
     def row(version, key, selector, status, color, note):
         return ('  ' + version + '  ' + key.ljust(width) + '  ' + selector.ljust(sel_width)
@@ -253,17 +261,27 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
     result.v1_pay = True
     say(row('v1', PAY_KEY, PAY_SELECTOR, 'ok', 'green', 'matched (not clicked)'))
 
-    # v2: a redesign removed both ids.
+    # v2: a redesign removed both ids, and a cookie banner now covers the form.
     page.set_content(page_html('v2'))
-    say(style('      -- v2: a redesign ships and both ids are gone --', 'dim'))
+    say(style('      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --',
+              'dim'))
+    failure = None
     try:
         box = heal.locator(TERMS_KEY, TERMS_SELECTOR, poll_ms=poll_ms)
     except (AttentionRequired, InvalidSelector) as exc:
+        failure, box = exc, None
+    banner = [e for e in heal.handled_interruptions if e.key == COOKIE_KEY]
+    result.banner_handled = bool(banner)
+    if banner:
+        say(row('v2', COOKIE_KEY, COOKIE_SELECTOR, 'ok', 'green',
+                'banner covered the form, clicked it (heal.interrupt)'))
+    else:
+        result.problems.append('the cookie banner on v2 was not handled.')
+    if failure is not None:
         say(row('v2', TERMS_KEY, TERMS_SELECTOR, 'MISS', 'red', 'not healed'))
         result.problems.append(TERMS_KEY + ' was not healed (the reason is above).')
-        for line in str(exc).splitlines():
+        for line in str(failure).splitlines():
             say(detail('', line.strip()))
-        box = None
     event = heal.heals[-1] if heal.heals else None
     if box is not None and event is not None and event.key == TERMS_KEY:
         result.v2_terms_missed = TERMS_SELECTOR in event.old
@@ -317,9 +335,10 @@ def _summary(result, style):
     applied = 1 if result.healed_xpath else 0
     confirmed = ' and confirmed' if result.confirmed else ''
     refused = 1 if result.pay_refused else 0
+    banner = 1 if result.banner_handled else 0
     return (style('Done:', 'bold') + ' ' + _count(applied, 'heal') + ' applied' + confirmed
-            + ', ' + str(refused) + ' refused, ' + _count(result.model_calls, 'model call')
-            + ' in total.')
+            + ', ' + str(refused) + ' refused, ' + _count(banner, 'interruption') + ' handled, '
+            + _count(result.model_calls, 'model call') + ' in total.')
 
 
 def _count(n, noun):
@@ -387,8 +406,9 @@ def _provider_name(provider):
 
 def run(*, browser=None, keep=False, slow=False, color=None, stream=None,
         err_stream=None, sleep=time.sleep, live=False):
-    """`mendwright demo`. Returns the exit code: 0 when the story ran red -> green and
-    the pay heal was refused, 1 otherwise (with the reason on stderr). live=True asks the
+    """`mendwright demo`. Returns the exit code: 0 when the story ran red -> green, the
+    cookie banner was handled and the pay heal was refused, 1 otherwise (with the reason
+    on stderr). live=True asks the
     provider from the environment (auto_provider()) instead of the scripted reply."""
     stream = stream or sys.stdout
     err_stream = err_stream or sys.stderr
@@ -434,7 +454,8 @@ def run(*, browser=None, keep=False, slow=False, color=None, stream=None,
             where = 'A stand-in page (lxml, no browser)'
         else:
             where = 'Offline: a stand-in page (lxml, no browser)'
-        say(style('mendwright demo: a redesign breaks two selectors on a checkout page.', 'bold'))
+        say(style('mendwright demo: a redesign breaks two selectors on a checkout page and adds '
+                  'a cookie banner.', 'bold'))
         if live:
             say(where + ' and a live model: ' + _provider_name(provider)
                 + ' (real API calls).')

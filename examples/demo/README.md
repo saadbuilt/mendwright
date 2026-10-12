@@ -1,6 +1,6 @@
 # Demo
 
-Two small offline demos of the same idea: a redesign breaks a selector, mendwright gets a new one from a provider, checks it against the page, and retries the step.
+Two small offline demos of the same idea: a redesign breaks a selector, mendwright gets a new one from a provider, checks it against the page, and retries the step. `mendwright demo` also shows a change in the flow: a cookie banner that now opens first.
 Neither needs a browser or an API key.
 
 - `mendwright demo` ships in the package and runs anywhere mendwright is installed. It uses a checkout page.
@@ -16,25 +16,27 @@ mendwright demo
 Output from a run:
 
 ```
-mendwright demo: a redesign breaks two selectors on a checkout page.
+mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie banner.
 Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).
 
-  v1  accept_terms  #accept-terms  ok     matched, box checked
-  v1  pay           #pay           ok     matched (not clicked)
-      -- v2: a redesign ships and both ids are gone --
-  v2  accept_terms  #accept-terms  MISS   no element matches
+  v1  accept_terms  #accept-terms   ok     matched, box checked
+  v1  pay           #pay            ok     matched (not clicked)
+      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --
+  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it (heal.interrupt)
+  v2  accept_terms  #accept-terms   MISS   no element matches
       model    proposed //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (scripted reply, no API call)
       checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
       retry    ok: box checked with the healed selector, heal confirmed
-  v2  pay           #pay           MISS   no element matches
+  v2  pay           #pay            MISS   no element matches
       refused  'pay' is marked destructive=True. Not healed, no model call.
 
-Done: 1 heal applied and confirmed, 1 refused, 1 model call in total.
+Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in total.
 ```
 
 The pages are `mendwright/demo/v1.html` and `v2.html`, a checkout form.
 In v2 the ids `accept-terms` and `pay` are gone, while the checkbox, its label and the "Pay now" button are unchanged.
-The checkbox is healed. The demo marks the pay step `destructive=True`, so the pay button is refused without a model call (see [Destructive controls](../../SECURITY.md#destructive-controls)).
+v2 also opens with a cookie banner that covers the form. The demo registers it once, before the first step, with `heal.interrupt("cookies", "#cookie-accept")`, so when the checkbox step misses, mendwright clicks the banner away first and then heals the checkbox.
+The demo marks the pay step `destructive=True`, so the pay button is refused without a model call (see [Destructive controls](../../SECURITY.md#destructive-controls)).
 
 Options:
 
@@ -44,7 +46,7 @@ Options:
 - `--slow` pauses 0.4 seconds between lines, for screen recordings.
 
 The demo writes only to a temporary folder and deletes it at the end, unless you pass `--keep`.
-It exits with 1 if the checkbox isn't healed or the pay button isn't refused.
+It exits with 1 if the banner isn't handled, the checkbox isn't healed or the pay button isn't refused.
 
 ## demo.py
 
@@ -79,7 +81,7 @@ result: red -> green
 
 Both demos use two stand-ins from `mendwright.demo`. Everything else is the code a real run uses.
 
-- `StandInPage` is an lxml page with the methods of a sync Playwright page. `mendwright.open()` detects it as Playwright, so the real driver, resolver, checks and store run against it. `#accept-terms` misses on v2 because v2 has no element with that id, and the healed XPath is checked against the same v2 DOM.
+- `StandInPage` is an lxml page with the methods of a sync Playwright page. `mendwright.open()` detects it as Playwright, so the real driver, resolver, checks and store run against it. `#accept-terms` misses on v2 because v2 has no element with that id, and the healed XPath is checked against the same v2 DOM. It runs no JavaScript, so it knows one thing a script would do: an element marked `data-overlay` covers the page until a click inside it closes it, and an action outside it fails the way Playwright fails when another element intercepts the click.
 - `ScriptedProvider` builds the real prompt with `build_prompt()` and parses a canned reply with `parse_proposal()`. It makes no API call. The model reply is the only thing that is canned.
 
 `box.check(expect=box.is_checked)` confirms the heal only if the box really is checked afterwards. If `expect=` returns false, the healed selector is quarantined.

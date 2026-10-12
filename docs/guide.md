@@ -652,7 +652,7 @@ pytest shows the lines in the captured output of a failed test.
 
 ### mendwright demo
 
-Runs a scripted heal on a stand-in checkout page, offline, and exits 0 when the checkbox heals and the pay button is refused.
+Runs a scripted heal on a stand-in checkout page, offline, and exits 0 when the cookie banner is handled, the checkbox heals and the pay button is refused.
 
 - `--browser [chromium|firefox|webkit]` runs it in a real headless Playwright browser.
 - `--live` asks the model from your environment instead of the scripted reply. Only the demo page is sent.
