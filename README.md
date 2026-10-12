@@ -194,7 +194,7 @@ heal.locator("create_account", "#create-account").click()
 ```
 
 A step that moved to another page, steps in a new order, or a new required step still need a change to your script.
-mendwright remembers the page each key was found on and doesn't heal a key on a page where it was never found, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, pass `heal_across_pages=True` to `mendwright.open()`.
+mendwright remembers the last few pages each key was found on and doesn't heal a key on another page, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, or the same steps run under language paths such as `/en/` and `/de/`, pass `heal_across_pages=True` to `mendwright.open()`.
 The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`.
 The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
 

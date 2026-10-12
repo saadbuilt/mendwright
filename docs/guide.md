@@ -332,6 +332,7 @@ print(await heal.present("newsletter"))
 - `proxy.native` raises `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
 - `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
+- Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
@@ -463,10 +464,12 @@ mendwright looks for registered interruptions only when a step needs help:
 - when an action fails because something covered the element: Playwright's "intercepts pointer events" or "element is not visible", Selenium's `ElementClickInterceptedException` or `ElementNotInteractableException`
 
 When one is there and visible, mendwright performs its action, waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
-A failed action is tried again once, and only after an interception error and a handled interruption, so an action that may already have taken effect is never repeated.
+A failed action is tried again once, and only after an interception error and a handled interruption, so an action that may already have taken effect is never repeated. An error whose Playwright call log says the action was done (`click action done`), such as a click that went through and then timed out waiting for the next page, is never tried again, even when an earlier attempt in the same log was intercepted.
 At most 3 interruptions are handled for one step (one `locator()` call, or one action). If one is still there after that, mendwright raises `AttentionRequired` and tries no heal. That stops an interruption that comes back each time it is closed, for example when its action doesn't close it.
 
 An interruption is never healed by a model. If your script also has a step of its own for it, keep it: `heal.locator("cookies", "#cookie-accept").click()` is skipped when the element isn't there, either because the interruption was handled earlier in the run (no wait) or because it didn't appear this time (after `timeout_ms`). A skipped step logs one INFO line, its proxy has `.present` False, and its actions do nothing. When the banner does come at its old place in the flow, the step clicks it as before.
+
+A skipped step can't tell a banner that didn't appear from one whose selector no longer matches. In the second case the banner stays, and a later action fails because it covers the element. mendwright then logs one WARNING that names the registered interruptions, because none of them matched a visible element, and raises the browser's error.
 
 An interruption that hides the element instead of covering it, such as a consent wall that replaces the page until you answer, is found when the step misses, so the step first waits its `timeout_ms`.
 
@@ -475,7 +478,17 @@ An interruption that hides the element instead of covering it, such as a consent
 `mendwright.open(page, cookies="reject")` registers an interruption under the key `cookie_banner` that closes consent banners without accepting. `cookies="accept"` accepts them instead. It is off by default, so mendwright never clicks anything you didn't ask for.
 
 It knows the reject, decline, necessary-only and close buttons (or the accept buttons) of these consent managers by their ids and classes: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, the cookieconsent library (Osano's and orestbida's), CookieYes (and its older Cookie Law Info plugin) and Complianz.
-For other banners there is a fallback: a button or link whose text, aria-label or title says reject, decline, deny, disagree, necessary only, essential only, continue without accepting or close (for `"reject"`), or accept, allow or agree (for `"accept"`), inside an element whose id, class or aria label mentions cookie or consent. The `html`, `body` and `main` elements don't count as that element, so a page-wide class such as `cookie-banner-open` doesn't turn every Close button into a match.
+For other banners there is a fallback: a button or link whose text, aria-label or title says reject, decline, deny, disagree, necessary only, essential only or continue without accepting (for `"reject"`), or accept, allow or agree (for `"accept"`), inside a cookie banner. With `"reject"`, a Close button counts too, but only when its label is just Close (or Close banner, Close notice, Close message, Close dialog or Close popup), or when it is an icon whose aria-label or title says close. So a button such as Close account never counts.
+
+The cookie banner is one element that meets all of these:
+
+- its id, class or aria label mentions cookie or consent
+- its text mentions cookies
+- its text is at most 1,500 characters
+- it holds no `main` or `nav` element and no text field
+- it isn't `html`, `body` or `main`
+
+So a consent screen that isn't about cookies, such as an OAuth screen with Allow and Deny or a terms step with I agree, is never clicked, and neither is a page-wide wrapper with a class such as `cookie-consent-given`.
 The selectors are XPath, so they run on Playwright and Selenium. Usercentrics draws its banner in a shadow root, which XPath can't reach, so its buttons are also looked for with CSS, which Playwright reaches and Selenium doesn't.
 The selector lists are in `mendwright/interruptions.py`.
 
@@ -494,17 +507,17 @@ With `optional=True`, a step whose element doesn't appear within `timeout_ms` is
 
 ### Steps that moved to another page
 
-mendwright saves the page where each key's element was found, in the store next to its selectors: `lastPage` (the most recent) and `pages` (the last 5). A page is its path in lower case, without the scheme, host, query or fragment, with the trailing slash removed, and with numeric and uuid-like parts replaced by `*`, so `https://shop.example/Orders/10482/?tab=2` is `/orders/*`. `about:blank`, `data:` URLs and the site root have no page, and are never compared.
+mendwright saves the page where each key's element was found, in the store next to its selectors: `lastPage` (the most recent) and `pages` (the last 5). A page is its path in lower case, without the scheme, host, query or fragment, and without empty parts, so a trailing or doubled slash changes nothing. Parts that look like record ids are replaced by `*`: numbers, uuids, hex of 16 or more characters such as a MongoDB id, and generated ids of 16 or more letters and digits (dashes and underscores allowed) with at least two digits, such as a ULID. So `https://shop.example/Orders/10482/?tab=2` is `/orders/*`, and so is `/orders/507f1f77bcf86cd799439011`. Short parts such as `v2`, `2fa` or `step-3` stay as they are. `about:blank`, `data:` URLs and the site root have no page, and are never compared. A `file://` page is compared by its path, so two local files, such as `v1.html` and `v2.html` of the same page, count as two pages.
 
-When a key's selector misses on a page where its element was never found, mendwright declines the heal before any model call, raises `AttentionRequired` and writes a `flow.page_guard` journal event:
+When a key's selector misses on a page that isn't one of its saved pages, mendwright declines the heal before any model call, raises `AttentionRequired` and writes a `flow.page_guard` journal event:
 
 ```text
 'continue' was last found on /signup, and this page is /signup/details. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open().
 ```
 
-If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on.
+If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. Pass it too when the same steps run under several language paths, such as `/en/checkout` and `/de/checkout`, because those are different pages to the guard. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on. When two processes share a store, as with pytest-xdist, the pages both of them found a key on are kept.
 
-The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the browser stays on the same address, as in a single-page app. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
+The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the path stays the same. That last case covers apps that route with the URL fragment (`/#/signup`) or the query string (`?page=signup`), and apps that never change the URL. A single-page app that changes the path with the History API is covered. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
 
 ### When the model finds no element
 
@@ -520,6 +533,7 @@ Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes th
 
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
+WARNING mendwright: an element covered 'email', and none of the interruptions registered with heal.interrupt() ('cookies') matched a visible element, so mendwright did not try the action again. If the element in the way is one of them, its selector no longer matches: update it. If not, register the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
 ```
