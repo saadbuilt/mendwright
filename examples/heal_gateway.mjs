@@ -144,6 +144,7 @@ export function buildPrompt(b) {
     'key: ' + pyStr(b.key) +
     '\nexpectedRole: ' + pyStr(expectedRole) +
     '\nexpectedText: ' + pyJson(expectedText) +
+    (pyTruthy(b.intent) ? '\nintent: ' + pyStr(b.intent) : '') +
     '\ndestructive: ' + (destructive ? 'true' : 'false') +
     (pyTruthy(b.page) ? '\npage: ' + pyStr(b.page) : '') +
     (pyTruthy(b.lastPage) ? '\nlast found on page: ' + pyStr(b.lastPage) : '') +

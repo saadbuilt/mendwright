@@ -65,3 +65,13 @@ def test_a_no_element_reply():
     assert not_here_reason('{"xpath": null, "reason": 5}') is None
     assert not_here_reason('no json') is None
     assert not_here_reason('') is None and not_here_reason(None) is None
+
+
+def test_the_prompt_carries_the_intent_on_one_line():
+    user = build_prompt({'key': 'terms', 'expectedRole': 'checkbox', 'expectedText': [],
+                         'intent': 'the terms checkbox in the signup form'})['user']
+    assert ('expectedText: []\nintent: the terms checkbox in the signup form\ndestructive: false'
+            in user)
+    for empty in (None, ''):
+        plain = build_prompt({'key': 'terms', 'expectedRole': 'checkbox', 'intent': empty})
+        assert 'intent:' not in plain['user']

@@ -393,19 +393,22 @@ class AsyncHealer:
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
                 text: str | Sequence[str] | None = None, destructive: bool | None = None,
                 timeout_ms: int | None = None, poll_ms: int = 200,
-                inline_xpath: Selector | None = None, optional: bool = False) -> AsyncActionProxy:
+                inline_xpath: Selector | None = None, optional: bool = False,
+                intent: str | None = None) -> AsyncActionProxy:
         """Like Healer.locator(), but returns at once: the key is resolved (and healed and
         retried if its candidates miss) when an action on the proxy is awaited, or the
-        proxy itself. The arguments mean the same as on Healer.locator(), optional=
-        included.
+        proxy itself. The arguments mean the same as on Healer.locator(), optional= and
+        intent= included.
 
-        A non-string selector (TypeError), a malformed one (InvalidSelector) or an unknown
-        role (ValueError) raises here, before anything is awaited. AttentionRequired, when
-        the element cannot be found or healed, is raised by the await."""
-        roles, code = _locator_args(key, selector, role, inline_xpath)
+        A non-string selector (TypeError), a malformed one (InvalidSelector), an unknown
+        role (ValueError) or intent= with nothing stored and no role= (ValueError) raises
+        here, before anything is awaited. AttentionRequired, when the element cannot be
+        found or healed, is raised by the await."""
+        roles, code = _locator_args(key, selector, role, inline_xpath, intent)
+        self._core._check_intent(key, code, roles, intent)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         return AsyncActionProxy(self, key, (roles, code, text, destructive, timeout, poll_ms,
-                                            bool(optional)))
+                                            bool(optional), intent))
 
     async def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
@@ -456,12 +459,12 @@ class AsyncHealer:
         return proxy._native
 
     async def _locate(self, key, roles, code, text, destructive, timeout, poll_ms,
-                      optional=False):
+                      optional=False, intent=None):
         """Healer.locator() after its argument checks, with the page work awaited.
         Runs under self._lock. Returns _ABSENT for a step that was skipped."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        core._prime(key, roles, code, text, destructive)
+        core._prime(key, roles, code, text, destructive, intent)
         first_wait = core._first_wait(key, timeout)
 
         async def attempt(wait=timeout):

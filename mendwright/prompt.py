@@ -42,6 +42,7 @@ def build_prompt(bundle):
         'key: ' + str(bundle.get('key')) +
         '\nexpectedRole: ' + str(expected_role) +
         '\nexpectedText: ' + json.dumps(expected_text) +
+        (('\nintent: ' + str(bundle.get('intent'))) if bundle.get('intent') else '') +
         '\ndestructive: ' + ('true' if destructive else 'false') +
         (('\npage: ' + str(bundle.get('page'))) if bundle.get('page') else '') +
         (('\nlast found on page: ' + str(bundle.get('lastPage'))) if bundle.get('lastPage') else '') +

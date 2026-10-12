@@ -184,7 +184,16 @@ class HealCoordinator:
                 "once the guard allows heals.")
         started = self.clock()
         html, requested = None, False
-        if self.fingerprint:
+        # 'intent' when the key had no selector at all and the model looks for it from its
+        # intent= description; the journal names that source, and the plain model none.
+        source = 'intent' if not broken_candidates and meta.get('intent') else 'model'
+        if source == 'intent' and unavailable:
+            return self._decline(
+                selector_key, "'" + selector_key + "' has no selector yet, and only a model can "
+                'find it from intent=, but no model provider is configured. ' + unavailable,
+                logged=("'" + selector_key + "' has no selector yet, and " + summary)
+                if summary else None)
+        if self.fingerprint and source != 'intent':
             html = self.html_provider()
             applied, note, requested = self._fingerprint_tier(selector_key, meta,
                                                               broken_candidates, html, started)
@@ -205,9 +214,6 @@ class HealCoordinator:
                 "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
                 "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
                 "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).")
-        # 'intent' when the key had no selector at all and the model looks for it from its
-        # intent= description; the journal names that source, and the plain model none.
-        source = 'intent' if not broken_candidates and meta.get('intent') else 'model'
         tag = source if source != 'model' else None
         if not requested:
             self.journal.requested(selector_key)

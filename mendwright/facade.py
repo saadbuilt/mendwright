@@ -379,9 +379,14 @@ def _frame_message(key, selector, frames, opener):
             'it. Open mendwright on that Frame instead: heal = ' + opener + '(' + how + ').')
 
 
-def _locator_args(key, selector, role, inline_xpath):
+def _locator_args(key, selector, role, inline_xpath, intent=None):
     """locator()'s argument checks, which touch neither the page nor the store: returns
-    (roles, code), the accepted roles for role= and the selectors from _code_selectors()."""
+    (roles, code), the accepted roles for role= and the selectors from _code_selectors().
+    Raises TypeError for an intent= that is not a non-empty string."""
+    if intent is not None and (not isinstance(intent, str) or not intent.strip()):
+        raise TypeError('mendwright: intent= for ' + repr(key) + ' takes a description of the '
+                        'element in words, got ' + repr(intent) + ". For example, intent='the "
+                        "terms checkbox in the signup form'.")
     if inline_xpath is not None:
         if selector is not None:
             raise TypeError('mendwright: locator() got both selector and inline_xpath. '
@@ -523,7 +528,8 @@ class Healer:
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
                 text: str | Sequence[str] | None = None, destructive: bool | None = None,
                 timeout_ms: int | None = None, poll_ms: int = 200,
-                inline_xpath: Selector | None = None, optional: bool = False) -> ActionProxy:
+                inline_xpath: Selector | None = None, optional: bool = False,
+                intent: str | None = None) -> ActionProxy:
         """Resolve `key`, healing + retrying inline if its candidates miss, and return an
         ActionProxy wrapping the native locator. timeout_ms bounds how long each resolution
         polls for the element before it's treated as broken (and a heal is attempted).
@@ -557,15 +563,22 @@ class Healer:
         way when its element is not there. Registered interruptions are handled before
         this step when its element is missing or covered (see interrupt()).
 
+        intent is what the element is for, in words, such as 'the terms checkbox in the
+        signup form'. It is saved with the key and the model gets it when it heals the key.
+        With intent= and role= but no selector, and nothing stored for the key yet, the
+        model looks for the element from the intent on first use; what it finds passes
+        the same checks as a heal, and is saved and used from then on.
+
         inline_xpath is the old name of selector and still works as a keyword.
 
         Raises AttentionRequired when the element cannot be found or healed (the message
         says why and what to do), InvalidSelector or TypeError for a selector that can
-        never work, and ValueError for an unknown role.
+        never work, and ValueError for an unknown role, or for intent= with nothing to go
+        on but no role=.
         """
         __tracebackhide__ = True  # pytest shows the caller
-        roles, code = _locator_args(key, selector, role, inline_xpath)
-        self._prime(key, roles, code, text, destructive)
+        roles, code = _locator_args(key, selector, role, inline_xpath, intent)
+        self._prime(key, roles, code, text, destructive, intent)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         first_wait = self._first_wait(key, timeout)
         store = self.store
@@ -623,23 +636,48 @@ class Healer:
 
     # --- metadata ------------------------------------------------------------------
 
-    def _prime(self, key, roles, code, text, destructive):
+    def _prime(self, key, roles, code, text, destructive, intent=None):
         """Store updates locator() makes before it looks at the page: the code's
-        selectors go first, and role/text/destructive are applied. Raises
-        AttentionRequired when the key has no selector at all."""
+        selectors go first, and role/text/destructive/intent are applied. Raises
+        AttentionRequired when the key has no selector at all and no intent=, and
+        ValueError for intent= with no selector and no role (see _check_intent)."""
         __tracebackhide__ = True  # pytest shows the caller
         store = self.store
         if code:
             store.set_code_candidates(key, code)
         elif not store.candidates(key):
-            raise AttentionRequired(
-                'mendwright: there is no stored selector for "' + key + '" yet, and none was '
-                'passed. Pass a starting selector on the first call, for example '
-                'heal.locator("' + key + '", "//your/xpath", role="checkbox").')
-        self._apply_meta(key, roles, text, destructive)
+            if intent is None:
+                raise AttentionRequired(
+                    'mendwright: there is no stored selector for "' + key + '" yet, and none '
+                    'was passed. Pass a starting selector on the first call, for example '
+                    'heal.locator("' + key + '", "//your/xpath", role="checkbox"), or describe '
+                    'the element with intent= and role= so a model finds it on first use.')
+            self._check_intent(key, code, roles, intent)
+        self._apply_meta(key, roles, text, destructive, intent)
 
-    def _apply_meta(self, key, roles, text, destructive):
+    def _check_intent(self, key, code, roles, intent):
+        """Raise ValueError when key will be looked for from intent= alone (no selector
+        passed, none stored) and mendwright does not know its role, which it needs to check
+        what the model finds."""
+        if intent is None or code or roles or self.store.candidates(key):
+            return
+        role = None
+        try:
+            if not self.store.role_is_guess(key):
+                role = self.store.meta(key)['expectedRole']
+        except Exception:
+            role = None
+        if role and role != 'unknown':
+            return
+        raise ValueError(
+            "mendwright: '" + key + "' has no selector yet, so a model will look for it from "
+            'intent=, and mendwright needs role= to check what it finds. Pass role=, for '
+            "example heal.locator('" + key + "', intent=" + repr(intent) + ", role='button').")
+
+    def _apply_meta(self, key, roles, text, destructive, intent=None):
         store = self.store
+        if intent is not None:
+            store.set_meta(key, intent=intent)
         if roles:
             current = store.meta(key)['expectedRole']
             if len(roles) == 1:
