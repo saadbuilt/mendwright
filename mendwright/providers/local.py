@@ -43,10 +43,26 @@ DEFAULT_BASE_URL = 'http://127.0.0.1:11434'
 # The least probability a pick needs to be used: below it the heal is declined, as for a
 # null pick. Set from the validation split (training/README.md); Ollama versions that do not
 # return logprobs skip the check.
-MIN_CONFIDENCE = 0.0
+MIN_CONFIDENCE = 0.8
 
 # Reasons from the gate after which the provider asks again without the refused element.
 _RETRY_REASONS = (NOT_LIVE, 'not unique')
+
+
+def _env_confidence():
+    """MENDWRIGHT_LOCAL_MIN_CONFIDENCE as a number from 0 to 1, else MIN_CONFIDENCE."""
+    text = (os.environ.get('MENDWRIGHT_LOCAL_MIN_CONFIDENCE') or '').strip()
+    if not text:
+        return MIN_CONFIDENCE
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError('MENDWRIGHT_LOCAL_MIN_CONFIDENCE must be a number from 0 to 1, got '
+                         + repr(text)) from None
+    if not 0.0 <= value <= 1.0:
+        raise ValueError('MENDWRIGHT_LOCAL_MIN_CONFIDENCE must be a number from 0 to 1, got '
+                         + repr(text))
+    return value
 
 
 def _host(value):
@@ -78,7 +94,7 @@ class LocalModelProvider:
     wants_fingerprint = True
 
     def __init__(self, model=None, base_url=None, *, http=None, timeout=60, num_ctx=4096,
-                 keep_alive='10m', max_candidates=MAX_CANDIDATES, min_confidence=MIN_CONFIDENCE):
+                 keep_alive='10m', max_candidates=MAX_CANDIDATES, min_confidence=None):
         self.model = model or os.environ.get('MENDWRIGHT_LOCAL_MODEL') or DEFAULT_MODEL
         self.base_url = _host(base_url or os.environ.get('OLLAMA_HOST'))
         self.http = http
@@ -88,6 +104,8 @@ class LocalModelProvider:
         self.max_candidates = max_candidates
         # A pick the model gives with less probability than this is not used (see
         # candidates.answer_confidence); 0 turns the check off.
+        if min_confidence is None:
+            min_confidence = _env_confidence()
         self.min_confidence = min_confidence
         self.last_error = None
         # What the model answered last time: {'pick', 'why', 'candidates'}, for logs and tests.

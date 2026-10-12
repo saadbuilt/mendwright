@@ -186,6 +186,8 @@ def main(argv=None):
     parser.add_argument('--data', required=True)
     parser.add_argument('--split', default='val')
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--reaches-model', action='store_true',
+                        help="only the steps mendwright's fingerprint tier would pass on to the model")
     parser.add_argument('--base', default=os.environ.get('MW_BASE', r'C:\Users\Omen\mendwright-train\base\Qwen2.5-1.5B-Instruct'))
     parser.add_argument('--adapter')
     parser.add_argument('--ollama', help='Ollama model name')
@@ -194,6 +196,8 @@ def main(argv=None):
     parser.add_argument('--out', help='output prefix (default: next to the data)')
     args = parser.parse_args(argv)
     rows = load(Path(args.data) / (args.split + '.jsonl'), args.limit or None)
+    if args.reaches_model:
+        rows = [r for r in rows if r.get('fp_tier') in ('unsure', 'none')]
     started = time.time()
     confs = []
     if args.ollama:

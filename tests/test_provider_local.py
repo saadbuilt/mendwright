@@ -287,6 +287,17 @@ def _logprobs(value_logprob):
             {'token': '3', 'logprob': 0.0}, {'token': '}', 'logprob': 0.0}]
 
 
+def test_the_threshold_comes_from_the_argument_or_the_environment(monkeypatch):
+    from mendwright.providers.local import MIN_CONFIDENCE
+    assert LocalModelProvider().min_confidence == MIN_CONFIDENCE
+    monkeypatch.setenv('MENDWRIGHT_LOCAL_MIN_CONFIDENCE', '0')
+    assert LocalModelProvider().min_confidence == 0.0
+    assert LocalModelProvider(min_confidence=0.9).min_confidence == 0.9
+    monkeypatch.setenv('MENDWRIGHT_LOCAL_MIN_CONFIDENCE', 'high')
+    with pytest.raises(ValueError, match='MENDWRIGHT_LOCAL_MIN_CONFIDENCE'):
+        LocalModelProvider()
+
+
 def test_it_asks_for_logprobs_and_declines_a_pick_it_is_not_sure_of():
     import math
     http = FakeOllama('{"pick": 3}', logprobs=_logprobs(math.log(0.55)))
