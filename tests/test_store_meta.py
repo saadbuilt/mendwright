@@ -124,6 +124,37 @@ def test_set_last_page_writes_only_when_it_changes(tmp_path):
     assert writes == []
     store.set_last_page('next', '/checkout')
     assert writes == [1]
+    # Back and forth between known pages: the order changes in memory, the file waits.
+    store.set_last_page('next', '/signup')
+    store.set_last_page('next', '/checkout')
+    assert writes == [1]
+    assert store.meta('next')['lastPage'] == '/checkout'
+
+
+def test_a_reordered_page_list_is_saved_with_the_next_write(tmp_path):
+    path = tmp_path / 'o.json'
+    store = load_store(None, str(path))
+    store.add_candidate('next', '#next', source='code')
+    store.set_last_page('next', '/signup')
+    store.set_last_page('next', '/checkout')
+    store.set_last_page('next', '/signup')              # a reorder: not written yet
+    store.set_meta('next', role='button')               # any later write carries it
+    saved = json.loads(path.read_text(encoding='utf-8'))['selectors']['next']
+    assert saved['lastPage'] == '/signup' and saved['pages'] == ['/signup', '/checkout']
+
+
+def test_two_processes_keep_the_pages_both_found_a_key_on(tmp_path):
+    path = str(tmp_path / 'o.json')
+    first = load_store(None, path)
+    first.add_candidate('search', '#q', source='code')
+    first.set_meta('search', role='input')
+    a = load_store(None, path)
+    b = load_store(None, path)
+    a.set_last_page('search', '/search')
+    b.set_last_page('search', '/results')
+    meta = load_store(None, path).meta('search')
+    assert meta['pages'] == ['/results', '/search']
+    assert meta['lastPage'] == '/results'
 
 
 def test_malformed_saved_pages_are_ignored(tmp_path):

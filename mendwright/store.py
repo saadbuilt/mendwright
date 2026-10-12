@@ -390,7 +390,9 @@ class SelectorStore:
         """Record that key's element was just found on the page ``path`` (a normalized
         path, see mendwright.flow.page_path). lastPage becomes path, and pages keeps the
         last few distinct paths, most recent first. Saved in the override file, which is
-        written only when either changes. A path of None or '' is ignored."""
+        written only when the set of pages changes: a key used on two pages in turn, such
+        as a search box in the header, does not rewrite the file on every call, and its
+        new order is saved with the next write. A path of None or '' is ignored."""
         if not isinstance(path, str) or not path:
             return
         e = self._entry(key)
@@ -401,7 +403,8 @@ class SelectorStore:
         saved = self._meta.get(key, {})
         if saved.get('lastPage') != path or saved.get('pages') != pages:
             self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
-            self._persist_override()
+            if set(saved.get('pages') or ()) != set(pages):
+                self._persist_override()
 
     def guess_role(self, key, role, *, replace=False):
         """Use role as key's expectedRole for now, without saving it. Only replaces an
@@ -712,7 +715,9 @@ def _merge_status(mine, theirs, base):
 
 
 def _merge_meta(mine, theirs, base):
-    """Saved metadata after a three-way merge (see SelectorStore._absorb)."""
+    """Saved metadata after a three-way merge (see SelectorStore._absorb). When both sides
+    recorded pages for a key, both sets are kept (this store's first), so a page another
+    process found the key on is not lost."""
     out = {}
     for field in META_FIELDS:
         m, t, b = mine.get(field), theirs.get(field), base.get(field)
@@ -722,6 +727,8 @@ def _merge_meta(mine, theirs, base):
             value = m
         elif field == 'destructive':
             value = bool(m) or bool(t)
+        elif field == 'pages':
+            value = list(dict.fromkeys(_pages(m) + _pages(t)))[:MAX_PAGES] or None
         else:
             value = m
         if value is not None:
