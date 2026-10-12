@@ -978,7 +978,7 @@ def _negative(rng, seed, split, site, family, content, vocab, overlays1, uid, co
     if url_mode == 'moved':
         from mendwright.flow import page_path
         # both pages must have a path, or the step cannot be seen to move
-        if page_path(v1_url) is None or page_path(v1_url) == page_path(v2_url):
+        if page_path(v1_url) is None or page_path(v2_url) is None or page_path(v1_url) == page_path(v2_url):
             return None
     return _scenario(rng, seed, split, site, family, uid, concept, area, item, el1, selectors, v1, v2,
                      v1_url, v2_url, url_mode, truth=False, why=why, kind=kind, muts=sorted(muts), lang2=lang2,

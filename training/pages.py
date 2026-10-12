@@ -1403,17 +1403,191 @@ def fam_interstitial(g, kind=None):
     return [site_header(g, minimal=True), h('main', None, h('section', {'class': g.cls('card'), 'role': 'dialog' if g.rng.random() < 0.4 else None}, *body))], path
 
 
+def fam_contact(g):
+    g.block = 'contact-form'
+    p = 'ct.'
+    form = h('form', {'class': g.cls('form'), 'id': g.pick(('contact-form', 'support', None), 'fid')},
+             g.field(p + 'name', 'full_name', area='contact', required=True),
+             g.field(p + 'email', 'email', area='contact', required=True),
+             g.field(p + 'company', 'company', area='contact') if g.rng.random() < 0.4 else None,
+             g.field(p + 'subject', 'subject', area='contact', options=['Billing', 'Technical issue', 'Sales', 'Other']),
+             g.field(p + 'message', 'message', area='contact', required=True),
+             g.button(p + 'attach', 'attach_file', area='contact', variant='secondary') if g.rng.random() < 0.5 else None,
+             g.check(p + 'consent', 'privacy_consent', area='contact'),
+             g.button(p + 'send', 'send_message', area='contact', submit=True))
+    aside = h('aside', {'class': g.cls('aside')}, h('h2', None, g.phrase('h_contact')),
+              g.link(p + 'faq', 'faq', '/faq', area='contact'), g.link(p + 'status', 'status', '/status', area='contact'),
+              g.link(p + 'docs', 'docs', '/docs', area='contact') if g.rng.random() < 0.5 else None)
+    return [site_header(g), h('main', {'class': g.cls('main')}, g.heading(1, g.phrase('h_contact')),
+                              h('div', {'class': g.cls('grid')}, form, aside)), site_footer(g)], 'contact'
+
+
+def fam_pricing(g):
+    g.block = 'pricing'
+    toggle = h('div', {'class': g.cls('toggle')}, g.check('pr.yearly', 'billing_yearly', area='pricing'))
+    cards = []
+    for i, name in enumerate(('Free', 'Starter', 'Pro', 'Business', 'Enterprise')[:g.rng.randrange(3, 6)]):
+        k = 'plan.' + name.lower()
+        g.block = 'plan-card'
+        concept = 'contact_sales' if name == 'Enterprise' else 'choose_plan'
+        cards.append(h('article' if g.rng.random() < 0.5 else 'div', {'class': g.cls('card', 'plan')},
+                       h('h3', None, name), h('p', {'class': g.cls('price')}, '$' + str(i * 12) + '/mo'),
+                       h('ul', None, *[h('li', None, f) for f in ('Unlimited projects', 'Priority support', 'SSO')[:i + 1]]),
+                       g.button(k + '.choose', concept, area='plans', item=name)))
+    g.block = 'faq'
+    faq = h('section', {'class': g.cls('section')}, h('h2', None, g.word('pr.faqh', 'faq')),
+            *[h('details', None, h('summary', None, q), g.para('Yes.')) for q in ('Can I cancel anytime?', 'Do you offer discounts?')])
+    return [site_header(g), h('main', {'class': g.cls('main')}, g.heading(1, g.phrase('h_pricing')), toggle,
+                              h('div', {'class': g.cls('grid')}, *cards), faq), site_footer(g)], 'pricing'
+
+
+def fam_inbox(g):
+    g.block = 'inbox'
+    folders = h('nav', {'class': g.cls('folders'), 'aria-label': 'Folders'},
+                *[g.link('fld.' + f.lower(), 'view_all', '/inbox/' + f.lower(), area='folders', text=f, item=f)
+                  for f in ('Inbox', 'Starred', 'Sent', 'Drafts', 'Spam')[:g.rng.randrange(3, 6)]])
+    rows = []
+    for name in people(g, g.rng.randrange(4, 12) if not g.dense else 18):
+        k = 'msg.' + slugify(name)
+        g.block = 'message-row'
+        rows.append(h('li', {'class': g.cls('row', 'message')},
+                      h('span', {'class': g.cls('sender')}, name),
+                      h('span', {'class': g.cls('subject')}, g.pick(('Invoice for October', 'Quick question', 'Meeting notes', 'Welcome aboard'), name)),
+                      g.button(k + '.read', 'mark_read', area='row', item=name, icon=g.style.icons, variant=''),
+                      g.button(k + '.archive', 'archive', area='row', item=name, icon=g.style.icons, variant=''),
+                      g.button(k + '.delete', 'delete', area='row', item=name, icon=g.style.icons, variant='')))
+    g.block = 'inbox'
+    tools = h('div', {'class': g.cls('toolbar')}, g.button('ibx.compose', 'compose', area='inbox'),
+              g.field('ibx.search', 'search', area='inbox'),
+              g.button('ibx.refresh', 'refresh', area='inbox', icon=True, variant='') if g.rng.random() < 0.5 else None)
+    reading = h('section', {'class': g.cls('reader')}, h('h2', None, 'Quick question'), g.para('Hi, can we move the call?'),
+                h('div', {'class': g.cls('actions')}, g.button('rd.reply', 'reply', area='reader'),
+                  g.button('rd.forward', 'forward', area='reader', variant='secondary'),
+                  g.button('rd.delete', 'delete', area='reader', variant='')))
+    return app_shell(g, [tools, h('div', {'class': g.cls('layout')}, folders, h('ul', {'class': g.cls('list')}, *rows), reading)],
+                     g.phrase('h_inbox')), 'inbox'
+
+
+def fam_booking(g):
+    g.block = 'booking'
+    p = 'bk.'
+    form = h('form', {'class': g.cls('form'), 'id': g.pick(('booking-form', 'reserve', None), 'fid')},
+             h('div', {'class': g.cls('row', 'split')},
+               g.field(p + 'date', 'date', area='booking', required=True),
+               g.field(p + 'time', 'time_slot', area='booking', options=['18:00', '18:30', '19:00', '19:30'])),
+             g.field(p + 'guests', 'guests', area='booking', value='2'),
+             g.field(p + 'location', 'city', area='booking') if g.rng.random() < 0.4 else None,
+             g.button(p + 'check', 'check_availability', area='booking', variant='secondary'),
+             g.field(p + 'name', 'full_name', area='booking'), g.field(p + 'phone', 'phone', area='booking'),
+             g.field(p + 'notes', 'message', area='booking') if g.rng.random() < 0.5 else None,
+             g.button(p + 'book', 'book_now', area='booking', submit=True))
+    return [site_header(g), h('main', {'class': g.cls('main')}, g.heading(1, g.phrase('h_booking')), form),
+            site_footer(g)], 'book'
+
+
+def fam_files(g):
+    g.block = 'files'
+    crumbs = h('nav', {'aria-label': 'Breadcrumb', 'class': g.cls('breadcrumb')},
+               g.link('fl.home', 'home', '/files', area='breadcrumb', text=g.phrase('h_files')),
+               g.link('fl.folder', 'view_all', '/files/reports', area='breadcrumb', text='Reports'))
+    rows = []
+    names = [p + ext for p, ext in zip(projects(g, 8), ('.pdf', '.xlsx', '.docx', '.png', '.csv', '.zip', '.pptx', '.txt'), strict=False)]
+    for name in names[:g.rng.randrange(3, 9)]:
+        k = 'file.' + slugify(name)
+        g.block = 'file-row'
+        rows.append(h('tr', {'class': g.cls('row')}, h('td', None, h('span', {'class': g.cls('name')}, name)),
+                      h('td', None, str(g.rng.randrange(10, 900)) + ' KB'),
+                      h('td', {'class': g.cls('actions')},
+                        g.button(k + '.download', 'download', area='row', item=name, icon=g.style.icons, variant=''),
+                        g.button(k + '.share', 'share', area='row', item=name, icon=g.style.icons, variant=''),
+                        g.button(k + '.rename', 'rename', area='row', item=name, icon=g.style.icons, variant='') if g.rng.random() < 0.5 else None,
+                        g.button(k + '.delete', 'delete', area='row', item=name, icon=g.style.icons, variant=''))))
+    g.block = 'files'
+    tools = h('div', {'class': g.cls('toolbar')}, g.button('fl.upload', 'upload_file', area='files'),
+              g.button('fl.newfolder', 'new_folder', area='files', variant='secondary'),
+              g.field('fl.search', 'search', area='files') if g.rng.random() < 0.5 else None)
+    table = h('table', {'class': g.cls('table')}, h('thead', None, h('tr', None, h('th', None, 'Name'), h('th', None, 'Size'), h('th', None, ''))),
+              h('tbody', None, *rows))
+    return app_shell(g, [crumbs, tools, table], g.phrase('h_files')), 'files'
+
+
+def fam_board(g):
+    g.block = 'board'
+    cols = []
+    for col in ('To do', 'In progress', 'Done')[:g.rng.randrange(2, 4)]:
+        cards = []
+        for task in projects(g, g.rng.randrange(1, 4)):
+            k = 'task.' + slugify(col) + '.' + slugify(task)
+            g.block = 'task-card'
+            cards.append(h('li', {'class': g.cls('card', 'task')}, h('h4', None, task),
+                           g.button(k + '.done', 'complete_task', area='board', item=task, icon=g.rng.random() < 0.4, variant=''),
+                           g.button(k + '.move', 'move_task', area='board', item=task, icon=g.rng.random() < 0.4, variant='')))
+        g.block = 'board-column'
+        cols.append(h('section', {'class': g.cls('column')}, h('h3', None, col), h('ul', None, *cards),
+                      g.button('col.' + slugify(col) + '.add', 'add_card', area='board', item=col, variant='')))
+    g.block = 'board'
+    return app_shell(g, [h('div', {'class': g.cls('toolbar')}, g.button('brd.new', 'new_project', area='board', variant='secondary')),
+                         h('div', {'class': g.cls('board')}, *cols)], g.phrase('h_board')), 'board'
+
+
+def fam_product(g):
+    name = products(g, 1)[0]
+    g.block = 'product'
+    buy = h('section', {'class': g.cls('section', 'buy')}, g.heading(1, name), h('p', {'class': g.cls('price')}, price(g)),
+            g.field('pd.size', 'size', area='product', options=['S', 'M', 'L', 'XL']),
+            g.field('pd.color', 'color', area='product', options=['Black', 'Navy', 'Sand']) if g.rng.random() < 0.6 else None,
+            g.field('pd.qty', 'quantity', area='product', value='1'),
+            h('div', {'class': g.cls('actions')}, g.button('pd.add', 'add_to_cart', area='product'),
+              g.button('pd.buy', 'buy_now', area='product', variant='secondary') if g.rng.random() < 0.6 else None,
+              g.button('pd.wish', 'add_to_wishlist', area='product', icon=g.rng.random() < 0.5, variant='')))
+    reviews = h('section', {'class': g.cls('section', 'reviews')}, h('h2', None, g.phrase('h_reviews')),
+                g.button('pd.review', 'write_review', area='reviews', variant='secondary'),
+                *[h('blockquote', None, g.para('Great quality.'), h('cite', None, n)) for n in people(g, 2)])
+    related = []
+    for other in products(g, 5)[1:g.rng.randrange(3, 5)]:
+        k = 'rel.' + slugify(other)
+        g.block = 'product-card'
+        related.append(h('li', {'class': g.cls('card')}, h('h3', None, g.link(k + '.title', 'products', '/products/' + slugify(other), area='related', item=other, text=other)),
+                         g.button(k + '.add', 'add_to_cart', area='related', item=other, variant='secondary')))
+    g.block = 'product'
+    return [site_header(g, shop=True), h('main', {'class': g.cls('main')}, buy, reviews,
+                                         h('section', None, h('h2', None, g.phrase('h_related')), h('ul', None, *related))),
+            site_footer(g)], 'products/' + slugify(name)
+
+
+def fam_orders(g):
+    g.block = 'orders'
+    rows = []
+    for i in range(g.rng.randrange(2, 6)):
+        num = '#' + str(10200 + i * 37 + g.rng.randrange(9))
+        k = 'ord.' + num[1:]
+        g.block = 'order-row'
+        rows.append(h('article', {'class': g.cls('card', 'order')}, h('h3', None, g.word('ord.h', 'orders') + ' ' + num),
+                      g.para(products(g, 3)[i % 3]),
+                      h('div', {'class': g.cls('actions')},
+                        g.link(k + '.track', 'track_order', '/orders/' + num[1:] + '/track', area='orders', item=num),
+                        g.link(k + '.invoice', 'view_invoice', '/orders/' + num[1:] + '/invoice', area='orders', item=num),
+                        g.button(k + '.again', 'buy_again', area='orders', item=num, variant='secondary'),
+                        g.button(k + '.return', 'return_items', area='orders', item=num, variant='') if g.rng.random() < 0.5 else None)))
+    g.block = 'orders'
+    return [site_header(g, shop=True), h('main', {'class': g.cls('main')}, g.heading(1, g.phrase('h_orders')), *rows),
+            site_footer(g)], 'account/orders'
+
+
 FAMILIES = {
     'login': fam_login, 'signup': fam_signup, 'checkout': fam_checkout, 'cart': fam_cart,
     'grid': fam_grid, 'settings': fam_settings, 'table': fam_table, 'dashboard': fam_dashboard,
     'dialog': fam_dialog, 'landing': fam_landing, 'search': fam_search, 'wizard': fam_wizard,
     'article': fam_article, 'reset': fam_reset, 'twofactor': fam_twofactor,
+    'contact': fam_contact, 'pricing': fam_pricing, 'inbox': fam_inbox, 'booking': fam_booking,
+    'files': fam_files, 'board': fam_board, 'product': fam_product, 'orders': fam_orders,
 }
 # Families held out of training: the test split uses them (with held-out names) to measure
 # how the model does on page layouts it never saw.
 TEST_FAMILIES = ('search', 'wizard', 'article')
 TRAIN_FAMILIES = ('login', 'signup', 'checkout', 'cart', 'grid', 'settings', 'table', 'dashboard',
-                  'dialog', 'landing', 'reset', 'twofactor')
+                  'dialog', 'landing', 'reset', 'twofactor', 'contact', 'pricing', 'inbox', 'booking',
+                  'files', 'board', 'product', 'orders')
 # For a step that moved to another page: pages a flow goes to from each family.
 RELATED = {
     'login': ('twofactor', 'reset', 'signup', 'dashboard'),
@@ -1431,6 +1605,14 @@ RELATED = {
     'article': ('landing', 'search'),
     'reset': ('login', 'twofactor'),
     'twofactor': ('login', 'reset', 'dashboard'),
+    'contact': ('landing', 'pricing'),
+    'pricing': ('signup', 'checkout', 'contact'),
+    'inbox': ('dashboard', 'settings', 'files'),
+    'booking': ('checkout', 'contact'),
+    'files': ('dashboard', 'inbox', 'board'),
+    'board': ('dashboard', 'files'),
+    'product': ('cart', 'grid', 'checkout'),
+    'orders': ('product', 'cart', 'checkout'),
 }
 
 

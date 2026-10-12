@@ -193,13 +193,40 @@ switch_account|link|switch-account/other-account|Switch account/Use another acco
 age_yes|button|age-yes/over-18/enter-site|Yes, I am over 18/Enter site|Ja, ich bin über 18|Oui, j'ai plus de 18 ans|Sí, soy mayor de 18|Sim, tenho mais de 18|Sì, ho più di 18 anni|Ja, ik ben ouder dan 18
 age_no|button|age-no/under-18/leave-site|No, take me back/Leave|Nein|Non|No|Não|No|Nee
 stay_signed_in|button|stay-signed-in/keep-session/extend-session|Stay signed in/Keep me signed in|Angemeldet bleiben|Rester connecté|Seguir conectado|Continuar conectado|Resta connesso|Ingelogd blijven
+subject|select|subject/topic/reason|Subject/Topic/What can we help with?|Betreff/Thema|Sujet/Objet|Asunto/Tema|Assunto|Oggetto/Argomento|Onderwerp
+message|textarea|message/body/your-message|Message/Your message/How can we help?|Nachricht/Ihre Nachricht|Message/Votre message|Mensaje/Tu mensaje|Mensagem/Sua mensagem|Messaggio/Il tuo messaggio|Bericht/Je bericht
+send_message|button|send/send-message/submit-message|Send message/Send/Submit request|Nachricht senden/Senden|Envoyer le message/Envoyer|Enviar mensaje/Enviar|Enviar mensagem/Enviar|Invia messaggio/Invia|Bericht versturen/Verzenden
+attach_file|button|attach/attach-file/upload-attachment|Attach file/Add attachment|Datei anhängen|Joindre un fichier|Adjuntar archivo|Anexar arquivo|Allega file|Bestand bijvoegen
+privacy_consent|checkbox|consent/privacy-consent/gdpr|I agree to the privacy policy/I consent to being contacted|Ich stimme der Datenschutzerklärung zu|J'accepte la politique de confidentialité|Acepto la política de privacidad|Concordo com a política de privacidade|Accetto l'informativa sulla privacy|Ik ga akkoord met het privacybeleid
+choose_plan|button|choose-plan/select-plan/get-plan|Choose plan/Select plan/Get started|Tarif wählen/Auswählen|Choisir cette offre/Choisir|Elegir plan/Seleccionar|Escolher plano/Selecionar|Scegli il piano/Seleziona|Kies abonnement/Selecteren
+contact_sales|button|contact-sales/talk-to-sales/sales|Contact sales/Talk to sales|Vertrieb kontaktieren|Contacter les ventes|Contactar con ventas|Falar com vendas|Contatta le vendite|Contact opnemen met sales
+billing_yearly|switch|billing-yearly/annual-billing/yearly|Bill yearly/Annual billing/Pay yearly|Jährliche Abrechnung|Facturation annuelle|Facturación anual|Cobrança anual|Fatturazione annuale|Jaarlijks betalen
+compose|button|compose/new-message/write|Compose/New message/Write|Verfassen/Neue Nachricht|Nouveau message/Rédiger|Redactar/Nuevo mensaje|Escrever/Nova mensagem|Scrivi/Nuovo messaggio|Opstellen/Nieuw bericht
+mark_read|button|mark-read/mark-as-read/read|Mark as read/Mark read|Als gelesen markieren|Marquer comme lu|Marcar como leído|Marcar como lida|Segna come letto|Markeren als gelezen
+reply|button|reply/respond/reply-message|Reply/Respond|Antworten|Répondre|Responder|Responder|Rispondi|Beantwoorden
+forward|button|forward/forward-message|Forward|Weiterleiten|Transférer|Reenviar|Encaminhar|Inoltra|Doorsturen
+check_availability|button|check-availability/search-dates/availability|Check availability/See available times|Verfügbarkeit prüfen|Vérifier la disponibilité|Comprobar disponibilidad|Verificar disponibilidade|Verifica disponibilità|Beschikbaarheid bekijken
+book_now|button|book-now/book/reserve|Book now/Reserve/Confirm booking|Jetzt buchen/Reservieren|Réserver maintenant/Réserver|Reservar ahora/Reservar|Reservar agora/Reservar|Prenota ora/Prenota|Nu boeken/Reserveren
+date|input:date|date/booking-date/check-in|Date/Check-in date/Arrival date|Datum/Anreisedatum|Date/Date d'arrivée|Fecha/Fecha de llegada|Data/Data de chegada|Data/Data di arrivo|Datum/Aankomstdatum
+time_slot|select|time/time-slot/slot|Time/Time slot/Choose a time|Uhrzeit/Zeitfenster|Heure/Créneau|Hora/Franja horaria|Horário|Orario/Fascia oraria|Tijd/Tijdslot
+guests|input:number|guests/party-size/people|Guests/Number of guests/Party size|Gäste/Anzahl der Gäste|Invités/Nombre de personnes|Huéspedes/Número de personas|Hóspedes/Número de pessoas|Ospiti/Numero di persone|Gasten/Aantal personen
+upload_file|button|upload/upload-file/add-file|Upload/Upload file/Add files|Hochladen/Datei hochladen|Importer/Téléverser un fichier|Subir/Subir archivo|Enviar arquivo/Carregar|Carica/Carica file|Uploaden/Bestand uploaden
+new_folder|button|new-folder/create-folder/add-folder|New folder/Create folder|Neuer Ordner|Nouveau dossier|Nueva carpeta|Nova pasta|Nuova cartella|Nieuwe map
+share|button|share/share-file/share-link|Share/Share file|Teilen|Partager|Compartir|Compartilhar|Condividi|Delen
+write_review|button|write-review/add-review/review|Write a review/Add a review|Bewertung schreiben|Écrire un avis|Escribir una opinión|Escrever uma avaliação|Scrivi una recensione|Review schrijven
+return_items|button|return/return-items/start-return|Return items/Start a return|Artikel zurücksenden|Retourner des articles|Devolver artículos|Devolver itens|Restituisci articoli|Artikelen retourneren
+view_invoice|link|invoice/view-invoice/download-invoice|View invoice/Invoice/Download invoice|Rechnung ansehen|Voir la facture|Ver factura|Ver nota fiscal/Ver fatura|Visualizza fattura|Factuur bekijken
+buy_again|button|buy-again/reorder/order-again|Buy again/Reorder/Order again|Erneut kaufen|Acheter à nouveau|Volver a comprar|Comprar novamente|Acquista di nuovo|Opnieuw kopen
+add_card|button|add-card/add-task/new-task|Add a card/Add task/+ Add item|Karte hinzufügen/Aufgabe hinzufügen|Ajouter une carte/Ajouter une tâche|Añadir tarjeta/Añadir tarea|Adicionar cartão/Adicionar tarefa|Aggiungi scheda/Aggiungi attività|Kaart toevoegen/Taak toevoegen
+complete_task|button|complete/mark-done/done-task|Mark complete/Mark as done/Complete|Als erledigt markieren|Marquer comme terminé|Marcar como completada|Marcar como concluída|Segna come completata|Markeren als voltooid
+move_task|button|move/move-card/move-task|Move/Move card|Verschieben|Déplacer|Mover|Mover|Sposta|Verplaatsen
 """
 
 # Controls a decoy should never be confused with: the concept that does harm when picked.
 DESTRUCTIVE = frozenset({
     'delete_account', 'delete', 'remove_item', 'empty_cart', 'discard', 'delete_draft',
     'delete_project', 'bulk_delete', 'remove_avatar', 'sign_out', 'unsubscribe', 'reject_all',
-    'archive_project', 'remove_coupon',
+    'archive_project', 'remove_coupon', 'return_items',
 })
 
 # Concepts that look alike but mean different things, as decoys for one another.
@@ -248,6 +275,21 @@ NEIGHBOURS = {
     'push_notifications': ('email_notifications', 'weekly_digest'),
     'weekly_digest': ('email_notifications', 'push_notifications'),
     'ship_standard': ('ship_express',),
+    'send_message': ('attach_file', 'cancel'),
+    'choose_plan': ('contact_sales',),
+    'contact_sales': ('choose_plan',),
+    'reply': ('forward', 'delete', 'archive'),
+    'forward': ('reply',),
+    'mark_read': ('archive', 'delete'),
+    'check_availability': ('book_now',),
+    'book_now': ('check_availability', 'cancel'),
+    'upload_file': ('new_folder',),
+    'new_folder': ('upload_file',),
+    'share': ('download', 'delete', 'rename'),
+    'download': ('share', 'delete'),
+    'buy_again': ('return_items',),
+    'complete_task': ('move_task', 'delete'),
+    'add_card': ('delete',),
     'ship_express': ('ship_standard',),
     'email': ('confirm_password', 'full_name', 'phone', 'username'),
     'password': ('confirm_password', 'email'),
@@ -344,6 +386,13 @@ h_comments|Comments/Join the discussion|Kommentare|Commentaires|Comentarios|Come
 h_reset|Reset your password/Forgot your password?|Passwort zurücksetzen|Réinitialiser votre mot de passe|Restablecer tu contraseña|Redefinir sua senha|Reimposta la password|Wachtwoord opnieuw instellen
 h_twofactor|Two-step verification/Enter your code|Bestätigung in zwei Schritten|Vérification en deux étapes|Verificación en dos pasos|Verificação em duas etapas|Verifica in due passaggi|Verificatie in twee stappen
 h_orders|Your orders/Order history|Ihre Bestellungen|Vos commandes|Tus pedidos|Seus pedidos|I tuoi ordini|Je bestellingen
+h_contact|Contact us/Get in touch/How can we help?|Kontakt/Kontaktieren Sie uns|Contactez-nous/Nous contacter|Contáctanos/Contacto|Fale conosco/Contato|Contattaci|Neem contact op
+h_pricing|Plans and pricing/Pricing/Choose your plan|Preise und Tarife/Preise|Tarifs/Nos offres|Planes y precios/Precios|Planos e preços/Preços|Piani e prezzi/Prezzi|Abonnementen en prijzen/Prijzen
+h_inbox|Inbox/Messages|Posteingang/Nachrichten|Boîte de réception/Messages|Bandeja de entrada/Mensajes|Caixa de entrada/Mensagens|Posta in arrivo/Messaggi|Inbox/Berichten
+h_booking|Book a table/Make a reservation/Book your stay|Tisch reservieren/Reservierung|Réserver une table/Faire une réservation|Reservar mesa/Hacer una reserva|Reservar mesa/Fazer uma reserva|Prenota un tavolo/Prenotazione|Tafel reserveren/Reservering maken
+h_files|Files/Documents/My files|Dateien/Dokumente|Fichiers/Documents|Archivos/Documentos|Arquivos/Documentos|File/Documenti|Bestanden/Documenten
+h_board|Board/Sprint board/Tasks|Board/Aufgaben|Tableau/Tâches|Tablero/Tareas|Quadro/Tarefas|Bacheca/Attività|Bord/Taken
+h_reviews|Reviews/Customer reviews|Bewertungen/Kundenbewertungen|Avis/Avis clients|Opiniones/Reseñas|Avaliações|Recensioni|Reviews/Beoordelingen
 f_company|Company|Unternehmen|Entreprise|Empresa|Empresa|Azienda|Bedrijf
 f_resources|Resources|Ressourcen|Ressources|Recursos|Recursos|Risorse|Bronnen
 f_legal|Legal|Rechtliches|Mentions légales|Legal|Jurídico|Note legali|Juridisch
