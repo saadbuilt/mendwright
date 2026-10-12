@@ -82,6 +82,7 @@ addopts = "-m 'not browser' -p no:mendwright"
 
 [tool.ruff]
 line-length = 112
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
@@ -92,3 +93,5 @@ select = ["E", "F", "W", "B"]
 "mendwright/__init__.py" = ["E402", "F401"]
 # Test data (HTML snippets, long selectors) reads better on one line.
 "tests/**" = ["E501"]
+# The training scripts build HTML and word lists; those read better on one line too.
+"training/**" = ["E501"]
