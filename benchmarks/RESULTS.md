@@ -6,7 +6,7 @@ The corpus has 47 cases: 35 where a heal is the right answer and 12 where the ri
 
 ## Model runs
 
-None yet. The rows below are model-free runs, which show what the fingerprint tier, the harness and the gate do without a model. Model numbers will be added when the runs below have been made.
+Each model row is one run on one date. Results vary between runs and model versions, so compare rows from the same date where you can.
 
 To add a model run (the key and endpoint come from your environment, as in `mendwright doctor`):
 
@@ -26,6 +26,8 @@ to measure the model alone.
 
 | Provider | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives | Healed by fingerprint | Avg model calls | Avg latency | Avg prompt chars (est. tokens) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
+| local (mendwright-selector) + fingerprint | headless chromium | 2026-10-12 | 30/35 (85.7%) | 0 (0.0%) | 5 (14.3%) | 11/12 | 1/12 | 21 | 0.47 | 202 ms | 1,544 (~386) |
+| local (mendwright-selector) + fingerprint | StandInPage | 2026-10-12 | 30/35 (85.7%) | 0 (0.0%) | 5 (14.3%) | 11/12 | 1/12 | 21 | 0.47 | 202 ms | 1,544 (~386) |
 | fingerprint tier alone (no model) | StandInPage | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,271 (~2,568) |
 | fingerprint tier alone (no model) | headless chromium | 2026-10-12 | 21/35 (60.0%) | 0 (0.0%) | 14 (40.0%) | 12/12 | 0/12 | 21 | 0.47 | under 1 ms | 10,281 (~2,570) |
 | similarity baseline + fingerprint | StandInPage | 2026-10-12 | 28/35 (80.0%) | 1 (2.9%) | 6 (17.1%) | 10/12 | 2/12 | 21 | 0.47 | 1 ms | 10,271 (~2,568) |
@@ -41,6 +43,64 @@ The fingerprint tier is part of mendwright and on by default: while the old sele
 The similarity baseline records the element while the old selector still matches, and later picks the most similar element on the new page. A model gets less: the key, the old selector and the new page, never the old page.
 
 ## Each run
+
+### local (mendwright-selector) + fingerprint, headless chromium, 2026-10-12
+
+mendwright 0.4.0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/local-mendwright-selector-chromium-20261012.json`.
+
+Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 8,489 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 4 | 0 | 0 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 2 | 0 | 1 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| tag change, same role | 3 | 3 | 0 | 0 | 0 | 0 |
+| near-duplicates | 4 | 1 | 0 | 3 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 3 | 0 | 0 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 1 | 1 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+Wrong heals:
+
+- `neg-ambiguous-invite-accept`: healed to `//li[p[normalize-space()='Globex invited you to Globex Field Team.']]//button[normalize-space()='Accept']` (negative case, should not heal).
+
+### local (mendwright-selector) + fingerprint, StandInPage, 2026-10-12
+
+mendwright 0.4.0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
+47 cases (corpus 6178f8b04c6a). Results file: `benchmarks/results/local-mendwright-selector-standin-20261012.json`.
+
+Wrong heals: 1 of 47 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 21. Prompt text for one pass over the cases: about 8,489 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 4 | 4 | 0 | 0 | 0 | 0 |
+| hashed class churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 3 | 2 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 2 | 0 | 1 | 0 | 0 |
+| moved to another region | 3 | 3 | 0 | 0 | 0 | 0 |
+| attribute churn | 3 | 3 | 0 | 0 | 0 | 0 |
+| tag change, same role | 3 | 3 | 0 | 0 | 0 | 0 |
+| near-duplicates | 4 | 1 | 0 | 3 | 0 | 0 |
+| hidden duplicate | 3 | 3 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 3 | 0 | 0 | 0 | 0 |
+| form fields reordered | 3 | 3 | 0 | 0 | 0 | 0 |
+| removed (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| ambiguous duplicates (negative) | 2 | 0 | 0 | 0 | 1 | 1 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
+
+Wrong heals:
+
+- `neg-ambiguous-invite-accept`: healed to `//li[p[normalize-space()='Globex invited you to Globex Field Team.']]//button[normalize-space()='Accept']` (negative case, should not heal).
 
 ### fingerprint tier alone (no model), StandInPage, 2026-10-12
 
