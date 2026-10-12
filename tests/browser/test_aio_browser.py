@@ -334,3 +334,142 @@ def test_the_sync_open_points_an_async_page_to_aio(engine):
             await page.context.close()
 
     assert 'heal = await mendwright.aio.open(page)' in engine.run(main())
+
+
+# --- flow changes: interruptions, the cookies= preset, optional steps, the page guard ---------
+
+_COOKIE_BANNER = """<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <button id="cookie-accept" type="button" style="position: absolute; left: 16px; bottom: 16px"
+    onclick="document.getElementById('consent').textContent = 'accepted';
+             document.getElementById('cookie-banner').remove()">Accept all</button></div>"""
+_SIGNUP = ("<p>Consent: <span id='consent'>none</span></p><form><input id='email'>"
+           "<button type='button' id='create' onclick=\"document.getElementById('done')"
+           ".textContent = 'created'\">Create account</button></form><p id='done'></p>")
+_ONETRUST = _SIGNUP.replace('<form>', """<div id="onetrust-consent-sdk"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div id="onetrust-banner-sdk" role="region" aria-label="Cookie banner"
+    style="position: absolute; left: 0; right: 0; bottom: 0; background: #fff">
+    <button id="onetrust-reject-all-handler" onclick="choose('rejected')">Reject All</button>
+    <button id="onetrust-accept-btn-handler" onclick="choose('accepted')">Accept All</button>
+  </div></div>
+<script>function choose(c) { document.getElementById('consent').textContent = c;
+  document.getElementById('onetrust-consent-sdk').remove(); }</script><form>""")
+
+
+async def _close(page):
+    try:
+        await page.context.close()
+    except Exception:
+        pass   # some Firefox builds fail BrowserContext.close; the browser closes later
+
+
+async def _texts(page):
+    return (await page.input_value('#email'), await page.text_content('#consent'),
+            await page.text_content('#done'))
+
+
+def test_flow_a_banner_that_now_opens_first(engine, tmp_path):
+    provider = Stub("//button[@id='create']")
+
+    async def main():
+        page = await engine.page(_SIGNUP + _COOKIE_BANNER)
+        try:
+            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('cookies', '#cookie-accept')
+            await heal.locator('email', '#email').fill('ada@example.com')
+            await heal.locator('create', '#create').click()
+            old_step = heal.locator('cookies', '#cookie-accept')
+            result = await old_step.click()
+            return heal, result, old_step.present, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, result, present, texts = engine.run(main())
+    assert result is None and present is False
+    assert texts == ('ada@example.com', 'accepted', 'created')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', 'email')]
+    assert provider.bundles == []
+
+
+@pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
+def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
+    async def main():
+        page = await engine.page(_ONETRUST)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, cookies=choice)
+            await heal.locator('email', '#email').fill('ada@example.com')
+            return heal, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, texts = engine.run(main())
+    assert texts[:2] == ('ada@example.com', outcome)
+    assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
+
+
+def test_flow_an_optional_step(engine, tmp_path):
+    provider = Stub("//button[@id='create']")
+
+    async def main():
+        page = await engine.page(_SIGNUP)
+        try:
+            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=200)
+            promo = heal.locator('promo', '#promo-close', optional=True, role='button')
+            clicked = await promo.click()
+            there = heal.locator('create', '#create', optional=True)
+            await there.click()
+            return clicked, promo.present, there.present, await _texts(page)
+        finally:
+            await _close(page)
+
+    clicked, absent, present, texts = engine.run(main())
+    assert clicked is None and absent is False and present is True
+    assert texts[2] == 'created'
+    assert provider.bundles == []
+
+
+def test_flow_the_page_guard_across_two_urls(engine, tmp_path):
+    from urllib.parse import urlsplit
+    pages = {'/signup': "<form><input id='email'><button type='button' id='continue'>Continue"
+                        "</button></form>",
+             '/signup/details': "<form><input id='phone'><button type='button' id='help'>Help"
+                                "</button></form>"}
+    provider = Stub("//button[@id='help']")
+
+    async def serve(route):
+        await route.fulfill(status=200, content_type='text/html',
+                            body=pages.get(urlsplit(route.request.url).path, ''))
+
+    async def main():
+        page = await engine.page('')
+        try:
+            await page.route('https://mendwright.test/**', serve)
+            await page.goto('https://mendwright.test/signup')
+            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=200)
+            await heal.locator('continue', '#continue').click()
+            await page.goto('https://mendwright.test/signup/details')
+            try:
+                await heal.locator('continue', '#continue')
+            except AttentionRequired as exc:
+                error = str(exc)
+            else:
+                error = ''
+            calls = len(provider.bundles)
+            across = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                               timeout_ms=200, heal_across_pages=True)
+            await across.locator('continue', '#continue')
+            return error, calls, across
+        finally:
+            await _close(page)
+
+    error, calls, across = engine.run(main())
+    assert ("'continue' was last found on /signup, and this page is /signup/details. That looks "
+            "like a change in the flow") in error
+    assert 'pass heal_across_pages=True to mendwright.aio.open().' in error
+    assert calls == 0
+    assert len(provider.bundles) == 1 and across.heals[0].new == "//button[@id='help']"

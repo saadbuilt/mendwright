@@ -7,8 +7,10 @@ of them installed, and only deselects the tests afterwards (pyproject addopts).
 
 Engines start lazily, one at a time, headless. An engine whose library or browser is not
 on this machine skips its tests with the reason and the command that fixes it. Pages are
-loaded with page.set_content() on Playwright and from file:// pages written to tmp_path
-on Selenium, so nothing touches the network.
+loaded with page.set_content() on Playwright and from a file:// page written to tmp_path
+on Selenium, so nothing touches the network. tab.load() keeps one address for the whole
+test (as a redesign of one page would); tab.load_at(html, path) gives a page its own
+path, served from a route on Playwright and from its own file on Selenium.
 """
 
 import asyncio
@@ -21,6 +23,7 @@ import shutil
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -176,6 +179,9 @@ class Tab:
         return self.js('document.querySelector(' + _js_string(css) + ').textContent')
 
 
+SITE = 'https://mendwright.test'
+
+
 class PlaywrightTab(Tab):
     family = PLAYWRIGHT
 
@@ -184,6 +190,7 @@ class PlaywrightTab(Tab):
         self.page = browser.new_page()
         self.page.set_default_timeout(ACTION_TIMEOUT_MS)
         self._ctx = self.page
+        self._served = {}
 
     @property
     def target(self):
@@ -192,6 +199,21 @@ class PlaywrightTab(Tab):
     def load(self, html):
         self._ctx = self.page
         self.page.set_content(html)
+
+    def load_at(self, html, path):
+        """Show html at SITE + path, served by a route (no network)."""
+        if not self._served:
+            self.page.route(SITE + '/**', self._serve)
+        self._served[path] = html
+        self._ctx = self.page
+        self.page.goto(SITE + path)
+
+    def _serve(self, route):
+        html = self._served.get(urlsplit(route.request.url).path)
+        if html is None:
+            route.fulfill(status=404, body='')
+        else:
+            route.fulfill(status=200, content_type='text/html', body=html)
 
     def js(self, expression):
         return self._ctx.evaluate('() => (' + expression + ')')
@@ -233,11 +255,23 @@ class SeleniumTab(Tab):
         self.driver.get('about:blank')
 
     def load(self, html):
+        # One file for every load: a page that changes keeps its address, as on a real
+        # site. The query only makes the browser read the file again.
         self._loads += 1
-        path = self._workdir / ('page' + str(self._loads) + '.html')
+        path = self._workdir / 'page.html'
         path.write_text(html, encoding='utf-8')
         self.driver.switch_to.default_content()
-        self.driver.get(path.as_uri())
+        self.driver.get(path.as_uri() + '?load=' + str(self._loads))
+
+    def load_at(self, html, path):
+        """Show html from its own file, site/<path>.html, so its address differs."""
+        self._loads += 1
+        target = self._workdir.joinpath('site', *path.strip('/').split('/'))
+        target = target.with_name(target.name + '.html')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(html, encoding='utf-8')
+        self.driver.switch_to.default_content()
+        self.driver.get(target.as_uri() + '?load=' + str(self._loads))
 
     def js(self, expression):
         return self.driver.execute_script('return (' + expression + ');')
