@@ -505,6 +505,39 @@ def test_an_action_that_failed_otherwise_is_never_run_twice(side, tmp_path, stub
     assert heal.pending() == {}                          # the heal was quarantined as before
 
 
+# What Playwright raises when a click that was intercepted once went through on a retry,
+# and the navigation it started did not commit before the timeout.
+CLICK_DONE_LOG = '\n'.join([
+    'Locator.click: Timeout 30000ms exceeded.',
+    'Call log:',
+    '  - waiting for locator("#next")',
+    '  - attempting click action',
+    '    - <div id="toast"> intercepts pointer events',
+    '  - retrying click action',
+    '    - performing click action',
+    '    - click action done',
+    '    - waiting for scheduled navigations to finish'])
+
+
+def test_an_action_that_reached_the_page_is_not_retried_after_an_interception(side, tmp_path):
+    page = _page(SIGNUP)
+    heal = side.open(page, provider=None, store_path=_store(tmp_path))
+    heal.interrupt('cookies', '#cookie-accept')
+    proxy = side.locate('next', '#next')
+
+    # The click went through (it placed an order, say), then timed out waiting for the next
+    # page, while a banner opened. The call log still holds the earlier interception.
+    def banner_and_timeout(p):
+        p.doc.body.insert(0, lxml.html.fragment_fromstring(BANNER.replace('data-overlay=""', '')))
+        p.fail_next = TimeoutError(CLICK_DONE_LOG)
+    page.during_action.append(banner_and_timeout)
+    with pytest.raises(TimeoutError, match='click action done'):
+        side.act(proxy, 'click')
+    assert page.clicks('css=#next') == 1
+    assert page.clicks('css=#cookie-accept') == 0
+    assert heal.handled_interruptions == []
+
+
 def test_an_intercepted_action_with_nothing_registered_is_not_retried(side, tmp_path):
     page = _page(SIGNUP)
     side.open(page, provider=None, store_path=_store(tmp_path))
@@ -821,6 +854,12 @@ def test_flow_change_message_names_the_entry_point():
     (type('ElementNotInteractableException', (Exception,), {})('not interactable'), True),
     (RuntimeError('Locator.click: Target closed'), False),
     (TimeoutError('timed out'), False),
+    # The interceptor stopped the events of an attempt that was already performing: retried.
+    (RuntimeError('Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - performing click '
+                  'action\n  - <div id="toast"> intercepts pointer events\n  - retrying click '
+                  'action'), True),
+    # The click reached the page and then timed out waiting for the next page: never again.
+    (TimeoutError(CLICK_DONE_LOG), False),
 ])
 def test_is_interception_error(error, expected):
     assert is_interception_error(error) is expected

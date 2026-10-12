@@ -64,12 +64,24 @@ def is_interception_error(exc):
     target could not be interacted with: Playwright's "intercepts pointer events" and
     "element is not visible", Selenium's ElementClickInterceptedException and
     ElementNotInteractableException. Matched by name and text, so selenium and playwright
-    need not be importable."""
+    need not be importable.
+
+    False when Playwright's call log shows the action reached the page ("click action
+    done", then "waiting for scheduled navigations to finish"), even if an earlier attempt
+    in the same log was intercepted: such an action may have taken effect, for example a
+    click that placed an order and then timed out waiting for the next page, so it must
+    never be run again."""
     names = {cls.__name__ for cls in type(exc).__mro__}
     if names & {'ElementClickInterceptedException', 'ElementNotInteractableException'}:
         return True
     text = str(exc).lower()
+    if _ACTION_RAN.search(text):
+        return False
     return 'intercepts pointer events' in text or 'element is not visible' in text
+
+
+# Playwright's call-log lines once a pointer action was performed (see is_interception_error).
+_ACTION_RAN = re.compile(r'\baction done\b|waiting for scheduled navigations')
 
 
 # --- messages ------------------------------------------------------------------------------
