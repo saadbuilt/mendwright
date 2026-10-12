@@ -504,3 +504,31 @@ def test_a_redesign_heals_from_the_fingerprint_with_no_model(engine, tmp_path):
     assert provider.bundles == [] and provider.outcomes == []
     assert heal.heals == [HealEvent('terms', ('#terms',), "//input[@data-testid='consent']",
                                     True, 'fingerprint')]
+
+
+def test_heal_page_runs_an_unchanged_async_script(engine, tmp_path):
+    provider = Stub(HEALED)
+
+    async def main():
+        raw = await engine.page(TERMS)
+        try:
+            heal = await mendwright.aio.open(raw, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=300, fingerprint=False)
+            page = heal.page                   # the one changed line
+
+            async def script():
+                await page.locator('#terms').check()
+                return await page.is_checked('#terms')
+
+            first = await script()
+            await page.set_content(TERMS_V2)   # passes through to the real page
+            hidden = await page.is_visible('#terms')
+            second = await script()
+            visible = await page.locator('#terms').is_visible()
+            return first, hidden, second, visible, await raw.locator('#terms-v2').is_checked()
+        finally:
+            await raw.context.close()
+
+    first, hidden, second, visible, checked = engine.run(main())
+    assert (first, hidden, second, visible, checked) == (True, False, True, True, True)
+    assert len(provider.bundles) == 1

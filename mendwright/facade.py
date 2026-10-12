@@ -245,6 +245,8 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
     by every Healer on the same store file in this process.
     """
+    from .proxies import unwrap
+    page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
     preset = _cookie_preset(cookies, 'mendwright.open()')
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
@@ -416,8 +418,8 @@ class Healer:
 
     def __init__(self, page: Any, driver: Any, store: Any, coordinator: HealCoordinator, *,
                  timeout_ms: int = 10000) -> None:
-        self.page = page
-        self.driver = driver
+        self._page = page
+        self._driver = driver
         self.store = store
         self.coordinator = coordinator
         self.timeout_ms = timeout_ms
@@ -429,7 +431,58 @@ class Healer:
         self._interrupt_log: list = []
         # (key, xpath) pairs whose fingerprint this Healer has read already.
         self._fingerprinted: set = set()
+        self._proxies: dict = {}
         _register(self)
+
+    @property
+    def page(self) -> Any:
+        """The page to use in place of your own, so an existing script heals by changing
+        one line: page = mendwright.open(page).page.
+
+        For a Playwright page or frame it is a HealingPage: page.locator(selector) and the
+        page shortcuts that take a selector (click, dblclick, fill, check, uncheck,
+        select_option, press, type, hover, is_checked, text_content, inner_text,
+        get_attribute) go through heal.locator(selector, selector), so the selector is the
+        key its heals are saved under. is_visible(selector) answers at once and never
+        heals. Everything else, and a locator built with options or chained from another
+        one, is the real page's, not healed. For any other page or driver it is the object
+        mendwright was opened on."""
+        if 'page' not in self._proxies:
+            from .drivers.playwright_sync import PlaywrightSyncDriver
+            from .proxies import HealingPage
+            healing = isinstance(self._driver, PlaywrightSyncDriver)
+            self._proxies['page'] = HealingPage(self, self._page) if healing else self._page
+        return self._proxies['page']
+
+    @property
+    def driver(self) -> Any:
+        """For a Selenium WebDriver, the driver to use in place of your own:
+        driver = mendwright.open(driver).driver. Its find_element(by, value) goes through
+        heal.locator(f'{by}={value}', ...) for By.XPATH, By.CSS_SELECTOR, By.ID and By.NAME
+        and returns the WebElement; everything else is the real driver's. For any other
+        page it is mendwright's own Driver for it, as before."""
+        if 'driver' not in self._proxies:
+            from .drivers.selenium import SeleniumDriver
+            from .proxies import HealingDriver
+            healing = isinstance(self._driver, SeleniumDriver)
+            self._proxies['driver'] = HealingDriver(self, self._page) if healing else self._driver
+        return self._proxies['driver']
+
+    def _knows(self, key):
+        """True when the store has an active selector for key."""
+        try:
+            return bool(self.store.candidates(key))
+        except Exception:
+            return False
+
+    def _peek_visible(self, key):
+        """For heal.page's is_visible(): True when one of key's stored selectors shows one
+        visible element right now. No waiting and no heal."""
+        try:
+            native = resolve(self.store, self._driver, key, timeout_ms=0, poll_ms=0)
+            return bool(driver_act_on(self._driver, native, 'is_visible'))
+        except Exception:
+            return False
 
     def interrupt(self, key: str, selector: Selector, *, action: str = 'click',
                   args: Sequence[Any] = (), role: Role | None = None) -> None:
@@ -518,7 +571,7 @@ class Healer:
         store = self.store
 
         def attempt(wait=timeout):
-            return resolve(store, self.page, key, timeout_ms=wait, poll_ms=poll_ms)
+            return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
 
         try:
             native = self._resolve_step(key, lambda: attempt(first_wait), Budget(), timeout,
@@ -537,14 +590,14 @@ class Healer:
         self._remember_page(key)
         target = self._fingerprint_target(key)
         if target is not None:
-            self._keep_fingerprint(key, target, driver_fingerprint(self.driver, target))
+            self._keep_fingerprint(key, target, driver_fingerprint(self._driver, target))
         return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms)
 
     def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
         No waiting and no healing."""
         from .resolver import present
-        return present(self.store, self.page, key)
+        return present(self.store, self._page, key)
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 
@@ -617,7 +670,7 @@ class Healer:
         if target is None:
             return None
         try:
-            return driver_describe(self.driver, *target)
+            return driver_describe(self._driver, *target)
         except Exception:
             return None
 
@@ -695,7 +748,7 @@ class Healer:
     def _learn_role(self, key, roles, described):
         store = self.store
         if described is None:
-            if not callable(getattr(self.driver, 'describe', None)):
+            if not callable(getattr(self._driver, 'describe', None)):
                 # This driver cannot describe elements: keep the guess from the selector.
                 guess = store.meta(key)['expectedRole']
                 if guess and guess != 'unknown':
@@ -761,7 +814,7 @@ class Healer:
         others = self._others(before)
         if not others:
             return False
-        driver = driver or self.driver
+        driver = driver or self._driver
         handled = False
         for item in others:
             target = self._interruption_target(item, driver)
@@ -857,7 +910,7 @@ class Healer:
 
     def _url(self):
         try:
-            return self.driver.url() or ''
+            return self._driver.url() or ''
         except Exception:
             return ''
 
@@ -928,7 +981,7 @@ class Healer:
         (a driver with frame_matches(), such as Playwright's), raise AttentionRequired
         saying so, before any model call. A model shown this page could not find it."""
         __tracebackhide__ = True
-        finder = getattr(self.driver, 'frame_matches', None)
+        finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
             return
         for selector in self._frame_candidates(key):
@@ -1031,7 +1084,7 @@ class ActionProxy:
             return None   # a skipped step: nothing to act on
         args = tuple(_unwrap(a) for a in args)
         kwargs = {k: _unwrap(v) for k, v in kwargs.items()}
-        act_on = getattr(self._healer.driver, 'act_on', None)
+        act_on = getattr(self._healer._driver, 'act_on', None)
         if callable(act_on):
             # The built-in drivers raise AttributeError/TypeError/ValueError for a bad verb
             # or argument before anything reaches the browser.

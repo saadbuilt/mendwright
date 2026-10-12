@@ -26,6 +26,8 @@ def wrap(obj):
     Locator/FrameLocator passed where a page was expected, or an unknown object. Custom
     drivers registered with register_driver_front are still tried first, so one can take
     over any of those cases."""
+    from ..proxies import unwrap
+    obj = unwrap(obj)   # heal.page or heal.driver: drive the real page, never the proxy
     if is_driver(obj):
         return obj
     for detect, make in _REGISTRY:

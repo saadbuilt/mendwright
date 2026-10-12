@@ -430,7 +430,7 @@ def other_driver():
 ''')
     project.makepyfile('''
         def test_uses_it(heal, my_driver):
-            assert heal.page is my_driver
+            assert heal.page.native is my_driver
     ''')
     args = []
     if how == 'ini':
