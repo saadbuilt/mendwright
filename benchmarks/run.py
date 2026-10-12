@@ -693,7 +693,7 @@ def _provider_error(reason, provider):
         return False
     if isinstance(provider, (NoneProposer, SimilarityProposer, OracleProposer)):
         return False
-    return not error.lower().startswith('the model')
+    return not error.lower().startswith(('the model', 'the local model'))
 
 
 def show(page, html, url=None):

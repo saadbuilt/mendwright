@@ -97,13 +97,13 @@ class LocalModelProvider:
             reason = str(bundle.get('rejectReason') or '')
             if not reason.startswith(_RETRY_REASONS):
                 self.last_error = sentence(
-                    "mendwright's checks refused the element the local model picked ("
-                    + clip(reason, 120) + "), and the local model does not guess a second time")
+                    "the local model's pick was refused by mendwright's checks ("
+                    + clip(reason, 120) + "), and it does not guess a second time")
                 return None
             cands = self._without(cands, rejected)
             if cands is None:
                 self.last_error = sentence(
-                    "mendwright's checks refused the element the local model picked ("
+                    "the local model's pick was refused by mendwright's checks ("
                     + clip(reason, 120) + '), and it could not be told apart from the others')
                 return None
         if not cands:
