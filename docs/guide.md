@@ -205,7 +205,7 @@ export MENDWRIGHT_LOCAL_MODEL=mendwright-selector   # the name you gave it in `o
 mendwright doctor                                    # LocalModelProvider (mendwright selector model in Ollama)
 ```
 
-In code, `LocalModelProvider(model="mendwright-selector", base_url="http://localhost:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST`.
+In code, `LocalModelProvider(model="mendwright-selector", base_url="http://127.0.0.1:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST` and then `http://127.0.0.1:11434`. `localhost` is read as `127.0.0.1`, because on Windows a request to `localhost` tries IPv6 first and waits about 2 seconds before Ollama answers on IPv4.
 
 Two things differ from the other providers:
 

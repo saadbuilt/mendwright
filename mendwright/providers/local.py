@@ -24,7 +24,7 @@ key matched last time), because it sets wants_fingerprint; the coordinator leave
 fingerprint out for every other provider.
 
 The model is set with model= or MENDWRIGHT_LOCAL_MODEL (default 'mendwright-selector'), and
-the host with base_url= or OLLAMA_HOST (default http://localhost:11434). training/ in the
+the host with base_url= or OLLAMA_HOST (default http://127.0.0.1:11434). training/ in the
 repository has the recipe that builds the model.
 """
 
@@ -35,7 +35,9 @@ from ..gate import NOT_LIVE
 from ._errors import NOT_HERE_HINT, Describer, clip, sentence
 
 DEFAULT_MODEL = 'mendwright-selector'
-DEFAULT_BASE_URL = 'http://localhost:11434'
+# 127.0.0.1 rather than localhost: on Windows, localhost tries IPv6 first, and a request to
+# Ollama (which listens on IPv4) then waits about 2 seconds before it falls back.
+DEFAULT_BASE_URL = 'http://127.0.0.1:11434'
 
 # Reasons from the gate after which the provider asks again without the refused element.
 _RETRY_REASONS = (NOT_LIVE, 'not unique')
@@ -43,7 +45,8 @@ _RETRY_REASONS = (NOT_LIVE, 'not unique')
 
 def _host(value):
     """OLLAMA_HOST is often written without a scheme ('localhost:11434', '0.0.0.0'), and
-    an OpenAI-style base URL ends in /v1; both become a plain http://host:port."""
+    an OpenAI-style base URL ends in /v1; both become a plain http://host:port. localhost
+    and 0.0.0.0 become 127.0.0.1 (see DEFAULT_BASE_URL)."""
     text = (value or '').strip().rstrip('/')
     if not text:
         return DEFAULT_BASE_URL
@@ -51,12 +54,13 @@ def _host(value):
         text = 'http://' + text
     if text.endswith('/v1'):
         text = text[:-3]
-    host = text.split('://', 1)[1]
-    if host.startswith('0.0.0.0'):
-        text = text.replace('0.0.0.0', '127.0.0.1', 1)
-    if ':' not in host.split('/', 1)[0]:
-        text += ':11434'
-    return text.rstrip('/')
+    scheme, rest = text.split('://', 1)
+    hostport, slash, path = rest.partition('/')
+    host, colon, port = hostport.partition(':')
+    if host.lower() in ('localhost', '0.0.0.0'):
+        host = '127.0.0.1'
+    hostport = host + ':' + (port if colon and port else '11434')
+    return (scheme + '://' + hostport + slash + path).rstrip('/')
 
 
 class LocalModelProvider:

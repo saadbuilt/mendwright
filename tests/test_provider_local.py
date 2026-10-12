@@ -87,7 +87,7 @@ def test_the_request_is_a_json_chat_at_temperature_zero_with_the_task():
     prov = LocalModelProvider(http=http)
     prov.propose(BUNDLE)
     call = http.calls[0]
-    assert call['url'] == 'http://localhost:11434/api/chat'
+    assert call['url'] == 'http://127.0.0.1:11434/api/chat'
     body = call['json']
     assert body['model'] == DEFAULT_MODEL == prov.model
     assert body['format'] == 'json' and body['stream'] is False
@@ -148,7 +148,7 @@ def test_ollama_not_running_is_named():
     err = urllib.error.URLError(ConnectionRefusedError(10061, 'refused'))
     prov = LocalModelProvider(http=FakeOllama(error=err))
     assert prov.propose(BUNDLE) is None
-    assert prov.last_error.startswith('could not connect to http://localhost:11434 (connection refused)')
+    assert prov.last_error.startswith('could not connect to http://127.0.0.1:11434 (connection refused)')
     assert "ollama serve" in prov.last_error
 
 
@@ -180,10 +180,11 @@ def test_after_any_other_refusal_it_does_not_guess_again():
 
 
 @pytest.mark.parametrize('host, url', [
-    ('localhost:11434', 'http://localhost:11434'),
+    ('localhost:11434', 'http://127.0.0.1:11434'),
+    ('LOCALHOST', 'http://127.0.0.1:11434'),
     ('0.0.0.0', 'http://127.0.0.1:11434'),
     ('http://gpu-box:8080/', 'http://gpu-box:8080'),
-    ('http://localhost:11434/v1', 'http://localhost:11434'),
+    ('http://localhost:11434/v1', 'http://127.0.0.1:11434'),
 ])
 def test_ollama_host_is_read_like_ollama_reads_it(monkeypatch, host, url):
     monkeypatch.setenv('OLLAMA_HOST', host)
@@ -273,5 +274,5 @@ def test_doctor_names_the_local_model_and_its_endpoint(monkeypatch):
     info = _provider_info()
     assert info['configured'] and info['model'] == 'mendwright-selector'
     assert info['name'].startswith('LocalModelProvider')
-    assert info['endpoint'] == 'http://localhost:11434'
+    assert info['endpoint'] == 'http://127.0.0.1:11434'
     assert info['selected_by'] == ['MENDWRIGHT_LOCAL_MODEL']
