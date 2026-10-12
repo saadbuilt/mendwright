@@ -454,6 +454,7 @@ heal.locator("email", "#email").fill("ada@example.com")
 
 `heal.interrupt(key, selector, *, action="click", args=(), role=None)` registers a step that can show up at any point.
 `selector` finds the element to act on: one selector, or a list tried in order. `action` and `args` say what to do with it, with the same verbs as a proxy action. With `role=`, mendwright acts only on an element of that role (on drivers that can read elements).
+Use a selector that matches one element. An XPath that matches several is narrowed to the first visible match, but a CSS or Playwright selector that matches several, such as `.cookie-accept` matching a hidden mobile copy and the visible button, is skipped.
 
 mendwright looks for registered interruptions only when a step needs help:
 

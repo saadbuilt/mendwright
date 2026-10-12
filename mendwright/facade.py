@@ -409,7 +409,9 @@ class Healer:
         selector finds the element to act on (one selector, or a list tried in order), and
         action with args is what to do with it (a click by default; for example
         action='press', args=('Escape',)). role=, when given, is the role the element
-        must have before mendwright acts on it.
+        must have before mendwright acts on it. Use a selector that matches one element:
+        an XPath that matches several is narrowed to the first visible match, and any
+        other kind that matches several is skipped.
 
         mendwright looks for it only when a step needs help: when a locator() misses
         (before any heal or model call), before an action while the page shows it, and when
