@@ -1,0 +1,10 @@
+{
+  "id": "flow-signup-continue",
+  "category": "flow",
+  "description": "Sign-up now asks about the team before the account step is finished, so when the script clicks Continue on the account form the browser is on /signup/team, which has its own Continue button for a different step.",
+  "key": "signup_continue",
+  "selector": "#signup-continue",
+  "truth": null,
+  "v1_url": "https://tallyboard.example/signup",
+  "v2_url": "https://tallyboard.example/signup/team"
+}

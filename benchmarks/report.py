@@ -37,6 +37,7 @@ CATEGORY_NAMES = {
     'removed': 'removed (negative)',
     'ambiguous': 'ambiguous duplicates (negative)',
     'removed_near_danger': 'removed, dangerous control nearby (negative)',
+    'flow': 'step moved to another page (negative)',
 }
 
 COMMANDS = """```bash

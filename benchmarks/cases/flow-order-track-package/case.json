@@ -1,0 +1,10 @@
+{
+  "id": "flow-order-track-package",
+  "category": "flow",
+  "description": "The order page now sends returning customers to the returns page first, so the step that follows the Track package link runs on /account/orders/10482/returns, which has a Track return link instead.",
+  "key": "track_package",
+  "selector": "#track-package",
+  "truth": null,
+  "v1_url": "https://northwind.example/account/orders/10482",
+  "v2_url": "https://northwind.example/account/orders/10482/returns"
+}

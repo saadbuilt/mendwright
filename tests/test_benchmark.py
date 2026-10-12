@@ -7,6 +7,8 @@ what it is given.
 - The grader: the oracle (it proposes the truth) gets every positive case right and
   declines every negative one; the none baseline misses every positive case and declines
   every negative one; a proposer that picks another element is graded wrong.
+- The flow cases (the step moved to another page) give each version its own address, and
+  mendwright's page guard declines them before any model call.
 
 Everything runs offline on StandInPage, with no model and no browser.
 """
@@ -17,6 +19,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from mendwright.flow import page_path
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCH = ROOT / 'benchmarks'
@@ -38,17 +42,19 @@ bench = _load('mendwright_benchmark_run', BENCH / 'run.py')
 report = _load('mendwright_benchmark_report', BENCH / 'report.py')
 
 CASES = bench.load_cases()
-NEGATIVE_CATEGORIES = ('removed', 'ambiguous', 'removed_near_danger')
+NEGATIVE_CATEGORIES = ('removed', 'ambiguous', 'removed_near_danger', 'flow')
 POSITIVE = [c for c in CASES if c.positive]
 NEGATIVE = [c for c in CASES if not c.positive]
 BY_ID = {c.id: c for c in CASES}
+FLOW = [c for c in CASES if c.category == 'flow']
 
 
 # --- the corpus ------------------------------------------------------------------------------
 
 def test_the_corpus_has_the_size_and_spread_the_docs_describe():
-    assert 36 <= len(CASES) <= 44
-    assert 6 <= len(NEGATIVE) <= 10
+    assert 40 <= len(CASES) <= 50
+    assert 10 <= len(NEGATIVE) <= 14
+    assert 3 <= len(FLOW) <= 4
     categories = {c.category for c in CASES}
     assert categories == set(bench.CATEGORIES)
     for name in bench.CATEGORIES:
@@ -61,7 +67,13 @@ def test_case_is_well_formed(case):
     meta = json.loads((folder / 'case.json').read_text(encoding='utf-8'))
     assert meta['id'] == folder.name
     assert {'id', 'category', 'description', 'key', 'selector', 'truth'} <= set(meta)
-    assert set(meta) <= {'id', 'category', 'description', 'key', 'selector', 'truth', 'role', 'destructive'}
+    assert set(meta) <= {'id', 'category', 'description', 'key', 'selector', 'truth', 'role',
+                         'destructive', 'v1_url', 'v2_url'}
+    # Only a flow case gives its versions their own addresses, and they are different pages.
+    assert ('v1_url' in meta) == ('v2_url' in meta) == (case.category == 'flow')
+    if case.category == 'flow':
+        assert page_path(case.v1_url) and page_path(case.v2_url)
+        assert page_path(case.v1_url) != page_path(case.v2_url)
     assert case.description.strip() and case.key.strip()
     assert case.category in bench.CATEGORIES
     assert case.positive == (case.category not in NEGATIVE_CATEGORIES)
@@ -111,6 +123,9 @@ def test_the_oracle_gets_every_positive_case_and_declines_every_negative():
     assert all(outcomes[c.id] == 'declined' for c in NEGATIVE), outcomes
     for r in records:
         assert r['note'] is None
+        if r['category'] == 'flow':     # declined by the page guard, before any model call
+            assert r['model_calls'] == 0 and r['prompt_chars'] == 0
+            continue
         assert r['model_calls'] == 1
         assert r['prompt_chars'] > 1000 and r['est_tokens'] == round(r['prompt_chars_total'] / 4)
 
@@ -120,7 +135,10 @@ def test_the_none_baseline_misses_every_positive_case_and_declines_every_negativ
     for r in records:
         assert r['outcome'] == ('missed' if r['expected'] == 'heal' else 'declined'), r['id']
         assert r['healed_xpath'] is None
-        assert 'never proposes' in r['decline_reason']
+        if r['category'] == 'flow':
+            assert 'That looks like a change in the flow' in r['decline_reason']
+        else:
+            assert 'never proposes' in r['decline_reason']
         assert r['provider_error'] is False
     summary = bench.summarize(records)
     assert (summary['correct'], summary['wrong'], summary['wrong_negative']) == (0, 0, 0)
@@ -192,6 +210,27 @@ def test_a_wrong_pick_the_gate_refuses_is_counted_and_the_retry_is_graded():
     assert first['target'] == 'other' and 'live page' in first['result']
     assert second['target'] == 'truth' and second['result'] == 'applied'
     assert record['prompt_chars_total'] > record['prompt_chars']
+
+
+@pytest.mark.parametrize('case', FLOW, ids=lambda c: c.id)
+def test_the_page_guard_is_what_declines_a_flow_case(case):
+    # With the guard, no model call. Without it, the similarity baseline heals onto the
+    # similar element on the other page, which every check accepts.
+    guarded = bench.run_case(case, bench.SimilarityProposer(), bench.StandInPage())
+    assert (guarded['outcome'], guarded['model_calls']) == ('declined', 0)
+    assert guarded['decline_reason'].startswith("'" + case.key + "' was last found on "
+                                                + page_path(case.v1_url))
+    across = bench.run_case(case, bench.SimilarityProposer(), bench.StandInPage(),
+                            heal_across_pages=True)
+    assert (across['outcome'], across['model_calls']) == ('wrong_negative', 1)
+
+
+def test_show_gives_a_stand_in_page_the_address_of_the_version():
+    page = bench.StandInPage()
+    bench.show(page, '<p>v1</p>', 'https://shop.example/a')
+    assert page.url == 'https://shop.example/a' and 'v1' in page.content()
+    bench.show(page, '<p>v2</p>')
+    assert page.url == 'https://shop.example/a' and 'v2' in page.content()
 
 
 def test_the_similarity_baseline_does_not_depend_on_the_truth():

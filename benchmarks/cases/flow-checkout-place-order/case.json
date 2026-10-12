@@ -1,0 +1,10 @@
+{
+  "id": "flow-checkout-place-order",
+  "category": "flow",
+  "description": "Checkout gained a separate payment page between delivery and review, so the place-order step now runs on /checkout/payment, where the primary submit button continues to review instead.",
+  "key": "place_order",
+  "selector": "#place-order",
+  "truth": null,
+  "v1_url": "https://northwind.example/checkout/review",
+  "v2_url": "https://northwind.example/checkout/payment"
+}

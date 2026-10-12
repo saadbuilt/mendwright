@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Return items from order 10482 | Northwind Outfitters</title>
+  <link rel="stylesheet" href="/assets/theme.css?v=812">
+  <style>
+    body { font-family: "Helvetica Neue", Arial, sans-serif; margin: 0; color: #222; }
+    .site-header { border-bottom: 1px solid #ddd; }
+    .header-main { display: flex; align-items: center; gap: 24px; padding: 12px 32px; }
+    .main-nav ul, .account-links { list-style: none; margin: 0; padding: 0; display: flex; gap: 16px; }
+    .product-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; list-style: none; padding: 0; }
+    .btn { padding: 8px 16px; border-radius: 4px; border: 1px solid #222; background: #fff; cursor: pointer; }
+    .btn-primary { background: #1d3b2a; color: #fff; }
+    .cookie-banner { background: #f6f3ee; padding: 16px 32px; }
+    .site-footer { background: #1d3b2a; color: #eee; padding: 32px; }
+  </style>
+  <script>window.dataLayer = window.dataLayer || []; window.dataLayer.push({"pageType": "checkout"});</script>
+</head>
+<body>
+  <div id="cookie-banner" class="cookie-banner" role="dialog" aria-label="Cookie consent">
+    <p>We use cookies to improve your experience and to show you relevant offers. <a href="/legal/cookies">Read our cookie policy</a>.</p>
+    <button id="cookie-reject" class="btn" type="button">Reject all</button>
+    <button id="cookie-settings" class="btn" type="button">Cookie settings</button>
+    <button id="cookie-accept" class="btn btn-primary" type="button">Accept all</button>
+  </div>
+  <header class="site-header">
+    <div class="promo-strip">Free shipping on orders over $75. <a href="/help/shipping">Details</a></div>
+    <div class="header-main">
+      <a class="logo" href="/"><img src="/assets/logo.svg" alt="Northwind Outfitters" width="160" height="32"></a>
+      <form class="search-form" action="/search" method="get" role="search">
+        <label for="search-input">Search</label>
+        <input id="search-input" name="q" type="search" placeholder="Search products">
+        <button type="submit" class="btn">Search</button>
+      </form>
+      <ul class="account-links">
+        <li><a href="/account/login">Sign in</a></li>
+        <li><a href="/wishlist">Wishlist</a></li>
+        <li><a class="cart-link" href="/cart">Cart (2)</a></li>
+      </ul>
+    </div>
+    <nav class="main-nav" aria-label="Main">
+      <ul>
+        <li><a href="/c/new-in">New in</a></li>
+        <li><a href="/c/women">Women</a></li>
+        <li><a href="/c/men">Men</a></li>
+        <li><a href="/c/kids">Kids</a></li>
+        <li><a href="/c/outdoor">Outdoor</a></li>
+        <li><a href="/c/sale">Sale</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main class="account">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/account">Account</a> / <a href="/account/orders">Orders</a> / <a href="/account/orders/10482">Order 10482</a> / <span>Returns</span></nav>
+    <h1>Return items</h1>
+    <p class="order-status">You have one return in progress for this order.</p>
+    <div class="order-actions">
+      <a id="track-return" class="btn btn-primary" href="/account/orders/10482/returns/7731/tracking">Track return</a>
+      <a class="btn" href="/account/orders/10482/returns/7731/label">Print return label</a>
+    </div>
+    <form id="return-form" action="/account/orders/10482/returns" method="post">
+      <table class="order-lines">
+        <thead><tr><th>Return</th><th>Item</th><th>Reason</th></tr></thead>
+        <tbody>
+          <tr><td><input type="checkbox" name="line" value="1" aria-label="Return Trail Runner 2"></td><td>Trail Runner 2, size 10</td><td><select name="reason_1" aria-label="Reason for Trail Runner 2"><option>Too small</option><option>Too large</option><option>Not as described</option></select></td></tr>
+          <tr><td><input type="checkbox" name="line" value="2" aria-label="Return Canvas field cap"></td><td>Canvas field cap</td><td><select name="reason_2" aria-label="Reason for Canvas field cap"><option>Too small</option><option>Too large</option><option>Not as described</option></select></td></tr>
+        </tbody>
+      </table>
+      <button type="submit" class="btn">Start another return</button>
+    </form>
+  </main>
+  <footer class="site-footer">
+    <section class="newsletter">
+      <h2>Get 10% off your first order</h2>
+      <form action="/newsletter" method="post" class="newsletter-form">
+        <label for="newsletter-email">Email address</label>
+        <input id="newsletter-email" name="email" type="email" placeholder="you@example.com">
+        <button type="submit" class="btn btn-primary">Subscribe</button>
+      </form>
+    </section>
+    <div class="footer-columns">
+      <div class="footer-column">
+        <h3>Help</h3>
+        <ul>
+          <li><a href="/help/contact">Contact us</a></li>
+          <li><a href="/help/shipping">Shipping</a></li>
+          <li><a href="/help/returns">Returns &amp; exchanges</a></li>
+          <li><a href="/help/size-guide">Size guide</a></li>
+          <li><a href="/help/faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div class="footer-column">
+        <h3>Company</h3>
+        <ul>
+          <li><a href="/about">About us</a></li>
+          <li><a href="/careers">Careers</a></li>
+          <li><a href="/sustainability">Sustainability</a></li>
+          <li><a href="/press">Press</a></li>
+        </ul>
+      </div>
+      <div class="footer-column">
+        <h3>Legal</h3>
+        <ul>
+          <li><a href="/legal/privacy">Privacy policy</a></li>
+          <li><a href="/legal/terms">Terms of service</a></li>
+          <li><a href="/legal/cookies">Cookie policy</a></li>
+          <li><a href="/legal/accessibility">Accessibility</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="social"><a href="https://instagram.com/northwind.example">Instagram</a> <a href="https://pinterest.com/northwind.example">Pinterest</a> <a href="https://youtube.com/@northwind.example">YouTube</a></p>
+    <p class="copyright">&copy; 2026 Northwind Outfitters Ltd. All prices include sales tax where applicable.</p>
+  </footer>
+</body>
+</html>

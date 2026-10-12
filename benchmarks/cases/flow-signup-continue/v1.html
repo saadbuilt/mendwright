@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create your account - Tallyboard</title>
+  <link rel="stylesheet" href="/assets/application-5c1e9f.css">
+  <style>
+    body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #f7f8fa; }
+    .navbar { display: flex; align-items: center; gap: 16px; padding: 8px 20px; background: #24292f; color: #fff; }
+    .navbar a, .navbar button { color: #fff; }
+    .app-shell { display: grid; grid-template-columns: 220px 1fr; }
+    .sidebar { background: #fff; border-right: 1px solid #e3e6ea; padding: 16px; }
+    .content { padding: 24px 32px; }
+    .btn { border: 1px solid #c9ced6; background: #fff; border-radius: 6px; padding: 6px 12px; }
+    .btn-primary { background: #3d5afe; color: #fff; border-color: #3d5afe; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef0f3; }
+  </style>
+  <script>window.TB = {"env": "production", "release": "2026.09.3"};</script>
+</head>
+<body>
+  <div class="auth-layout">
+    <header class="auth-header"><a href="/" class="auth-logo">Tallyboard</a></header>
+    <main class="auth-page">
+      <div class="auth-card">
+        <ol class="signup-steps" aria-label="Sign-up progress"><li class="current">Account</li><li>Your team</li><li>Invite people</li></ol>
+        <h1>Create your Tallyboard account</h1>
+        <p class="auth-sub">Free for 14 days. No card needed.</p>
+        <form id="signup-account" action="/signup" method="post" class="auth-form">
+          <div class="form-group"><label for="work-email">Work email</label><input id="work-email" name="user[email]" type="email" autocomplete="email"></div>
+          <div class="form-group"><label for="new-password">Password</label><input id="new-password" name="user[password]" type="password" autocomplete="new-password"></div>
+          <p class="form-hint">At least 12 characters. Use a passphrase you do not use anywhere else.</p>
+          <div class="form-check"><input id="tos" name="user[tos]" type="checkbox"> <label for="tos">I agree to the <a href="/legal/terms">terms</a></label></div>
+          <div class="form-actions">
+            <button id="signup-continue" type="submit" class="btn btn-primary btn-block">Continue</button>
+          </div>
+        </form>
+        <div class="auth-divider"><span>or</span></div>
+        <a class="btn btn-block btn-sso" href="/auth/google">Sign up with Google</a>
+        <p class="auth-alt">Already have an account? <a href="/login">Sign in</a></p>
+      </div>
+    </main>
+    <footer class="auth-footer">
+      <ul class="auth-footer-links">
+        <li><a href="/legal/privacy">Privacy</a></li>
+        <li><a href="/legal/terms">Terms</a></li>
+        <li><a href="/status">Status</a></li>
+        <li><a href="/help">Help center</a></li>
+      </ul>
+      <p>&copy; 2026 Tallyboard Inc.</p>
+    </footer>
+  </div>
+</body>
+</html>

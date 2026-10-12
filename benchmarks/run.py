@@ -3,7 +3,9 @@ often mendwright accepts a wrong one.
 
 Each case in benchmarks/cases/<id>/ holds a page before a redesign (v1.html), the same
 page after it (v2.html), the selector that matched on v1, and an XPath for the element
-that is right on v2, or null when the right answer is not to heal at all.
+that is right on v2, or null when the right answer is not to heal at all. A case may give
+each version its own address (v1_url, v2_url): the 'flow' cases do, because there the step
+moved to another page.
 
 A case runs the way a test suite would meet the redesign:
 
@@ -80,6 +82,7 @@ CATEGORIES = {
     'removed': 'negative: element removed',
     'ambiguous': 'negative: duplicates with nothing to tell them apart',
     'removed_near_danger': 'negative: removed, with a dangerous control nearby',
+    'flow': 'negative: the step moved to another page',
 }
 
 # Outcomes. A positive case (truth is an XPath) is correct, wrong or missed. A negative
@@ -119,6 +122,8 @@ class Case:
     v2: str
     role: str | None = None
     destructive: bool = False
+    v1_url: str | None = None   # where each version is shown; None: about:blank
+    v2_url: str | None = None
 
     @property
     def positive(self):
@@ -132,6 +137,7 @@ def load_case(folder):
     return Case(id=data['id'], category=data['category'], description=data['description'],
                 key=data['key'], selector=data['selector'], truth=data.get('truth'),
                 role=data.get('role'), destructive=bool(data.get('destructive')),
+                v1_url=data.get('v1_url'), v2_url=data.get('v2_url'),
                 v1=(folder / 'v1.html').read_text(encoding='utf-8'),
                 v2=(folder / 'v2.html').read_text(encoding='utf-8'))
 
@@ -147,9 +153,12 @@ def corpus_hash(cases):
     """A short hash of the cases' files, so a results file names the corpus it ran on."""
     digest = hashlib.sha256()
     for case in sorted(cases, key=lambda c: c.id):
-        meta = json.dumps({'id': case.id, 'category': case.category, 'key': case.key,
-                           'selector': case.selector, 'truth': case.truth, 'role': case.role,
-                           'destructive': case.destructive}, sort_keys=True)
+        fields = {'id': case.id, 'category': case.category, 'key': case.key,
+                  'selector': case.selector, 'truth': case.truth, 'role': case.role,
+                  'destructive': case.destructive}
+        if case.v1_url or case.v2_url:
+            fields.update(v1_url=case.v1_url, v2_url=case.v2_url)
+        meta = json.dumps(fields, sort_keys=True)
         for part in (meta, case.v1, case.v2):
             digest.update(part.replace('\r\n', '\n').encode('utf-8'))
             digest.update(b'\0')
@@ -665,9 +674,38 @@ def _provider_error(reason, provider):
     return not error.lower().startswith('the model')
 
 
-def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, run=1):
+def show(page, html, url=None):
+    """Load ``html`` into ``page``. With a url, the page reports that address: a
+    StandInPage gets it set, and a Playwright page navigates to it, with a route that
+    answers from ``html`` (and with an empty 404 for anything else), so nothing is
+    fetched from the network."""
+    if url is None:
+        page.set_content(html)
+        return
+    if isinstance(page, StandInPage):
+        page.url = url
+        page.set_content(html)
+        return
+    served = getattr(page, '_bench_served', None)
+    if served is None:
+        served = page._bench_served = {}
+
+        def answer(route):
+            body = served.get(route.request.url.split('#', 1)[0])
+            if body is None:
+                route.fulfill(status=404, body='')
+            else:
+                route.fulfill(status=200, content_type='text/html', body=body)
+        page.route('**/*', answer)
+    served[url] = html
+    page.goto(url)
+
+
+def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, run=1,
+             heal_across_pages=False):
     """Run one case on ``page`` (a StandInPage or a sync Playwright page) with
-    ``proposer`` and return its record. The store lives in a temporary folder."""
+    ``proposer`` and return its record. The store lives in a temporary folder.
+    heal_across_pages is passed to mendwright.open(); the published runs leave it off."""
     folder = tempfile.mkdtemp(prefix='mendwright-bench-')
     recorder = Recorder(proposer)
     record = {'id': case.id, 'category': case.category, 'run': run,
@@ -681,7 +719,8 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
             heal = mendwright.open(page, provider=proposer,
                                    store_path=os.path.join(folder, 'overrides.json'),
                                    dry_run=False, timeout_ms=timeout_ms,
-                                   rate_per_key_per_hour=None, rate_global_per_hour=None)
+                                   rate_per_key_per_hour=None, rate_global_per_hour=None,
+                                   heal_across_pages=heal_across_pages)
         log = []
         heal.coordinator.log = log.append
         kwargs = {'poll_ms': poll_ms}
@@ -690,7 +729,7 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
         if case.destructive:
             kwargs['destructive'] = True
 
-        page.set_content(case.v1)
+        show(page, case.v1, case.v1_url)
         try:
             heal.locator(case.key, case.selector, **kwargs)
         except AttentionRequired as exc:
@@ -701,7 +740,7 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
         if callable(learn):
             learn(case.key, page.content(), case.selector)
 
-        page.set_content(case.v2)
+        show(page, case.v2, case.v2_url)
         started = time.perf_counter()
         healed, reason = None, None
         try:

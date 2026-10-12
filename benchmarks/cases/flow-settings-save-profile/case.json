@@ -1,0 +1,10 @@
+{
+  "id": "flow-settings-save-profile",
+  "category": "flow",
+  "description": "Settings now opens on Security instead of Profile, so the step that saves the contact details runs on /settings/security, which has its own Save changes button next to a control that turns off two-step verification.",
+  "key": "save_profile",
+  "selector": "#save-profile",
+  "truth": null,
+  "v1_url": "https://fernbank.example/settings/profile",
+  "v2_url": "https://fernbank.example/settings/security"
+}

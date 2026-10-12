@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tell us about your team - Tallyboard</title>
+  <link rel="stylesheet" href="/assets/application-5c1e9f.css">
+  <style>
+    body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #f7f8fa; }
+    .navbar { display: flex; align-items: center; gap: 16px; padding: 8px 20px; background: #24292f; color: #fff; }
+    .navbar a, .navbar button { color: #fff; }
+    .app-shell { display: grid; grid-template-columns: 220px 1fr; }
+    .sidebar { background: #fff; border-right: 1px solid #e3e6ea; padding: 16px; }
+    .content { padding: 24px 32px; }
+    .btn { border: 1px solid #c9ced6; background: #fff; border-radius: 6px; padding: 6px 12px; }
+    .btn-primary { background: #3d5afe; color: #fff; border-color: #3d5afe; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef0f3; }
+  </style>
+  <script>window.TB = {"env": "production", "release": "2026.09.3"};</script>
+</head>
+<body>
+  <div class="auth-layout">
+    <header class="auth-header"><a href="/" class="auth-logo">Tallyboard</a></header>
+    <main class="auth-page">
+      <div class="auth-card">
+        <ol class="signup-steps" aria-label="Sign-up progress"><li class="done">Account</li><li class="current">Your team</li><li>Invite people</li></ol>
+        <h1>Tell us about your team</h1>
+        <p class="auth-sub">We use this to set up your first workspace. You can change it later.</p>
+        <form id="signup-team" action="/signup/team" method="post" class="auth-form">
+          <div class="form-group"><label for="workspace-name">Workspace name</label><input id="workspace-name" name="workspace[name]" type="text" autocomplete="organization"></div>
+          <div class="form-group"><label for="team-size">Team size</label><select id="team-size" name="workspace[size]"><option>Just me</option><option>2 to 10</option><option>11 to 50</option><option>More than 50</option></select></div>
+          <div class="form-group"><label for="team-role">Your role</label><select id="team-role" name="workspace[role]"><option>Engineering</option><option>Design</option><option>Product</option><option>Operations</option><option>Something else</option></select></div>
+          <div class="form-actions">
+            <a class="btn" href="/signup">Back</a>
+            <button id="team-skip" type="button" class="btn btn-link">Skip for now</button>
+            <button id="team-continue" type="submit" class="btn btn-primary">Continue</button>
+          </div>
+        </form>
+        <p class="auth-alt">Need help setting up? <a href="/help/getting-started">Read the getting started guide</a></p>
+      </div>
+    </main>
+    <footer class="auth-footer">
+      <ul class="auth-footer-links">
+        <li><a href="/legal/privacy">Privacy</a></li>
+        <li><a href="/legal/terms">Terms</a></li>
+        <li><a href="/status">Status</a></li>
+        <li><a href="/help">Help center</a></li>
+      </ul>
+      <p>&copy; 2026 Tallyboard Inc.</p>
+    </footer>
+  </div>
+</body>
+</html>
