@@ -813,10 +813,13 @@ class Healer:
     def _report_nothing_matched(self, key):
         """After an action on key was intercepted and no registered interruption matched a
         visible element: say so, because the likeliest cause is an interruption whose
-        selector no longer matches (its own step, if any, was skipped with an INFO line)."""
-        others = [item.key for item in self._others(key)]
+        selector no longer matches (its own step, if any, was skipped with an INFO line),
+        or one mendwright was never told about."""
+        others = self._others(key)
         if others:
-            self.coordinator._emit(logging.WARNING, nothing_matched_message(key, others))
+            mine = [item.key for item in others if not item.preset]
+            preset = any(item.preset for item in others)
+            self.coordinator._emit(logging.WARNING, nothing_matched_message(key, mine, preset))
 
     def _url(self):
         try:

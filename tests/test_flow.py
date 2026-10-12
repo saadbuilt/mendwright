@@ -549,11 +549,52 @@ def test_an_interruption_whose_selector_broke_is_named_when_it_blocks_a_step(sid
         side.step('email', '#email', 'fill', 'ada@example.com')
     assert page.clicks('css=#accept-all') == 0
     assert [a for a in page.actions if a[1] == 'fill'] == [('css=#email', 'fill', ('ada@example.com',))]
-    assert ("mendwright: an element covered 'email', and none of the interruptions registered "
-            "with heal.interrupt() ('cookies') matched a visible element, so mendwright did not "
-            "try the action again. If the element in the way is one of them, its selector no "
-            "longer matches: update it. If not, register the element in the way with "
-            "heal.interrupt().") in _lines(caplog, logging.WARNING)
+    assert ("mendwright: the action on 'email' failed because something covered its element or "
+            "it could not be reached, and none of the interruptions mendwright looks for "
+            "(heal.interrupt(): 'cookies') matched a visible element, so it did not try the "
+            "action again. If the element in the way is one of those registered with "
+            "heal.interrupt(), its selector no longer matches: update it. Otherwise register the "
+            "button that closes the element in the way with heal.interrupt().") in _lines(
+                caplog, logging.WARNING)
+
+
+def test_a_step_covered_by_something_the_cookies_preset_does_not_know(side, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    spinner = '<div id="spinner" data-overlay=""><p>Loading your account</p></div>'
+    page = _page(spinner + SIGNUP)
+    side.open(page, provider=None, store_path=_store(tmp_path), cookies='reject')
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('email', '#email', 'fill', 'ada@example.com')
+    assert [a for a in page.actions if a[1] == 'fill'] == [('css=#email', 'fill', ('ada@example.com',))]
+    assert ("mendwright: the action on 'email' failed because something covered its element or "
+            "it could not be reached, and none of the interruptions mendwright looks for (the "
+            "cookies= preset) matched a visible element, so it did not try the action again. If "
+            "the element in the way is a cookie banner the preset does not know, or anything "
+            "else, register the button that closes it with heal.interrupt().") in _lines(
+                caplog, logging.WARNING)
+
+
+def test_an_element_that_is_not_visible_is_not_said_to_be_covered(side, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _page(SIGNUP)
+    heal = side.open(page, provider=None, store_path=_store(tmp_path), cookies='accept')
+    heal.interrupt('newsletter', '#newsletter-close')
+    proxy = side.locate('email', '#email')
+    page.fail_next = RuntimeError('Locator.fill: Timeout 30000ms exceeded.\nCall log:\n'
+                                  '  - waiting for element to be visible, enabled and editable\n'
+                                  '  - element is not visible')
+    with pytest.raises(RuntimeError, match='element is not visible'):
+        side.act(proxy, 'fill', 'ada@example.com')
+    warning = [line for line in _lines(caplog, logging.WARNING) if 'none of the interruptions' in line]
+    assert warning == [
+        "mendwright: the action on 'email' failed because something covered its element or it "
+        "could not be reached, and none of the interruptions mendwright looks for "
+        "(heal.interrupt(): 'newsletter'; the cookies= preset) matched a visible element, so it "
+        "did not try the action again. If the element in the way is one of those registered "
+        "with heal.interrupt(), its selector no longer matches: update it. Otherwise register "
+        "the button that closes the element in the way with heal.interrupt(), for example for a "
+        "cookie banner the cookies= preset does not know."]
+    assert 'covered ' + repr('email') not in ' '.join(_lines(caplog))
 
 
 def test_an_intercepted_action_with_nothing_registered_is_not_retried(side, tmp_path):

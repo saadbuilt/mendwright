@@ -124,14 +124,28 @@ def loop_message(before, key, count):
             'args=("Escape",) or a selector for its close button.')
 
 
-def nothing_matched_message(before, keys):
-    """The WARNING for an action that failed because something covered its element, when
-    none of the registered interruptions matched a visible element."""
-    return ('an element covered ' + repr(before) + ', and none of the interruptions '
-            'registered with heal.interrupt() (' + ', '.join(repr(k) for k in keys) + ') '
-            'matched a visible element, so mendwright did not try the action again. If the '
-            'element in the way is one of them, its selector no longer matches: update it. '
-            'If not, register the element in the way with heal.interrupt().')
+def nothing_matched_message(before, keys, preset=False):
+    """The WARNING for an action that failed because something covered its element or it
+    could not be reached, when no interruption matched a visible element. keys are the
+    ones registered with heal.interrupt(); preset is True when open(cookies=...) added
+    its own."""
+    looked = []
+    if keys:
+        looked.append('heal.interrupt(): ' + ', '.join(repr(k) for k in keys))
+    if preset:
+        looked.append('the cookies= preset')
+    text = ('the action on ' + repr(before) + ' failed because something covered its '
+            'element or it could not be reached, and none of the interruptions mendwright '
+            'looks for (' + '; '.join(looked) + ') matched a visible element, so it did not '
+            'try the action again.')
+    if keys:
+        return (text + ' If the element in the way is one of those registered with '
+                'heal.interrupt(), its selector no longer matches: update it. Otherwise '
+                'register the button that closes the element in the way with heal.interrupt()'
+                + (', for example for a cookie banner the cookies= preset does not know.'
+                   if preset else '.'))
+    return (text + ' If the element in the way is a cookie banner the preset does not know, '
+            'or anything else, register the button that closes it with heal.interrupt().')
 
 
 def skip_message(key, reason, before=None):

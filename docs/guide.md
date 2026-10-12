@@ -469,7 +469,7 @@ At most 3 interruptions are handled for one step (one `locator()` call, or one a
 
 An interruption is never healed by a model. If your script also has a step of its own for it, keep it: `heal.locator("cookies", "#cookie-accept").click()` is skipped when the element isn't there, either because the interruption was handled earlier in the run (no wait) or because it didn't appear this time (after `timeout_ms`). A skipped step logs one INFO line, its proxy has `.present` False, and its actions do nothing. When the banner does come at its old place in the flow, the step clicks it as before.
 
-A skipped step can't tell a banner that didn't appear from one whose selector no longer matches. In the second case the banner stays, and a later action fails because it covers the element. mendwright then logs one WARNING that names the registered interruptions, because none of them matched a visible element, and raises the browser's error.
+A skipped step can't tell a banner that didn't appear from one whose selector no longer matches. In the second case the banner stays, and a later action fails because it covers the element. mendwright then logs one WARNING that names the interruptions it looked for (yours, and the `cookies=` preset when it is on), because none of them matched a visible element, and raises the browser's error. The same WARNING comes when the element couldn't be reached for another reason, such as being hidden, while interruptions are registered.
 
 An interruption that hides the element instead of covering it, such as a consent wall that replaces the page until you answer, is found when the step misses, so the step first waits its `timeout_ms`.
 
@@ -533,7 +533,7 @@ Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes th
 
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
-WARNING mendwright: an element covered 'email', and none of the interruptions registered with heal.interrupt() ('cookies') matched a visible element, so mendwright did not try the action again. If the element in the way is one of them, its selector no longer matches: update it. If not, register the element in the way with heal.interrupt().
+WARNING mendwright: the action on 'email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (heal.interrupt(): 'cookies') matched a visible element, so it did not try the action again. If the element in the way is one of those registered with heal.interrupt(), its selector no longer matches: update it. Otherwise register the button that closes the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
 ```
