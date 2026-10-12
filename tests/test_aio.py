@@ -812,3 +812,50 @@ def test_the_async_driver_maps_browser_parse_errors(apage):
         assert await driver.describe('#new-id') is None
 
     run(main())
+
+
+# --- fingerprint healing --------------------------------------------------------------------------
+
+FP_V1 = ("<form id='f'><label><input type='checkbox' id='old-id' name='terms'>"
+         "<span>I accept the terms</span></label></form>")
+FP_V2 = ("<form id='f'><label><input type='checkbox' name='agreement' data-testid='consent'>"
+         "<span>I accept the terms</span></label></form>")
+
+
+def test_the_async_healer_records_a_fingerprint_and_heals_from_it(make_page, tmp_path,
+                                                                  stub_provider):
+    sync = make_page(FP_V1, fingerprints=True)
+    page = AsyncFakePage(sync)
+    provider = stub_provider("//input[@name='agreement']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0)
+        await heal.locator('terms', '#old-id', poll_ms=0)
+        assert heal.store.meta('terms')['fingerprint']['attrs']['name'] == 'terms'
+        sync.set_html(FP_V2)
+        box = await heal.locator('terms', '#old-id', poll_ms=0)
+        await box.check(expect=lambda: True)
+        return heal
+
+    heal = run(main())
+    assert provider.bundles == [] and provider.outcomes == []
+    assert heal.heals == [HealEvent('terms', ('#old-id',), "//input[@data-testid='consent']",
+                                    True, 'fingerprint')]
+    assert sync.fingerprint_reads == 1
+
+
+def test_the_async_healer_takes_fingerprint_false(make_page, tmp_path, stub_provider):
+    sync = make_page(FP_V1, fingerprints=True)
+    page = AsyncFakePage(sync)
+    provider = stub_provider("//input[@name='agreement']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, fingerprint=False)
+        await heal.locator('terms', '#old-id', poll_ms=0)
+        sync.set_html(FP_V2)
+        await heal.locator('terms', '#old-id', poll_ms=0)
+        return heal
+
+    heal = run(main())
+    assert sync.fingerprint_reads == 0 and len(provider.bundles) == 1
+    assert heal.heals[-1].source == 'model'

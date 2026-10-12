@@ -203,8 +203,10 @@ def test_without_a_provider_each_miss_logs_a_short_line(monkeypatch, tmp_path, c
             message = str(exc)
     assert 'ANTHROPIC_API_KEY' in message
     lines = [r.getMessage() for r in caplog.records if 'did not heal' in r.getMessage()]
-    assert lines == ["mendwright: did not heal 'terms': no model provider is configured (see "
-                     'the mendwright.open() warning, or run mendwright doctor)']
+    assert lines == ["mendwright: did not heal 'terms': 'terms' has no fingerprint yet "
+                     '(mendwright records one each time its selector matches), and no model '
+                     'provider is configured (see the mendwright.open() warning, or run '
+                     'mendwright doctor)']
 
 
 def test_a_missing_role_is_named_together_with_a_missing_provider(monkeypatch, tmp_path,

@@ -91,6 +91,11 @@ BUNDLES = [
      'lastPage': '/signup', 'html': '<button>Help</button>'},
     {'key': 'continue', 'expectedRole': 'button', 'page': '', 'lastPage': None},
     {'key': 'continue', 'expectedRole': 'button', 'page': '/caf\u00e9/*'},
+    {'key': 'terms', 'expectedRole': 'checkbox', 'candidates': [],
+     'intent': 'the terms checkbox in the signup form, \u00fc "quoted" \U0001F600'},
+    {'key': 'terms', 'expectedRole': 'checkbox', 'intent': ''},
+    {'key': 'terms', 'expectedRole': 'checkbox', 'intent': None, 'expectedText': ['I agree']},
+    {'key': 'terms', 'expectedRole': 'checkbox', 'intent': 7},
 ]
 
 TEXTS = [

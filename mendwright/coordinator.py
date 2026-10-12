@@ -1,6 +1,7 @@
 """The heal itself. When every candidate selector misses, HealCoordinator captures the
-page, asks a provider for a fix, checks and saves it, and resolve_with_heal() retries the
-step in the same call. A guard can block healing while a payment or registration is being
+page, looks for the element the key's fingerprint describes (with fingerprint=True, no
+model needed), else asks a provider for a fix, checks and saves it, and resolve_with_heal()
+retries the step in the same call. A guard can block healing while a payment or registration is being
 submitted, keys marked destructive are never healed, a key is not healed on a page where
 it was never found (a change in the flow, see mendwright.flow), and a failed canary
 quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
@@ -10,6 +11,7 @@ quarantines the healed candidate. When a heal does not happen, the coordinator r
 import logging
 import time
 
+from . import fingerprint as _fingerprint
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
@@ -40,6 +42,15 @@ def _role_needed(selector_key):
             "in the seed file.")
 
 
+# The provider name heals from the fingerprint tier get in the journal and the log.
+FINGERPRINT_PROVIDER = 'fingerprint'
+
+
+def _no_fingerprint(selector_key):
+    return ("'" + selector_key + "' has no fingerprint yet (mendwright records one each time "
+            'its selector matches)')
+
+
 def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
@@ -61,13 +72,22 @@ class HealCoordinator:
     before any model call, because that looks like a step that moved to another page.
     heal_across_pages=True turns this off. entry is the function named in that message.
     A context without 'page' (the low-level default) is never guarded.
+
+    fingerprint=True turns on the first tier: before any model call, the elements of the
+    captured page are scored against the fingerprint stored for the key (meta
+    'fingerprint', see mendwright.fingerprint), and a confident match is checked by the
+    same gate as a model's proposal and applied, with provider name 'fingerprint'. It
+    needs no provider and does not count toward the rate limit. It is off by default here;
+    mendwright.open() turns it on.
     """
 
     def __init__(self, store, gateway=None, download_key=None, *, provider=None, http=None,
                  html_provider, inventory_provider, guard, dry_run=False, log=None,
                  auth_header=DEFAULT_AUTH_HEADER, driver=None, guardrails=None, journal=None,
-                 clock=time.monotonic, heal_across_pages=False, entry='mendwright.open()'):
+                 clock=time.monotonic, heal_across_pages=False, entry='mendwright.open()',
+                 fingerprint=False):
         self.store = store
+        self.fingerprint = bool(fingerprint)
         # Direct-mode guardrails (rate limit + spend cap) and the event journal. In gateway
         # mode these live server-side, so they default off / no-op here; the facade wires
         # real ones for direct in-process providers.
@@ -100,7 +120,8 @@ class HealCoordinator:
         # person sees WHY (and what to do) instead of a bare "no matching element".
         self.heal_reasons = {}
         # Every heal this coordinator applied, oldest first: {'key', 'old', 'new',
-        # 'confirmed'}. confirmed is None until the canary reports, then True or False.
+        # 'confirmed', 'source'}. confirmed is None until the canary reports, then True or
+        # False. source is 'fingerprint', 'model', or 'intent' for a key that had no selector.
         self.heals = []
 
     def _emit(self, level, message):
@@ -126,7 +147,10 @@ class HealCoordinator:
         """Heal + apply a validated selector. Returns the applied xpath (truthy) if a
         candidate was applied, else None/False. Never heals a key marked destructive, and
         never heals while the guard blocks. On every non-applied path it records a
-        human-readable reason via ``self.heal_reasons`` (see ``explain``)."""
+        human-readable reason via ``self.heal_reasons`` (see ``explain``).
+
+        With fingerprint=True the fingerprint tier runs first (after the destructive, page,
+        role and guard checks), and the provider is asked only when it does not heal."""
         if meta.get('destructive'):
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
@@ -141,13 +165,14 @@ class HealCoordinator:
         role = meta.get('expectedRole')
         role_unknown = not role or role == 'unknown'
         unavailable = getattr(self.provider, 'unavailable_reason', None)
-        if isinstance(unavailable, str) and unavailable:
-            summary = getattr(self.provider, 'unavailable_summary', None)
+        unavailable = unavailable if isinstance(unavailable, str) and unavailable else None
+        summary = getattr(self.provider, 'unavailable_summary', None)
+        summary = summary if isinstance(summary, str) else None
+        if unavailable and (role_unknown or not self.fingerprint):
             if role_unknown:
                 # Both need fixing: say so now, so fixing one does not just reveal the other.
                 unavailable = unavailable.rstrip() + ' Also, mendwright ' + _role_needed(selector_key)
-            return self._decline(selector_key, unavailable,
-                                 logged=summary if isinstance(summary, str) else None)
+            return self._decline(selector_key, unavailable, logged=summary)
         if role_unknown:
             # Every proposal would fail the gate's role check, so asking costs model calls
             # for nothing.
@@ -157,6 +182,30 @@ class HealCoordinator:
                 "a transaction guard is currently blocking heals (a payment or registration "
                 "submission is pending), so mendwright did not try to heal. Run the step again "
                 "once the guard allows heals.")
+        started = self.clock()
+        html, requested = None, False
+        # 'intent' when the key had no selector at all and the model looks for it from its
+        # intent= description; the journal names that source, and the plain model none.
+        source = 'intent' if not broken_candidates and meta.get('intent') else 'model'
+        if source == 'intent' and unavailable:
+            return self._decline(
+                selector_key, "'" + selector_key + "' has no selector yet, and only a model can "
+                'find it from intent=, but no model provider is configured. ' + unavailable,
+                logged=("'" + selector_key + "' has no selector yet, and " + summary)
+                if summary else None)
+        if self.fingerprint and source != 'intent':
+            html = self.html_provider()
+            applied, note, requested = self._fingerprint_tier(selector_key, meta,
+                                                              broken_candidates, html, started)
+            if applied is not None:
+                return applied
+            if unavailable:
+                # note says why the fingerprint did not heal; the provider's reason says
+                # what to set so a model can try.
+                return self._decline(
+                    selector_key, note + ', and no model provider is configured to try '
+                    'instead. ' + unavailable,
+                    logged=(note + ', and ' + summary) if summary else None)
         # Direct-mode budget: fail closed when the rate/spend cap is reached (one heal
         # attempt == one slot), mirroring the gateway's server-side needs_human.
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
@@ -165,9 +214,11 @@ class HealCoordinator:
                 "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
                 "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
                 "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).")
-        self.journal.requested(selector_key)
-        started = self.clock()
-        html = self.html_provider()
+        tag = source if source != 'model' else None
+        if not requested:
+            self.journal.requested(selector_key)
+        if html is None:
+            html = self.html_provider()
         bundle = build_bundle(selector_key, meta, broken_candidates,
                               self.inventory_provider(), html, context, row)
         for _ in range(2):  # initial heal + one re-prompt on validation failure
@@ -187,7 +238,7 @@ class HealCoordinator:
                     "the model returned no usable selector for '" + selector_key + "'. Try a "
                     "different or stronger model, or repair the selector by hand.")
             self.journal.proposed(selector_key, xpath=proposal.get('xpath'),
-                                  reasoning=proposal.get('reasoning'))
+                                  reasoning=proposal.get('reasoning'), source=tag)
             if self.dry_run:
                 valid = None
                 for xpath in [proposal.get('xpath')] + list(proposal.get('fallbacks') or []):
@@ -204,26 +255,79 @@ class HealCoordinator:
                     level=logging.INFO)
             applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver)
             if applied:
-                seconds = max(0.0, self.clock() - started)
-                self.journal.applied(selector_key, xpath=applied,
-                                     old=_old_selectors(broken_candidates),
-                                     provider=type(self.provider).__name__,
-                                     model=self._provider_model(),
-                                     latency_ms=int(round(seconds * 1000)))
-                self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
-                self.heals.append({'key': selector_key,
-                                   'old': tuple(_old_selectors(broken_candidates)),
-                                   'new': applied, 'confirmed': None})
-                self._log_applied(selector_key, broken_candidates, applied, seconds)
+                self._record_applied(selector_key, broken_candidates, applied, started,
+                                     type(self.provider).__name__, self._provider_model(),
+                                     source)
                 return applied
             # Feed the actual validation reason back so the re-prompt can fix the actual problem.
-            self.journal.rejected(selector_key, xpath=proposal.get('xpath'), reason=reason)
+            self.journal.rejected(selector_key, xpath=proposal.get('xpath'), reason=reason,
+                                  source=tag)
             bundle = dict(bundle, rejectedXpath=proposal.get('xpath'), rejectReason=reason)
         self._decline(selector_key,
             "no selector the model proposed for '" + selector_key + "' passed mendwright's local "
             "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
             "matches exactly one element of the expected role and is present on the live page.")
         return None
+
+    def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
+        """The first tier: (applied, note, requested). applied is the xpath applied, False
+        when dry run declined the heal (with its reason recorded), or None to go on to the
+        model; note says why the tier did not heal, and requested whether heal.requested
+        was journaled."""
+        stored = meta.get('fingerprint')
+        if not _fingerprint.valid(stored):
+            return None, _no_fingerprint(selector_key), False
+        self.journal.requested(selector_key)
+        match = _fingerprint.find(stored, html, meta.get('expectedRole'),
+                                  visible=self._live_visible if self.driver is not None else None)
+        if not match.xpath:
+            return None, ("the fingerprint match for '" + selector_key + "' was not confident: "
+                          + match.reason), True
+        reasoning = ('fingerprint score ' + format(match.score, '.2f') + ', next best '
+                     + format(match.runner_up, '.2f'))
+        self.journal.proposed(selector_key, xpath=match.xpath, reasoning=reasoning,
+                              source=FINGERPRINT_PROVIDER)
+        if self.dry_run:
+            ok = validate(match.xpath, html, expected_role=meta.get('expectedRole'),
+                          expected_text=meta.get('expectedText'),
+                          destructive=bool(meta.get('destructive'))).ok
+            self._emit(logging.INFO, '[heal dry-run] key=' + selector_key + ' proposed='
+                       + match.xpath + ' (fingerprint) valid=' + str(ok) + ' (not applied)')
+            return self._decline(selector_key,
+                "dry-run mode is on, so the fingerprint match for '" + selector_key + "' was "
+                "checked but not applied. Turn off dry_run to let mendwright apply and retry.",
+                level=logging.INFO), '', True
+        proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
+        applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver)
+        if applied:
+            self._record_applied(selector_key, broken_candidates, applied, started,
+                                 FINGERPRINT_PROVIDER, None, FINGERPRINT_PROVIDER)
+            return applied, '', True
+        self.journal.rejected(selector_key, xpath=match.xpath, reason=reason,
+                              source=FINGERPRINT_PROVIDER)
+        return None, ("the fingerprint match for '" + selector_key + "', " + match.xpath
+                      + ", failed mendwright's checks (" + str(reason) + ')'), True
+
+    def _live_visible(self, xpath):
+        """For the fingerprint tier: False when xpath does not reach one visible element on
+        the live page, True when it does, None when the page could not be read."""
+        try:
+            return self.driver.count(xpath) == 1 and bool(self.driver.is_visible(xpath))
+        except Exception:
+            return None
+
+    def _record_applied(self, selector_key, broken_candidates, applied, started, provider,
+                        model, source):
+        """Journal, remember and log a heal that was applied."""
+        seconds = max(0.0, self.clock() - started)
+        self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
+                             provider=provider, model=model,
+                             latency_ms=int(round(seconds * 1000)),
+                             source=source if source != 'model' else None)
+        self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
+        self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
+                           'new': applied, 'confirmed': None, 'source': source})
+        self._log_applied(selector_key, broken_candidates, applied, seconds, provider, source)
 
     def _flow_change(self, selector_key, context):
         """The reason to decline when the current page is not one the key was found on,
@@ -255,8 +359,14 @@ class HealCoordinator:
             return error.strip()
         return ''
 
-    def _log_applied(self, selector_key, broken_candidates, applied, seconds):
+    def _log_applied(self, selector_key, broken_candidates, applied, seconds, provider,
+                     source='model'):
         old = _old_selectors(broken_candidates)
+        timing = ' (' + provider + ', ' + format(seconds, '.1f') + 's)'
+        if source == 'intent':
+            self._emit(logging.WARNING, 'found ' + repr(selector_key) + ' from its intent: '
+                       + applied + timing)
+            return
         if not old:
             was = '(no stored selector)'
         elif len(old) == 1:
@@ -264,21 +374,22 @@ class HealCoordinator:
         else:
             was = old[0] + ' (+' + str(len(old) - 1) + ' more)'
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
-                   + applied + ' (' + type(self.provider).__name__ + ', '
-                   + format(seconds, '.1f') + 's)')
+                   + applied + timing)
 
     def confirm(self, selector_key, xpath, success):
         """Canary report: route the outcome through the provider, and quarantine a healed
-        candidate whose retry failed."""
-        try:
-            self.provider.report_outcome(selector_key, xpath, success)
-        except Exception:
-            pass
+        candidate whose retry failed. A heal from the fingerprint tier is not reported to
+        the provider, which did not propose it."""
+        heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
+                     and h['new'] == xpath and h['confirmed'] is None), None)
+        if heal is None or heal.get('source') != FINGERPRINT_PROVIDER:
+            try:
+                self.provider.report_outcome(selector_key, xpath, success)
+            except Exception:
+                pass
         self.journal.canary(selector_key, xpath=xpath, success=bool(success))
-        for heal in reversed(self.heals):
-            if heal['key'] == selector_key and heal['new'] == xpath and heal['confirmed'] is None:
-                heal['confirmed'] = bool(success)
-                break
+        if heal is not None:
+            heal['confirmed'] = bool(success)
         if not success:
             self.store.quarantine(selector_key, xpath)
             self.journal.quarantine(selector_key, xpath=xpath)

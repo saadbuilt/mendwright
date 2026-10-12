@@ -12,21 +12,26 @@ A case runs the way a test suite would meet the redesign:
 1. mendwright.open(page) on v1, with a fresh store, and heal.locator(key, selector) so
    the selector matches and its role is learned.
 2. The same Healer on v2, where the selector no longer matches. heal.locator() then
-   asks the provider and runs the real coordinator, gate and live check.
+   runs the real coordinator: the fingerprint tier first (it recorded the element on v1),
+   then the provider, with the real gate and live check.
 3. The healed selector is graded by element identity: it must reach the same element
    of the v2 document as the case's truth XPath.
 
 Usage:
 
+    python benchmarks/run.py --provider none                    # the fingerprint tier alone
     python benchmarks/run.py --provider similarity
     python benchmarks/run.py --provider anthropic --model <model id>
     python benchmarks/run.py --provider ollama --model <model> --cases "near-dup-*"
+    python benchmarks/run.py --provider similarity --no-fingerprint
 
 Providers: anthropic, openai, gemini, ollama and auto call a model (keys and endpoints
 come from the environment, the same way mendwright.open() reads them). similarity and
-none need no model. The page is a StandInPage (lxml, no browser) unless --browser picks
-a headless Playwright browser. Only the standard library and mendwright are needed;
---browser also needs Playwright.
+none need no model. mendwright's fingerprint tier runs before the provider, as it does by
+default in mendwright.open(), so --provider none measures the fingerprint tier alone;
+--no-fingerprint turns it off to measure the provider alone. The page is a StandInPage
+(lxml, no browser) unless --browser picks a headless Playwright browser. Only the
+standard library and mendwright are needed; --browser also needs Playwright.
 
 See docs/benchmark.md for what is measured and how to read the results.
 """
@@ -702,10 +707,11 @@ def show(page, html, url=None):
 
 
 def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, run=1,
-             heal_across_pages=False):
+             heal_across_pages=False, fingerprint=True):
     """Run one case on ``page`` (a StandInPage or a sync Playwright page) with
     ``proposer`` and return its record. The store lives in a temporary folder.
-    heal_across_pages is passed to mendwright.open(); the published runs leave it off."""
+    heal_across_pages and fingerprint are passed to mendwright.open(); the published runs
+    leave heal_across_pages off."""
     folder = tempfile.mkdtemp(prefix='mendwright-bench-')
     recorder = Recorder(proposer)
     record = {'id': case.id, 'category': case.category, 'run': run,
@@ -713,14 +719,16 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
               'healed_xpath': None, 'healed_target': None, 'learned_role': None,
               'model_calls': 0, 'model_ms': 0.0, 'heal_ms': 0.0, 'prompt_chars': 0,
               'prompt_chars_total': 0, 'est_tokens': 0, 'decline_reason': None,
-              'provider_error': False, 'proposals': [], 'gate_caught_wrong': 0, 'note': None}
+              'provider_error': False, 'proposals': [], 'gate_caught_wrong': 0, 'note': None,
+              'healed_by': None}
     try:
         with _healing_on():
             heal = mendwright.open(page, provider=proposer,
                                    store_path=os.path.join(folder, 'overrides.json'),
                                    dry_run=False, timeout_ms=timeout_ms,
                                    rate_per_key_per_hour=None, rate_global_per_hour=None,
-                                   heal_across_pages=heal_across_pages)
+                                   heal_across_pages=heal_across_pages,
+                                   fingerprint=fingerprint)
         log = []
         heal.coordinator.log = log.append
         kwargs = {'poll_ms': poll_ms}
@@ -780,6 +788,9 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
         for event in _journal(folder):
             if event.get('event') == 'heal.rejected' and event.get('xpath'):
                 rejected[event['xpath']] = scrub(str(event.get('reason') or ''))
+            if event.get('event') == 'heal.applied' and healed is not None:
+                record['healed_by'] = ('fingerprint' if event.get('provider') == 'fingerprint'
+                                       else 'model')
         for event in _journal(folder):
             if event.get('event') != 'heal.proposed':
                 continue
@@ -789,7 +800,8 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
                 verdict = 'applied'
             else:
                 verdict = rejected.get(xpath, 'not applied')
-            record['proposals'].append({'xpath': scrub(xpath), 'result': verdict, 'target': target})
+            record['proposals'].append({'xpath': scrub(xpath), 'result': verdict, 'target': target,
+                                        'source': event.get('source') or 'model'})
             if verdict != 'applied' and target == 'other':
                 record['gate_caught_wrong'] += 1
     except Exception as exc:   # a harness or page fault: keep going, and say so
@@ -841,9 +853,10 @@ def browser_session(name):
         manager.stop()
 
 
-def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None):
+def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None, fingerprint=True):
     """Run every case ``repeat`` times and return the records. ``proposer`` is one
-    provider shared by all cases, or a callable that takes a Case and returns one."""
+    provider shared by all cases, or a callable that takes a Case and returns one.
+    fingerprint=False turns mendwright's fingerprint tier off, so only the provider heals."""
     make = proposer if callable(proposer) and not hasattr(proposer, 'propose') else (lambda case: proposer)
     records = []
     total = len(cases) * repeat
@@ -855,11 +868,13 @@ def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None):
                     page = session.new_page()
                     try:
                         record = run_case(case, make(case), page, timeout_ms=BROWSER_TIMEOUT_MS,
-                                          poll_ms=BROWSER_POLL_MS, run=run)
+                                          poll_ms=BROWSER_POLL_MS, run=run,
+                                          fingerprint=fingerprint)
                     finally:
                         page.close()
                 else:
-                    record = run_case(case, make(case), StandInPage(), run=run)
+                    record = run_case(case, make(case), StandInPage(), run=run,
+                                      fingerprint=fingerprint)
                 records.append(record)
                 if progress:
                     progress(len(records), total, record)
@@ -894,6 +909,7 @@ def summarize(records, repeat=1):
         'wrong_heals': count['wrong'] + count['wrong_negative'],
         'wrong_heals_pct': _pct(count['wrong'] + count['wrong_negative'], len(records)),
         'gate_caught_wrong': sum(r['gate_caught_wrong'] for r in records),
+        'fingerprint_heals': sum(1 for r in records if r.get('healed_by') == 'fingerprint'),
         'avg_model_calls': round(sum(r['model_calls'] for r in records) / len(records), 2) if records else None,
         'avg_model_ms': round(sum(r['model_ms'] for r in called) / len(called), 1) if called else None,
         'avg_prompt_chars': round(avg_chars) if sized else None,
@@ -921,16 +937,17 @@ def markdown_summary(result):
     s = result['summary']
     who = result['provider'] + (' (' + result['model'] + ')' if result.get('model') else '')
     lines = [
-        '| Provider | Page | Cases | Correct | Wrong | Missed | Negatives declined | Wrong on negatives '
-        '| Avg model calls | Avg prompt chars (est. tokens) |',
-        '|---|---|---|---|---|---|---|---|---|---|',
+        '| Provider | Fingerprint | Page | Cases | Correct | Wrong | Missed | Negatives declined '
+        '| Wrong on negatives | Healed by fingerprint | Avg model calls | Avg prompt chars (est. tokens) |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|',
         '| ' + ' | '.join([
-            who, result['page'], str(s['cases']),
+            who, 'on' if result.get('fingerprint') else 'off', result['page'], str(s['cases']),
             str(s['correct']) + '/' + str(s['positives']) + ' (' + _fmt_pct(s['correct_pct']) + ')',
             str(s['wrong']) + ' (' + _fmt_pct(s['wrong_pct']) + ')',
             str(s['missed']) + ' (' + _fmt_pct(s['missed_pct']) + ')',
             str(s['declined']) + '/' + str(s['negatives']),
             str(s['wrong_negative']),
+            str(s.get('fingerprint_heals', 0)),
             str(s['avg_model_calls']),
             (str(s['avg_prompt_chars']) + ' (~' + str(s['avg_prompt_tokens_est']) + ')')
             if s['avg_prompt_chars'] else '-',
@@ -939,8 +956,11 @@ def markdown_summary(result):
     return '\n'.join(lines)
 
 
-def default_out(provider, model, page_mode, when):
+def default_out(provider, model, page_mode, when, fingerprint=True):
+    """benchmarks/results/<provider>[-<model>][-nofp]-<page>-<date>.json: -nofp marks a run
+    with the fingerprint tier off."""
     name = provider + ('-' + re.sub(r'[^A-Za-z0-9._-]+', '_', model) if model else '')
+    name += '' if fingerprint else '-nofp'
     return RESULTS_DIR / (name + '-' + page_mode + '-' + when.strftime('%Y%m%d') + '.json')
 
 
@@ -958,7 +978,11 @@ def main(argv=None):
     parser.add_argument('--out', help='results file '
                                       '(default: benchmarks/results/<provider>-<page>-<date>.json)')
     parser.add_argument('--repeat', type=int, default=1, help='run every case N times (default 1)')
+    parser.add_argument('--no-fingerprint', action='store_true',
+                        help="turn mendwright's fingerprint tier off, so only the provider heals "
+                             '(default: on, as in mendwright.open())')
     args = parser.parse_args(argv)
+    fingerprint = not args.no_fingerprint
     if args.repeat < 1:
         parser.error('--repeat must be 1 or more')
 
@@ -981,6 +1005,8 @@ def main(argv=None):
                                              'StandInPage (lxml, no browser)'))
     if args.provider in BASELINES:
         print('provider: ' + type(proposer).__name__ + ' (model-free baseline, no network)')
+        if args.provider == 'none' and fingerprint:
+            print('the none baseline never proposes, so this run measures the fingerprint tier alone')
     else:
         print('provider: ' + type(proposer).__name__ + (', model ' + model if model else ''))
         print('endpoint: ' + (url or 'the provider default') + '  (each case sends its v2 page here)')
@@ -992,6 +1018,7 @@ def main(argv=None):
                   'endpoint needs none')
         print('model calls: at most ' + str(2 * len(cases) * args.repeat)
               + ' (2 per case: a proposal and one retry)')
+    print('fingerprint tier: ' + ('on' if fingerprint else 'off (--no-fingerprint)'))
     print('', flush=True)
 
     def progress(done, total, record):
@@ -999,6 +1026,7 @@ def main(argv=None):
         print('  [' + str(done).rjust(len(str(total))) + '/' + str(total) + '] '
               + record['id'].ljust(44) + ' ' + record['outcome'].ljust(14) + ' '
               + str(calls) + ' call' + ('' if calls == 1 else 's')
+              + ('  (fingerprint)' if record.get('healed_by') == 'fingerprint' else '')
               + (('  ' + record['note']) if record['note'] else ''), file=sys.stderr, flush=True)
         if done == 1 and record['provider_error']:
             # A bad key, model id or endpoint fails every case the same way. Stop here
@@ -1008,7 +1036,7 @@ def main(argv=None):
     when = datetime.datetime.now(datetime.timezone.utc)
     try:
         records = run_cases(cases, proposer, browser=args.browser, repeat=args.repeat,
-                            progress=progress)
+                            progress=progress, fingerprint=fingerprint)
     except SetupError as exc:
         print('benchmark: ' + str(exc), file=sys.stderr)
         return 2
@@ -1026,6 +1054,7 @@ def main(argv=None):
         'provider': args.provider,
         'provider_class': type(proposer).__name__,
         'model': model,
+        'fingerprint': fingerprint,
         'endpoint': url,
         'page': page_mode,
         'repeat': args.repeat,
@@ -1037,7 +1066,8 @@ def main(argv=None):
         'by_category': by_category(records),
         'records': records,
     }
-    out = Path(args.out) if args.out else default_out(args.provider, model, page_mode, when)
+    out = Path(args.out) if args.out else default_out(args.provider, model, page_mode, when,
+                                                      fingerprint)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1) + '\n', encoding='utf-8', newline='\n')
 
@@ -1046,6 +1076,8 @@ def main(argv=None):
     print('')
     print('Wrong heals (accepted onto the wrong element): ' + str(s['wrong_heals']) + ' of '
           + str(s['cases']) + '. Wrong proposals the gate stopped: ' + str(s['gate_caught_wrong']) + '.')
+    if fingerprint:
+        print('Heals by the fingerprint tier (no model call): ' + str(s['fingerprint_heals']) + '.')
     if s['provider_errors']:
         print('Provider errors: ' + str(s['provider_errors']) + ' case(s) were declined because a '
               'call failed (see decline_reason in the results file). Rerun those before '

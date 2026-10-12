@@ -1,12 +1,13 @@
 {
  "format": 1,
- "date": "2026-10-12T00:58:06+00:00",
+ "date": "2026-10-12T09:33:40+00:00",
  "mendwright": "0.3.0",
  "python": "3.12.10",
  "platform": "Windows-11",
  "provider": "similarity",
  "provider_class": "SimilarityProposer",
  "model": null,
+ "fingerprint": true,
  "endpoint": null,
  "page": "standin",
  "repeat": 1,
@@ -18,27 +19,28 @@
   "cases": 47,
   "positives": 35,
   "negatives": 12,
-  "correct": 27,
+  "correct": 28,
   "wrong": 1,
-  "missed": 7,
+  "missed": 6,
   "declined": 10,
   "wrong_negative": 2,
   "errors": 0,
   "provider_errors": 0,
-  "correct_pct": 77.1,
+  "correct_pct": 80.0,
   "wrong_pct": 2.9,
-  "missed_pct": 20.0,
+  "missed_pct": 17.1,
   "declined_pct": 83.3,
   "wrong_negative_pct": 16.7,
   "wrong_heals": 3,
   "wrong_heals_pct": 6.4,
   "gate_caught_wrong": 0,
-  "avg_model_calls": 0.91,
-  "avg_model_ms": 1.1,
-  "avg_prompt_chars": 9984,
-  "avg_prompt_tokens_est": 2496,
-  "run_prompt_chars": 429294,
-  "run_tokens_est": 107324
+  "fingerprint_heals": 21,
+  "avg_model_calls": 0.47,
+  "avg_model_ms": 1.3,
+  "avg_prompt_chars": 10271,
+  "avg_prompt_tokens_est": 2568,
+  "run_prompt_chars": 225953,
+  "run_tokens_est": 56488
  },
  "by_category": {
   "id_renamed": {
@@ -96,9 +98,9 @@
    "cases": 3
   },
   "tag_change": {
-   "correct": 0,
+   "correct": 1,
    "wrong": 0,
-   "missed": 3,
+   "missed": 2,
    "declined": 0,
    "wrong_negative": 0,
    "error": 0,
@@ -188,8 +190,8 @@
    "healed_target": "other",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.3,
-   "heal_ms": 8.2,
+   "model_ms": 1.5,
+   "heal_ms": 10.2,
    "prompt_chars": 14782,
    "prompt_chars_total": 14782,
    "est_tokens": 3696,
@@ -199,11 +201,13 @@
     {
      "xpath": "//button[@data-testid='giftcard-apply']",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "attr-churn-menu-toggle",
@@ -214,23 +218,25 @@
    "healed_xpath": "//button[@aria-label='Menu']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 5.8,
-   "prompt_chars": 5251,
-   "prompt_chars_total": 5251,
-   "est_tokens": 1313,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.7,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@aria-label='Menu']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "attr-churn-origin-input",
@@ -241,23 +247,25 @@
    "healed_xpath": "//input[@data-testid='origin-input']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 5.5,
-   "prompt_chars": 8544,
-   "prompt_chars_total": 8544,
-   "est_tokens": 2136,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.8,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@data-testid='origin-input']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-last-name",
@@ -268,23 +276,25 @@
    "healed_xpath": "//input[@id='su-last']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 4.9,
-   "prompt_chars": 4634,
-   "prompt_chars_total": 4634,
-   "est_tokens": 1158,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@id='su-last']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-phone",
@@ -292,26 +302,28 @@
    "run": 1,
    "expected": "heal",
    "outcome": "correct",
-   "healed_xpath": "//input[@id=':r7:']",
+   "healed_xpath": "//input[@name='phone']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 7.4,
-   "prompt_chars": 12855,
-   "prompt_chars_total": 12855,
-   "est_tokens": 3214,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.6,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
-     "xpath": "//input[@id=':r7:']",
+     "xpath": "//input[@name='phone']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-postcode",
@@ -322,23 +334,25 @@
    "healed_xpath": "//input[@name='postalCode']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 1.2,
-   "heal_ms": 6.5,
-   "prompt_chars": 7032,
-   "prompt_chars_total": 7032,
-   "est_tokens": 1758,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='postalCode']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "flow-checkout-place-order",
@@ -351,7 +365,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 0.6,
+   "heal_ms": 0.5,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -359,7 +373,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-order-track-package",
@@ -372,7 +387,7 @@
    "learned_role": "link",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 0.6,
+   "heal_ms": 0.5,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -380,7 +395,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-settings-save-profile",
@@ -393,7 +409,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 0.6,
+   "heal_ms": 0.5,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -401,7 +417,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-signup-continue",
@@ -414,7 +431,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 0.6,
+   "heal_ms": 1.0,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -422,7 +439,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "hashed-class-cart-link",
@@ -433,23 +451,25 @@
    "healed_xpath": "//a[@data-testid='header-cart']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 2.8,
-   "heal_ms": 9.6,
-   "prompt_chars": 19195,
-   "prompt_chars_total": 19195,
-   "est_tokens": 4799,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 8.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@data-testid='header-cart']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hashed-class-new-project",
@@ -460,23 +480,25 @@
    "healed_xpath": "//button[normalize-space()='New project']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 1.1,
-   "heal_ms": 6.8,
-   "prompt_chars": 10534,
-   "prompt_chars_total": 10534,
-   "est_tokens": 2634,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 6.1,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='New project']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hashed-class-sort-select",
@@ -487,23 +509,25 @@
    "healed_xpath": "//select[@id='results-sort']",
    "healed_target": "truth",
    "learned_role": "combobox",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 6.6,
-   "prompt_chars": 9917,
-   "prompt_chars_total": 9917,
-   "est_tokens": 2479,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//select[@id='results-sort']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-pricing-link",
@@ -514,23 +538,25 @@
    "healed_xpath": "//nav[@aria-label='Primary']//a[@href='/pricing']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 2.4,
-   "heal_ms": 7.6,
-   "prompt_chars": 7657,
-   "prompt_chars_total": 7657,
-   "est_tokens": 1914,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 13.4,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//nav[@aria-label='Primary']//a[@href='/pricing']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-sticky-add-to-cart",
@@ -538,26 +564,28 @@
    "run": 1,
    "expected": "heal",
    "outcome": "correct",
-   "healed_xpath": "//button[contains(concat(' ', normalize-space(@class), ' '), ' BuyBox_add__Wn1b7 ')]",
+   "healed_xpath": "//button[@type='submit' and normalize-space()='Add to cart']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 1.6,
-   "heal_ms": 8.6,
-   "prompt_chars": 15626,
-   "prompt_chars_total": 15626,
-   "est_tokens": 3906,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 6.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
-     "xpath": "//button[contains(concat(' ', normalize-space(@class), ' '), ' BuyBox_add__Wn1b7 ')]",
+     "xpath": "//button[@type='submit' and normalize-space()='Add to cart']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-subscribe-link",
@@ -568,23 +596,25 @@
    "healed_xpath": "//a[@href='/subscribe']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 1.7,
-   "heal_ms": 6.7,
-   "prompt_chars": 7810,
-   "prompt_chars_total": 7810,
-   "est_tokens": 1952,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 7.8,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@href='/subscribe']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-removed-checkout-continue",
@@ -595,23 +625,25 @@
    "healed_xpath": "//button[normalize-space()='Continue to payment']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 1.1,
-   "heal_ms": 6.9,
-   "prompt_chars": 13600,
-   "prompt_chars_total": 13600,
-   "est_tokens": 3400,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Continue to payment']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-removed-digest-checkbox",
@@ -622,23 +654,25 @@
    "healed_xpath": "//input[@name='digest']",
    "healed_target": "truth",
    "learned_role": "checkbox",
-   "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 5.3,
-   "prompt_chars": 9625,
-   "prompt_chars_total": 9625,
-   "est_tokens": 2406,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.8,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='digest']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-renamed-login-email",
@@ -651,7 +685,7 @@
    "learned_role": "input",
    "model_calls": 1,
    "model_ms": 0.6,
-   "heal_ms": 5.0,
+   "heal_ms": 5.7,
    "prompt_chars": 4584,
    "prompt_chars_total": 4584,
    "est_tokens": 1146,
@@ -661,11 +695,13 @@
     {
      "xpath": "//input[@id='signin-email']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "id-renamed-search-input",
@@ -676,23 +712,25 @@
    "healed_xpath": "//input[@name='q']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 1.0,
-   "heal_ms": 11.6,
-   "prompt_chars": 19164,
-   "prompt_chars_total": 19164,
-   "est_tokens": 4791,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 6.0,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='q']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "label-reworded-apply-filters",
@@ -704,8 +742,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.9,
-   "heal_ms": 6.2,
+   "model_ms": 1.0,
+   "heal_ms": 8.6,
    "prompt_chars": 9948,
    "prompt_chars_total": 9948,
    "est_tokens": 2487,
@@ -715,11 +753,13 @@
     {
      "xpath": "//button[normalize-space()='Show 5 flights']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "label-reworded-email-field",
@@ -730,23 +770,25 @@
    "healed_xpath": "//input[@id='profile-email']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 5.7,
-   "prompt_chars": 8584,
-   "prompt_chars_total": 8584,
-   "est_tokens": 2146,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@id='profile-email']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "label-reworded-signin-link",
@@ -758,8 +800,8 @@
    "healed_target": "truth",
    "learned_role": "link",
    "model_calls": 1,
-   "model_ms": 2.6,
-   "heal_ms": 8.6,
+   "model_ms": 3.1,
+   "heal_ms": 13.4,
    "prompt_chars": 13678,
    "prompt_chars_total": 13678,
    "est_tokens": 3420,
@@ -769,11 +811,13 @@
     {
      "xpath": "//a[@href='/account/login']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "moved-changelog-link",
@@ -784,23 +828,25 @@
    "healed_xpath": "//a[@href='/changelog/']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 1.1,
-   "heal_ms": 5.7,
-   "prompt_chars": 5573,
-   "prompt_chars_total": 5573,
-   "est_tokens": 1393,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 6.2,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@href='/changelog/']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "moved-logout-button",
@@ -811,23 +857,25 @@
    "healed_xpath": "//button[normalize-space()='Log out']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 5.1,
-   "prompt_chars": 5926,
-   "prompt_chars_total": 5926,
-   "est_tokens": 1482,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Log out']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "moved-share-button",
@@ -838,23 +886,25 @@
    "healed_xpath": "//button[@aria-label='Share this article']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 6.2,
-   "prompt_chars": 9661,
-   "prompt_chars_total": 9661,
-   "est_tokens": 2415,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 6.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@aria-label='Share this article']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "near-dup-cart-remove",
@@ -866,8 +916,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.8,
-   "heal_ms": 8.3,
+   "model_ms": 2.1,
+   "heal_ms": 12.7,
    "prompt_chars": 14975,
    "prompt_chars_total": 14975,
    "est_tokens": 3744,
@@ -877,11 +927,13 @@
     {
      "xpath": "//tr[.//td[normalize-space()='Canvas field capRed / M']]//button[normalize-space()='Remove']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-product-add-to-cart",
@@ -893,8 +945,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 2.2,
-   "heal_ms": 10.5,
+   "model_ms": 2.3,
+   "heal_ms": 11.9,
    "prompt_chars": 19241,
    "prompt_chars_total": 19241,
    "est_tokens": 4810,
@@ -904,11 +956,13 @@
     {
      "xpath": "//article[.//h3[normalize-space()='Trail Runner 2']]//button",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-review-edit",
@@ -921,7 +975,7 @@
    "learned_role": "link",
    "model_calls": 1,
    "model_ms": 2.2,
-   "heal_ms": 8.3,
+   "heal_ms": 11.4,
    "prompt_chars": 10640,
    "prompt_chars_total": 10640,
    "est_tokens": 2660,
@@ -931,11 +985,13 @@
     {
      "xpath": "//a[@href='/checkout?step=delivery']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-team-row-edit",
@@ -947,8 +1003,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.1,
-   "heal_ms": 3.4,
+   "model_ms": 1.3,
+   "heal_ms": 7.3,
    "prompt_chars": 8791,
    "prompt_chars_total": 8791,
    "est_tokens": 2198,
@@ -956,7 +1012,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-ambiguous-copy-button",
@@ -968,8 +1025,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 2.3,
+   "model_ms": 0.8,
+   "heal_ms": 6.2,
    "prompt_chars": 5468,
    "prompt_chars_total": 5468,
    "est_tokens": 1367,
@@ -977,7 +1034,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-ambiguous-invite-accept",
@@ -990,7 +1048,7 @@
    "learned_role": "button",
    "model_calls": 1,
    "model_ms": 1.0,
-   "heal_ms": 6.1,
+   "heal_ms": 8.0,
    "prompt_chars": 4827,
    "prompt_chars_total": 4827,
    "est_tokens": 1207,
@@ -1000,11 +1058,13 @@
     {
      "xpath": "//li[.//strong[normalize-space()='Globex']]//button[normalize-space()='Accept']",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "neg-danger-save-draft",
@@ -1016,8 +1076,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.4,
-   "heal_ms": 2.1,
+   "model_ms": 0.5,
+   "heal_ms": 2.9,
    "prompt_chars": 6097,
    "prompt_chars_total": 6097,
    "est_tokens": 1524,
@@ -1025,7 +1085,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-danger-save-payee",
@@ -1038,7 +1099,7 @@
    "learned_role": "button",
    "model_calls": 1,
    "model_ms": 0.5,
-   "heal_ms": 2.3,
+   "heal_ms": 3.0,
    "prompt_chars": 7091,
    "prompt_chars_total": 7091,
    "est_tokens": 1773,
@@ -1046,7 +1107,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-danger-save-profile",
@@ -1058,8 +1120,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.5,
-   "heal_ms": 2.4,
+   "model_ms": 0.6,
+   "heal_ms": 3.3,
    "prompt_chars": 8339,
    "prompt_chars_total": 8339,
    "est_tokens": 2085,
@@ -1067,7 +1129,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-compare-button",
@@ -1079,8 +1142,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.3,
-   "heal_ms": 4.4,
+   "model_ms": 1.4,
+   "heal_ms": 6.5,
    "prompt_chars": 19608,
    "prompt_chars_total": 19608,
    "est_tokens": 4902,
@@ -1088,7 +1151,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-marketing-optin",
@@ -1100,8 +1164,8 @@
    "healed_target": null,
    "learned_role": "checkbox",
    "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 3.9,
+   "model_ms": 0.9,
+   "heal_ms": 4.4,
    "prompt_chars": 13674,
    "prompt_chars_total": 13674,
    "est_tokens": 3418,
@@ -1109,7 +1173,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-quarterly-report",
@@ -1121,8 +1186,8 @@
    "healed_target": "other",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 5.0,
+   "model_ms": 1.1,
+   "heal_ms": 8.1,
    "prompt_chars": 4539,
    "prompt_chars_total": 4539,
    "est_tokens": 1135,
@@ -1132,32 +1197,42 @@
     {
      "xpath": "//li[.//h2[normalize-space()='Monthly summary: September']]//button",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "tag-change-div-to-button",
    "category": "tag_change",
    "run": 1,
    "expected": "heal",
-   "outcome": "missed",
-   "healed_xpath": null,
-   "healed_target": null,
+   "outcome": "correct",
+   "healed_xpath": "//button[normalize-space()='Export CSV']",
+   "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.5,
-   "heal_ms": 2.0,
-   "prompt_chars": 5280,
-   "prompt_chars_total": 5280,
-   "est_tokens": 1320,
-   "decline_reason": "SimilarityProposer returned no selector for 'export_csv': no element on the page is similar enough (best score 0.44, threshold 0.50).",
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 5.4,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
+   "decline_reason": null,
    "provider_error": false,
-   "proposals": [],
+   "proposals": [
+    {
+     "xpath": "//button[normalize-space()='Export CSV']",
+     "result": "applied",
+     "target": "truth",
+     "source": "fingerprint"
+    }
+   ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "tag-change-input-to-button",
@@ -1169,8 +1244,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 2.2,
+   "model_ms": 0.7,
+   "heal_ms": 3.4,
    "prompt_chars": 6128,
    "prompt_chars_total": 6128,
    "est_tokens": 1532,
@@ -1178,7 +1253,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "tag-change-link-to-button",
@@ -1190,8 +1266,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.2,
-   "heal_ms": 1.8,
+   "model_ms": 0.3,
+   "heal_ms": 2.6,
    "prompt_chars": 6971,
    "prompt_chars_total": 6971,
    "est_tokens": 1743,
@@ -1199,7 +1275,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-add-to-cart-de",
@@ -1211,8 +1288,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.3,
-   "heal_ms": 4.3,
+   "model_ms": 1.4,
+   "heal_ms": 6.5,
    "prompt_chars": 15744,
    "prompt_chars_total": 15744,
    "est_tokens": 3936,
@@ -1220,7 +1297,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-free-trial-es",
@@ -1232,8 +1310,8 @@
    "healed_target": null,
    "learned_role": "link",
    "model_calls": 1,
-   "model_ms": 2.0,
-   "heal_ms": 3.8,
+   "model_ms": 2.4,
+   "heal_ms": 7.3,
    "prompt_chars": 8155,
    "prompt_chars_total": 8155,
    "est_tokens": 2039,
@@ -1241,7 +1319,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-search-flights-fr",
@@ -1253,8 +1332,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 2.7,
+   "model_ms": 0.9,
+   "heal_ms": 4.0,
    "prompt_chars": 8965,
    "prompt_chars_total": 8965,
    "est_tokens": 2241,
@@ -1262,7 +1341,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "wrapped-archive-confirm",
@@ -1273,23 +1353,25 @@
    "healed_xpath": "//button[normalize-space()='Archive project']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 1.6,
-   "heal_ms": 7.2,
-   "prompt_chars": 13136,
-   "prompt_chars_total": 13136,
-   "est_tokens": 3284,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 8.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Archive project']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "wrapped-login-submit",
@@ -1300,23 +1382,25 @@
    "healed_xpath": "//button[@type='submit']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.3,
-   "heal_ms": 4.4,
-   "prompt_chars": 3737,
-   "prompt_chars_total": 3737,
-   "est_tokens": 934,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 4.1,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@type='submit']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "wrapped-qty-input",
@@ -1328,8 +1412,8 @@
    "healed_target": "truth",
    "learned_role": "input",
    "model_calls": 1,
-   "model_ms": 1.3,
-   "heal_ms": 7.6,
+   "model_ms": 2.0,
+   "heal_ms": 13.3,
    "prompt_chars": 13708,
    "prompt_chars_total": 13708,
    "est_tokens": 3427,
@@ -1339,11 +1423,13 @@
     {
      "xpath": "//tr[.//td[normalize-space()='Speckled camp mugSlate']]//input",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   }
  ]
 }

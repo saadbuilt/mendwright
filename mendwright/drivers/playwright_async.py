@@ -12,6 +12,7 @@ queries and actions are awaited.
 
 import inspect
 
+from ..fingerprint import FINGERPRINT_JS, from_raw
 from .base import (DESCRIBE_JS, INVENTORY_JS, _member, inventory_rows, is_async_api,
                    looks_like_locator, summary_from_js)
 from .playwright_sync import _raise_if_invalid, child_frames, frame_info, playwright_selector
@@ -28,7 +29,7 @@ class AsyncPlaywrightDriver:
     """Wraps an async Playwright Page or Frame (or a patchright / camoufox one).
 
     Every method is a coroutine: count, is_visible, scroll_into_view, handle, act, act_on,
-    url, outer_html, describe and inventory, with the same arguments and results as
+    url, outer_html, describe, fingerprint and inventory, with the same arguments and results as
     PlaywrightSyncDriver. handle() returns the native async Locator."""
 
     def __init__(self, page):
@@ -108,6 +109,13 @@ class AsyncPlaywrightDriver:
         or None when it matches none or several (see PlaywrightSyncDriver.describe)."""
         async def op(loc):
             return summary_from_js(await loc.evaluate_all(DESCRIBE_JS))
+        return await self._probe(selector, frame_chain, op, None)
+
+    async def fingerprint(self, selector, frame_chain=()):
+        """The fingerprint of the one element the selector matches, or None (see
+        PlaywrightSyncDriver.fingerprint)."""
+        async def op(loc):
+            return from_raw(await loc.evaluate_all(FINGERPRINT_JS))
         return await self._probe(selector, frame_chain, op, None)
 
     async def frame_matches(self, selector):

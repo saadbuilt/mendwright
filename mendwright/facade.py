@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers import driver_act_on, driver_describe, driver_inventory, wrap
+from .drivers import driver_act_on, driver_describe, driver_fingerprint, driver_inventory, wrap
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, InterruptionLoop, absent_message,
                    handled_message, is_interception_error, journal_event, loop_message,
@@ -53,16 +53,18 @@ Expect = Callable[[], Any]
 
 
 class _NullProvider:
-    """Used when no provider is configured: resolution still works, but a heal is a no-op.
+    """Used when no provider is configured: resolution still works, and only the
+    fingerprint tier (when it is on) can heal; the provider itself never proposes.
 
     It advertises an actionable ``unavailable_reason`` that the coordinator surfaces on an
     AttentionRequired, so a broken selector with no model yields "configure a provider"
     (with the exact next step) instead of a bare "no matching element"."""
 
     _DEFAULT = (
-        'no model provider is configured, so mendwright cannot repair a broken selector. '
-        'Set a provider key and model (for example ANTHROPIC_API_KEY and ANTHROPIC_MODEL), '
-        'or pass provider=... to mendwright.open(). Run mendwright doctor to see what it finds.')
+        'no model provider is configured, so only fingerprint healing (no model) can repair a '
+        'broken selector. Set a provider key and model (for example ANTHROPIC_API_KEY and '
+        'ANTHROPIC_MODEL), or pass provider=... to mendwright.open(). Run mendwright doctor '
+        'to see what it finds.')
 
     def __init__(self, reason=None, summary=None):
         self.unavailable_reason = reason or self._DEFAULT
@@ -124,11 +126,14 @@ def _unregister(healer) -> None:
 @dataclass(frozen=True)
 class HealEvent:
     """One heal a Healer applied: the key, the selectors that had stopped matching, the
-    new xpath, and the canary result (None while unconfirmed, then True or False)."""
+    new xpath, the canary result (None while unconfirmed, then True or False), and where
+    the new xpath came from: 'fingerprint' (no model call), 'model', or 'intent' (a key
+    that had no selector, found by a model from its intent=)."""
     key: str
     old: tuple
     new: str
     confirmed: bool | None = None
+    source: str = 'model'
 
 
 DEFAULT_STORE_PATH = './.mendwright/overrides.json'
@@ -155,6 +160,18 @@ def _env_flag(name):
         return False
     raise ValueError('mendwright: ' + name + ' must be 1 or 0, got ' + repr(raw) + '. '
                      'Set it to 1 to turn it on, or unset it.')
+
+
+def fingerprint_setting(fingerprint=None):
+    """Whether the fingerprint tier is on: the fingerprint= argument when it is not None,
+    else MENDWRIGHT_FINGERPRINT (1 or 0), else on. MENDWRIGHT_DISABLE=1 turns it off with
+    every other heal. Raises ValueError for a MENDWRIGHT_FINGERPRINT that is not a flag."""
+    if _env_flag('MENDWRIGHT_DISABLE'):
+        return False
+    if fingerprint is not None:
+        return bool(fingerprint)
+    env = _env_flag('MENDWRIGHT_FINGERPRINT')
+    return True if env is None else env
 
 
 def _env_timeout():
@@ -195,14 +212,19 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          guardrails: Guardrails | None = None, journal: Any = None,
          rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
          timeout_ms: int | None = None, cookies: str | None = None,
-         heal_across_pages: bool = False) -> Healer:
+         heal_across_pages: bool = False, fingerprint: bool | None = None) -> Healer:
     """Wrap a live page or driver into a Healer.
 
     - The driver is detected from the object (sync Playwright, camoufox, patchright,
       Selenium, or one added with register_driver).
     - provider defaults to auto_provider(), which reads the environment. If none can be
-      built, resolution still works, heals are declined with the reason, and one WARNING
-      is logged.
+      built, resolution still works, only fingerprint heals happen (no model), other
+      heals are declined with the reason, and one WARNING is logged.
+    - fingerprint (default on, or MENDWRIGHT_FINGERPRINT) is the first tier: each time a
+      key's selector matches, mendwright records what the element looks like, and when the
+      selector breaks it first looks for that element on the page, with no model call. A
+      confident match goes through the same checks as a model's proposal. Anything else
+      goes on to the provider. fingerprint=False turns it off.
     - store defaults to a JSON override file at store_path (no seed needed).
     - guard is a callable returning False while healing must wait (default: always True).
     - timeout_ms is how long locator() polls before treating a selector as broken.
@@ -223,6 +245,8 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
     by every Healer on the same store file in this process.
     """
+    from .proxies import unwrap
+    page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
     preset = _cookie_preset(cookies, 'mendwright.open()')
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
@@ -230,7 +254,7 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,
         journal=journal, rate_per_key_per_hour=rate_per_key_per_hour,
         rate_global_per_hour=rate_global_per_hour, timeout_ms=timeout_ms,
-        heal_across_pages=heal_across_pages)
+        heal_across_pages=heal_across_pages, fingerprint=fingerprint)
     healer = Healer(page, driver, store, coord, timeout_ms=timeout_ms)
     if preset is not None:
         healer._interruptions[preset.key] = preset
@@ -249,7 +273,7 @@ def _cookie_preset(cookies, entry):
 
 def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_keys,
            guardrails, journal, rate_per_key_per_hour, rate_global_per_hour, timeout_ms,
-           entry='mendwright.open()', heal_across_pages=False):
+           entry='mendwright.open()', heal_across_pages=False, fingerprint=None):
     """Everything open() does once the driver is known: settings from the arguments and the
     environment, the provider, the store, the journal, the rate limit, and a
     HealCoordinator whose live gate runs through ``driver``. Returns
@@ -263,6 +287,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         timeout_ms = DEFAULT_TIMEOUT_MS
     if dry_run is None:
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
+    fingerprint = fingerprint_setting(fingerprint)
 
     if _env_flag('MENDWRIGHT_DISABLE'):
         provider = _NullProvider(
@@ -281,8 +306,13 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
                 'ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY)')
             if 'provider=' not in reason:
                 reason = reason.rstrip('.') + '. Alternatively, pass provider=... to mendwright.open().'
-            logger.warning(entry + ': no model provider is available, so a broken '
-                           'selector will not be repaired. %s', reason)
+            if fingerprint:
+                logger.warning(entry + ': no model provider is available, so a broken '
+                               'selector is repaired only when its fingerprint finds the '
+                               'element with confidence (no model call). %s', reason)
+            else:
+                logger.warning(entry + ': no model provider is available, so a broken '
+                               'selector will not be repaired. %s', reason)
             provider = _NullProvider(reason, summary=(
                 'no model provider is configured (see the ' + entry + ' warning, or run '
                 'mendwright doctor)'))
@@ -305,7 +335,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         inventory_provider=lambda: driver_inventory(driver),
         guard=guard or (lambda: True), dry_run=dry_run,
         guardrails=guardrails, journal=journal, heal_across_pages=heal_across_pages,
-        entry=entry)
+        entry=entry, fingerprint=fingerprint)
     return store, coord, timeout_ms
 
 
@@ -349,9 +379,14 @@ def _frame_message(key, selector, frames, opener):
             'it. Open mendwright on that Frame instead: heal = ' + opener + '(' + how + ').')
 
 
-def _locator_args(key, selector, role, inline_xpath):
+def _locator_args(key, selector, role, inline_xpath, intent=None):
     """locator()'s argument checks, which touch neither the page nor the store: returns
-    (roles, code), the accepted roles for role= and the selectors from _code_selectors()."""
+    (roles, code), the accepted roles for role= and the selectors from _code_selectors().
+    Raises TypeError for an intent= that is not a non-empty string."""
+    if intent is not None and (not isinstance(intent, str) or not intent.strip()):
+        raise TypeError('mendwright: intent= for ' + repr(key) + ' takes a description of the '
+                        'element in words, got ' + repr(intent) + ". For example, intent='the "
+                        "terms checkbox in the signup form'.")
     if inline_xpath is not None:
         if selector is not None:
             raise TypeError('mendwright: locator() got both selector and inline_xpath. '
@@ -388,8 +423,8 @@ class Healer:
 
     def __init__(self, page: Any, driver: Any, store: Any, coordinator: HealCoordinator, *,
                  timeout_ms: int = 10000) -> None:
-        self.page = page
-        self.driver = driver
+        self._page = page
+        self._driver = driver
         self.store = store
         self.coordinator = coordinator
         self.timeout_ms = timeout_ms
@@ -399,7 +434,70 @@ class Healer:
         # key -> the step an interruption was first handled before, in this process.
         self._handled: dict = {}
         self._interrupt_log: list = []
+        # (key, xpath) pairs whose fingerprint this Healer has read already.
+        self._fingerprinted: set = set()
+        self._proxies: dict = {}
         _register(self)
+
+    @property
+    def page(self) -> Any:
+        """The page to use in place of your own, so an existing script heals by changing
+        one line: page = mendwright.open(page).page.
+
+        For a Playwright page or frame it is a HealingPage: page.locator(selector) and the
+        page shortcuts that take a selector (click, dblclick, fill, check, uncheck,
+        select_option, press, type, hover, is_checked, text_content, inner_text,
+        get_attribute) go through heal.locator(selector, selector), so the selector is the
+        key its heals are saved under. is_visible(selector) answers at once and never
+        heals. Everything else, and a locator built with options or chained from another
+        one, is the real page's, not healed. For any other page or driver it is the object
+        mendwright was opened on."""
+        if 'page' not in self._proxies:
+            from .drivers.playwright_sync import PlaywrightSyncDriver
+            from .proxies import HealingPage
+            healing = isinstance(self._driver, PlaywrightSyncDriver)
+            self._proxies['page'] = HealingPage(self, self._page) if healing else self._page
+        return self._proxies['page']
+
+    @property
+    def driver(self) -> Any:
+        """For a Selenium WebDriver, the driver to use in place of your own:
+        driver = mendwright.open(driver).driver. Its find_element(by, value) goes through
+        heal.locator(f'{by}={value}', ...) for By.XPATH, By.CSS_SELECTOR, By.ID and By.NAME
+        and returns the WebElement; everything else is the real driver's. For any other
+        page it is mendwright's own Driver for it, as before."""
+        if 'driver' not in self._proxies:
+            from .drivers.selenium import SeleniumDriver
+            from .proxies import HealingDriver
+            healing = isinstance(self._driver, SeleniumDriver)
+            self._proxies['driver'] = HealingDriver(self, self._page) if healing else self._driver
+        return self._proxies['driver']
+
+    def _knows(self, key):
+        """True when the store has an active selector for key."""
+        try:
+            return bool(self.store.candidates(key))
+        except Exception:
+            return False
+
+    def _peek_visible(self, key):
+        """For heal.page's is_visible(): True when the first of key's stored selectors that
+        matches one element shows it visible right now. Like Playwright's is_visible(): no
+        wait, no heal, no scrolling, and nothing recorded in the store."""
+        from .resolver import _match_handle, _require_visible, _split_runnable
+        require_visible = _require_visible(self.store, key)
+        runnable, _errors = _split_runnable(key, self.store.candidates(key))
+        for candidate in runnable:
+            try:
+                native = _match_handle(self._driver, candidate, require_visible)
+            except Exception:
+                continue
+            if native is not None:
+                try:
+                    return bool(driver_act_on(self._driver, native, 'is_visible'))
+                except Exception:
+                    return False
+        return False
 
     def interrupt(self, key: str, selector: Selector, *, action: str = 'click',
                   args: Sequence[Any] = (), role: Role | None = None) -> None:
@@ -440,7 +538,8 @@ class Healer:
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
                 text: str | Sequence[str] | None = None, destructive: bool | None = None,
                 timeout_ms: int | None = None, poll_ms: int = 200,
-                inline_xpath: Selector | None = None, optional: bool = False) -> ActionProxy:
+                inline_xpath: Selector | None = None, optional: bool = False,
+                intent: str | None = None) -> ActionProxy:
         """Resolve `key`, healing + retrying inline if its candidates miss, and return an
         ActionProxy wrapping the native locator. timeout_ms bounds how long each resolution
         polls for the element before it's treated as broken (and a heal is attempted).
@@ -474,21 +573,28 @@ class Healer:
         way when its element is not there. Registered interruptions are handled before
         this step when its element is missing or covered (see interrupt()).
 
+        intent is what the element is for, in words, such as 'the terms checkbox in the
+        signup form'. It is saved with the key and the model gets it when it heals the key.
+        With intent= and role= but no selector, and nothing stored for the key yet, the
+        model looks for the element from the intent on first use; what it finds passes
+        the same checks as a heal, and is saved and used from then on.
+
         inline_xpath is the old name of selector and still works as a keyword.
 
         Raises AttentionRequired when the element cannot be found or healed (the message
         says why and what to do), InvalidSelector or TypeError for a selector that can
-        never work, and ValueError for an unknown role.
+        never work, and ValueError for an unknown role, or for intent= with nothing to go
+        on but no role=.
         """
         __tracebackhide__ = True  # pytest shows the caller
-        roles, code = _locator_args(key, selector, role, inline_xpath)
-        self._prime(key, roles, code, text, destructive)
+        roles, code = _locator_args(key, selector, role, inline_xpath, intent)
+        self._prime(key, roles, code, text, destructive, intent)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         first_wait = self._first_wait(key, timeout)
         store = self.store
 
         def attempt(wait=timeout):
-            return resolve(store, self.page, key, timeout_ms=wait, poll_ms=poll_ms)
+            return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
 
         try:
             native = self._resolve_step(key, lambda: attempt(first_wait), Budget(), timeout,
@@ -505,13 +611,16 @@ class Healer:
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
+        target = self._fingerprint_target(key)
+        if target is not None:
+            self._keep_fingerprint(key, target, driver_fingerprint(self._driver, target))
         return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms)
 
     def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
         No waiting and no healing."""
         from .resolver import present
-        return present(self.store, self.page, key)
+        return present(self.store, self._page, key)
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 
@@ -531,28 +640,54 @@ class Healer:
     @property
     def heals(self) -> list:
         """The heals this Healer applied, oldest first, as HealEvent objects."""
-        return [HealEvent(h['key'], tuple(h['old']), h['new'], h['confirmed'])
+        return [HealEvent(h['key'], tuple(h['old']), h['new'], h['confirmed'],
+                          h.get('source', 'model'))
                 for h in self.coordinator.heals]
 
     # --- metadata ------------------------------------------------------------------
 
-    def _prime(self, key, roles, code, text, destructive):
+    def _prime(self, key, roles, code, text, destructive, intent=None):
         """Store updates locator() makes before it looks at the page: the code's
-        selectors go first, and role/text/destructive are applied. Raises
-        AttentionRequired when the key has no selector at all."""
+        selectors go first, and role/text/destructive/intent are applied. Raises
+        AttentionRequired when the key has no selector at all and no intent=, and
+        ValueError for intent= with no selector and no role (see _check_intent)."""
         __tracebackhide__ = True  # pytest shows the caller
         store = self.store
         if code:
             store.set_code_candidates(key, code)
         elif not store.candidates(key):
-            raise AttentionRequired(
-                'mendwright: there is no stored selector for "' + key + '" yet, and none was '
-                'passed. Pass a starting selector on the first call, for example '
-                'heal.locator("' + key + '", "//your/xpath", role="checkbox").')
-        self._apply_meta(key, roles, text, destructive)
+            if intent is None:
+                raise AttentionRequired(
+                    'mendwright: there is no stored selector for "' + key + '" yet, and none '
+                    'was passed. Pass a starting selector on the first call, for example '
+                    'heal.locator("' + key + '", "//your/xpath", role="checkbox"), or describe '
+                    'the element with intent= and role= so a model finds it on first use.')
+            self._check_intent(key, code, roles, intent)
+        self._apply_meta(key, roles, text, destructive, intent)
 
-    def _apply_meta(self, key, roles, text, destructive):
+    def _check_intent(self, key, code, roles, intent):
+        """Raise ValueError when key will be looked for from intent= alone (no selector
+        passed, none stored) and mendwright does not know its role, which it needs to check
+        what the model finds."""
+        if intent is None or code or roles or self.store.candidates(key):
+            return
+        role = None
+        try:
+            if not self.store.role_is_guess(key):
+                role = self.store.meta(key)['expectedRole']
+        except Exception:
+            role = None
+        if role and role != 'unknown':
+            return
+        raise ValueError(
+            "mendwright: '" + key + "' has no selector yet, so a model will look for it from "
+            'intent=, and mendwright needs role= to check what it finds. Pass role=, for '
+            "example heal.locator('" + key + "', intent=" + repr(intent) + ", role='button').")
+
+    def _apply_meta(self, key, roles, text, destructive, intent=None):
         store = self.store
+        if intent is not None:
+            store.set_meta(key, intent=intent)
         if roles:
             current = store.meta(key)['expectedRole']
             if len(roles) == 1:
@@ -583,7 +718,7 @@ class Healer:
         if target is None:
             return None
         try:
-            return driver_describe(self.driver, *target)
+            return driver_describe(self._driver, *target)
         except Exception:
             return None
 
@@ -661,7 +796,7 @@ class Healer:
     def _learn_role(self, key, roles, described):
         store = self.store
         if described is None:
-            if not callable(getattr(self.driver, 'describe', None)):
+            if not callable(getattr(self._driver, 'describe', None)):
                 # This driver cannot describe elements: keep the guess from the selector.
                 guess = store.meta(key)['expectedRole']
                 if guess and guess != 'unknown':
@@ -727,7 +862,7 @@ class Healer:
         others = self._others(before)
         if not others:
             return False
-        driver = driver or self.driver
+        driver = driver or self._driver
         handled = False
         for item in others:
             target = self._interruption_target(item, driver)
@@ -823,7 +958,7 @@ class Healer:
 
     def _url(self):
         try:
-            return self.driver.url() or ''
+            return self._driver.url() or ''
         except Exception:
             return ''
 
@@ -835,6 +970,36 @@ class Healer:
         path = page_path(self._url() if url is None else url)
         if path:
             setter(key, path)
+
+    def _fingerprint_target(self, key):
+        """The selector to read key's fingerprint through after a match, or None when there
+        is nothing to record: the fingerprint tier is off, the match is inside an iframe, it
+        came from a heal made in this process that is not confirmed yet, the key is marked
+        destructive, or this Healer already read it for that selector."""
+        if not getattr(self.coordinator, 'fingerprint', False):
+            return None
+        winner = self.store.last_success(key)
+        if not winner or winner.get('frameXPath') or not isinstance(winner.get('xpath'), str):
+            return None
+        xpath = winner['xpath']
+        if (key, xpath) in self._fingerprinted or self.coordinator.pending.get(key) == xpath:
+            return None
+        try:
+            if self.store.meta(key)['destructive']:
+                return None
+        except Exception:
+            return None
+        return xpath
+
+    def _keep_fingerprint(self, key, xpath, fp):
+        """Save fp as key's fingerprint (the store writes the file only when it changed)."""
+        self._fingerprinted.add((key, xpath))
+        if fp is None:
+            return
+        try:
+            self.store.set_meta(key, fingerprint=fp)
+        except Exception:
+            logger.debug('mendwright: could not save the fingerprint of %r', key, exc_info=True)
 
     def _flow_context(self, key, url):
         """The heal context: the URL, and the pages the page guard compares."""
@@ -864,7 +1029,7 @@ class Healer:
         (a driver with frame_matches(), such as Playwright's), raise AttentionRequired
         saying so, before any model call. A model shown this page could not find it."""
         __tracebackhide__ = True
-        finder = getattr(self.driver, 'frame_matches', None)
+        finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
             return
         for selector in self._frame_candidates(key):
@@ -967,7 +1132,7 @@ class ActionProxy:
             return None   # a skipped step: nothing to act on
         args = tuple(_unwrap(a) for a in args)
         kwargs = {k: _unwrap(v) for k, v in kwargs.items()}
-        act_on = getattr(self._healer.driver, 'act_on', None)
+        act_on = getattr(self._healer._driver, 'act_on', None)
         if callable(act_on):
             # The built-in drivers raise AttributeError/TypeError/ValueError for a bad verb
             # or argument before anything reaches the browser.

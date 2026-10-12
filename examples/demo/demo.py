@@ -41,7 +41,9 @@ def main(override_path=None):
                                      ignore_cleanup_errors=True) as tmp:
         page = StandInPage()
         provider = ScriptedProvider({KEY: SCRIPTED_REPLY})
-        heal = mendwright.open(page, provider=provider, timeout_ms=0,
+        # fingerprint=False so the model's heal is what you see. Leave it out and the
+        # checkbox heals from the fingerprint mendwright recorded on v1, with no model call.
+        heal = mendwright.open(page, provider=provider, timeout_ms=0, fingerprint=False,
                                store_path=override_path or str(Path(tmp) / 'overrides.json'))
 
         # v1: the selector in the code matches. mendwright reads the role from the page.

@@ -473,3 +473,62 @@ def test_flow_the_page_guard_across_two_urls(engine, tmp_path):
     assert 'pass heal_across_pages=True to mendwright.aio.open().' in error
     assert calls == 0
     assert len(provider.bundles) == 1 and across.heals[0].new == "//button[@id='help']"
+
+
+FP_V1 = ("<form id='signup'><label><input type='checkbox' id='terms' name='terms'> "
+         "I accept the terms</label></form>")
+FP_V2 = ("<form id='signup'><label><input type='checkbox' name='agreement' "
+         "data-testid='consent'> I accept the terms</label></form>")
+
+
+def test_a_redesign_heals_from_the_fingerprint_with_no_model(engine, tmp_path):
+    provider = Stub()
+
+    async def main():
+        page = await engine.page(FP_V1)
+        try:
+            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            await heal.locator('terms', '#terms').check()
+            recorded = heal.store.meta('terms')['fingerprint']
+            await page.set_content(FP_V2)
+            box = heal.locator('terms', '#terms')
+            await box.check(expect=lambda: box.native.is_checked())
+            return heal, recorded, await page.locator("[data-testid='consent']").is_checked()
+        finally:
+            await page.context.close()
+
+    heal, recorded, checked = engine.run(main())
+    assert recorded['label'] == 'I accept the terms' and recorded['attrs']['name'] == 'terms'
+    assert checked
+    assert provider.bundles == [] and provider.outcomes == []
+    assert heal.heals == [HealEvent('terms', ('#terms',), "//input[@data-testid='consent']",
+                                    True, 'fingerprint')]
+
+
+def test_heal_page_runs_an_unchanged_async_script(engine, tmp_path):
+    provider = Stub(HEALED)
+
+    async def main():
+        raw = await engine.page(TERMS)
+        try:
+            heal = await mendwright.aio.open(raw, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=300, fingerprint=False)
+            page = heal.page                   # the one changed line
+
+            async def script():
+                await page.locator('#terms').check()
+                return await page.is_checked('#terms')
+
+            first = await script()
+            await page.set_content(TERMS_V2)   # passes through to the real page
+            hidden = await page.is_visible('#terms')
+            second = await script()
+            visible = await page.locator('#terms').is_visible()
+            return first, hidden, second, visible, await raw.locator('#terms-v2').is_checked()
+        finally:
+            await raw.context.close()
+
+    first, hidden, second, visible, checked = engine.run(main())
+    assert (first, hidden, second, visible, checked) == (True, False, True, True, True)
+    assert len(provider.bundles) == 1

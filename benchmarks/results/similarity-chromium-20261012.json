@@ -1,12 +1,13 @@
 {
  "format": 1,
- "date": "2026-10-12T01:00:09+00:00",
+ "date": "2026-10-12T09:34:11+00:00",
  "mendwright": "0.3.0",
  "python": "3.12.10",
  "platform": "Windows-11",
  "provider": "similarity",
  "provider_class": "SimilarityProposer",
  "model": null,
+ "fingerprint": true,
  "endpoint": null,
  "page": "chromium",
  "repeat": 1,
@@ -18,27 +19,28 @@
   "cases": 47,
   "positives": 35,
   "negatives": 12,
-  "correct": 27,
+  "correct": 28,
   "wrong": 1,
-  "missed": 7,
+  "missed": 6,
   "declined": 10,
   "wrong_negative": 2,
   "errors": 0,
   "provider_errors": 0,
-  "correct_pct": 77.1,
+  "correct_pct": 80.0,
   "wrong_pct": 2.9,
-  "missed_pct": 20.0,
+  "missed_pct": 17.1,
   "declined_pct": 83.3,
   "wrong_negative_pct": 16.7,
   "wrong_heals": 3,
   "wrong_heals_pct": 6.4,
   "gate_caught_wrong": 0,
-  "avg_model_calls": 0.91,
-  "avg_model_ms": 1.7,
-  "avg_prompt_chars": 9993,
-  "avg_prompt_tokens_est": 2498,
-  "run_prompt_chars": 429696,
-  "run_tokens_est": 107424
+  "fingerprint_heals": 21,
+  "avg_model_calls": 0.47,
+  "avg_model_ms": 1.3,
+  "avg_prompt_chars": 10281,
+  "avg_prompt_tokens_est": 2570,
+  "run_prompt_chars": 226172,
+  "run_tokens_est": 56543
  },
  "by_category": {
   "id_renamed": {
@@ -96,9 +98,9 @@
    "cases": 3
   },
   "tag_change": {
-   "correct": 0,
+   "correct": 1,
    "wrong": 0,
-   "missed": 3,
+   "missed": 2,
    "declined": 0,
    "wrong_negative": 0,
    "error": 0,
@@ -188,8 +190,8 @@
    "healed_target": "other",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 324.0,
+   "model_ms": 1.3,
+   "heal_ms": 314.9,
    "prompt_chars": 14780,
    "prompt_chars_total": 14780,
    "est_tokens": 3695,
@@ -199,11 +201,13 @@
     {
      "xpath": "//button[@data-testid='giftcard-apply']",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "attr-churn-menu-toggle",
@@ -214,23 +218,25 @@
    "healed_xpath": "//button[@aria-label='Menu']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 299.6,
-   "prompt_chars": 5255,
-   "prompt_chars_total": 5255,
-   "est_tokens": 1314,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 295.7,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@aria-label='Menu']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "attr-churn-origin-input",
@@ -241,23 +247,25 @@
    "healed_xpath": "//input[@data-testid='origin-input']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 290.8,
-   "prompt_chars": 8569,
-   "prompt_chars_total": 8569,
-   "est_tokens": 2142,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 303.1,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@data-testid='origin-input']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-last-name",
@@ -268,23 +276,25 @@
    "healed_xpath": "//input[@id='su-last']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 1.0,
-   "heal_ms": 303.3,
-   "prompt_chars": 4632,
-   "prompt_chars_total": 4632,
-   "est_tokens": 1158,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 297.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@id='su-last']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-phone",
@@ -292,26 +302,28 @@
    "run": 1,
    "expected": "heal",
    "outcome": "correct",
-   "healed_xpath": "//input[@id=':r7:']",
+   "healed_xpath": "//input[@name='phone']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 3.3,
-   "heal_ms": 311.3,
-   "prompt_chars": 12853,
-   "prompt_chars_total": 12853,
-   "est_tokens": 3213,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 300.1,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
-     "xpath": "//input[@id=':r7:']",
+     "xpath": "//input[@name='phone']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "field-order-postcode",
@@ -322,23 +334,25 @@
    "healed_xpath": "//input[@name='postalCode']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 1.0,
-   "heal_ms": 304.7,
-   "prompt_chars": 7051,
-   "prompt_chars_total": 7051,
-   "est_tokens": 1763,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 302.3,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='postalCode']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "flow-checkout-place-order",
@@ -351,7 +365,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 271.1,
+   "heal_ms": 270.6,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -359,7 +373,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-order-track-package",
@@ -372,7 +387,7 @@
    "learned_role": "link",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 274.1,
+   "heal_ms": 272.8,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -380,7 +395,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-settings-save-profile",
@@ -393,7 +409,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 280.8,
+   "heal_ms": 271.5,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -401,7 +417,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "flow-signup-continue",
@@ -414,7 +431,7 @@
    "learned_role": "button",
    "model_calls": 0,
    "model_ms": 0,
-   "heal_ms": 271.9,
+   "heal_ms": 269.8,
    "prompt_chars": 0,
    "prompt_chars_total": 0,
    "est_tokens": 0,
@@ -422,7 +439,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "hashed-class-cart-link",
@@ -433,23 +451,25 @@
    "healed_xpath": "//a[@data-testid='header-cart']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 5.9,
-   "heal_ms": 322.5,
-   "prompt_chars": 19193,
-   "prompt_chars_total": 19193,
-   "est_tokens": 4798,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 298.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@data-testid='header-cart']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hashed-class-new-project",
@@ -460,23 +480,25 @@
    "healed_xpath": "//button[normalize-space()='New project']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 2.4,
-   "heal_ms": 305.0,
-   "prompt_chars": 10532,
-   "prompt_chars_total": 10532,
-   "est_tokens": 2633,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 304.0,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='New project']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hashed-class-sort-select",
@@ -487,23 +509,25 @@
    "healed_xpath": "//select[@id='results-sort']",
    "healed_target": "truth",
    "learned_role": "combobox",
-   "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 342.0,
-   "prompt_chars": 9936,
-   "prompt_chars_total": 9936,
-   "est_tokens": 2484,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 302.6,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//select[@id='results-sort']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-pricing-link",
@@ -514,23 +538,25 @@
    "healed_xpath": "//nav[@aria-label='Primary']//a[@href='/pricing']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 4.4,
-   "heal_ms": 337.4,
-   "prompt_chars": 7694,
-   "prompt_chars_total": 7694,
-   "est_tokens": 1924,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 321.0,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//nav[@aria-label='Primary']//a[@href='/pricing']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-sticky-add-to-cart",
@@ -538,26 +564,28 @@
    "run": 1,
    "expected": "heal",
    "outcome": "correct",
-   "healed_xpath": "//button[contains(concat(' ', normalize-space(@class), ' '), ' BuyBox_add__Wn1b7 ')]",
+   "healed_xpath": "//button[@type='submit' and normalize-space()='Add to cart']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 3.1,
-   "heal_ms": 344.4,
-   "prompt_chars": 15624,
-   "prompt_chars_total": 15624,
-   "est_tokens": 3906,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 297.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
-     "xpath": "//button[contains(concat(' ', normalize-space(@class), ' '), ' BuyBox_add__Wn1b7 ')]",
+     "xpath": "//button[@type='submit' and normalize-space()='Add to cart']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "hidden-dup-subscribe-link",
@@ -568,23 +596,25 @@
    "healed_xpath": "//a[@href='/subscribe']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 3.5,
-   "heal_ms": 320.2,
-   "prompt_chars": 7811,
-   "prompt_chars_total": 7811,
-   "est_tokens": 1953,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 304.8,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@href='/subscribe']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-removed-checkout-continue",
@@ -595,23 +625,25 @@
    "healed_xpath": "//button[normalize-space()='Continue to payment']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 2.1,
-   "heal_ms": 348.5,
-   "prompt_chars": 13598,
-   "prompt_chars_total": 13598,
-   "est_tokens": 3400,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 307.4,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Continue to payment']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-removed-digest-checkbox",
@@ -622,23 +654,25 @@
    "healed_xpath": "//input[@name='digest']",
    "healed_target": "truth",
    "learned_role": "checkbox",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 313.4,
-   "prompt_chars": 9623,
-   "prompt_chars_total": 9623,
-   "est_tokens": 2406,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 305.0,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='digest']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "id-renamed-login-email",
@@ -650,8 +684,8 @@
    "healed_target": "truth",
    "learned_role": "input",
    "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 327.0,
+   "model_ms": 0.7,
+   "heal_ms": 302.8,
    "prompt_chars": 4591,
    "prompt_chars_total": 4591,
    "est_tokens": 1148,
@@ -661,11 +695,13 @@
     {
      "xpath": "//input[@id='signin-email']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "id-renamed-search-input",
@@ -676,23 +712,25 @@
    "healed_xpath": "//input[@name='q']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 0.9,
-   "heal_ms": 312.6,
-   "prompt_chars": 19162,
-   "prompt_chars_total": 19162,
-   "est_tokens": 4790,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 294.7,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@name='q']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "label-reworded-apply-filters",
@@ -704,8 +742,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.2,
-   "heal_ms": 301.2,
+   "model_ms": 1.3,
+   "heal_ms": 301.1,
    "prompt_chars": 9967,
    "prompt_chars_total": 9967,
    "est_tokens": 2492,
@@ -715,11 +753,13 @@
     {
      "xpath": "//button[normalize-space()='Show 5 flights']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "label-reworded-email-field",
@@ -730,23 +770,25 @@
    "healed_xpath": "//input[@id='profile-email']",
    "healed_target": "truth",
    "learned_role": "input",
-   "model_calls": 1,
-   "model_ms": 3.3,
-   "heal_ms": 318.0,
-   "prompt_chars": 8678,
-   "prompt_chars_total": 8678,
-   "est_tokens": 2170,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 305.1,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//input[@id='profile-email']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "label-reworded-signin-link",
@@ -758,8 +800,8 @@
    "healed_target": "truth",
    "learned_role": "link",
    "model_calls": 1,
-   "model_ms": 2.6,
-   "heal_ms": 307.5,
+   "model_ms": 2.7,
+   "heal_ms": 336.9,
    "prompt_chars": 13676,
    "prompt_chars_total": 13676,
    "est_tokens": 3419,
@@ -769,11 +811,13 @@
     {
      "xpath": "//a[@href='/account/login']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "moved-changelog-link",
@@ -784,23 +828,25 @@
    "healed_xpath": "//a[@href='/changelog/']",
    "healed_target": "truth",
    "learned_role": "link",
-   "model_calls": 1,
-   "model_ms": 1.7,
-   "heal_ms": 313.5,
-   "prompt_chars": 5577,
-   "prompt_chars_total": 5577,
-   "est_tokens": 1394,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 294.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//a[@href='/changelog/']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "moved-logout-button",
@@ -811,23 +857,25 @@
    "healed_xpath": "//button[normalize-space()='Log out']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.9,
-   "heal_ms": 308.7,
-   "prompt_chars": 5924,
-   "prompt_chars_total": 5924,
-   "est_tokens": 1481,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 304.7,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Log out']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "moved-share-button",
@@ -838,23 +886,25 @@
    "healed_xpath": "//button[@aria-label='Share this article']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.8,
-   "heal_ms": 305.1,
-   "prompt_chars": 9659,
-   "prompt_chars_total": 9659,
-   "est_tokens": 2415,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 303.9,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@aria-label='Share this article']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "near-dup-cart-remove",
@@ -866,8 +916,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.8,
-   "heal_ms": 327.3,
+   "model_ms": 2.0,
+   "heal_ms": 337.7,
    "prompt_chars": 14973,
    "prompt_chars_total": 14973,
    "est_tokens": 3743,
@@ -877,11 +927,13 @@
     {
      "xpath": "//tr[.//td[normalize-space()='Canvas field capRed / M']]//button[normalize-space()='Remove']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-product-add-to-cart",
@@ -893,8 +945,8 @@
    "healed_target": "truth",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 2.2,
-   "heal_ms": 299.2,
+   "model_ms": 2.3,
+   "heal_ms": 308.3,
    "prompt_chars": 19239,
    "prompt_chars_total": 19239,
    "est_tokens": 4810,
@@ -904,11 +956,13 @@
     {
      "xpath": "//article[.//h3[normalize-space()='Trail Runner 2']]//button",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-review-edit",
@@ -920,8 +974,8 @@
    "healed_target": "truth",
    "learned_role": "link",
    "model_calls": 1,
-   "model_ms": 4.7,
-   "heal_ms": 392.2,
+   "model_ms": 2.0,
+   "heal_ms": 320.2,
    "prompt_chars": 10638,
    "prompt_chars_total": 10638,
    "est_tokens": 2660,
@@ -931,11 +985,13 @@
     {
      "xpath": "//a[@href='/checkout?step=delivery']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "near-dup-team-row-edit",
@@ -947,8 +1003,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.0,
-   "heal_ms": 278.5,
+   "model_ms": 1.4,
+   "heal_ms": 286.1,
    "prompt_chars": 8789,
    "prompt_chars_total": 8789,
    "est_tokens": 2197,
@@ -956,7 +1012,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-ambiguous-copy-button",
@@ -968,8 +1025,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 275.9,
+   "model_ms": 0.6,
+   "heal_ms": 277.4,
    "prompt_chars": 5472,
    "prompt_chars_total": 5472,
    "est_tokens": 1368,
@@ -977,7 +1034,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-ambiguous-invite-accept",
@@ -989,8 +1047,8 @@
    "healed_target": "other",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 2.1,
-   "heal_ms": 325.3,
+   "model_ms": 1.0,
+   "heal_ms": 305.4,
    "prompt_chars": 4825,
    "prompt_chars_total": 4825,
    "est_tokens": 1206,
@@ -1000,11 +1058,13 @@
     {
      "xpath": "//li[.//strong[normalize-space()='Globex']]//button[normalize-space()='Accept']",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "neg-danger-save-draft",
@@ -1016,8 +1076,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 277.2,
+   "model_ms": 0.7,
+   "heal_ms": 276.3,
    "prompt_chars": 6082,
    "prompt_chars_total": 6082,
    "est_tokens": 1520,
@@ -1025,7 +1085,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-danger-save-payee",
@@ -1037,8 +1098,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.0,
-   "heal_ms": 271.3,
+   "model_ms": 0.7,
+   "heal_ms": 274.4,
    "prompt_chars": 7167,
    "prompt_chars_total": 7167,
    "est_tokens": 1792,
@@ -1046,7 +1107,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-danger-save-profile",
@@ -1059,7 +1121,7 @@
    "learned_role": "button",
    "model_calls": 1,
    "model_ms": 0.6,
-   "heal_ms": 269.9,
+   "heal_ms": 277.7,
    "prompt_chars": 8427,
    "prompt_chars_total": 8427,
    "est_tokens": 2107,
@@ -1067,7 +1129,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-compare-button",
@@ -1079,8 +1142,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 277.4,
+   "model_ms": 1.3,
+   "heal_ms": 279.2,
    "prompt_chars": 19606,
    "prompt_chars_total": 19606,
    "est_tokens": 4902,
@@ -1088,7 +1151,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-marketing-optin",
@@ -1100,8 +1164,8 @@
    "healed_target": null,
    "learned_role": "checkbox",
    "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 283.5,
+   "model_ms": 0.9,
+   "heal_ms": 279.7,
    "prompt_chars": 13672,
    "prompt_chars_total": 13672,
    "est_tokens": 3418,
@@ -1109,7 +1173,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "neg-removed-quarterly-report",
@@ -1121,8 +1186,8 @@
    "healed_target": "other",
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 307.4,
+   "model_ms": 0.8,
+   "heal_ms": 304.2,
    "prompt_chars": 4537,
    "prompt_chars_total": 4537,
    "est_tokens": 1134,
@@ -1132,32 +1197,42 @@
     {
      "xpath": "//li[.//h2[normalize-space()='Monthly summary: September']]//button",
      "result": "applied",
-     "target": "other"
+     "target": "other",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   },
   {
    "id": "tag-change-div-to-button",
    "category": "tag_change",
    "run": 1,
    "expected": "heal",
-   "outcome": "missed",
-   "healed_xpath": null,
-   "healed_target": null,
+   "outcome": "correct",
+   "healed_xpath": "//button[normalize-space()='Export CSV']",
+   "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.6,
-   "heal_ms": 278.5,
-   "prompt_chars": 5278,
-   "prompt_chars_total": 5278,
-   "est_tokens": 1320,
-   "decline_reason": "SimilarityProposer returned no selector for 'export_csv': no element on the page is similar enough (best score 0.44, threshold 0.50).",
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 297.8,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
+   "decline_reason": null,
    "provider_error": false,
-   "proposals": [],
+   "proposals": [
+    {
+     "xpath": "//button[normalize-space()='Export CSV']",
+     "result": "applied",
+     "target": "truth",
+     "source": "fingerprint"
+    }
+   ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "tag-change-input-to-button",
@@ -1169,8 +1244,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 272.3,
+   "model_ms": 0.8,
+   "heal_ms": 274.1,
    "prompt_chars": 6132,
    "prompt_chars_total": 6132,
    "est_tokens": 1533,
@@ -1178,7 +1253,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "tag-change-link-to-button",
@@ -1191,7 +1267,7 @@
    "learned_role": "button",
    "model_calls": 1,
    "model_ms": 0.3,
-   "heal_ms": 280.4,
+   "heal_ms": 283.4,
    "prompt_chars": 6969,
    "prompt_chars_total": 6969,
    "est_tokens": 1742,
@@ -1199,7 +1275,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-add-to-cart-de",
@@ -1211,8 +1288,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 1.2,
-   "heal_ms": 274.6,
+   "model_ms": 1.4,
+   "heal_ms": 281.3,
    "prompt_chars": 15742,
    "prompt_chars_total": 15742,
    "est_tokens": 3936,
@@ -1220,7 +1297,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-free-trial-es",
@@ -1232,8 +1310,8 @@
    "healed_target": null,
    "learned_role": "link",
    "model_calls": 1,
-   "model_ms": 2.2,
-   "heal_ms": 282.3,
+   "model_ms": 2.3,
+   "heal_ms": 290.2,
    "prompt_chars": 8192,
    "prompt_chars_total": 8192,
    "est_tokens": 2048,
@@ -1241,7 +1319,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "translated-search-flights-fr",
@@ -1253,8 +1332,8 @@
    "healed_target": null,
    "learned_role": "button",
    "model_calls": 1,
-   "model_ms": 0.9,
-   "heal_ms": 274.5,
+   "model_ms": 1.0,
+   "heal_ms": 278.6,
    "prompt_chars": 8990,
    "prompt_chars_total": 8990,
    "est_tokens": 2248,
@@ -1262,7 +1341,8 @@
    "provider_error": false,
    "proposals": [],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": null
   },
   {
    "id": "wrapped-archive-confirm",
@@ -1273,23 +1353,25 @@
    "healed_xpath": "//button[normalize-space()='Archive project']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 1.8,
-   "heal_ms": 319.3,
-   "prompt_chars": 13134,
-   "prompt_chars_total": 13134,
-   "est_tokens": 3284,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 319.5,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[normalize-space()='Archive project']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "wrapped-login-submit",
@@ -1300,23 +1382,25 @@
    "healed_xpath": "//button[@type='submit']",
    "healed_target": "truth",
    "learned_role": "button",
-   "model_calls": 1,
-   "model_ms": 0.7,
-   "heal_ms": 340.4,
-   "prompt_chars": 3741,
-   "prompt_chars_total": 3741,
-   "est_tokens": 935,
+   "model_calls": 0,
+   "model_ms": 0,
+   "heal_ms": 308.4,
+   "prompt_chars": 0,
+   "prompt_chars_total": 0,
+   "est_tokens": 0,
    "decline_reason": null,
    "provider_error": false,
    "proposals": [
     {
      "xpath": "//button[@type='submit']",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "fingerprint"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "fingerprint"
   },
   {
    "id": "wrapped-qty-input",
@@ -1328,8 +1412,8 @@
    "healed_target": "truth",
    "learned_role": "input",
    "model_calls": 1,
-   "model_ms": 1.4,
-   "heal_ms": 306.7,
+   "model_ms": 1.5,
+   "heal_ms": 319.9,
    "prompt_chars": 13706,
    "prompt_chars_total": 13706,
    "est_tokens": 3426,
@@ -1339,11 +1423,13 @@
     {
      "xpath": "//tr[.//td[normalize-space()='Speckled camp mugSlate']]//input",
      "result": "applied",
-     "target": "truth"
+     "target": "truth",
+     "source": "model"
     }
    ],
    "gate_caught_wrong": 0,
-   "note": null
+   "note": null,
+   "healed_by": "model"
   }
  ]
 }

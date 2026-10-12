@@ -1,0 +1,871 @@
+"""`mendwright fix`: write healed selectors back into the code that passes the old ones.
+
+Every test builds a small project in tmp_path (source files, an override store and a journal),
+runs mendwright.cli.main([...]) in-process and reads the output and the files. Offline: no
+network, no model, no browser.
+"""
+
+import ast
+import json
+import os
+import stat
+import sys
+import textwrap
+
+import pytest
+
+from mendwright import cli, fixback
+
+T0 = "2026-10-01T08:00:00+00:00"
+T1 = "2026-10-02T09:30:00+00:00"
+
+TERMS = "//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']"
+EMAIL = "//input[@name='email' and @type='text']"
+QUOTES = "//a[contains(.,\"Tom's\")]"
+
+
+# --- building a project ------------------------------------------------------------------
+
+def cand(xpath, source, last=None, status="active", frame=None):
+    c = {"xpath": xpath, "source": source, "status": status, "addedAt": T0, "lastSucceededAt": last}
+    if frame:
+        c["frameXPath"] = frame
+    return c
+
+
+def healed(old, new, role="checkbox", **extra):
+    """A key whose code passes ``old`` (a selector or a list of them) and whose best selector
+    is the heal ``new``."""
+    olds = [old] if isinstance(old, str) else list(old)
+    entry = {"expectedRole": role,
+             "candidates": [cand(o, "code", T0) for o in olds] + [cand(new, "heal", T1)]}
+    entry.update(extra)
+    return entry
+
+
+def applied(key, new, old=(), ts=T1):
+    return {"ts": ts, "event": "heal.applied", "key": key, "provider": "StubProvider",
+            "model": "stub-model", "latency_ms": 12, "xpath": new, "old": list(old)}
+
+
+def canary(key, xpath, success=True, ts=T1):
+    return {"ts": ts, "event": "heal.canary", "key": key, "xpath": xpath, "success": success}
+
+
+def write_store(root, selectors, events=()):
+    """overrides.json (and journal.jsonl, unless events is None) in root/.mendwright."""
+    folder = root / ".mendwright"
+    folder.mkdir(parents=True, exist_ok=True)
+    store = folder / "overrides.json"
+    store.write_text(json.dumps({"schema": 2, "selectors": selectors}), encoding="utf-8")
+    if events is not None:
+        (folder / "journal.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+    return store
+
+
+def confirmed_project(root, key, old, new, **extra):
+    """A store with one confirmed heal."""
+    entry = healed(old, new, **extra)
+    return write_store(root, {key: entry}, [applied(key, new, [old] if isinstance(old, str) else old),
+                                            canary(key, new)])
+
+
+def write(root, name, text, newline="\n"):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+    return path
+
+
+def run(capsys, *args):
+    code = cli.main(["fix", *args])
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+@pytest.fixture
+def root(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    return project
+
+
+# --- the dry run and --apply -------------------------------------------------------------
+
+def test_dry_run_prints_a_diff_and_changes_nothing(root, capsys):
+    confirmed_project(root, "accept_terms", "#accept-terms", TERMS)
+    source = write(root, "tests/test_checkout.py",
+                   'def test_it(heal):\n    heal.locator("accept_terms", "#accept-terms").check()\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    lines = out.splitlines()
+    assert lines[0] == ("mendwright fix: 1 replacement in 1 file would put 1 healed selector into "
+                        "your code. Dry run, nothing was changed.")
+    assert "--- a/tests/test_checkout.py" in lines
+    assert "+++ b/tests/test_checkout.py" in lines
+    assert '-    heal.locator("accept_terms", "#accept-terms").check()' in lines
+    assert '+    heal.locator("accept_terms", "' + TERMS + '").check()' in lines
+    assert "accept_terms  (checkbox)  healed, confirmed" in lines
+    assert "  was  #accept-terms" in lines
+    assert "  now  " + TERMS in lines
+    assert "  tests/test_checkout.py:2" in lines
+    assert "Run the same command with --apply to write these changes." in lines
+    assert ("Once your code holds the new selector, mendwright tries it first on the next run, "
+            "because selectors in your code win over saved heals.") in lines
+
+
+def test_apply_writes_the_file_and_the_next_run_has_nothing_to_do(root, capsys):
+    confirmed_project(root, "accept_terms", "#accept-terms", TERMS)
+    source = write(root, "test_a.py", 'heal.locator("accept_terms", "#accept-terms")\n')
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert out.splitlines()[0] == "mendwright fix: wrote 1 replacement in 1 file (1 key)."
+    assert "Run the same command with --apply" not in out
+    assert source.read_text(encoding="utf-8") == 'heal.locator("accept_terms", "' + TERMS + '")\n'
+    assert [p.name for p in root.iterdir() if p.name.startswith(".mendwright-fix")] == []
+
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert "accept_terms: your code already passes the healed selector (test_a.py:1), so there " \
+           "is nothing to change." in out
+
+
+def test_nothing_to_do_when_no_key_has_a_heal_in_front(root, capsys):
+    write_store(root, {"save": {"expectedRole": "button", "candidates": [
+        cand("#save", "code", T1), cand("//button[@id='old']", "heal", T0)]}}, [])
+    write(root, "test_a.py", 'heal.locator("save", "#save")\n')
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert out.splitlines() == ["mendwright fix: nothing to write back.",
+                                "No key has a healed selector ahead of the one in your code."]
+
+
+def test_an_empty_store_has_nothing_to_do(root, capsys):
+    write_store(root, {}, [])
+    assert run(capsys) == (0, "mendwright fix: nothing to write back.\nNo key has a healed "
+                              "selector ahead of the one in your code.\n", "")
+
+
+# --- which keys are fixed ----------------------------------------------------------------
+
+def test_an_unconfirmed_heal_is_left_out_until_asked_for(root, capsys):
+    write_store(root, {"accept_terms": healed("#accept-terms", TERMS)},
+                [applied("accept_terms", TERMS, ["#accept-terms"])])
+    source = write(root, "test_a.py", 'heal.locator("accept_terms", "#accept-terms")\n')
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == 'heal.locator("accept_terms", "#accept-terms")\n'
+    assert ("  accept_terms: its heal was never confirmed (journal.jsonl has no canary success for "
+            "it; the pytest plugin or an expect= or confirm(True) check writes one in the run "
+            "that makes the heal). Check that the selector finds the right element, then add "
+            "--include-unconfirmed to write it anyway.") in out.splitlines()
+
+    code, out, err = run(capsys, "--apply", "--include-unconfirmed")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == 'heal.locator("accept_terms", "' + TERMS + '")\n'
+    assert "accept_terms  (checkbox)  healed, NOT confirmed" in out
+
+
+def test_a_failed_canary_does_not_confirm_and_the_latest_one_counts(root, capsys):
+    events = [applied("k", TERMS, ["#a"]), canary("k", TERMS, False), canary("k", TERMS, True)]
+    write_store(root, {"k": healed("#a", TERMS)}, events)
+    write(root, "test_a.py", 'heal.locator("k", "#a")\n')
+    assert "healed, confirmed" in run(capsys)[1]
+    write_store(root, {"k": healed("#a", TERMS)}, [applied("k", TERMS, ["#a"]),
+                                                   canary("k", TERMS, True),
+                                                   canary("k", TERMS, False)])
+    assert "healed, confirmed" not in run(capsys)[1]
+
+
+def test_without_a_journal_no_heal_is_confirmed(root, capsys):
+    write_store(root, {"k": healed("#a", TERMS)}, events=None)
+    write(root, "test_a.py", 'heal.locator("k", "#a")\n')
+    out = run(capsys)[1]
+    assert "k: its heal was never confirmed (journal.jsonl has no canary" in out
+    assert "mendwright fix: nothing to write back." in out
+
+
+def test_a_destructive_key_is_never_fixed(root, capsys):
+    confirmed_project(root, "pay", "#pay", "//button[@id='pay-now']", role="button",
+                      destructive=True)
+    source = write(root, "test_a.py", 'heal.locator("pay", "#pay", destructive=True)\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply", "--include-unconfirmed")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  pay: it is marked destructive, so its heals are never written into code. Fix the "
+            "selector by hand.") in out.splitlines()
+
+
+def test_a_heal_inside_an_iframe_is_not_written_into_code(root, capsys):
+    write_store(root, {"k": {"expectedRole": "button", "candidates": [
+        cand("#a", "code", T0), cand("//button[@id='b']", "heal", T1, frame="//iframe[@id='shop']")]}},
+        [canary("k", "//button[@id='b']")])
+    source = write(root, "test_a.py", 'heal.locator("k", "#a")\n')
+    before = source.read_bytes()
+    out = run(capsys, "--apply")[1]
+    assert source.read_bytes() == before
+    assert "  k: its healed selector runs inside the iframe //iframe[@id='shop'], and a selector " \
+           "in your code runs in the page itself." in out
+
+
+def test_a_key_with_only_seed_selectors_has_no_code_to_fix(root, capsys):
+    write_store(root, {"k": {"expectedRole": "button", "candidates": [
+        cand("#a", "seed", T0), cand("//button[@id='b']", "heal", T1)]}},
+        [canary("k", "//button[@id='b']")])
+    source = write(root, "test_a.py", 'heal.locator("k", "#a")\n')
+    before = source.read_bytes()
+    out = run(capsys, "--apply")[1]
+    assert source.read_bytes() == before
+    assert "  k: no selector from your code is saved for it (its selectors come from a seed file" \
+           in out
+
+
+def test_superseded_and_quarantined_selectors_are_not_the_old_ones(root, capsys):
+    entry = {"expectedRole": "button", "candidates": [
+        cand("#old", "code", T0, status="superseded"),
+        cand("#now", "code", T0),
+        cand("//button[@id='q']", "heal", None, status="quarantined"),
+        cand("//button[@id='fixed']", "heal", T1)]}
+    write_store(root, {"k": entry}, [canary("k", "//button[@id='fixed']")])
+    source = write(root, "test_a.py",
+                   'heal.locator("k", "#now")\nheal.locator("other", "#old")\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == (
+        'heal.locator("k", "//button[@id=\'fixed\']")\nheal.locator("other", "#old")\n')
+
+
+def test_the_best_heal_is_the_one_that_succeeded_last(root, capsys):
+    entry = {"expectedRole": "button", "candidates": [
+        cand("#a", "code", T0),
+        cand("//button[@id='first']", "heal", "2026-10-02T00:00:00+00:00"),
+        cand("//button[@id='second']", "heal", "2026-10-03T00:00:00+00:00")]}
+    write_store(root, {"k": entry}, [canary("k", "//button[@id='second']")])
+    source = write(root, "test_a.py", 'heal.locator("k", "#a")\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'heal.locator("k", "//button[@id=\'second\']")\n'
+
+
+def test_a_heal_that_ties_with_its_code_selector_wins_and_one_that_never_matched_does_not(
+        root, capsys):
+    new = "//button[@id='new']"
+    tie = {"expectedRole": "button", "candidates": [cand("#a", "code", T1), cand(new, "heal", T1)]}
+    write_store(root, {"tie": tie}, [canary("tie", new)])
+    source = write(root, "test_a.py", 'x = "#a"\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'x = "' + new + '"\n'
+
+    never = {"expectedRole": "button", "candidates": [cand("#b", "code"), cand(new, "heal")]}
+    write_store(root, {"never": never}, [canary("never", new)])
+    other = write(root, "test_b.py", 'y = "#b"\n')
+    out = run(capsys, "--apply", "--include-unconfirmed")[1]
+    assert other.read_text(encoding="utf-8") == 'y = "#b"\n'
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+
+
+def test_every_old_code_selector_of_a_key_is_replaced(root, capsys):
+    confirmed_project(root, "k", ["#a", "//button[@id='b']"], EMAIL, role="input")
+    source = write(root, "test_a.py", "heal.locator('k', ['#a', \"//button[@id='b']\"])\n")
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == (
+        'heal.locator(\'k\', ["' + EMAIL + '", "' + EMAIL + '"])\n')
+    assert "(it had 2 selectors in code, and each found one is replaced by the healed selector)" in out
+
+
+# --- string literals ---------------------------------------------------------------------
+
+def rewrite(root, capsys, line, old="#save", new=TERMS):
+    """Fix a one-line Python file and return the new line, or None when it was left alone."""
+    confirmed_project(root, "k", old, new)
+    source = write(root, "test_a.py", line + "\n")
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    ast.parse(source.read_text(encoding="utf-8"))
+    after = source.read_text(encoding="utf-8").rstrip("\n")
+    return None if after == line else after
+
+
+@pytest.mark.parametrize("line, new, expected", [
+    ('x = "#save"', "//input[@id='a']", 'x = "//input[@id=\'a\']"'),
+    ("x = '#save'", "//input[@id='a']", 'x = "//input[@id=\'a\']"'),
+    ('x = "#save"', '//a[@id="b"]', "x = '//a[@id=\"b\"]'"),
+    ("x = '#save'", '//a[@id="b"]', "x = '//a[@id=\"b\"]'"),
+    ('x = "#save"', '//a[contains(.,"Tom\'s")]', 'x = "//a[contains(.,\\"Tom\'s\\")]"'),
+    ("x = '#save'", '//a[contains(.,"Tom\'s")]', "x = '//a[contains(.,\"Tom\\'s\")]'"),
+    ('x = """#save"""', '//a[contains(.,"Tom\'s")]', 'x = """//a[contains(.,"Tom\'s")]"""'),
+    ("x = '''#save'''", '//a[contains(.,"Tom\'s")]', "x = '''//a[contains(.,\"Tom's\")]'''"),
+    ('x = """#save"""', 'a"', "x = '''a\"'''"),
+    ("x = '''#save'''", "a'", "x = \"\"\"a'\"\"\""),
+    ('x = r"#save"', '//a[@href="x"]', "x = r'//a[@href=\"x\"]'"),
+    ('x = r"#save"', "//a[@d='\\d']", 'x = r"//a[@d=\'\\d\']"'),
+    ('x = r"#save"', "//a['\"\\d']", 'x = "//a[\'\\"\\\\d\']"'),
+    ('x = R"#save"', "a\\", 'x = "a\\\\"'),
+    ('x = u"#save"', "//a[@id='x']", 'x = u"//a[@id=\'x\']"'),
+    ('x = "#save"', "a\\b", 'x = "a\\\\b"'),
+    ('x = "#save"', "a\nb\tc", 'x = "a\\nb\\tc"'),
+], ids=["double-single", "single-single", "double-double", "single-double", "double-both",
+        "single-both", "triple-both", "triple-single-both", "triple-trailing-quote",
+        "triple-trailing-single", "raw-switch", "raw-keeps-backslash", "raw-both-quotes",
+        "raw-trailing-backslash", "u-prefix", "backslash", "control-characters"])
+def test_the_new_literal_is_valid_python_with_the_right_value(root, capsys, line, new, expected):
+    assert rewrite(root, capsys, line, new=new) == expected
+    value = ast.literal_eval(expected[len("x = "):])
+    assert value == new
+
+
+def test_python_literal_always_evaluates_to_the_selector():
+    selectors = [TERMS, QUOTES, "a\\", "\\", "'", '"', "'''", '"""', "x'''", 'x"""', "a\nb", "é",
+                 "\x00", "\u2028", "\U0001f600", "\\'", "//a[@d='\\\\']"]
+    tokens = ['"#x"', "'#x'", '"""#x"""', "'''#x'''", 'r"#x"', "r'#x'", 'u"#x"', 'R"""#x"""',
+              "r'''#x'''"]
+    for new in selectors:
+        for token in tokens:
+            literal = fixback.python_literal(new, token)
+            assert ast.literal_eval(literal) == new, (new, token, literal)
+
+
+def test_an_f_string_bytes_a_comment_and_a_substring_are_left_alone(root, capsys):
+    source = textwrap.dedent('''\
+        a = f"#save"
+        b = f"{d['#save']}"
+        c = f'{"#save"}'
+        d = b"#save"
+        e = "#save-all"
+        f = "click #save now"
+        g = "#sa" "ve"
+        # "#save" in a comment
+        h = rf"#save"
+        i = ("#save"
+             "x")
+        j = "x" \\
+            "#save"
+    ''')
+    confirmed_project(root, "k", "#save", TERMS)
+    path = write(root, "test_a.py", source)
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert path.read_text(encoding="utf-8") == source
+    assert "k: no string equal to '#save' was found in 1 file." in out
+
+
+def test_only_a_whole_string_is_replaced_and_every_copy_is(root, capsys):
+    source = textwrap.dedent('''\
+        A = "#save"
+        B = ["#save", '#save', """#save"""]
+        C = {"#save": 1}
+        D = foo("#save", x="#save")
+    ''')
+    confirmed_project(root, "k", "#save", "//b[@id='s']")
+    path = write(root, "test_a.py", source)
+    assert run(capsys, "--apply")[0] == 0
+    assert path.read_text(encoding="utf-8") == textwrap.dedent('''\
+        A = "//b[@id='s']"
+        B = ["//b[@id='s']", "//b[@id='s']", """//b[@id='s']"""]
+        C = {"//b[@id='s']": 1}
+        D = foo("//b[@id='s']", x="//b[@id='s']")
+    ''')
+
+
+def test_a_stored_spelling_matches_the_literal_that_normalizes_to_it(root, capsys):
+    confirmed_project(root, "k", ["//a[@id='x']", "#save"], "//b[@id='y']", role="button")
+    source = write(root, "test_a.py", 'A = "xpath=//a[@id=\'x\']"\nB = " #save "\nC = "css=#save"\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'A = "//b[@id=\'y\']"\nB = "//b[@id=\'y\']"\nC = "//b[@id=\'y\']"\n'
+
+
+def test_offsets_are_right_after_wide_characters_form_feeds_and_unicode_separators(root, capsys):
+    source = ('x = "\u00e9\U0001f600\u2028"; y = "#save"; z = "\u00e9"\n'
+              '\x0c\n'
+              'heal.locator("k", "#save")  # \u2028 in a comment\n')
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    path = write(root, "test_a.py", source)
+    assert run(capsys, "--apply")[0] == 0
+    assert path.read_text(encoding="utf-8") == source.replace("#save", "//b[@id='y']")
+
+
+def test_crlf_and_bom_and_mixed_endings_are_kept(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    crlf = write(root, "crlf.py", 'a = 1\nb = "#save"\nc = """x\ny"""\n', newline="\r\n")
+    bom = root / "bom.py"
+    bom.write_bytes(b"\xef\xbb\xbfa = '#save'\r\nb = 2\n")
+    mixed = root / "mixed.py"
+    mixed.write_bytes(b"a = 1\r\nb = '#save'\nc = 3\r")
+    before = (crlf.read_bytes(), bom.read_bytes(), mixed.read_bytes())
+    assert run(capsys)[0] == 0
+    assert (crlf.read_bytes(), bom.read_bytes(), mixed.read_bytes()) == before
+    assert run(capsys, "--apply")[0] == 0
+    assert crlf.read_bytes() == b'a = 1\r\nb = "//b[@id=\'y\']"\r\nc = """x\r\ny"""\r\n'
+    assert bom.read_bytes() == b"\xef\xbb\xbfa = \"//b[@id='y']\"\r\nb = 2\n"
+    assert mixed.read_bytes() == b"a = 1\r\nb = \"//b[@id='y']\"\nc = 3\r"
+
+
+def test_a_coding_comment_is_honoured_and_the_encoding_kept(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    path = root / "latin.py"
+    path.write_bytes("# -*- coding: latin-1 -*-\nx = '\u00e9'; y = '#save'\n".encode("latin-1"))
+    assert run(capsys, "--apply")[0] == 0
+    assert path.read_bytes() == "# -*- coding: latin-1 -*-\nx = '\u00e9'; y = \"//b[@id='y']\"\n".encode("latin-1")
+
+
+def test_a_file_that_is_not_valid_python_is_left_alone_and_named(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    broken = write(root, "broken.py", 'def f(:\n    x = "#save"\n')
+    fine = write(root, "fine.py", 'x = "#save"\n')
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert broken.read_text(encoding="utf-8") == 'def f(:\n    x = "#save"\n'
+    assert fine.read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+    assert "broken.py was not changed: it could not be read as Python (" in out
+
+
+def test_python_literals_finds_plain_strings_only():
+    source = textwrap.dedent('''\
+        a = "one"
+        b = f"two {x} {'inner'}"
+        c = b"three"
+        d = "four" "five"
+        e = ("six"
+             "seven")
+        f = 'eight'
+        g = """nine"""
+        h = r'ten'
+    ''')
+    found = [lit.value for lit in fixback.python_literals(source)]
+    assert found == ["one", "eight", "nine", "ten"]
+    for lit in fixback.python_literals(source):
+        assert source[lit.start:lit.end] == lit.source
+
+
+# --- ambiguity ---------------------------------------------------------------------------
+
+def test_a_string_shared_by_two_keys_leaves_the_whole_file_alone_and_lists_it(root, capsys):
+    write_store(root, {
+        "checkout_submit": healed("#submit", "//button[@id='checkout']", role="button"),
+        "signup_submit": healed("#submit", "//button[@id='signup']", role="button"),
+        "terms": healed("#terms", TERMS),
+    }, [canary("checkout_submit", "//button[@id='checkout']"),
+        canary("signup_submit", "//button[@id='signup']"), canary("terms", TERMS)])
+    shared = write(root, "tests/pages.py", 'A = "#submit"\nB = "#terms"\nC = "#submit"\n')
+    clean = write(root, "tests/other.py", 'T = "#terms"\n')
+    before = shared.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert shared.read_bytes() == before                      # untouched, with its fixable #terms
+    assert clean.read_text(encoding="utf-8") == 'T = "' + TERMS + '"\n'
+    assert ("  tests/pages.py was not touched: '#submit' belongs to more than one key "
+            "(checkout_submit, signup_submit), so mendwright cannot tell which healed selector "
+            "goes at 2 places (lines 1, 3). The 1 other replacement in this file was held back "
+            "too. Give each key its own selector string, or edit the file by hand.") \
+        in out.splitlines()
+    assert "--- a/tests/other.py" in out.splitlines()
+    assert "a/tests/pages.py" not in out
+
+
+def test_a_working_key_that_uses_the_same_string_blocks_the_fix(root, capsys):
+    write_store(root, {
+        "broken": healed("#go", "//button[@id='new']", role="button"),
+        "fine": {"expectedRole": "button", "candidates": [cand("#go", "code", T1)]},
+    }, [canary("broken", "//button[@id='new']")])
+    source = write(root, "test_a.py", 'heal.locator("broken", "#go")\nheal.locator("fine", "#go")\n')
+    before = source.read_bytes()
+    out = run(capsys, "--apply")[1]
+    assert source.read_bytes() == before
+    assert "test_a.py was not touched: '#go' belongs to more than one key (broken, fine)" in out
+
+
+def test_two_keys_healed_to_the_same_selector_do_not_clash(root, capsys):
+    new = "//button[@id='new']"
+    write_store(root, {"a": healed("#go", new, role="button"), "b": healed("#go", new, role="button")},
+                [canary("a", new), canary("b", new)])
+    source = write(root, "test_a.py", 'x = "#go"\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'x = "//button[@id=\'new\']"\n'
+
+
+def test_a_selector_that_is_a_seed_selector_of_another_key_is_ambiguous(root, capsys):
+    write_store(root, {
+        "a": healed("#go", "//button[@id='new']", role="button"),
+        "b": {"expectedRole": "button", "candidates": [cand("#go", "seed", T0)]},
+    }, [canary("a", "//button[@id='new']")])
+    source = write(root, "test_a.py", 'x = "#go"\n')
+    out = run(capsys, "--apply")[1]
+    assert source.read_text(encoding="utf-8") == 'x = "#go"\n'
+    assert "belongs to more than one key (a, b)" in out
+
+
+# --- finding files -----------------------------------------------------------------------
+
+def test_folders_that_are_not_your_code_are_skipped(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    skipped = [".git/hooks/x.py", ".venv/lib/x.py", "venv/x.py", "node_modules/pkg/x.py",
+               "build/x.py", "dist/x.py", "src/.mendwright/x.py", "__pycache__/x.py",
+               "pkg.egg-info/x.py", ".claude/worktrees/w/x.py", "a/site-packages/x.py"]
+    for name in skipped:
+        write(root, name, 'x = "#save"\n')
+    kept = write(root, "tests/x.py", 'x = "#save"\n')
+    assert run(capsys, "--apply")[0] == 0
+    for name in skipped:
+        assert (root / name).read_text(encoding="utf-8") == 'x = "#save"\n', name
+    assert kept.read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+
+
+def test_path_can_repeat_and_can_name_a_file_and_defaults_to_the_current_folder(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    for name in ("one/a.py", "two/b.py", "three/c.py", "four/d.txt"):
+        write(root, name, 'x = "#save"\n')
+    assert run(capsys, "--apply", "--path", "one", "--path", "two")[0] == 0
+    assert (root / "one/a.py").read_text(encoding="utf-8") != 'x = "#save"\n'
+    assert (root / "two/b.py").read_text(encoding="utf-8") != 'x = "#save"\n'
+    assert (root / "three/c.py").read_text(encoding="utf-8") == 'x = "#save"\n'
+    assert run(capsys, "--apply", "--path", "four/d.txt")[0] == 0     # a named file is taken as is
+    assert (root / "four/d.txt").read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+    assert run(capsys, "--apply")[0] == 0                              # the default is '.'
+    assert (root / "three/c.py").read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+
+
+def test_a_missing_path_is_an_error_and_nothing_is_changed(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = "#save"\n')
+    code, out, err = run(capsys, "--apply", "--path", "a.py", "--path", "nope")
+    assert code == 1
+    assert out == ""
+    assert err == ("mendwright fix: no such file or folder: nope. Check the --path value; "
+                   "nothing was changed.\n")
+    assert source.read_text(encoding="utf-8") == 'x = "#save"\n'
+
+
+def test_symbolic_links_are_not_followed(root, capsys, tmp_path):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = write(outside, "x.py", 'x = "#save"\n')
+    try:
+        os.symlink(str(outside), str(root / "link"), target_is_directory=True)
+        os.symlink(str(target), str(root / "file_link.py"))
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available here")
+    assert run(capsys, "--apply")[0] == 0
+    assert target.read_text(encoding="utf-8") == 'x = "#save"\n'
+
+
+def test_the_store_is_found_like_report_finds_it(root, capsys, tmp_path, monkeypatch):
+    store = confirmed_project(tmp_path / "elsewhere", "k", "#save", "//b[@id='y']")
+    write(root, "a.py", 'x = "#save"\n')
+    code, out, err = run(capsys)                       # no store in ./.mendwright
+    default = root / ".mendwright" / "overrides.json"
+    assert (code, out) == (1, "")
+    assert err == ("mendwright fix: no store at " + str(default) + ". Run your tests with "
+                   "mendwright first, or pass --store PATH (the default is MENDWRIGHT_STORE, else "
+                   "./.mendwright/overrides.json).\n")
+    code, out, err = run(capsys, "--store", str(store))
+    assert (code, err) == (0, "")
+    assert out.startswith("mendwright fix: 1 replacement in 1 file")
+    monkeypatch.setenv("MENDWRIGHT_STORE", str(store))
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert out.startswith("mendwright fix: 1 replacement in 1 file")
+    assert run(capsys, "--store", str(tmp_path / "nope.json"))[2] == (
+        "mendwright fix: no store at " + str(tmp_path / "nope.json") + ". Check the path given to "
+        "--store; the file is created by the first heal.\n")
+
+
+def test_an_unreadable_store_is_an_error(root, capsys):
+    bad = root / "bad.json"
+    bad.write_text("{oops", encoding="utf-8")
+    code, out, err = run(capsys, "--store", str(bad))
+    assert (code, out) == (1, "")
+    assert err.startswith("mendwright fix: " + str(bad) + " is not valid JSON (")
+
+
+def test_a_journal_with_junk_lines_is_read(root, capsys):
+    write_store(root, {"k": healed("#a", TERMS)}, [])
+    (root / ".mendwright" / "journal.jsonl").write_text(
+        "{broken\n[1]\n" + json.dumps({"event": "heal.canary", "key": "k"}) + "\n"
+        + json.dumps(canary("k", TERMS)) + "\n\n", encoding="utf-8")
+    write(root, "a.py", 'x = "#a"\n')
+    assert "healed, confirmed" in run(capsys)[1]
+
+
+# --- other file types --------------------------------------------------------------------
+
+def test_glob_adds_file_types_and_quoted_strings_are_replaced(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    ts = write(root, "e2e/page.ts", textwrap.dedent('''\
+        const a = page.locator('#save');
+        const b = page.locator("#save");
+        const c = page.locator(`#save`);
+        const d = page.locator('#save-all');   // not the same string
+        const e = `#save${n}`;
+        // page.locator('#save') in a line comment
+        /* page.locator('#save')
+           still a comment '#save' */
+        const f = "don't"; const g = '#save';
+        const h = `
+            #save`;
+    '''))
+    robot = write(root, "e2e/login.robot", 'Click Element    "#save"\nClick Element    #save\n')
+    skipped_py = write(root, "e2e/note.txt", 'x = "#save"\n')
+    code, out, err = run(capsys, "--apply", "--glob", "*.ts", "*.robot")
+    assert (code, err) == (0, "")
+    assert ts.read_text(encoding="utf-8") == textwrap.dedent('''\
+        const a = page.locator("//b[@id='y']");
+        const b = page.locator("//b[@id='y']");
+        const c = page.locator(`//b[@id='y']`);
+        const d = page.locator('#save-all');   // not the same string
+        const e = `#save${n}`;
+        // page.locator('#save') in a line comment
+        /* page.locator('#save')
+           still a comment '#save' */
+        const f = "don't"; const g = "//b[@id='y']";
+        const h = `
+            #save`;
+    ''')
+    assert robot.read_text(encoding="utf-8") == 'Click Element    "//b[@id=\'y\']"\nClick Element    #save\n'
+    assert skipped_py.read_text(encoding="utf-8") == 'x = "#save"\n'
+
+
+def test_glob_can_repeat_and_match_on_a_path(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    for name in ("a/x.ts", "b/y.js", "c/z.rb", "tests/e2e/w.js"):
+        write(root, name, "x = '#save'\n")
+    assert run(capsys, "--apply", "--glob", "*.ts", "--glob", "tests/*/*.js")[0] == 0
+    assert (root / "a/x.ts").read_text(encoding="utf-8") != "x = '#save'\n"
+    assert (root / "tests/e2e/w.js").read_text(encoding="utf-8") != "x = '#save'\n"
+    assert (root / "b/y.js").read_text(encoding="utf-8") == "x = '#save'\n"
+    assert (root / "c/z.rb").read_text(encoding="utf-8") == "x = '#save'\n"
+
+
+def test_a_selector_with_both_quote_kinds_is_escaped_where_the_language_allows_it(root, capsys):
+    confirmed_project(root, "k", "#save", QUOTES)
+    ts = write(root, "page.ts", "const a = '#save';\n")
+    rb = write(root, "page.rb", "a = '#save'\n")
+    code, out, err = run(capsys, "--apply", "--glob", "*.ts", "*.rb")
+    assert (code, err) == (0, "")
+    assert ts.read_text(encoding="utf-8") == "const a = '//a[contains(.,\"Tom\\'s\")]';\n"
+    assert rb.read_text(encoding="utf-8") == "a = '//a[contains(.,\"Tom\\'s\")]'\n"
+
+
+def test_a_selector_that_needs_unknown_escapes_is_listed_not_guessed(root, capsys):
+    confirmed_project(root, "k", "#save", QUOTES)
+    robot = write(root, "login.robot", "Click Element    '#save'\n")
+    code, out, err = run(capsys, "--apply", "--glob", "*.robot")
+    assert (code, err) == (0, "")
+    assert robot.read_text(encoding="utf-8") == "Click Element    '#save'\n"
+    assert "login.robot:1 was not changed: '#save' is the old selector of k, but the healed " \
+           "selector cannot be written into this kind of file without guessing at its " \
+           "escapes. Replace it by hand with: " + QUOTES in out
+
+
+def test_unquoted_robot_arguments_are_reported_as_not_changed(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    robot = write(root, "login.robot", "Click Element    #save\nClick Element    xpath=#save\n")
+    out = run(capsys, "--apply", "--glob", "*.robot")[1]
+    assert robot.read_text(encoding="utf-8") == "Click Element    #save\nClick Element    xpath=#save\n"
+    assert "mendwright fix only rewrites quoted strings, so unquoted Robot Framework arguments " \
+           "are not changed." in out
+
+
+def test_generic_literals_in_a_utf8_file_with_bom(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    path = root / "page.ts"
+    path.write_bytes(b"\xef\xbb\xbfconst a = '#save';\r\nconst b = 1;\r\n")
+    assert run(capsys, "--apply", "--glob", "*.ts")[0] == 0
+    assert path.read_bytes() == b"\xef\xbb\xbfconst a = \"//b[@id='y']\";\r\nconst b = 1;\r\n"
+
+
+def test_binary_and_big_files_are_skipped(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    binary = root / "data.py"
+    binary.write_bytes(b'x = "#save"\0\x01\x02')
+    big = root / "big.py"
+    big.write_text('x = "#save"\n' + "#" * (fixback.MAX_FILE_BYTES + 10), encoding="utf-8")
+    latin = root / "latin.ts"
+    latin.write_bytes(b"const a = '#save'; // \xe9\n")
+    assert run(capsys, "--apply", "--glob", "*.ts")[0] == 0
+    assert binary.read_bytes() == b'x = "#save"\0\x01\x02'
+    assert big.read_text(encoding="utf-8").startswith('x = "#save"')
+    assert latin.read_bytes() == b"const a = '#save'; // \xe9\n"
+
+
+# --- when a file cannot be rewritten safely ----------------------------------------------
+
+def test_a_rewrite_that_would_not_parse_is_an_error_and_writes_nothing(root, capsys, monkeypatch):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = "#save"\n')
+    monkeypatch.setattr(fixback, "python_literal", lambda new, token: '"broken')
+    code, out, err = run(capsys, "--apply")
+    assert code == 1
+    assert source.read_text(encoding="utf-8") == 'x = "#save"\n'
+    assert "mendwright fix: a.py was not changed: the file would no longer parse (" in err
+    assert "edit the selector by hand and report it." in err
+
+
+def test_a_rewrite_that_changes_the_wrong_value_is_caught(root, capsys, monkeypatch):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = "#save"\n')
+    monkeypatch.setattr(fixback, "python_literal", lambda new, token: '"//something-else"')
+    code, out, err = run(capsys, "--apply")
+    assert code == 1
+    assert source.read_text(encoding="utf-8") == 'x = "#save"\n'
+    assert "the strings that changed are not the ones that were planned" in err
+
+
+def test_a_rewrite_that_changes_the_structure_is_caught(root, capsys, monkeypatch):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = ["#save", 1]\n')
+    monkeypatch.setattr(fixback, "python_literal", lambda new, token: '"//b", 2')
+    code, out, err = run(capsys, "--apply")
+    assert code == 1
+    assert source.read_text(encoding="utf-8") == 'x = ["#save", 1]\n'
+    assert "the change would alter more than the selector strings" in err
+
+
+def test_one_bad_file_does_not_stop_the_others_and_exit_is_1(root, capsys, monkeypatch):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    bad = write(root, "a_bad.py", 'x = "#save"\n')
+    good = write(root, "b_good.ts", "const x = '#save';\n")
+    monkeypatch.setattr(fixback, "python_literal", lambda new, token: '"broken')
+    code, out, err = run(capsys, "--apply", "--glob", "*.ts")
+    assert code == 1
+    assert bad.read_text(encoding="utf-8") == 'x = "#save"\n'
+    assert good.read_text(encoding="utf-8") == "const x = \"//b[@id='y']\";\n"
+
+
+def test_a_write_that_fails_leaves_the_file_as_it_was(root, capsys, monkeypatch):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = "#save"\n')
+
+    def refuse(src, dst):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr(fixback.time, "sleep", lambda s: None)
+    code, out, err = run(capsys, "--apply")
+    assert code == 1
+    assert source.read_text(encoding="utf-8") == 'x = "#save"\n'
+    assert "mendwright fix: a.py was not changed: Permission denied. Close the file in other " \
+           "programs, or edit it by hand, then run again." in err
+    assert [p.name for p in root.iterdir() if p.name.startswith(".mendwright-fix")] == []
+    assert out.splitlines()[0] == ("mendwright fix: wrote 0 files of 1. The errors are listed "
+                                   "after the changes.")
+
+
+def test_a_file_that_changed_since_it_was_read_is_not_overwritten(root):
+    plan = fixback.plan_fixes(
+        {"selectors": {"k": healed("#save", "//b[@id='y']")}}, [canary("k", "//b[@id='y']")])
+    source = write(root, "a.py", 'x = "#save"\n')
+    result = fixback.build_result(plan, [str(root)])
+    assert len(result.changes) == 1
+    source.write_text('x = "#save"  # edited meanwhile\n', encoding="utf-8")
+    fixback.apply_result(result)
+    assert source.read_text(encoding="utf-8") == 'x = "#save"  # edited meanwhile\n'
+    assert result.errors == ["a.py was not changed: it changed while mendwright fix was running. "
+                             "Close the file in other programs, or edit it by hand, then run again."]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_the_file_mode_is_kept(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    source = write(root, "a.py", 'x = "#save"\n')
+    os.chmod(source, 0o750)
+    assert run(capsys, "--apply")[0] == 0
+    assert stat.S_IMODE(os.stat(source).st_mode) == 0o750
+
+
+def test_the_text_and_the_diff_never_carry_carriage_returns(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    write(root, "a.py", 'a = 1\nb = "#save"\nc = 2\n', newline="\r\n")
+    out = run(capsys)[1]
+    assert "\r" not in out
+    assert '-b = "#save"' in out.splitlines()
+
+
+# --- the command line --------------------------------------------------------------------
+
+def test_fix_help_lists_the_options(capsys):
+    assert cli.main(["fix", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: mendwright fix")
+    for option in ("--store", "--path", "--glob", "--include-unconfirmed", "--apply"):
+        assert option in out
+
+
+def test_fix_is_listed_in_the_main_help(capsys):
+    assert cli.main(["--help"]) == 0
+    assert "fix" in capsys.readouterr().out
+
+
+def test_fix_does_not_call_a_model_or_import_a_browser(root, capsys, monkeypatch):
+    for name in cli.PROVIDER_VARS:
+        monkeypatch.delenv(name, raising=False)
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    write(root, "a.py", 'x = "#save"\n')
+    before = {m for m in ("playwright", "selenium") if m in sys.modules}
+    assert run(capsys)[0] == 0
+    assert {m for m in ("playwright", "selenium") if m in sys.modules} == before
+
+
+def test_the_plan_names_what_it_will_do_without_touching_files():
+    store = {"selectors": {
+        "a": healed("#a", "//a[@id='n']", role="link"),
+        "b": {"expectedRole": "button", "candidates": [cand("#b", "code", T1)]},
+        "c": healed("#c", "//c[@id='n']", destructive=True),
+    }}
+    plan = fixback.plan_fixes(store, [canary("a", "//a[@id='n']"), canary("c", "//c[@id='n']")])
+    assert [(f.key, f.new, f.old, f.confirmed, f.role) for f in plan.fixes] == [
+        ("a", "//a[@id='n']", ["#a"], True, "link")]
+    assert [k for k, _ in plan.skipped] == ["c"]
+    assert plan.new_for == {"#a": "//a[@id='n']"}
+    assert plan.ambiguous == {}
+
+
+# --- with a real heal --------------------------------------------------------------------
+
+def test_a_real_heal_is_written_back_and_then_wins_on_the_next_run(root, capsys, make_page,
+                                                                  stub_provider):
+    """The store and journal come from mendwright itself: heal, confirm, fix, run again."""
+    import mendwright
+
+    old, healed_xpath = "//button[@id='a']", "//button[text()='C']"
+    page_html = "<form><button id='a'>A</button><button id='c'>C</button></form>"
+    store_path = str(root / ".mendwright" / "overrides.json")
+    source = write(root, "tests/test_shop.py",
+                   'def test_go(heal):\n    heal.locator("go", "' + old + '", role="button").click()\n')
+
+    def run_the_test(html, selector, proposal=None):
+        provider = stub_provider(proposal)
+        healer = mendwright.open(make_page(html), provider=provider, store_path=store_path)
+        proxy = healer.locator("go", selector, role="button", timeout_ms=0, poll_ms=0)
+        proxy.click(expect=lambda: True)          # a check of the test's own confirms the heal
+        return healer, provider
+
+    run_the_test(page_html, old)                                       # the selector works
+    broken = page_html.replace("id='a'", "id='a2'")
+    _, provider = run_the_test(broken, old, healed_xpath)              # redesign: healed, click ok
+    assert len(provider.bundles) == 1
+
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert "go  (button)  healed, confirmed" in out
+    text = source.read_text(encoding="utf-8")
+    assert text == ('def test_go(heal):\n    heal.locator("go", "' + healed_xpath
+                    + '", role="button").click()\n')
+    ast.parse(text)
+
+    healer, provider = run_the_test(broken, healed_xpath)              # the next run, code fixed
+    assert provider.bundles == []
+    assert [c["xpath"] for c in healer.store.candidates("go")] == [healed_xpath]
+    saved = json.loads((root / ".mendwright" / "overrides.json").read_text(encoding="utf-8"))
+    by_xpath = {c["xpath"]: c for c in saved["selectors"]["go"]["candidates"]}
+    assert by_xpath[healed_xpath]["source"] == "code"
+    assert by_xpath[old]["status"] == "superseded"
+
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."

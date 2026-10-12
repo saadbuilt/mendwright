@@ -3,7 +3,7 @@
 Redaction is best-effort. Before upload, quoted value="..." attributes are removed, row
 secrets (the secrets, proxy and profile strings) are replaced with [redacted], absolute
 URLs become [URL] and runs of 12 to 19 digits become [redacted number], in the HTML, the
-broken selectors, the expected text and every string of the DOM inventory. Visible text
+broken selectors, the expected text, the intent and every string of the DOM inventory. Visible text
 and other attribute values (aria-label, title, placeholder, data-*) are sent as they are;
 SECURITY.md lists the gaps.
 
@@ -148,10 +148,13 @@ def build_bundle(key, meta, broken_candidates, inventory, html, context, row=Non
     if isinstance(text, str):
         text = [text]
     xpaths = [c.get('xpath') if isinstance(c, dict) else c for c in (broken_candidates or [])]
+    intent = meta.get('intent')
     return {
         'key': key,
         'expectedRole': meta.get('expectedRole'),
         'expectedText': [_redact_text(t, forms) if isinstance(t, str) else t for t in text],
+        # What the element is for, in the user's words (locator(intent=...)).
+        'intent': _redact_text(intent, forms) if isinstance(intent, str) and intent else None,
         'destructive': bool(meta.get('destructive')),
         'candidates': [_redact_text(x, forms) for x in xpaths if isinstance(x, str) and x],
         'inventory': _redact_tree(inventory, forms),

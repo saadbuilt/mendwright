@@ -232,9 +232,11 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
     else:
         asked, proposals = _recorded(provider)
         source = '(' + type(provider).__name__ + ', a real API call)'
+    # fingerprint=False: the story shows a model's heal. With the fingerprint tier on (the
+    # default), the checkbox would heal from its recorded fingerprint before any model call.
     with _healing_on():
         heal = _open_healer(page, provider=provider, store_path=store_path, dry_run=False,
-                            timeout_ms=timeout_ms)
+                            timeout_ms=timeout_ms, fingerprint=False)
     # The story prints its own lines. mendwright's log line for each heal applied or
     # refused, or interruption handled, would repeat them on stderr.
     heal.coordinator.log = _silent

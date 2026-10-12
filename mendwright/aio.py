@@ -46,6 +46,7 @@ from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
+from .fingerprint import valid as valid_fingerprint
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _cookie_preset, _healed_target_error,
                      _locator_args, _setup)
@@ -104,8 +105,9 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory), act_on for an interruption's action,
-    and run() for any other callable. describe is None when the async driver has none."""
+    handle, url, outer_html, describe, inventory, fingerprint), act_on for an
+    interruption's action, and run() for any other callable. describe and fingerprint are
+    None when the async driver has none."""
 
     timeout = 30.0
 
@@ -120,6 +122,8 @@ class SyncBridge:
             # and fails closed when that read fails. A custom async driver without one
             # keeps the count and visibility checks only.
             self.describe = None
+        if not callable(_member(driver, 'fingerprint')):
+            self.fingerprint = None
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -180,6 +184,9 @@ class SyncBridge:
     def inventory(self, limit=200):
         return self.run(self._driver.inventory, limit)
 
+    def fingerprint(self, selector, frame_chain=()):
+        return self.run(self._driver.fingerprint, selector, frame_chain)
+
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
         one, else as getattr(native, verb)(...), awaited on the event loop."""
@@ -237,17 +244,19 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                guardrails: Guardrails | None = None, journal: Any = None,
                rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
                timeout_ms: int | None = None, cookies: str | None = None,
-               heal_across_pages: bool = False) -> AsyncHealer:
+               heal_across_pages: bool = False, fingerprint: bool | None = None) -> AsyncHealer:
     """Wrap an async Playwright Page or Frame into an AsyncHealer. Await it inside the
     event loop that runs the page.
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
-    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE) and defaults as
-    mendwright.open(), cookies= and heal_across_pages= included. guard may be a plain or
-    an async callable; it runs on the event loop. The provider stays sync and is called in
-    a worker thread. A driver whose count, is_visible and handle are coroutine functions
-    is used as it is.
+    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT)
+    and defaults as mendwright.open(), cookies=, heal_across_pages= and fingerprint=
+    included. guard may be a plain or an async callable; it runs on the event loop. The
+    provider stays sync and is called in a worker thread. A driver whose count, is_visible
+    and handle are coroutine functions is used as it is.
     """
+    from .proxies import unwrap
+    page = unwrap(page)    # heal.page of another healer: use the real page
     preset = _cookie_preset(cookies, 'mendwright.aio.open()')
     driver = _async_driver(page)
     bridge = SyncBridge(driver, asyncio.get_running_loop())
@@ -264,7 +273,8 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,
         journal=journal, rate_per_key_per_hour=rate_per_key_per_hour,
         rate_global_per_hour=rate_global_per_hour, timeout_ms=timeout_ms,
-        entry='mendwright.aio.open()', heal_across_pages=heal_across_pages)
+        entry='mendwright.aio.open()', heal_across_pages=heal_across_pages,
+        fingerprint=fingerprint)
     healer = AsyncHealer(page, driver, store, coord, timeout_ms=timeout_ms)
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
@@ -310,8 +320,8 @@ class AsyncHealer:
                  timeout_ms: int = DEFAULT_TIMEOUT_MS,
                  sleep: Callable[[float], Any] = asyncio.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
-        self.page = page
-        self.driver = driver
+        self._page = page
+        self._driver = driver
         self.store = store
         self.coordinator = coordinator
         # The sync Healer's own helpers (argument checks, metadata, role learning) run on
@@ -324,6 +334,47 @@ class AsyncHealer:
         self._clock = clock
         self._lock = asyncio.Lock()
         self._bridge = None
+
+    @property
+    def page(self) -> Any:
+        """The page to use in place of your own: page = (await mendwright.aio.open(page)).page.
+        For an async Playwright page it is an AsyncHealingPage: page.locator(selector) and
+        the page shortcuts that take a selector work as on Healer.page, with the actions
+        and reads awaited. Everything else is the real page's. For a custom async driver,
+        the object mendwright was opened on."""
+        proxy = self.__dict__.get('_page_proxy')
+        if proxy is None:
+            from .proxies import AsyncHealingPage
+            healing = isinstance(self._driver, AsyncPlaywrightDriver)
+            proxy = AsyncHealingPage(self, self._page) if healing else self._page
+            self._page_proxy = proxy
+        return proxy
+
+    @property
+    def driver(self) -> Any:
+        """mendwright's own async Driver for the page."""
+        return self._driver
+
+    def _knows(self, key):
+        return self._core._knows(key)
+
+    async def _peek_visible(self, key):
+        """Healer._peek_visible(), awaited: no wait, no heal, no scrolling, and nothing
+        recorded in the store."""
+        async with self._lock:
+            require_visible = _require_visible(self.store, key)
+            runnable, _errors = _split_runnable(key, self.store.candidates(key))
+            for candidate in runnable:
+                try:
+                    native = await _match_handle(self._driver, candidate, require_visible)
+                except Exception:
+                    continue
+                if native is not None:
+                    try:
+                        return bool(await _act_on(self._driver, native, 'is_visible'))
+                    except Exception:
+                        return False
+            return False
 
     @property
     def timeout_ms(self) -> int:
@@ -350,19 +401,22 @@ class AsyncHealer:
     def locator(self, key: str, selector: Selector | None = None, *, role: Role | None = None,
                 text: str | Sequence[str] | None = None, destructive: bool | None = None,
                 timeout_ms: int | None = None, poll_ms: int = 200,
-                inline_xpath: Selector | None = None, optional: bool = False) -> AsyncActionProxy:
+                inline_xpath: Selector | None = None, optional: bool = False,
+                intent: str | None = None) -> AsyncActionProxy:
         """Like Healer.locator(), but returns at once: the key is resolved (and healed and
         retried if its candidates miss) when an action on the proxy is awaited, or the
-        proxy itself. The arguments mean the same as on Healer.locator(), optional=
-        included.
+        proxy itself. The arguments mean the same as on Healer.locator(), optional= and
+        intent= included.
 
-        A non-string selector (TypeError), a malformed one (InvalidSelector) or an unknown
-        role (ValueError) raises here, before anything is awaited. AttentionRequired, when
-        the element cannot be found or healed, is raised by the await."""
-        roles, code = _locator_args(key, selector, role, inline_xpath)
+        A non-string selector (TypeError), a malformed one (InvalidSelector), an unknown
+        role (ValueError) or intent= with nothing stored and no role= (ValueError) raises
+        here, before anything is awaited. AttentionRequired, when the element cannot be
+        found or healed, is raised by the await."""
+        roles, code = _locator_args(key, selector, role, inline_xpath, intent)
+        self._core._check_intent(key, code, roles, intent)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         return AsyncActionProxy(self, key, (roles, code, text, destructive, timeout, poll_ms,
-                                            bool(optional)))
+                                            bool(optional), intent))
 
     async def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
@@ -374,7 +428,7 @@ class AsyncHealer:
             runnable, errors = _split_runnable(key, candidates)
             for candidate in runnable:
                 try:
-                    if await _match_handle(self.driver, candidate, require_visible) is not None:
+                    if await _match_handle(self._driver, candidate, require_visible) is not None:
                         return True
                 except InvalidSelector as exc:
                     errors.append(exc.for_key(key))
@@ -413,12 +467,12 @@ class AsyncHealer:
         return proxy._native
 
     async def _locate(self, key, roles, code, text, destructive, timeout, poll_ms,
-                      optional=False):
+                      optional=False, intent=None):
         """Healer.locator() after its argument checks, with the page work awaited.
         Runs under self._lock. Returns _ABSENT for a step that was skipped."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        core._prime(key, roles, code, text, destructive)
+        core._prime(key, roles, code, text, destructive, intent)
         first_wait = core._first_wait(key, timeout)
 
         async def attempt(wait=timeout):
@@ -438,7 +492,8 @@ class AsyncHealer:
             native = await self._heal(key, exc, attempt)
         await self._check_healed_target(key)
         await self._learn(key, roles)
-        core._remember_page(key, await _url(self.driver))
+        core._remember_page(key, await _url(self._driver))
+        await self._remember_fingerprint(key)
         return native
 
     async def _resolve_step(self, key, attempt, budget, timeout, poll_ms):
@@ -461,7 +516,7 @@ class AsyncHealer:
         if self._bridge is None:
             bridge = getattr(self.coordinator, 'driver', None)
             if not isinstance(bridge, SyncBridge):
-                bridge = SyncBridge(self.driver, asyncio.get_running_loop())
+                bridge = SyncBridge(self._driver, asyncio.get_running_loop())
             self._bridge = bridge
         return self._bridge
 
@@ -516,7 +571,7 @@ class AsyncHealer:
         """mendwright.resolver.resolve(), awaited: the candidates in the same order, bad
         selectors dropped (InvalidSelector at once when none can run), the first unique
         (visible) match returned and recorded, AttentionRequired at the deadline."""
-        store, driver = self.store, self.driver
+        store, driver = self.store, self._driver
         candidates = store.candidates(key)
         if not candidates:
             raise AttentionRequired('No selector candidates for: ' + key)
@@ -549,11 +604,11 @@ class AsyncHealer:
     async def _stop_if_in_a_frame(self, key, exc):
         """Healer._stop_if_in_a_frame(), with the frame lookups awaited."""
         __tracebackhide__ = True
-        if not callable(_member(self.driver, 'frame_matches')):
+        if not callable(_member(self._driver, 'frame_matches')):
             return
         for selector in self._core._frame_candidates(key):
             try:
-                frames = await _awaited(self.driver.frame_matches(selector))
+                frames = await _awaited(self._driver.frame_matches(selector))
             except Exception:
                 continue
             if frames:
@@ -564,7 +619,7 @@ class AsyncHealer:
         attempt() on the event loop. The coordinator reaches the page through SyncBridge."""
         __tracebackhide__ = True  # pytest shows the caller
         meta = self.store.meta(key)
-        context = self._core._flow_context(key, await _url(self.driver))
+        context = self._core._flow_context(key, await _url(self._driver))
         missed = [exc]
 
         def resolve_fn():
@@ -585,13 +640,27 @@ class AsyncHealer:
             return
         core._learn_from(key, roles, todo, await self._describe_winner(key))
 
+    async def _remember_fingerprint(self, key):
+        """Healer's fingerprint recording after a match, with the read awaited."""
+        core = self._core
+        target = core._fingerprint_target(key)
+        if target is None:
+            return
+        fp = None
+        if callable(_member(self._driver, 'fingerprint')):
+            try:
+                fp = await _awaited(self._driver.fingerprint(target, ()))
+            except Exception:
+                fp = None
+        core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)
+
     async def _describe_winner(self, key):
         target = self._core._winner_target(key)
-        describe = _member(self.driver, 'describe')
+        describe = _member(self._driver, 'describe')
         if target is None or not callable(describe):
             return None
         try:
-            out = await _awaited(self.driver.describe(*target))
+            out = await _awaited(self._driver.describe(*target))
         except Exception:
             return None
         return out if isinstance(out, dict) else None
@@ -604,7 +673,7 @@ class AsyncHealer:
                 await _in_thread(self.coordinator.confirm_pending, key, bool(success))
 
     def __repr__(self) -> str:
-        return '<AsyncHealer page=' + repr(self.page) + '>'
+        return '<AsyncHealer page=' + repr(self._page) + '>'
 
 
 async def _unwrap(value):
@@ -705,7 +774,7 @@ class AsyncActionProxy:
         timeout, poll_ms = self._plan[4], self._plan[5]
         budget = await healer._before_action(self._key, timeout, poll_ms)
         try:
-            result = await _act_on(healer.driver, native, verb, *args, **kwargs)
+            result = await _act_on(healer._driver, native, verb, *args, **kwargs)
         except _USAGE_ERRORS:
             raise
         except Exception as exc:
@@ -717,7 +786,7 @@ class AsyncActionProxy:
                 await healer._confirm(self._key, False)  # the browser action failed
                 raise
             try:
-                result = await _act_on(healer.driver, native, verb, *args, **kwargs)
+                result = await _act_on(healer._driver, native, verb, *args, **kwargs)
             except _USAGE_ERRORS:
                 raise
             except Exception:

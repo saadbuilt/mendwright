@@ -1,5 +1,8 @@
 """The `mendwright` command: demo, doctor, report, --version and --help.
 
+`mendwright fix` and `report --format html` have their own files: test_fix.py and
+test_report_html.py.
+
 Every test calls mendwright.cli.main([...]) in-process (or runs `python -m mendwright` in a
 subprocess) and reads the output. Offline: no network, no model, no browser. The one
 real-browser test is marked `browser` and is deselected by default.
@@ -91,7 +94,7 @@ def test_help_lists_the_commands(capsys):
     assert cli.main(["--help"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("usage: mendwright ")
-    for command in ("demo", "doctor", "report"):
+    for command in ("demo", "doctor", "report", "fix"):
         assert command in out
 
 
@@ -105,7 +108,7 @@ def test_unknown_command_is_a_usage_error(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["demo", "doctor", "report"])
+@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix"])
 def test_each_command_has_help(capsys, command):
     assert cli.main([command, "--help"]) == 0
     assert capsys.readouterr().out.startswith("usage: mendwright " + command)
@@ -497,8 +500,11 @@ def test_doctor_offline_with_no_provider(capsys, tmp_path, monkeypatch):
     assert "Browser libraries (looked up only, nothing imported or launched)" in lines
     for name in cli.BROWSER_LIBRARIES:
         assert any(line.startswith("  " + name.ljust(11) + " ") for line in lines)
-    assert "  none configured, so a broken selector is reported but not repaired." in lines
+    assert ("  none configured, so only fingerprint healing (no model call) can repair a broken "
+            "selector.") in lines
     assert "Why: mendwright.auto_provider: no provider configured." in out
+    assert "Fingerprint healing (no model)" in lines
+    assert "  on: each time a selector matches, mendwright records what the element looks" in out
     store = tmp_path / ".mendwright" / "overrides.json"
     assert "  " + str(store) in lines
     assert ("  the folder does not exist yet; it is created the first time mendwright.open() "
@@ -507,6 +513,29 @@ def test_doctor_offline_with_no_provider(capsys, tmp_path, monkeypatch):
     assert "  no MENDWRIGHT_* variables are set" in lines
     assert "Problems" not in lines
     assert list(tmp_path.iterdir()) == []  # doctor creates nothing
+
+
+def test_doctor_with_the_fingerprint_tier_off(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert "  none configured, so a broken selector is reported but not repaired." in lines
+    assert "  off (MENDWRIGHT_FINGERPRINT=0), so only a model provider can repair a broken" in out
+    assert "  MENDWRIGHT_FINGERPRINT=0" in lines
+    assert "Problems" not in lines
+
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "maybe")
+    assert cli.main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["fingerprint"] == {"enabled": True, "source": "default"}
+    assert any("MENDWRIGHT_FINGERPRINT must be 1 or 0" in p for p in data["problems"])
+
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "1")
+    monkeypatch.setenv("MENDWRIGHT_DISABLE", "1")
+    assert cli.main(["doctor"]) == 0
+    assert "  off, because MENDWRIGHT_DISABLE is on. Unset it to heal again." in capsys.readouterr().out
 
 
 def test_doctor_json(capsys, tmp_path, monkeypatch):
@@ -521,6 +550,7 @@ def test_doctor_json(capsys, tmp_path, monkeypatch):
     assert data["store"]["path"] == str(tmp_path / ".mendwright" / "overrides.json")
     assert data["store"]["source"] == "default"
     assert data["store"]["writable"] is True
+    assert data["fingerprint"] == {"enabled": True, "source": "default"}
     assert data["env"] == {} and data["problems"] == []
 
 

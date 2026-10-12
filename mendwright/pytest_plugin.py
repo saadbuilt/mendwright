@@ -204,6 +204,15 @@ def _no_provider(items):
     return False
 
 
+def _fingerprint_on():
+    """Whether mendwright.open() would run the fingerprint tier (MENDWRIGHT_FINGERPRINT)."""
+    try:
+        from .facade import fingerprint_setting
+        return fingerprint_setting()
+    except ValueError:
+        return True
+
+
 def _shown_path(path, root):
     try:
         rel = os.path.relpath(path, os.fspath(root))
@@ -283,7 +292,10 @@ class _Session:
         if self.strict:
             mode += ', strict'
         if mode != 'disabled' and _no_provider(healing):
-            mode += ' (no provider: broken selectors will fail; see mendwright doctor)'
+            if _fingerprint_on():
+                mode += ' (no provider: only fingerprint heals, no model; see mendwright doctor)'
+            else:
+                mode += ' (no provider: broken selectors will fail; see mendwright doctor)'
         return ['mendwright: store ' + _shown_path(_store_path(config), config.rootpath)
                 + ', mode ' + mode]
 
