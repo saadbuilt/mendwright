@@ -24,6 +24,7 @@ Standard library and lxml only.
 """
 
 import json
+import math
 import re
 
 import lxml.etree
@@ -904,6 +905,41 @@ def parse_answer(text):
     if not isinstance(pick, int) or pick < 1:
         return None
     return {'pick': pick, 'why': None}
+
+
+def answer_confidence(logprobs):
+    """How sure the model was of the value it gave for "pick" (a number or null), from the
+    per-token log probabilities Ollama returns with logprobs=true: the probability of the
+    tokens from the ':' after "pick" to the end of the value. None when the tokens are not
+    there (an older Ollama, or a reply without "pick")."""
+    if not isinstance(logprobs, list) or not logprobs:
+        return None
+    text = ''
+    total = None
+    for item in logprobs:
+        if not isinstance(item, dict) or not isinstance(item.get('token'), str):
+            return None
+        token = item['token']
+        value = item.get('logprob')
+        if not isinstance(value, (int, float)):
+            return None
+        if total is None:
+            text += token
+            key = text.find('"pick"')
+            if key >= 0 and ':' in text[key + 6:]:
+                total = float(value)   # the token that holds the ':' (and maybe the value)
+                rest = text[key + 6:].split(':', 1)[1]
+                if re.search(r'[,}]', rest):
+                    break
+            continue
+        if re.search(r'[,}]', token):
+            if re.match(r'^\s*(?:\d+|null)', token):
+                total += float(value)
+            break
+        total += float(value)
+    if total is None:
+        return None
+    return math.exp(total)
 
 
 # --- XPath for the picked element --------------------------------------------------------------

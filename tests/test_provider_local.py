@@ -45,11 +45,12 @@ class Resp:
 class FakeOllama:
     """Answers /api/chat. reply is a str, or a callable taking the user message."""
 
-    def __init__(self, reply='{"pick": 3}', status=200, body=None, error=None):
+    def __init__(self, reply='{"pick": 3}', status=200, body=None, error=None, logprobs=None):
         self.reply = reply
         self.status = status
         self.body = body
         self.error = error
+        self.logprobs = logprobs
         self.calls = []
 
     def post(self, url, *, json=None, headers=None, timeout=None):
@@ -60,8 +61,10 @@ class FakeOllama:
             return Resp(self.status, self.body)
         user = json['messages'][1]['content']
         content = self.reply(user) if callable(self.reply) else self.reply
-        return Resp(self.status, {'model': json['model'], 'message': {'role': 'assistant', 'content': content},
-                                  'done': True})
+        data = {'model': json['model'], 'message': {'role': 'assistant', 'content': content}, 'done': True}
+        if self.logprobs is not None:
+            data['logprobs'] = self.logprobs
+        return Resp(self.status, data)
 
 
 def pick_text(text):
@@ -110,7 +113,7 @@ def test_a_pick_becomes_a_unique_xpath_with_fallbacks_for_that_element():
     for xp in [out['xpath']] + out['fallbacks']:
         assert doc.xpath(xp) == [target], xp
     assert mendwright.validate(out['xpath'], PAGE, expected_role='button').ok
-    assert prov.last_answer == {'pick': 3, 'why': None, 'candidates': 4}
+    assert prov.last_answer == {'pick': 3, 'why': None, 'candidates': 4, 'confidence': None}
 
 
 def test_a_null_pick_returns_none_with_the_models_reason():
@@ -276,3 +279,24 @@ def test_doctor_names_the_local_model_and_its_endpoint(monkeypatch):
     assert info['name'].startswith('LocalModelProvider')
     assert info['endpoint'] == 'http://127.0.0.1:11434'
     assert info['selected_by'] == ['MENDWRIGHT_LOCAL_MODEL']
+
+
+def _logprobs(value_logprob):
+    return [{'token': '{"', 'logprob': 0.0}, {'token': 'pick', 'logprob': 0.0},
+            {'token': '":', 'logprob': 0.0}, {'token': ' ', 'logprob': value_logprob},
+            {'token': '3', 'logprob': 0.0}, {'token': '}', 'logprob': 0.0}]
+
+
+def test_it_asks_for_logprobs_and_declines_a_pick_it_is_not_sure_of():
+    import math
+    http = FakeOllama('{"pick": 3}', logprobs=_logprobs(math.log(0.55)))
+    prov = LocalModelProvider(http=http, min_confidence=0.8)
+    assert prov.propose(BUNDLE) is None
+    assert http.calls[0]['json']['logprobs'] is True
+    assert prov.last_error.startswith('the local model was not sure which element the step meant '
+                                      '(it picked button "Log in"')
+    assert 'confidence 0.55, below 0.80' in prov.last_error
+    sure = LocalModelProvider(http=FakeOllama('{"pick": 3}', logprobs=_logprobs(math.log(0.97))),
+                              min_confidence=0.8)
+    assert sure.propose(BUNDLE) is not None
+    assert round(sure.last_answer['confidence'], 2) == 0.97

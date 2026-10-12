@@ -28,7 +28,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from mendwright.candidates import parse_answer  # noqa: E402
+from mendwright.candidates import answer_confidence, parse_answer  # noqa: E402
+
+THRESHOLDS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95)
 
 
 def load(path, limit=None):
@@ -68,10 +70,10 @@ def hf_predict(rows, base, adapter, batch=8, max_new=16):
     return outs, times
 
 
-def ollama_predict(rows, model, host='http://127.0.0.1:11434', options=None):
+def ollama_predict(rows, model, host='http://127.0.0.1:11434', options=None, confs=None):
     outs, times = [], []
     for n, row in enumerate(rows):
-        body = {'model': model, 'stream': False, 'format': 'json',
+        body = {'model': model, 'stream': False, 'format': 'json', 'logprobs': True,
                 'messages': [{'role': 'system', 'content': row['system']},
                              {'role': 'user', 'content': row['user']}],
                 'options': dict({'temperature': 0, 'num_ctx': 4096, 'num_predict': 24}, **(options or {}))}
@@ -82,9 +84,35 @@ def ollama_predict(rows, model, host='http://127.0.0.1:11434', options=None):
             data = json.loads(resp.read().decode('utf-8'))
         times.append(time.perf_counter() - t0)
         outs.append(((data.get('message') or {}).get('content')) or '')
+        if confs is not None:
+            confs.append(answer_confidence(data.get('logprobs')))
         if n % 50 == 0:
             print('  %d/%d' % (n, len(rows)), flush=True)
     return outs, times
+
+
+def thresholds(rows, outs, confs):
+    """Outcomes when a pick below each confidence threshold counts as no pick, as
+    LocalModelProvider(min_confidence=...) does."""
+    table = {}
+    for t in THRESHOLDS:
+        c = defaultdict(int)
+        for row, text, conf in zip(rows, outs, confs, strict=True):
+            ans = parse_answer(text)
+            pick = ans['pick'] if ans else 'invalid'
+            if isinstance(pick, int) and conf is not None and conf < t:
+                pick = None
+            if row['label'] is not None:
+                c['pos'] += 1
+                c['pos_correct'] += pick == row['label']
+                c['pos_wrong'] += isinstance(pick, int) and pick != row['label']
+            else:
+                c['neg'] += 1
+                c['neg_correct'] += pick is None
+        table[str(t)] = {'pos_correct': round(c['pos_correct'] / max(c['pos'], 1), 4),
+                         'pos_wrong': round(c['pos_wrong'] / max(c['pos'], 1), 4),
+                         'neg_correct': round(c['neg_correct'] / max(c['neg'], 1), 4)}
+    return table
 
 
 def score(rows, outs, times):
@@ -167,15 +195,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
     rows = load(Path(args.data) / (args.split + '.jsonl'), args.limit or None)
     started = time.time()
+    confs = []
     if args.ollama:
         options = {'num_gpu': args.num_gpu} if args.num_gpu is not None else None
-        outs, times = ollama_predict(rows, args.ollama, args.host, options)
+        outs, times = ollama_predict(rows, args.ollama, args.host, options, confs)
         who = 'ollama-' + args.ollama.replace(':', '_').replace('/', '_')
     else:
         outs, times = hf_predict(rows, args.base, args.adapter)
         who = 'hf-' + Path(args.adapter).parent.name if args.adapter else 'hf-base'
     report, errors = score(rows, outs, times)
     report['seconds'] = round(time.time() - started, 1)
+    if confs and any(c is not None for c in confs):
+        report['thresholds'] = thresholds(rows, outs, confs)
+        by_id = {row['id']: conf for row, conf in zip(rows, confs, strict=True)}
+        for e in errors:
+            e['confidence'] = by_id.get(e['id'])
     out = Path(args.out) if args.out else Path(args.data) / ('eval-' + who + '-' + args.split)
     out.parent.mkdir(parents=True, exist_ok=True)
     Path(str(out) + '.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

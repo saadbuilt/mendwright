@@ -30,7 +30,8 @@ repository has the recipe that builds the model.
 
 import os
 
-from ..candidates import MAX_CANDIDATES, WHY, extract, format_task, parse_answer, robust_xpaths
+from ..candidates import (MAX_CANDIDATES, WHY, answer_confidence, extract, format_task,
+                          parse_answer, robust_xpaths)
 from ..gate import NOT_LIVE
 from ._errors import NOT_HERE_HINT, Describer, clip, sentence
 
@@ -38,6 +39,11 @@ DEFAULT_MODEL = 'mendwright-selector'
 # 127.0.0.1 rather than localhost: on Windows, localhost tries IPv6 first, and a request to
 # Ollama (which listens on IPv4) then waits about 2 seconds before it falls back.
 DEFAULT_BASE_URL = 'http://127.0.0.1:11434'
+
+# The least probability a pick needs to be used: below it the heal is declined, as for a
+# null pick. Set from the validation split (training/README.md); Ollama versions that do not
+# return logprobs skip the check.
+MIN_CONFIDENCE = 0.0
 
 # Reasons from the gate after which the provider asks again without the refused element.
 _RETRY_REASONS = (NOT_LIVE, 'not unique')
@@ -72,7 +78,7 @@ class LocalModelProvider:
     wants_fingerprint = True
 
     def __init__(self, model=None, base_url=None, *, http=None, timeout=60, num_ctx=4096,
-                 keep_alive='10m', max_candidates=MAX_CANDIDATES):
+                 keep_alive='10m', max_candidates=MAX_CANDIDATES, min_confidence=MIN_CONFIDENCE):
         self.model = model or os.environ.get('MENDWRIGHT_LOCAL_MODEL') or DEFAULT_MODEL
         self.base_url = _host(base_url or os.environ.get('OLLAMA_HOST'))
         self.http = http
@@ -80,6 +86,9 @@ class LocalModelProvider:
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
         self.max_candidates = max_candidates
+        # A pick the model gives with less probability than this is not used (see
+        # candidates.answer_confidence); 0 turns the check off.
+        self.min_confidence = min_confidence
         self.last_error = None
         # What the model answered last time: {'pick', 'why', 'candidates'}, for logs and tests.
         self.last_answer = None
@@ -116,21 +125,30 @@ class LocalModelProvider:
                 + str(bundle.get('expectedRole') or 'matching') + ' element', NOT_HERE_HINT)
             return None
         system, user = format_task(bundle, cands)
-        content = self._chat(system, user)
-        if content is None:
+        reply = self._chat(system, user)
+        if reply is None:
             return None
+        content, confidence = reply
         answer = parse_answer(content)
         if answer is None:
             self.last_error = sentence('the local model reply did not say which element it '
                                        'picked: ' + clip(content, 80), self._hints()['reply'])
             return None
-        self.last_answer = {'pick': answer['pick'], 'why': answer['why'], 'candidates': len(cands)}
+        self.last_answer = {'pick': answer['pick'], 'why': answer['why'], 'candidates': len(cands),
+                            'confidence': confidence}
         if answer['pick'] is None:
             why = answer['why'] or 'removed'
             self.last_error = sentence('the local model says no element on this page fits: '
                                        + WHY.get(why, clip(why, 80)), NOT_HERE_HINT)
             return None
         number = answer['pick']
+        if confidence is not None and confidence < self.min_confidence:
+            self.last_error = sentence(
+                'the local model was not sure which element the step meant (it picked '
+                + clip(cands[number - 1].line if number <= len(cands) else str(number), 80)
+                + ' with confidence ' + format(confidence, '.2f') + ', below '
+                + format(self.min_confidence, '.2f') + ')', NOT_HERE_HINT)
+            return None
         if number > len(cands):
             self.last_error = sentence('the local model picked candidate ' + str(number)
                                        + ', but there are only ' + str(len(cands)),
@@ -186,8 +204,8 @@ class LocalModelProvider:
         return Describer('Ollama', url=self.base_url, hints=self._hints())
 
     def _chat(self, system, user):
-        """The reply text, or None with last_error set."""
-        body = {'model': self.model, 'stream': False, 'format': 'json',
+        """(reply text, confidence or None), or None with last_error set."""
+        body = {'model': self.model, 'stream': False, 'format': 'json', 'logprobs': True,
                 'messages': [{'role': 'system', 'content': system},
                              {'role': 'user', 'content': user}],
                 'options': {'temperature': 0, 'num_ctx': self.num_ctx, 'num_predict': 24}}
@@ -216,4 +234,4 @@ class LocalModelProvider:
         if not isinstance(content, str) or not content.strip():
             self.last_error = self._errors().no_text()
             return None
-        return content
+        return content, answer_confidence(data.get('logprobs'))

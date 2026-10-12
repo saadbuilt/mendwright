@@ -205,6 +205,20 @@ ROWS = """<html><body><main><table><tbody>
 </main></body></html>"""
 
 
+def test_answer_confidence_reads_the_tokens_of_the_pick_value():
+    from mendwright.candidates import answer_confidence
+
+    def lp(*pairs):
+        return [{'token': t, 'logprob': v} for t, v in pairs]
+    base = (('{"', 0.0), ('pick', 0.0))
+    assert round(answer_confidence(lp(*base, ('":', 0.0), (' ', -0.1), ('1', -0.2), ('2', 0.0),
+                                      ('}', 0.0))), 3) == round(2.718281828 ** -0.3, 3)
+    assert round(answer_confidence(lp(*base, ('":', 0.0), (' null', -0.7), (',', 0.0))), 3) \
+        == round(2.718281828 ** -0.7, 3)
+    assert answer_confidence(lp(('{"', 0.0), ('why', 0.0))) is None
+    assert answer_confidence(None) is None and answer_confidence([]) is None
+
+
 def test_rows_are_named_by_their_text_without_decorative_initials():
     lines = [c.line for c in extract({'key': 'remove', 'expectedRole': 'button', 'html': ROWS})]
     assert lines[0] == 'button "Remove" | in item "Canvas cap · Red / M" | main'
