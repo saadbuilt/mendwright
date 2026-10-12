@@ -708,6 +708,32 @@ def test_an_async_proxy_says_present_only_once_awaited(tmp_path):
     assert asyncio.run(main()) is False
 
 
+def test_async_actions_awaited_together_handle_a_banner_once(tmp_path):
+    page = _page(BANNER + SIGNUP)
+    locked = []   # whether the healer's lock was held each time interruptions were looked for
+
+    async def main():
+        heal = await mendwright.aio.open(AsyncFlowPage(page), provider=None,
+                                         store_path=_store(tmp_path), timeout_ms=0)
+        heal.coordinator.log = None
+        heal.interrupt('cookies', '#cookie-accept')
+        look = heal._core._interrupt
+
+        def spy(*args, **kwargs):
+            locked.append(heal._lock.locked())
+            return look(*args, **kwargs)
+        heal._core._interrupt = spy
+        email = await heal.locator('email', '#email', poll_ms=0)
+        nxt = await heal.locator('next', '#next', poll_ms=0)
+        await asyncio.gather(email.fill('ada@example.com'), nxt.click())
+        return heal
+
+    heal = asyncio.run(main())
+    assert locked == [True, True]        # one action looked at a time
+    assert page.clicks('css=#cookie-accept') == 1
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', 'email')]
+
+
 # --- where a key was found, and the page guard ---------------------------------------------------
 
 @pytest.mark.parametrize('url, path', [

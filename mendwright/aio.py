@@ -475,11 +475,22 @@ class AsyncHealer:
         return await _in_thread(core._interrupt, before, budget, timeout_ms, poll_ms,
                                 self._sync_driver())
 
+    async def _interrupt_for_action(self, before, budget, timeout_ms, poll_ms):
+        """_interrupt() for an action, under the lock. Actions of one healer may run at the
+        same time (asyncio.gather), and two of them must not handle one interruption at
+        once, for example both clicking the same banner: the second one waits, then finds
+        it gone. locator() calls _interrupt() itself, because it already holds the lock."""
+        __tracebackhide__ = True
+        if not self._core._others(before):
+            return False
+        async with self._lock:
+            return await self._interrupt(before, budget, timeout_ms, poll_ms)
+
     async def _before_action(self, key, timeout_ms, poll_ms):
         """Healer._before_action(), awaited. Returns the step's budget."""
         __tracebackhide__ = True
         budget = Budget()
-        await self._interrupt(key, budget, timeout_ms, poll_ms)
+        await self._interrupt_for_action(key, budget, timeout_ms, poll_ms)
         return budget
 
     async def _check_healed_target(self, key):
@@ -699,7 +710,7 @@ class AsyncActionProxy:
             raise
         except Exception as exc:
             if not (is_interception_error(exc)
-                    and await healer._interrupt(self._key, budget, timeout, poll_ms)):
+                    and await healer._interrupt_for_action(self._key, budget, timeout, poll_ms)):
                 await healer._confirm(self._key, False)  # the browser action failed
                 raise
             try:
