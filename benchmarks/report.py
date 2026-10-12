@@ -230,6 +230,16 @@ def render(runs):
             "model's. A row marked + fingerprint ran the tier before the provider; the "
             'fingerprint tier alone row has no provider behind it. Use --no-fingerprint for a run '
             'without it.', '',
+            "The fingerprint tier's numbers are in-sample. Its thresholds (a score of 0.40, a "
+            'margin of 0.12 over the next element, and a shared id, test id, name, link, label '
+            'or text) were tuned on these same 47 cases until it made no wrong heal here. That '
+            'shows the tier can be set to make no wrong heal on this corpus, not that it makes '
+            'none on your pages. Pages written to probe it after the tuning did find wrong heals '
+            '(a row button for another row, a button whose text changed one word, a Save button '
+            'in another form), and the rules were tightened until it declined them; those pages '
+            'are tests in tests/test_fingerprint.py, not cases here, so they are not counted '
+            'above. Its pick goes through the same checks as a model\'s, and those checks cannot '
+            'tell a plausible wrong element from the right one.', '',
             'The similarity baseline records the element while the old selector still matches, '
             'and later picks the most similar element on the new page. A model gets less: the '
             'key, the old selector and the new page, never the old page.', '',
