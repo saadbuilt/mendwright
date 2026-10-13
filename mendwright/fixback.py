@@ -11,6 +11,8 @@ What it will and will not touch:
 - Only keys whose most recently successful active selector came from a heal, and (unless
   asked) only heals that journal.jsonl shows a canary success for (the pytest plugin writes
   one when the test that made the heal passes, and an expect= or confirm(True) check does too).
+- A CSS selector in your code gets the heal's CSS form (mendwright.css) when it has one;
+  otherwise the healed XPath.
 - Never a key marked destructive, never a heal that sits inside an iframe, and never a key
   whose selectors came only from a seed file (there is no string in your code to replace).
 - Only a string literal whose whole value is the old selector (compared as stored, so
@@ -79,6 +81,18 @@ class Fix:
     old: list                   # the key's active selectors from code, as stored
     confirmed: bool             # a canary success for this selector is in the journal
     role: str | None = None
+    css: str | None = None      # a CSS selector for the same element (see mendwright.css)
+
+    def for_old(self, selector):
+        """What replaces one old selector: the CSS form for a CSS selector when there is
+        one, else the healed XPath."""
+        if self.css and classify(selector) == CSS:
+            return self.css
+        return self.new
+
+    def written(self):
+        """The selectors this fix writes, without repeats."""
+        return list(dict.fromkeys(self.for_old(s) for s in self.old))
 
 
 @dataclass
@@ -170,12 +184,16 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  'value, a dict entry), so mendwright cannot tell which ones '
                                  'are the selector. Change it by hand to: ' + new))
             continue
+        css = best.get('css') if isinstance(best.get('css'), str) and best.get('css') else None
         by = next((b for prefix, b in _DRIVER_KEYS if key.startswith(prefix)), None)
-        if by and classify(new) == XPATH and all(classify(s) == CSS for s in old):
+        if (by and classify(new) == XPATH and all(classify(s) == CSS for s in old)
+                and not (css and by == 'By.CSS_SELECTOR')):
             plan.skipped.append((key, 'it comes from driver.find_element(' + by + ', ...) through '
                                  'heal.driver, and ' + by + ' cannot run the healed XPath. '
                                  'Change the call by hand to: find_element(By.XPATH, '
-                                 + repr(new) + ')'))
+                                 + repr(new) + ')'
+                                 + (', or find_element(By.CSS_SELECTOR, ' + repr(css) + ')'
+                                    if css else '')))
             continue
         confirmed = canary.get((key, new)) is True
         if not confirmed and not include_unconfirmed:
@@ -186,7 +204,8 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  '--include-unconfirmed to write it anyway.'))
             continue
         role = entry.get('expectedRole')
-        plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None))
+        plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None,
+                              css))
 
     by_key = {fix.key: fix for fix in plan.fixes}
     for fix in plan.fixes:
@@ -194,13 +213,13 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
             others = claims.get(selector, set()) - {fix.key}
             blockers = [k for k in others
                         if not (k in by_key and selector in by_key[k].old
-                                and by_key[k].new == fix.new)]
+                                and by_key[k].for_old(selector) == fix.for_old(selector))]
             plan.keys_for[selector] = sorted(others | {fix.key})
             if blockers:
                 plan.ambiguous[selector] = plan.keys_for[selector]
                 plan.new_for.pop(selector, None)
             elif selector not in plan.ambiguous:
-                plan.new_for[selector] = fix.new
+                plan.new_for[selector] = fix.for_old(selector)
     return plan
 
 
@@ -754,7 +773,7 @@ def scan_file(path, plan, result, needles):
         return found
 
     table = {**plan.new_for, **plan.ambiguous}
-    healed = {fix.new: fix.new for fix in plan.fixes}
+    healed = {s: s for fix in plan.fixes for s in [fix.new] + fix.written()}
     contexts = python_contexts(text) if python else {}
     lines = None if python else _split_lines(text)
     hits, blocked = [], []
@@ -829,7 +848,8 @@ def build_result(plan, paths=('.',), globs=()):
     result.scanned = len(files)
     found = set()
     if plan.fixes:
-        needles = _needles(set(plan.new_for) | set(plan.ambiguous) | {f.new for f in plan.fixes})
+        written = {s for f in plan.fixes for s in [f.new] + f.written()}
+        needles = _needles(set(plan.new_for) | set(plan.ambiguous) | written)
         for path in files:
             found |= scan_file(path, plan, result, needles)
     result.unmatched = [fix for fix in plan.fixes if not any(s in found for s in fix.old)]
@@ -919,7 +939,8 @@ def format_lines(result, *, apply):
                             else 'healed, NOT confirmed'))
             for selector in fix.old:
                 lines.append('  was  ' + selector)
-            lines.append('  now  ' + fix.new)
+            for selector in fix.written():
+                lines.append('  now  ' + selector)
             places = ['  ' + r.path + ':' + str(r.line) for c in result.changes
                       for r in c.replacements if fix.key in r.keys]
             lines.extend(places)
@@ -943,7 +964,8 @@ def format_lines(result, *, apply):
                     + 'Give each key its own selector string, or edit the file by hand.')
     left.extend(result.notes)
     for fix in result.unmatched:
-        where = result.holding.get(fix.new)
+        where = next((result.holding[s] for s in fix.written() + [fix.new]
+                      if s in result.holding), None)
         if where:
             left.append(fix.key + ': your code already passes the healed selector ('
                         + ', '.join(where[:3]) + (', and more' if len(where) > 3 else '')
@@ -952,7 +974,7 @@ def format_lines(result, *, apply):
             continue
         left.append(fix.key + ': no string equal to ' + _quote_list(fix.old) + ' was found in '
                     + _count(result.scanned, 'file') + '. Add --path or --glob (for example --glob '
-                    "'*.ts') if it is somewhere else, or change it by hand to: " + fix.new
+                    "'*.ts') if it is somewhere else, or change it by hand to: " + fix.written()[0]
                     + (' mendwright fix only rewrites quoted strings, so unquoted Robot Framework '
                        'arguments are not changed.' if result.has_robot else ''))
     if left:

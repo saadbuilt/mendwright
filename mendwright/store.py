@@ -498,14 +498,22 @@ class SelectorStore:
             self._persist_override()
         return not was_top
 
-    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, now=None):
+    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None, now=None):
+        """Add a candidate selector for key. css is a CSS selector checked to match the same
+        element as a healed XPath (see mendwright.css); it is saved with the candidate for
+        mendwright fix, and never run."""
         entry = self._entry(key)
-        if not self._find(key, xpath):
+        found = self._find(key, xpath)
+        if not found:
             cand = {'xpath': xpath, 'source': source, 'addedAt': now or _now_iso(),
                     'lastSucceededAt': None, 'status': 'active'}
             if frame_xpath:
                 cand['frameXPath'] = frame_xpath
+            if css:
+                cand['css'] = css
             entry['candidates'].append(cand)
+        elif css and not found.get('css'):
+            found['css'] = css
         self._dirty.add((key, xpath))
         self._persist_override()
 
@@ -668,6 +676,8 @@ class SelectorStore:
                 local['lastSucceededAt'] = newest or None
                 if 'frameXPath' in c and 'frameXPath' not in local:
                     local['frameXPath'] = c['frameXPath']
+                if 'css' in c and 'css' not in local:
+                    local['css'] = c['css']
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):
@@ -699,6 +709,8 @@ class SelectorStore:
                 item = {k: c[k] for k in ('xpath', 'source', 'addedAt', 'lastSucceededAt', 'status') if k in c}
                 if 'frameXPath' in c:
                     item['frameXPath'] = c['frameXPath']
+                if isinstance(c.get('css'), str) and c['css']:
+                    item['css'] = c['css']
                 overlay.append(item)
             saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
             if overlay or saved:

@@ -49,8 +49,9 @@ mendwright = "mendwright.pytest_plugin"
 [project.optional-dependencies]
 # The core needs only lxml. Providers import their SDK lazily and fall back to urllib,
 # and drivers use whichever browser library the caller already has.
-test = ["pytest>=7"]
-dev = ["pytest>=7", "ruff", "build", "twine"]
+# cssselect lets the tests check generated CSS with an independent engine.
+test = ["pytest>=7", "cssselect"]
+dev = ["pytest>=7", "cssselect", "ruff", "build", "twine"]
 playwright = ["playwright>=1.40"]
 selenium = ["selenium>=4.10"]
 anthropic = ["anthropic>=0.39"]

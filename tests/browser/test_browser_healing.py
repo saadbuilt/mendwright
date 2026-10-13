@@ -258,3 +258,16 @@ def test_mendwright_disable_resolves_but_never_heals(tab, store_file, stub_provi
     assert 'MENDWRIGHT_DISABLE' in str(info.value)
     assert provider.bundles == []
     assert HEALED not in saved_candidates(store_file, 'accept_terms')
+
+
+def test_a_heal_for_a_css_selector_keeps_a_css_twin(tab, store_file, stub_provider):
+    # The code's selector is CSS, so the heal is also saved as a CSS selector that the
+    # browser itself confirmed matches the same element, for mendwright fix.
+    tab.load(page("<main><button type='button' class='primary' data-testid='save-btn'>Save"
+                  "</button><button type='button'>Cancel</button></main>"))
+    healed = "//button[normalize-space()='Save']"
+    heal = _open(tab, stub_provider(healed), store_file, fingerprint=False)
+    heal.locator('save', '#save', role='button', timeout_ms=FAST_MS, poll_ms=POLL_MS).click()
+    saved = saved_candidates(store_file, 'save')
+    assert saved[healed]['source'] == 'heal'
+    assert saved[healed]['css'] == '[data-testid="save-btn"]'

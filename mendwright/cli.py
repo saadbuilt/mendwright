@@ -460,6 +460,8 @@ def collect_report(path):
                    'last_success': c.get('lastSucceededAt'), 'added': c.get('addedAt')}
             if c.get('frameXPath'):
                 row['frame'] = str(c['frameXPath'])
+            if isinstance(c.get('css'), str) and c['css']:
+                row['css'] = c['css']
             candidates.append(row)
         keys.append({'key': key, 'role': entry.get('expectedRole'),
                      'destructive': entry.get('destructive') is True,
@@ -536,6 +538,8 @@ def _report_text(r):
             lines.append('  ' + c['status'].ljust(11) + ' ' + c['source'].ljust(4) + '  '
                          + c['selector'] + frame + '  (last success: ' + _when(c['last_success'])
                          + ')')
+            if c.get('css'):
+                lines.append('  ' + ' ' * 18 + 'as CSS: ' + c['css'])
         if per:
             lines.append('  heals: ' + _counts_sentence(per))
     if not r['keys']:
@@ -587,6 +591,8 @@ def _report_md(r):
                 selector = _md_code(c['selector'])
                 if c.get('frame'):
                     selector += ' in frame ' + _md_code(c['frame'])
+                if c.get('css'):
+                    selector += ' (as CSS: ' + _md_code(c['css']) + ')'
                 lines.append('| ' + cell + ' | ' + selector + ' | ' + _md_cell(c['source'])
                              + ' | ' + status + ' | ' + _md_cell(_when(c['last_success'])) + ' |')
     else:

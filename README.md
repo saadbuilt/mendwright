@@ -270,7 +270,7 @@ Where another tool fits better: Healenium covers Java, and any Selenium client t
 
 ## Limitations
 
-- Heals are always XPath, even when your code used CSS or a Playwright selector.
+- Heals run as XPath. When your code's selector is CSS, the heal also gets a CSS form that `mendwright fix` writes back, but only if CSS can tell the element apart: one that only its text identifies stays XPath, and so does a heal for a Playwright `text=` or `role=` selector.
 - An element inside an iframe heals only when you open mendwright on the frame: a `Frame` from `page.frames` on Playwright, or the driver after `switch_to.frame()` on Selenium. On Playwright, a selector that matches only inside a child iframe raises `AttentionRequired` and says so, without a model call.
 - With a hosted provider, page HTML is sent to it whenever a fingerprint match isn't confident. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, a hosted model gets a shortened copy. Parts that share no word with the step and aren't of its role are left out first, so the element can still be left out on a page with more related elements than fit. While parts are left out, a healed XPath can't use a position such as `[2]`.

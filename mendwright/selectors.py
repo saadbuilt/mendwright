@@ -15,7 +15,8 @@ a Playwright Locator), an empty selector, or XPath that lxml cannot compile. CSS
 selectors are checked by the browser when they run; the drivers turn that error into the
 same ``InvalidSelector``.
 
-Heals always produce XPath, because the safety gate evaluates proposals with lxml.
+Heals always produce XPath, because the safety gate evaluates proposals with lxml. A heal
+for a key whose code uses CSS also gets a CSS form for mendwright fix (mendwright.css).
 """
 
 import functools

@@ -12,9 +12,10 @@ import urllib.request
 
 import lxml.html
 
+from .css import css_selectors
 from .fit import has_position
 from .gate import live_reason
-from .selectors import XPATH, classify, normalize
+from .selectors import CSS, XPATH, classify, normalize
 from .validation import validate
 
 DEFAULT_AUTH_HEADER = 'X-Heal-Key'  # generic; a tool may pass its own via auth_header=
@@ -156,6 +157,51 @@ def _xpath_forms(proposed):
     return body, normalize('xpath=' + body)
 
 
+def _code_uses_css(store, selector_key):
+    """True when one of the key's selectors from code is CSS."""
+    try:
+        return any(c.get('source') == 'code' and isinstance(c.get('xpath'), str)
+                   and classify(c['xpath']) == CSS for c in store.candidates(selector_key))
+    except Exception:
+        return False
+
+
+def _same_live(driver, css, xpath):
+    """True when css matches one element on the live page and it is the one xpath
+    matches (same outer HTML). Without a driver the captured page's check stands."""
+    if driver is None:
+        return True
+    try:
+        if driver.count(css) != 1:
+            return False
+        describe = getattr(driver, 'describe', None)
+        if not callable(describe):
+            return True
+        a, b = describe(css), describe(xpath)
+        return (isinstance(a, dict) and isinstance(b, dict) and bool(a.get('outer_html'))
+                and a.get('outer_html') == b.get('outer_html'))
+    except Exception:
+        return False
+
+
+def css_twin(store, selector_key, doc, body, xpath, driver=None):
+    """A CSS selector for the element a healed XPath matches, when the key's code uses
+    CSS, else None. It must match that element and nothing else on the captured page (see
+    mendwright.css) and on the live page."""
+    if doc is None or not _code_uses_css(store, selector_key):
+        return None
+    try:
+        hits = [h for h in doc.xpath(body) if isinstance(getattr(h, 'tag', None), str)]
+    except Exception:
+        return None
+    if len(hits) != 1:
+        return None
+    for css in css_selectors(hits[0], doc):
+        if _same_live(driver, css, xpath):
+            return css
+    return None
+
+
 def apply(store, selector_key, proposal, html, meta, driver=None, positional=True):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
@@ -171,6 +217,9 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
     blocks the element itself: a proposal that selects the element of a quarantined
     selector under another spelling ("(//input[@id='a'])[1]" for "//input[@id='a']") is
     rejected as well, until that row is removed from the store.
+
+    When one of the key's selectors in code is CSS, a CSS selector that matches the same
+    element is saved with the heal as its ``css`` (see css_twin), for mendwright fix.
 
     positional=False rejects any candidate with a position in it ([2], last(),
     position()). The coordinator passes it when the model read a page with parts left out
@@ -213,7 +262,11 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             continue
         # proposal['frameXPath'] is unvalidated model output and is never stored. Frame
         # context comes from the gate, not from a proposal.
-        store.add_candidate(selector_key, xpath, source='heal')
+        css = css_twin(store, selector_key, doc, body, xpath, driver)
+        if css:
+            store.add_candidate(selector_key, xpath, source='heal', css=css)
+        else:
+            store.add_candidate(selector_key, xpath, source='heal')
         return xpath, reason
     return None, reason
 

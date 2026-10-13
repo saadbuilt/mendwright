@@ -165,6 +165,8 @@ def _candidate(c):
     skind = {'heal': 'info', 'code': 'plain', 'seed': 'plain'}.get(source, 'plain')
     frame = ('<div class="sub">inside frame ' + _code(c['frame']) + '</div>'
              if c.get('frame') else '')
+    if c.get('css'):
+        frame += '<div class="sub">as CSS ' + _code(c['css']) + '</div>'
     return ('<li><div class="line">' + _badge(source, skind) + ' ' + _badge(status, kind) + '</div>'
             + _code(c['selector']) + frame
             + '<div class="sub">last success ' + h(_when(c['last_success'])) + '</div></li>')
