@@ -587,10 +587,14 @@ class SeleniumDriver:
         """The iframes of the page (not iframes inside them) in which selector matches at
         least one element, as [{'name', 'url', 'count', 'nested', 'selector'}] like the
         Playwright driver's. 'selector' is a CSS selector for the iframe element (see
-        base.frame_selector), or None when nothing tells it apart. The driver is back on
-        the page afterwards, even when a switch fails. A malformed selector raises
-        InvalidSelector; any other error skips that frame."""
+        base.frame_selector), or None when nothing tells it apart. The driver is back where
+        it was afterwards, even when a switch fails. [] when the driver is inside an iframe
+        itself (mendwright opened after switch_to.frame()): frame candidates are looked up
+        from the top document, so they would not work from there. A malformed selector
+        raises InvalidSelector; any other error skips that frame."""
         self._precheck(selector, ())
+        if not self._on_top():
+            return []
 
         def op():
             found = []
@@ -603,7 +607,7 @@ class SeleniumDriver:
                         n = len(self._find_all(selector))
                         url = self._driver.execute_script('return document.URL;')
                     finally:
-                        self._driver.switch_to.default_content()
+                        self._driver.switch_to.parent_frame()
                 except InvalidSelector:
                     raise
                 except Exception:
@@ -627,10 +631,18 @@ class SeleniumDriver:
 
     def framed(self, frame_selector):
         """A driver for the document inside the one iframe that frame_selector matches on
-        the page (SeleniumFrameDriver), or None when it matches none or several."""
-        if self.count(frame_selector) != 1:
+        the page (SeleniumFrameDriver), or None when it matches none or several, or when the
+        driver is inside an iframe itself."""
+        if not self._on_top() or self.count(frame_selector) != 1:
             return None
         return SeleniumFrameDriver(self, (frame_selector,))
+
+    def _on_top(self):
+        """True when the driver is on the top document, not switched into an iframe."""
+        try:
+            return self._driver.execute_script('return window.self === window.top;') is True
+        except Exception:
+            return False
 
     def inventory(self, limit=200):
         """Up to ``limit`` interactive elements of the current document:

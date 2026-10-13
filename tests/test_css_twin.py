@@ -193,3 +193,9 @@ def test_fix_keeps_xpath_for_xpath_code(root, capsys):
     (root / 'test_c.py').write_text('page.click("//button[@id=\'save\']")\n', encoding='utf-8')
     assert cli.main(['fix', '--apply']) == 0
     assert NEW in (root / 'test_c.py').read_text(encoding='utf-8')
+
+
+def test_an_href_with_a_query_is_not_used():
+    doc = lxml.html.fromstring("<p><a href='/cart?session=abc'>Cart</a><a href='/help'>Help</a></p>")
+    assert css_selectors(doc.xpath('//a')[0], doc) == []
+    assert css_selectors(doc.xpath('//a')[1], doc) == ['a[href="/help"]']

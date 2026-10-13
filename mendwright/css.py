@@ -69,8 +69,8 @@ def _parts(el):
         value = el.get(name)
         if not _usable(value) or (name == 'name' and generated(value)):
             continue
-        if name == 'href' and (value.startswith('javascript') or value == '#'):
-            continue
+        if name == 'href' and (value.startswith('javascript') or '?' in value or '#' in value):
+            continue   # a query or fragment is often a session or tracking value
         parts.append(_attr(name, value))
     for token in stable_classes(el.get('class'))[:3]:
         if _class_ok(token) and _IDENT.match(token):

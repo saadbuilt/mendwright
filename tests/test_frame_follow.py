@@ -111,7 +111,11 @@ def test_a_selector_found_only_in_an_iframe_is_looked_up_there(tmp_path, stub_pr
     page = TwoDocs(INNER)
     provider = stub_provider(None)
     heal = _open(page, tmp_path, provider)
-    heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0).check()
+    proxy = heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    # Waiting for its canary like any heal (the pytest plugin confirms it, strict mode
+    # counts it).
+    assert heal.pending() == {'terms': 'css=#inner-terms'}
+    proxy.check()
     assert page.actions == [('check', 'css=#inner-terms', (FRAME,))]
     assert provider.bundles == []
     assert [(h.source, h.old, h.new) for h in heal.heals] == [
@@ -185,3 +189,11 @@ def test_a_key_last_found_in_an_iframe_heals_inside_it(tmp_path, stub_provider):
 ])
 def test_frame_spelling_keeps_a_frame_candidate_apart(selector, spelled):
     assert frame_spelling(selector) == spelled
+
+
+def test_the_stop_message_gives_selenium_advice_on_selenium():
+    from mendwright.facade import _frame_message
+    frames = [{'name': 'consent', 'url': 'about:srcdoc', 'selector': FRAME}]
+    text = _frame_message('terms', '#inner-terms', frames, 'mendwright.open', 'why', selenium=True)
+    assert "driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, 'iframe[name=\"consent\"]'))" in text
+    assert 'page.frame' not in text

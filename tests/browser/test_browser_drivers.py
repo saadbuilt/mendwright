@@ -12,7 +12,8 @@ import pytest
 import mendwright
 from mendwright import InvalidSelector
 from mw_engines import (ACTIONS_PAGE, FAST_MS, FORM_CONTROLS, HEALED, IFRAME_PAGE, POLL_MS,
-                        SAVE_PAGE, SIGNUP_V1, V2_CHECKBOX, journal_events, saved_candidates)
+                        SAVE_PAGE, SIGNUP_V1, V2_CHECKBOX, journal_events, page,
+                        saved_candidates)
 
 pytestmark = pytest.mark.browser
 
@@ -152,6 +153,33 @@ def test_a_key_last_found_in_an_iframe_heals_inside_it(fingerprint, tab, store_f
         assert 'consent-box' in provider.bundles[0]['html']        # the iframe's HTML
         assert 'Outer page' not in provider.bundles[0]['html']
     assert tab.js('window.frameElement === null') is True
+
+
+def _srcdoc(html):
+    return html.replace('&', '&amp;').replace('"', '&quot;')
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_healer_opened_inside_an_iframe_stays_there(tab, store_file, stub_provider):
+    """The iframe workaround on Selenium, with an iframe inside that iframe: a miss does
+    not look into the inner iframe (frame candidates run from the top document), and the
+    driver stays switched into the outer iframe."""
+    inner = page("<label><input type='checkbox' id='deep'> ok</label>", 'inner')
+    outer = page('<p>outer</p><iframe id="inner" srcdoc="' + _srcdoc(inner) + '"></iframe>', 'outer')
+    tab.load(page('<h1>Top</h1><iframe id="outer" srcdoc="' + _srcdoc(outer) + '"></iframe>'))
+    target = tab.enter_frame('#outer')
+    deadline = time.monotonic() + 10
+    while not tab.js("!!(document.querySelector('#inner') && document.querySelector('#inner')"
+                     ".contentDocument && document.querySelector('#inner').contentDocument"
+                     ".querySelector('#deep'))"):
+        assert time.monotonic() < deadline, 'the inner iframe did not load'
+        time.sleep(0.1)
+    heal = _open(target, stub_provider(None), store_file)
+    with pytest.raises(mendwright.AttentionRequired):
+        heal.locator('deep', '#deep', role='checkbox', timeout_ms=FAST_MS, poll_ms=POLL_MS)
+    assert heal.heals == []
+    assert tab.js('window.self !== window.top') is True            # still in the outer iframe
+    assert tab.js("document.querySelector('#inner') !== null") is True
 
 
 def test_a_stored_frame_candidate_acts_inside_the_frame_and_returns(tab, store_file,

@@ -364,10 +364,23 @@ def _bare_url(url):
         return ''
 
 
-def _frame_message(key, selector, frames, opener, why=None):
+def _frame_message(key, selector, frames, opener, why=None, selenium=False):
     """Why a key whose selector matches only inside an iframe was not followed there."""
     frame = frames[0]
     name, url = frame.get('name') or '', _bare_url(frame.get('url') or '')
+    if selenium:
+        found = ('driver.find_element(By.CSS_SELECTOR, ' + repr(frame['selector']) + ')'
+                 if frame.get('selector') else 'the iframe element')
+        where = ('the iframe named ' + repr(name) if name else
+                 'the iframe at ' + url if url else 'an iframe')
+        if len(frames) > 1:
+            where += ' (and ' + str(len(frames) - 1) + ' more)'
+        because = why or 'nothing tells that iframe apart from the others on the page'
+        return ("'" + key + "' is inside an iframe: " + selector + ' matches nothing in the '
+                'page mendwright was opened on, but matches inside ' + where + '. mendwright '
+                'did not look for it there, because ' + because + ', and did not ask a model '
+                'to heal it. Switch into it and open mendwright there instead: '
+                'driver.switch_to.frame(' + found + '), then heal = mendwright.open(driver).')
     if name:
         where, how = 'the iframe named ' + repr(name), 'page.frame(name=' + repr(name) + ')'
     elif url:
@@ -1088,7 +1101,8 @@ class Healer:
         """Record and raise the AttentionRequired for a key found only inside an iframe
         that mendwright did not follow it into."""
         __tracebackhide__ = True
-        reason = _frame_message(key, selector, frames, opener, why)
+        selenium = type(self._driver).__name__ == 'SeleniumDriver'
+        reason = _frame_message(key, selector, frames, opener, why, selenium)
         self.coordinator._decline(key, reason)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
