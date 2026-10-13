@@ -12,6 +12,7 @@ import urllib.request
 
 import lxml.html
 
+from .fit import has_position
 from .gate import live_reason
 from .selectors import XPATH, classify, normalize
 from .validation import validate
@@ -105,6 +106,11 @@ _RETIRED = {
 _SAME_ELEMENT = ('previously quarantined (the same element as a quarantined heal; '
                  'choose a different element)')
 
+# apply()'s reason for a positional XPath when the model read a fitted page (mendwright.fit).
+POSITIONAL = ('it uses a position ([2], last() or position()), but parts of the page were '
+              'left out of the snapshot to fit the prompt, so positions there do not match the '
+              'live page. Anchor on attributes or text instead')
+
 
 def _quarantined_paths(store, selector_key, html):
     """(doc, paths): the captured page parsed the way validate() parses it, and the tree
@@ -150,7 +156,7 @@ def _xpath_forms(proposed):
     return body, normalize('xpath=' + body)
 
 
-def apply(store, selector_key, proposal, html, meta, driver=None):
+def apply(store, selector_key, proposal, html, meta, driver=None, positional=True):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
     (None, <last reason>) so the caller can feed a real reason into a reprompt.
@@ -165,6 +171,10 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
     blocks the element itself: a proposal that selects the element of a quarantined
     selector under another spelling ("(//input[@id='a'])[1]" for "//input[@id='a']") is
     rejected as well, until that row is removed from the store.
+
+    positional=False rejects any candidate with a position in it ([2], last(),
+    position()). The coordinator passes it when the model read a page with parts left out
+    (see mendwright.fit), where a position counts different elements than the live page.
     """
     doc, bad = _quarantined_paths(store, selector_key, html)
     candidates = [proposal.get('xpath')] + list(proposal.get('fallbacks') or [])
@@ -176,6 +186,9 @@ def apply(store, selector_key, proposal, html, meta, driver=None):
             reason = 'proposal is not a string'
             continue
         body, xpath = _xpath_forms(proposed)
+        if not positional and has_position(body):
+            reason = POSITIONAL
+            continue
         retired = _RETIRED.get(_stored_status(store, selector_key, xpath))
         if retired:
             reason = retired

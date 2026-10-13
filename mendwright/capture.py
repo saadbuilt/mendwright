@@ -14,9 +14,11 @@ your own machine. It is redacted the same way.
 The HTML that goes into the bundle is also cleaned first. Scripts, styles, <noscript>,
 <template>, comments, the inside of <svg> and everything in <head> except <title> are
 removed, and runs of whitespace are collapsed. Real pages are often mostly inline
-script and CSS, and the prompt keeps only the first 60,000 characters, so without this a
-button near the end of a large page never reaches the model. Cleaning changes only what
-the model sees: the gate still validates every proposal against the full captured HTML.
+script and CSS, and the prompt has room for 60,000 characters, so without this a button
+near the end of a large page would not reach the model. A page that is still too long is
+fitted to the prompt later, by leaving out what looks unrelated to the step
+(mendwright.fit). Cleaning changes only what the model sees: the gate still validates
+every proposal against the full captured HTML.
 """
 
 import html as _html

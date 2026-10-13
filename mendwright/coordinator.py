@@ -15,6 +15,7 @@ from . import fingerprint as _fingerprint
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
+from .fit import fit_bundle
 from .flow import flow_change_message, journal_event
 from .journal import NullJournal
 from .providers import GatewayProvider
@@ -225,6 +226,12 @@ class HealCoordinator:
         bundle = build_bundle(selector_key, meta, broken_candidates,
                               self.inventory_provider(), html, context, row,
                               with_fingerprint=wants)
+        # A provider that builds a prompt gets the page fitted to it (see mendwright.fit).
+        # When elements had to be left out, positions in what the model read no longer match
+        # the page, so a positional XPath is refused.
+        left_out = 0
+        if getattr(self.provider, 'wants_full_html', False) is not True:
+            bundle, left_out = fit_bundle(bundle, meta.get('fingerprint'))
         for _ in range(2):  # initial heal + one re-prompt on validation failure
             proposal = self.provider.propose(bundle)
             if not proposal:
@@ -257,7 +264,8 @@ class HealCoordinator:
                     "dry-run mode is on, so the proposal for '" + selector_key + "' was checked "
                     "but not applied. Turn off dry_run to let mendwright apply and retry.",
                     level=logging.INFO)
-            applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver)
+            applied, reason = apply(self.store, selector_key, proposal, html, meta,
+                                    driver=self.driver, positional=not left_out)
             if applied:
                 self._record_applied(selector_key, broken_candidates, applied, started,
                                      type(self.provider).__name__, self._provider_model(),

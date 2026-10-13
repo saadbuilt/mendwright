@@ -92,6 +92,9 @@ class LocalModelProvider:
     # The coordinator adds the key's saved fingerprint to the bundle for this provider only:
     # the model runs on this machine, and the fingerprint is what it was trained to compare.
     wants_fingerprint = True
+    # It reads candidates from the whole page, not a prompt, so the coordinator does not
+    # fit the bundle for it (see mendwright.fit).
+    wants_full_html = True
 
     def __init__(self, model=None, base_url=None, *, http=None, timeout=60, num_ctx=4096,
                  keep_alive='10m', max_candidates=MAX_CANDIDATES, min_confidence=None):
