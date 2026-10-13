@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .fingerprint import valid as _valid_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
+from .selectors import frame_spelling
 
 logger = logging.getLogger('mendwright')
 
@@ -151,6 +152,32 @@ def _read_text(path, sleep=None):
     return None  # not reached
 
 
+def _respell_frame_heals(data):
+    """Give a heal saved inside an iframe the text mendwright saves it with since 0.6.1:
+    the XPath with its 'xpath=' prefix written out (selectors.frame_spelling), which keeps
+    it, and a quarantine on it, apart from the same XPath on the page. 0.6.0 saved those
+    heals as the plain XPath. Only rows with source 'heal' and a frameXPath change, and
+    not one whose new text another row of the key already has. Returns data."""
+    for entry in (data.get('selectors') or {}).values():
+        rows = entry.get('candidates') if isinstance(entry, dict) else None
+        if not isinstance(rows, list):
+            continue
+        texts = {c.get('xpath') for c in rows if isinstance(c, dict)}
+        for c in rows:
+            if not (isinstance(c, dict) and c.get('source') == 'heal' and c.get('frameXPath')
+                    and isinstance(c.get('xpath'), str)):
+                continue
+            try:
+                spelled = frame_spelling(c['xpath'])
+            except (TypeError, ValueError):
+                continue
+            if spelled and spelled != c['xpath'] and spelled not in texts:
+                texts.discard(c['xpath'])
+                c['xpath'] = spelled
+                texts.add(spelled)
+    return data
+
+
 def _read_schema2(path, destructive_keys=frozenset()):
     """Read a selector file, migrating schema-1 to schema-2. A missing file is an empty
     store; one that exists but cannot be used raises StoreReadError."""
@@ -174,7 +201,7 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
     if data == {}:
         return _empty(), False
     if isinstance(data, dict) and data.get('schema') == 2 and isinstance(selectors, dict):
-        return data, True
+        return _respell_frame_heals(data), True
     if isinstance(data, dict) and data.get('schema') in (None, 1) and isinstance(selectors, list):
         return migrate_schema1(data, destructive_keys), False
     raise StoreReadError(
@@ -486,12 +513,15 @@ class SelectorStore:
                 return c.get('status', 'active')
         return None
 
-    def quarantined(self, key):
+    def quarantined(self, key, frame_xpath=None):
         """The selectors of key's quarantined candidates, in stored order. apply() uses them
-        to refuse a proposal that selects the same element under another spelling."""
+        to refuse a proposal that selects the same element under another spelling.
+        frame_xpath limits them to one place: '' for the page, an iframe's selector for that
+        iframe. None lists them all."""
         entry = self._data['selectors'].get(key)
         return [c['xpath'] for c in (entry or {}).get('candidates', [])
-                if c.get('status') == 'quarantined' and c.get('xpath')]
+                if c.get('status') == 'quarantined' and c.get('xpath')
+                and (frame_xpath is None or (c.get('frameXPath') or '') == frame_xpath)]
 
     def _find(self, key, xpath):
         for c in self._entry(key)['candidates']:

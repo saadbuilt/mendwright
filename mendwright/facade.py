@@ -40,7 +40,8 @@ from .limits import Guardrails, RateLimiter
 from .providers import GatewayProvider
 from .resolver import resolve
 from .roles import infer_role, role_choices
-from .selectors import CSS, XPATH, InvalidSelector, check_syntax, classify, normalize, strip_prefix
+from .selectors import (XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
+                        normalize)
 from .store import load_store
 
 logger = logging.getLogger('mendwright')
@@ -398,25 +399,6 @@ def _frame_message(key, selector, frames, opener, why=None, selenium=False):
             'mendwright was opened on, but matches inside ' + where + '. mendwright did not '
             'look for it there, because ' + because + ', and did not ask a model to heal '
             'it. Open mendwright on that Frame instead: heal = ' + opener + '(' + how + ').')
-
-
-def frame_spelling(selector):
-    """The key's selector as it is saved for a lookup inside an iframe: with its 'xpath=' or
-    'css=' prefix written out, so the store keeps it apart from the same selector in the page
-    (the store tells candidates apart by their text). None for a Playwright engine selector."""
-    try:
-        kind = classify(selector)
-    except TypeError:
-        return None
-    if kind not in (XPATH, CSS):
-        return None
-    body = strip_prefix(selector)
-    alt = ('xpath=' if kind == XPATH else 'css=') + body
-    if alt == normalize(selector):
-        if kind != XPATH:
-            return None
-        alt = 'xpath=(' + body + ')'
-    return alt
 
 
 def latest_success(store, key):
@@ -1133,7 +1115,10 @@ class Healer:
             return None, 'it matches ' + str(frame.get('count')) + ' elements there'
         if not frame.get('selector'):
             return None, None
-        alt = frame_spelling(selector)
+        try:
+            alt = frame_spelling(selector)
+        except TypeError:
+            alt = None
         if alt is None:
             return None, 'a Playwright engine selector is not followed into an iframe'
         status = _stored_status(self.store, key, alt)

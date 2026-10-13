@@ -144,6 +144,26 @@ def normalize(selector):
     return ('xpath=' if kind == XPATH else 'css=') + body
 
 
+def frame_spelling(selector):
+    """The selector as mendwright saves it for a lookup inside an iframe: with its 'xpath='
+    or 'css=' prefix written out. A selector on the page is saved without it (see
+    normalize), so the store, which tells candidates apart by their text, keeps the two
+    apart: a heal or a quarantine inside an iframe never lands on, or blocks, the same text
+    on the page. None for a Playwright engine selector.
+
+    Raises TypeError for a non-string."""
+    kind = classify(selector)
+    if kind not in (XPATH, CSS):
+        return None
+    body = strip_prefix(selector)
+    alt = ('xpath=' if kind == XPATH else 'css=') + body
+    if alt == normalize(selector):
+        if kind != XPATH:
+            return None
+        alt = 'xpath=(' + body + ')'
+    return alt
+
+
 @functools.lru_cache(maxsize=1024)
 def _compile_xpath(expr):
     lxml.etree.XPath(expr)  # raises lxml.etree.XPathSyntaxError on bad syntax

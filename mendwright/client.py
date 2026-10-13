@@ -15,7 +15,7 @@ import lxml.html
 from .css import css_selectors
 from .fit import has_position
 from .gate import live_reason
-from .selectors import CSS, XPATH, classify, normalize
+from .selectors import CSS, XPATH, classify, frame_spelling, normalize
 from .validation import validate
 
 DEFAULT_AUTH_HEADER = 'X-Heal-Key'  # generic; a tool may pass its own via auth_header=
@@ -113,20 +113,31 @@ POSITIONAL = ('it uses a position ([2], last() or position()), but parts of the 
               'live page. Anchor on attributes or text instead')
 
 
-def _quarantined_paths(store, selector_key, html):
+def _quarantined_paths(store, selector_key, html, frame_xpath=''):
     """(doc, paths): the captured page parsed the way validate() parses it, and the tree
-    paths of the elements the key's quarantined selectors match in it. (None, set()) when
-    the page cannot be parsed; stores without quarantined() give no paths."""
+    paths of the elements the key's quarantined selectors match in it. Only quarantines of
+    the same place count: the page ('') or the iframe frame_xpath, whose document ``html``
+    then is. A selector quarantined inside an iframe says nothing about an element that
+    looks the same on the page. (None, set()) when the page cannot be parsed; stores
+    without quarantined() give no paths, and a store whose quarantined() takes no
+    frame_xpath gives all of them."""
     try:
         doc = lxml.html.fromstring(html)
     except Exception:
         return None, set()
     listed = getattr(store, 'quarantined', None)
     tree, paths = doc.getroottree(), set()
-    try:
-        stored = list(listed(selector_key)) if callable(listed) else []
-    except Exception:
-        stored = []
+    stored = []
+    if callable(listed):
+        try:
+            stored = list(listed(selector_key, frame_xpath=frame_xpath))
+        except TypeError:
+            try:
+                stored = list(listed(selector_key))
+            except Exception:
+                stored = []
+        except Exception:
+            stored = []
     for selector in stored:
         try:
             body = _xpath_forms(selector)[0]   # drop any 'xpath=' prefix
@@ -256,13 +267,15 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
 
     frame_xpath is the selector of the iframe the heal was made in, when the coordinator
     healed inside one (``html`` and ``driver`` are then that iframe's); it is saved with the
-    candidate so the resolver looks for it there.
+    candidate so the resolver looks for it there. Such a heal is saved and returned with
+    its 'xpath=' prefix written out (see selectors.frame_spelling), so it never shares a
+    row with the same text on the page, and only quarantines made in that iframe block it.
 
     positional=False rejects any candidate with a position in it ([2], last(),
     position()). The coordinator passes it when the model read a page with parts left out
     (see mendwright.fit), where a position counts different elements than the live page.
     """
-    doc, bad = _quarantined_paths(store, selector_key, html)
+    doc, bad = _quarantined_paths(store, selector_key, html, frame_xpath or '')
     candidates = [proposal.get('xpath')] + list(proposal.get('fallbacks') or [])
     reason = 'no candidates in proposal'
     for proposed in candidates:
@@ -272,6 +285,8 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             reason = 'proposal is not a string'
             continue
         body, xpath = _xpath_forms(proposed)
+        if frame_xpath:
+            xpath = frame_spelling(xpath)
         if not positional and has_position(body):
             reason = POSITIONAL
             continue
