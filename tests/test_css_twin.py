@@ -27,6 +27,14 @@ def _doc():
     return lxml.html.fromstring(PAGE)
 
 
+def _cssselect():
+    """lxml.cssselect, or a skip when the cssselect package is not installed (lxml's
+    module imports, then raises a plain ImportError, which importorskip does not skip)."""
+    pytest.importorskip('cssselect')
+    import lxml.cssselect
+    return lxml.cssselect
+
+
 @pytest.mark.parametrize('xpath, first', [
     ("//input[@name='coupon']", '#coupon-code'),
     ("//button[@data-testid='save-btn']", '[data-testid="save-btn"]'),
@@ -38,7 +46,7 @@ def test_css_selectors_match_the_element_and_nothing_else(xpath, first):
     el = doc.xpath(xpath)[0]
     found = css_selectors(el, doc)
     assert found and found[0] == first
-    cssselect = pytest.importorskip('lxml.cssselect')
+    cssselect = _cssselect()
     for css in found:     # an independent CSS engine agrees with the XPath twins
         assert cssselect.CSSSelector(css)(doc) == [el], css
 
@@ -80,7 +88,7 @@ class _Live:
     def _find(self, selector):
         if selector.startswith(('/', '(')):
             return self.doc.xpath(selector)
-        return pytest.importorskip('lxml.cssselect').CSSSelector(selector)(self.doc)
+        return _cssselect().CSSSelector(selector)(self.doc)
 
     def count(self, selector, frame_chain=()):
         found = self._find(selector)
