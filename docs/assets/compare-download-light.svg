@@ -30,6 +30,6 @@
 <text x="619" y="445.5" font-size="13" font-weight="600" fill="#0b0b0b">178.83 MB, 162 packages</text>
 <text x="24" y="478" font-size="12" fill="#52514e">Resolved with pip install --dry-run on CPython 3.12, Windows x64, on 2026-10-10. Sizes are the wheel files listed on PyPI.</text>
 <text x="24" y="500" font-size="12" fill="#52514e">Not counted: playwright, greenlet, pyee, patchright, selenium, robotframework, robotframework-browser, grpcio, Appium libraries,</text>
-<text x="24" y="517" font-size="12" fill="#52514e">and the Chrome that stagehand and browser-use drive. On Linux x86_64, mendwright and lxml come to 5.35 MB.</text>
+<text x="24" y="517" font-size="12" fill="#52514e">and the Chrome that stagehand and browser-use drive. On Linux x86_64, mendwright and lxml come to 5.36 MB.</text>
 <text x="24" y="539" font-size="12" fill="#52514e">Data and sources: docs/charts/data.json</text>
 </svg>

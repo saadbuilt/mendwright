@@ -108,7 +108,7 @@ mendwright's optional gateway mode adds 1: a Cloudflare Worker with a KV binding
 
 | Package | Version | Compressed wheels | Packages | Note |
 |---|---|---|---|---|
-| mendwright | 0.6.0 | 4.26 MB | 2 | mendwright and lxml. 5.35 MB on Linux x86_64. See [Methodology](#mendwright-wheel). |
+| mendwright | 0.6.0 | 4.26 MB | 2 | mendwright and lxml. 5.36 MB on Linux x86_64. See [Methodology](#mendwright-wheel). |
 | [stagehand](https://pypi.org/pypi/stagehand/4.2.0/json) | 4.2.0 | 4.26 MB | 17 | No Playwright dependency; it drives a Chrome you install. |
 | [robotframework-selfhealing-agents](https://pypi.org/pypi/robotframework-selfhealing-agents/0.1.7/json) | 0.1.7 | 17.45 MB | 53 | 37.08 MB in 59 packages with Robot Framework and browser libraries. |
 | [robotframework-heal](https://pypi.org/pypi/robotframework-heal/0.4.0/json) | 0.4.0 | 29.77 MB | 82 | 49.69 MB in 89 packages with Robot Framework and browser libraries. |
@@ -121,12 +121,12 @@ For scale, the same method gives 38.99 MB in 4 packages for `playwright` 1.63.0 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/compare-infra-dark.svg">
-  <img alt="Download before the first heal, including services, compressed, Linux x86_64: mendwright 5.35 MB of wheels, Healenium-Web 512.3 MB of Docker images, Healenium-Proxy for Python 2,215.7 MB, of which 1,374.5 MB is a Selenium hub and a Chromium node. Docker totals are upper bounds." src="assets/compare-infra-light.svg" width="800">
+  <img alt="Download before the first heal, including services, compressed, Linux x86_64: mendwright 5.36 MB of wheels, Healenium-Web 512.3 MB of Docker images, Healenium-Proxy for Python 2,215.7 MB, of which 1,374.5 MB is a Selenium hub and a Chromium node. Docker totals are upper bounds." src="assets/compare-infra-light.svg" width="800">
 </picture>
 
 | Setup | Compressed download | Made of |
 |---|---|---|
-| mendwright | 5.35 MB | mendwright wheel 0.25 MB + lxml manylinux2014 x86_64 wheel 5.11 MB |
+| mendwright | 5.36 MB | mendwright wheel 0.25 MB + lxml manylinux2014 x86_64 wheel 5.11 MB |
 | Healenium-Web | 512.3 MB, upper bound | [postgres:15.5-alpine](https://hub.docker.com/v2/repositories/library/postgres/tags/15.5-alpine) 94.8 + [hlm-backend:3.5.1](https://hub.docker.com/v2/repositories/healenium/hlm-backend/tags/3.5.1) 317.4 + [hlm-selector-imitator:1.6](https://hub.docker.com/v2/repositories/healenium/hlm-selector-imitator/tags/1.6) 100.1 |
 | Healenium-Proxy for Python | 2,215.7 MB, upper bound | the 3 above + [hlm-proxy:2.2.1](https://hub.docker.com/v2/repositories/healenium/hlm-proxy/tags/2.2.1) 328.9 (841.2 for Healenium) + [selenium/hub](https://hub.docker.com/v2/repositories/selenium/hub/tags/latest) 369.7 + [selenium/node-chromium](https://hub.docker.com/v2/repositories/selenium/node-chromium/tags/latest) 1,004.8 |
 
@@ -145,9 +145,9 @@ Your test runner, your browser and the LLM API are not counted.
 ### mendwright wheel
 
 - `git archive` of the 0.6.0 source into a scratch folder, then `python -m build --wheel` (isolated build, setuptools 84.0.0).
-- The wheel is 249,570 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
+- The wheel is 250,230 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
 - The lxml 6.1.3 wheel is 4,005,999 bytes for cp312 win_amd64 and 5,105,247 bytes for manylinux2014 x86_64 ([PyPI](https://pypi.org/pypi/lxml/6.1.3/json)).
-- Totals: 4,255,569 bytes (4.26 MB) on Windows and 5,354,817 bytes (5.35 MB) on Linux.
+- Totals: 4,256,229 bytes (4.26 MB) on Windows and 5,355,477 bytes (5.36 MB) on Linux.
 - The wheel embeds README.md and the package code, so this changes slightly when either does. It is re-measured at release.
 
 ### Other Python packages
