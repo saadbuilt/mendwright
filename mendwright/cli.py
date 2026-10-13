@@ -724,6 +724,13 @@ def cmd_fix(args):
     return 1 if result.errors else 0
 
 
+# --- model -----------------------------------------------------------------------------
+
+def cmd_model_install(args):
+    from . import model_install
+    return model_install.main(args, out=_out, err=_err)
+
+
 # --- demo ------------------------------------------------------------------------------
 
 def cmd_demo(args):
@@ -819,6 +826,29 @@ def build_parser():
     fix.add_argument('--apply', action='store_true',
                      help='write the changes (default: print the diff only)')
     fix.set_defaults(handler=cmd_fix)
+
+    model = sub.add_parser(
+        'model', help="download and set up mendwright's local selector model",
+        description="Work with mendwright's own selector model, a 1 GB fine-tune of "
+                    'Qwen2.5-1.5B that runs in Ollama.')
+    model_sub = model.add_subparsers(dest='model_command', metavar='<action>')
+    model_install = model_sub.add_parser(
+        'install', help='download the model and register it with Ollama',
+        description='Download the model file from the GitHub release this version of '
+                    'mendwright was tested with (about 1 GB, once), check its SHA-256, write '
+                    'an Ollama Modelfile next to it and run ollama create. Then select it '
+                    'with MENDWRIGHT_LOCAL_MODEL=mendwright-selector.')
+    model_install.add_argument('--name', default='mendwright-selector',
+                               help='the Ollama model name (default: mendwright-selector)')
+    model_install.add_argument('--dir', metavar='FOLDER',
+                               help='where to keep the model file (default: a mendwright '
+                                    'folder in your user cache)')
+    model_install.add_argument('--force', action='store_true',
+                               help='download again even if the file is already there')
+    model_install.add_argument('--skip-create', action='store_true',
+                               help='only download; print the ollama create command instead')
+    model_install.set_defaults(handler=cmd_model_install)
+    model.set_defaults(handler=lambda args: (model.print_help(), 0)[1])
     return parser
 
 

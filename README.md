@@ -189,11 +189,14 @@ mendwright has its own small model, so a heal can run without the page leaving y
 `mendwright-selector` is Qwen2.5-1.5B-Instruct fine-tuned for one question: given the broken step and a numbered list of the elements of its role on the current page, which one did the step mean, if any.
 It answers with a number, or says that no element fits and why. mendwright then builds the XPath for that element itself and runs it through the same checks as any heal, so the model never writes a selector.
 
-Build it with the recipe in [training/README.md](https://github.com/saadbuilt/mendwright/blob/main/training/README.md) (about 6 hours of training on a laptop GPU with 6 GB), import it into Ollama, and select it:
+With [Ollama](https://ollama.com/download) installed, one command downloads the model from the GitHub release, checks its SHA-256 and registers it, and one variable selects it:
 
 ```bash
+mendwright model install
 export MENDWRIGHT_LOCAL_MODEL=mendwright-selector
 ```
+
+To build it yourself instead, [training/README.md](https://github.com/saadbuilt/mendwright/blob/main/training/README.md) has the data generator and the recipe (about 6 hours of training on a laptop GPU with 6 GB).
 
 The model file is about 1 GB. It answers in about a quarter of a second on a laptop GPU, or 1 to 2 seconds on the CPU alone.
 On 3,000 held-out synthetic redesigns it picked the right element for 97.1% of the broken selectors and a wrong one for 0.14%, and said no element fits for 97.1% of the steps where none did.

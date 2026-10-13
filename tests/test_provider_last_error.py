@@ -285,7 +285,7 @@ def test_long_vendor_messages_are_cut(name):
 def test_ollama_refused_asks_whether_ollama_is_running():
     provider, _ = _run('ollama', _refused())
     assert provider.last_error.startswith(
-        'could not connect to http://localhost:11434/v1 (connection refused). '
+        'could not connect to http://127.0.0.1:11434/v1 (connection refused). '
         'Is Ollama running?')
     assert 'OLLAMA_HOST' in provider.last_error
 
@@ -392,7 +392,7 @@ def test_openai_sdk_connection_error(monkeypatch):
     provider = OpenAICompatibleProvider.for_ollama('llama-test')
     assert provider.propose(BUNDLE) is None
     assert provider.last_error.startswith(
-        'could not connect to http://localhost:11434/v1 (connection refused). Is Ollama running?')
+        'could not connect to http://127.0.0.1:11434/v1 (connection refused). Is Ollama running?')
 
 
 def test_gemini_sdk_api_error(monkeypatch):

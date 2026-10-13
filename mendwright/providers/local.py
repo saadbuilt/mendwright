@@ -206,9 +206,8 @@ class LocalModelProvider:
 
     def _hints(self):
         return {
-            'model': "Create it with 'ollama create " + self.model + " -f Modelfile' (see "
-                     'training/README.md in the mendwright repository), or set '
-                     'MENDWRIGHT_LOCAL_MODEL to the name you gave it.',
+            'model': "Install it with 'mendwright model install', or set "
+                     'MENDWRIGHT_LOCAL_MODEL to the name you gave it in Ollama.',
             'refused': "Is Ollama running? Start it with 'ollama serve', or set OLLAMA_HOST "
                        '(or base_url=) to where it listens.',
             'connect': 'Check OLLAMA_HOST (or base_url=) and that Ollama is running.',

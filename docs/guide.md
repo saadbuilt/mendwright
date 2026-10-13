@@ -298,7 +298,7 @@ With no `provider=`, `auto_provider()` reads the environment and takes the first
 | 5 | `MENDWRIGHT_LOCAL_MODEL` | `LocalModelProvider`, mendwright's own model in Ollama | `MENDWRIGHT_LOCAL_MODEL` |
 | 6 | `OLLAMA_MODEL` or `OLLAMA_HOST` | Ollama, keyless | `OLLAMA_MODEL` |
 
-`OLLAMA_HOST` defaults to `http://localhost:11434`.
+`OLLAMA_HOST` defaults to `http://127.0.0.1:11434`, and `localhost` in it is read as `127.0.0.1`.
 `MENDWRIGHT_PROVIDER` skips the order and forces one of the six. `MENDWRIGHT_PROVIDER=local` uses `mendwright-selector` when `MENDWRIGHT_LOCAL_MODEL` isn't set.
 For a proxy or a compatible host, the Anthropic and OpenAI providers take a base URL from `base_url=`, or from `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. `base_url=` wins.
 
@@ -324,7 +324,7 @@ from mendwright import (AnthropicProvider, BedrockProvider, GatewayProvider, Gem
 provider = AnthropicProvider(model="...")             # key from ANTHROPIC_API_KEY
 provider = OpenAICompatibleProvider(model="...")      # OpenAI, key from OPENAI_API_KEY
 provider = OpenAICompatibleProvider(model="...", base_url="https://api.groq.com/openai/v1", api_key="...")
-provider = OpenAICompatibleProvider.for_ollama("...")  # http://localhost:11434/v1, no key
+provider = OpenAICompatibleProvider.for_ollama("...")  # http://127.0.0.1:11434/v1, no key
 provider = OpenAICompatibleProvider.for_azure(endpoint, deployment, api_version, key)
 provider = GeminiProvider(model="...")                # key from GEMINI_API_KEY
 provider = BedrockProvider(model="...", region="us-east-1")  # AWS credentials from boto3
@@ -354,10 +354,11 @@ The model gets that list and the step: the key, the role, the old selectors, the
 It answers with the number of the element the step meant, or says that none fits and why.
 mendwright then builds the XPath for that element itself, from its id, test id, name, aria-label, label, text or the row or heading around it, never from its position, and checks it like any other heal.
 
-The model is built from this repository with the recipe in [training/README.md](../training/README.md), which also has its accuracy. Once it exists in Ollama:
+`mendwright model install` downloads the model file (about 1 GB, once) from the GitHub release this version of mendwright was tested with, checks its SHA-256, writes an Ollama Modelfile next to it and runs `ollama create mendwright-selector`. It needs [Ollama](https://ollama.com/download). `--dir` picks where the file is kept (default: a mendwright folder in your user cache), `--name` the Ollama name, `--skip-create` only downloads, and `--force` downloads again. To build the model yourself, [training/README.md](../training/README.md) has the recipe and its accuracy. Then:
 
 ```bash
-export MENDWRIGHT_LOCAL_MODEL=mendwright-selector   # the name you gave it in `ollama create`
+mendwright model install
+export MENDWRIGHT_LOCAL_MODEL=mendwright-selector   # or the --name you gave it
 mendwright doctor                                    # LocalModelProvider (mendwright selector model in Ollama)
 ```
 
@@ -980,7 +981,7 @@ Model provider
   OPENAI_MODEL (OpenAI-compatible); GEMINI_API_KEY and GEMINI_MODEL (Gemini);
   MENDWRIGHT_GATEWAY and MENDWRIGHT_KEY, plus MENDWRIGHT_AUTH_HEADER if your gateway
   uses another header (mendwright gateway); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama is
-  not on http://localhost:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one of:
+  not on http://127.0.0.1:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one of:
   anthropic, openai, gemini, gateway, ollama, or pass provider=... to mendwright.open().
   `mendwright demo` works without one (it uses a scripted reply).
 

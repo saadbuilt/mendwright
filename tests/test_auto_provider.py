@@ -247,7 +247,7 @@ def test_empty_env_error_names_every_env_var_auto_provider_reads():
     msg = str(exc.value)
     for var in _ALL_ENV:  # keys, models, gateway settings, Ollama, and the override
         assert var in msg, var
-    assert 'http://localhost:11434' in msg
+    assert 'http://127.0.0.1:11434' in msg
     assert chr(0x2014) not in msg  # no em-dash
 
 
@@ -260,7 +260,7 @@ def test_ollama_model_alone_selects_local_ollama(monkeypatch):
     monkeypatch.setenv('OLLAMA_MODEL', 'llama-test')
     prov = auto_provider()
     assert isinstance(prov, OpenAICompatibleProvider)
-    assert prov.base_url == 'http://localhost:11434/v1'
+    assert prov.base_url == 'http://127.0.0.1:11434/v1'
     assert prov.model == 'llama-test'
     assert prov.api_key == ''
 

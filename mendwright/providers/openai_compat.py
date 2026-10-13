@@ -17,7 +17,7 @@ environment variable, and construction raises if neither is set. The endpoint is
 it), else https://api.openai.com/v1, for the SDK and the urllib fallback alike.
 
 After each propose() call, ``last_error`` is None on success or a short reason when it
-returned None, for example "could not connect to http://localhost:11434/v1 (connection
+returned None, for example "could not connect to http://127.0.0.1:11434/v1 (connection
 refused). Is Ollama running? ..." or "OpenAI returned HTTP 404 (model_not_found): ...".
 """
 
@@ -28,7 +28,9 @@ from ..prompt import build_prompt, parse_proposal
 from ._errors import Describer
 
 DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-OLLAMA_BASE_URL = 'http://localhost:11434/v1'
+# 127.0.0.1, not localhost: on Windows localhost tries IPv6 first and can stall about 2 s
+# before falling back to IPv4, where Ollama listens.
+OLLAMA_BASE_URL = 'http://127.0.0.1:11434/v1'
 
 
 class OpenAICompatibleProvider:
@@ -61,7 +63,7 @@ class OpenAICompatibleProvider:
     # --- factories -------------------------------------------------------------------
     @classmethod
     def for_ollama(cls, model, *, base_url=OLLAMA_BASE_URL, api_key=None, **kwargs):
-        """Local, keyless Ollama (http://localhost:11434/v1). model is required by Ollama.
+        """Local, keyless Ollama (http://127.0.0.1:11434/v1). model is required by Ollama.
 
         Pass '' (not None) by default so the __init__ fallback never inherits OPENAI_API_KEY:
         a local keyless call must not ship your OpenAI key to localhost.

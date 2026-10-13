@@ -5,8 +5,8 @@
 
 1. Loads the base model in fp16 on the CPU, applies the adapter, merges it and saves
    EXPORT_DIR/merged (safetensors + tokenizer).
-2. Writes EXPORT_DIR/Modelfile from Modelfile.template, with the system prompt from
-   mendwright.candidates.SYSTEM_PROMPT.
+2. Writes EXPORT_DIR/Modelfile with mendwright.model_install.modelfile_text(), the same
+   template and system prompt that mendwright model install uses.
 3. Tries `ollama create <name> -f Modelfile --quantize <q>` on the merged safetensors.
    Ollama 0.40 quantizes safetensors only to its own int4/int8 formats, so for a llama.cpp
    type such as q4_K_M this fails, and the script goes on: llama.cpp's
@@ -30,7 +30,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from mendwright.candidates import SYSTEM_PROMPT  # noqa: E402
+from mendwright.model_install import modelfile_text  # noqa: E402
 
 DEFAULT_BASE = os.environ.get('MW_BASE', r'C:\Users\Omen\mendwright-train\base\Qwen2.5-1.5B-Instruct')
 LLAMA_CPP = Path(os.environ.get('LLAMA_CPP', r'C:\Users\Omen\mendwright-train\llama.cpp'))
@@ -74,8 +74,8 @@ def merge(base, adapter, out):
 
 
 def modelfile(source, path):
-    text = (HERE / 'Modelfile.template').read_text(encoding='utf-8')
-    text = text.replace('{FROM}', str(source)).replace('{SYSTEM}', SYSTEM_PROMPT)
+    # The same template mendwright model install writes, so both builds match.
+    text = modelfile_text(source)
     path.write_text(text, encoding='utf-8')
     return path
 

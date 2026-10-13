@@ -16,7 +16,7 @@ Selection, in priority order when several are set:
                                                                 in Ollama; host: OLLAMA_HOST)
     OLLAMA_MODEL or OLLAMA_HOST    -> OpenAICompatibleProvider.for_ollama
                                       (keyless; model: OLLAMA_MODEL; host: OLLAMA_HOST,
-                                       default http://localhost:11434)
+                                       default http://127.0.0.1:11434)
 
 Cloud keys and the gateway win over Ollama, so a shell that has OLLAMA_MODEL set for
 other tools still uses ANTHROPIC_API_KEY when that is set too.
@@ -52,7 +52,7 @@ _NOTHING_CONFIGURED = (
     'MENDWRIGHT_GATEWAY and MENDWRIGHT_KEY, plus MENDWRIGHT_AUTH_HEADER if your gateway '
     'uses another header (mendwright gateway); MENDWRIGHT_LOCAL_MODEL (mendwright\'s local '
     'selector model in Ollama); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama '
-    'is not on http://localhost:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one '
+    'is not on http://127.0.0.1:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one '
     'of: ' + ', '.join(_NAMES) + ', or pass provider=... to mendwright.open().')
 
 
@@ -137,12 +137,11 @@ def _ollama(model, kwargs):
     # really wants auth can still pass api_key=... through kwargs.
     kwargs.setdefault('api_key', '')
     host = _env('OLLAMA_HOST')
-    if host:  # unset: for_ollama's own default, http://localhost:11434/v1
-        base = host if '://' in host else 'http://' + host  # OLLAMA_HOST is often scheme-less
-        base = base.rstrip('/')
-        if not base.endswith('/v1'):
-            base += '/v1'  # the OpenAI-compatible endpoint Ollama serves
-        kwargs.setdefault('base_url', base)
+    if host:  # unset: for_ollama's own default, http://127.0.0.1:11434/v1
+        # Same reading of OLLAMA_HOST as the local provider (scheme-less values, a /v1
+        # suffix, localhost and 0.0.0.0 to 127.0.0.1), plus the OpenAI-compatible /v1 path.
+        from .local import _host
+        kwargs.setdefault('base_url', _host(host) + '/v1')
     return cls.for_ollama(model, **kwargs)
 
 

@@ -68,7 +68,7 @@ def test_ollama_is_keyless_and_targets_localhost():
     prov.propose(BUNDLE)
 
     call = http.calls[0]
-    assert call['url'] == 'http://localhost:11434/v1/chat/completions'
+    assert call['url'] == 'http://127.0.0.1:11434/v1/chat/completions'
     assert 'Authorization' not in call['headers']  # keyless: no auth header at all
     assert 'api-key' not in call['headers']
     assert call['json']['model'] == 'llama3.1'

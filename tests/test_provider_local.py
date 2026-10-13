@@ -144,7 +144,7 @@ def test_a_missing_model_says_how_to_create_it():
     prov = LocalModelProvider(http=http)
     assert prov.propose(BUNDLE) is None
     assert prov.last_error.startswith('Ollama returned HTTP 404')
-    assert "ollama create mendwright-selector" in prov.last_error
+    assert "mendwright model install" in prov.last_error
 
 
 def test_ollama_not_running_is_named():
