@@ -161,6 +161,8 @@ A driver wraps one live page or session.
 | `outer_html(scope=None)` | expected | The HTML the checks run against. |
 | `act_on(native, verb, *args, **kwargs)` | optional | Run a Playwright-style verb on a `handle()` result. Without it, `driver_act_on()` calls `getattr(native, verb)(*args, **kwargs)`. |
 | `describe(selector, frame_chain=())` | optional | `{'tag', 'role', 'text', 'outer_html'}` for a single match, else `None`. Without it, `driver_describe()` returns `None` and the role is guessed from the selector text. |
+| `frame_matches(selector)` | optional | The iframes of the page in which the selector matches, as `[{'name', 'url', 'count', 'nested', 'selector'}]`; `selector` is a CSS selector for the iframe element (see `frame_selector()` in `mendwright/drivers/base.py`), or `None`. Without it, mendwright doesn't look into iframes on its own. |
+| `framed(frame_selector)` | optional | A driver for the document inside the one iframe `frame_selector` matches, or `None`. Without it, a key found inside an iframe heals on the page. |
 | `fingerprint(selector, frame_chain=())` | optional | The fingerprint (see `mendwright/fingerprint.py`) of the one element the selector matches, else `None`. Run `FINGERPRINT_JS` on the match and pass the result through `from_raw()`. Without it, `driver_fingerprint()` returns `None` and the fingerprint tier never has anything to look for. |
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
 

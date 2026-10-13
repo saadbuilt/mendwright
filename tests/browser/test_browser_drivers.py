@@ -12,7 +12,7 @@ import pytest
 import mendwright
 from mendwright import InvalidSelector
 from mw_engines import (ACTIONS_PAGE, FAST_MS, FORM_CONTROLS, HEALED, IFRAME_PAGE, POLL_MS,
-                        SAVE_PAGE, SIGNUP_V1, V2_CHECKBOX)
+                        SAVE_PAGE, SIGNUP_V1, V2_CHECKBOX, journal_events, saved_candidates)
 
 pytestmark = pytest.mark.browser
 
@@ -73,6 +73,85 @@ def test_the_iframe_workaround(tab, store_file, stub_provider):
     assert 'legal-consent' in provider.bundles[0]['html']      # the frame's HTML was captured
     assert 'Outer page' not in provider.bundles[0]['html']
     assert provider.outcomes == [('frame_terms', HEALED, True)]
+
+
+IN_FRAME = "//input[@data-testid='legal-consent']"
+FRAME = 'iframe[id="consent-frame"]'
+
+
+def _frame_checked(tab):
+    return tab.js('document.querySelector("#consent-frame").contentDocument'
+                  '.querySelector("[name=agreement]").checked')
+
+
+def test_a_selector_that_matches_only_inside_an_iframe_is_followed_there(tab, store_file,
+                                                                          stub_provider):
+    """mendwright is opened on the page, and the key's selector matches only inside the
+    iframe: it is looked up there from now on, with no model call."""
+    tab.load(IFRAME_PAGE)
+    provider = stub_provider(None)
+    heal = _open(tab.target, provider, store_file)
+    heal.locator('frame_terms', IN_FRAME, role='checkbox', timeout_ms=FAST_MS,
+                 poll_ms=POLL_MS).check()
+
+    assert _frame_checked(tab) is True
+    assert provider.bundles == []
+    assert [h.source for h in heal.heals] == ['frame']
+    assert saved_candidates(store_file, 'frame_terms')['xpath=' + IN_FRAME]['frameXPath'] == FRAME
+    applied = [e for e in journal_events(store_file) if e['event'] == 'heal.applied']
+    assert applied[0]['source'] == 'frame' and applied[0]['frame'] == FRAME
+    assert tab.js('window.frameElement === null') is True        # back on the page
+
+    again = stub_provider(None)
+    rerun = _open(tab.target, again, store_file)
+    rerun.locator('frame_terms', IN_FRAME, role='checkbox', timeout_ms=FAST_MS,
+                  poll_ms=POLL_MS).uncheck()
+    assert _frame_checked(tab) is False
+    assert rerun.heals == [] and again.bundles == []
+
+
+def test_a_destructive_key_is_not_followed_into_an_iframe(tab, store_file, stub_provider):
+    tab.load(IFRAME_PAGE)
+    heal = _open(tab.target, stub_provider(None), store_file)
+    with pytest.raises(mendwright.AttentionRequired) as info:
+        heal.locator('frame_terms', IN_FRAME, role='checkbox', destructive=True,
+                     timeout_ms=FAST_MS, poll_ms=POLL_MS)
+    assert 'is marked as a destructive control' in str(info.value)
+    assert heal.heals == []
+
+
+@pytest.mark.parametrize('fingerprint', [False, True])
+def test_a_key_last_found_in_an_iframe_heals_inside_it(fingerprint, tab, store_file,
+                                                        stub_provider):
+    """After a redesign inside the iframe, the heal captures and checks the iframe's
+    document, and saves the new selector there: from the model, or from the fingerprint
+    recorded inside the iframe with no model call."""
+    tab.load(IFRAME_PAGE)
+    first = _open(tab.target, stub_provider(None), store_file, fingerprint=fingerprint)
+    first.locator('frame_terms', IN_FRAME, role='checkbox', timeout_ms=FAST_MS,
+                  poll_ms=POLL_MS).check(expect=lambda: _frame_checked(tab))
+    # Once the move into the iframe is confirmed, the next match records the fingerprint
+    # of the element inside the iframe.
+    first.locator('frame_terms', IN_FRAME, role='checkbox', timeout_ms=FAST_MS,
+                  poll_ms=POLL_MS)
+
+    tab.load(IFRAME_PAGE.replace('legal-consent', 'consent-box'))   # the redesign
+    provider = stub_provider("//input[@name='agreement']")
+    heal = _open(tab.target, provider, store_file, fingerprint=fingerprint)
+    heal.locator('frame_terms', IN_FRAME, role='checkbox', timeout_ms=FAST_MS,
+                 poll_ms=POLL_MS).check()
+
+    assert _frame_checked(tab) is True
+    [event] = heal.heals
+    assert event.source == ('fingerprint' if fingerprint else 'model')
+    saved = saved_candidates(store_file, 'frame_terms')[event.new]
+    assert saved['frameXPath'] == FRAME
+    if fingerprint:
+        assert provider.bundles == []
+    else:
+        assert 'consent-box' in provider.bundles[0]['html']        # the iframe's HTML
+        assert 'Outer page' not in provider.bundles[0]['html']
+    assert tab.js('window.frameElement === null') is True
 
 
 def test_a_stored_frame_candidate_acts_inside_the_frame_and_returns(tab, store_file,

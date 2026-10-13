@@ -532,3 +532,37 @@ def test_heal_page_runs_an_unchanged_async_script(engine, tmp_path):
     first, hidden, second, visible, checked = engine.run(main())
     assert (first, hidden, second, visible, checked) == (True, False, True, True, True)
     assert len(provider.bundles) == 1
+
+
+FRAMED = ("<h1>Outer</h1><iframe id='consent' srcdoc=\"<label>I agree <input type='checkbox' "
+          "name='agree' id='inner-terms'></label>\"></iframe>")
+
+
+def test_a_key_is_followed_into_an_iframe_and_heals_there(engine, tmp_path):
+    # Opened on the page: the selector matches only inside the iframe, so it is looked up
+    # there with no model call. After a redesign inside the iframe, the heal captures and
+    # checks the iframe's document.
+    async def main():
+        page = await engine.page(FRAMED)
+        try:
+            await page.frame_locator('#consent').locator('#inner-terms').wait_for(state='attached')
+            first = Stub()
+            heal = await mendwright.aio.open(page, provider=first, store_path=_store(tmp_path))
+            await heal.locator('terms', '#inner-terms', role='checkbox').check()
+            followed = list(heal.heals)
+
+            await page.set_content(FRAMED.replace('inner-terms', 'terms-v2'))
+            await page.frame_locator('#consent').locator('#terms-v2').wait_for(state='attached')
+            second = Stub("//input[@name='agree']")
+            again = await mendwright.aio.open(page, provider=second, store_path=_store(tmp_path),
+                                              fingerprint=False)
+            await again.locator('terms', '#inner-terms', role='checkbox', timeout_ms=500).check()
+            checked = await page.frame_locator('#consent').locator('#terms-v2').is_checked()
+            return followed, first, again.heals, second, checked
+        finally:
+            await page.context.close()
+
+    followed, first, heals, second, checked = engine.run(main())
+    assert [h.source for h in followed] == ['frame'] and first.bundles == []
+    assert [h.source for h in heals] == ['model'] and checked
+    assert 'terms-v2' in second.bundles[0]['html'] and 'Outer' not in second.bundles[0]['html']

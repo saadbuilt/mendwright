@@ -13,9 +13,10 @@ queries and actions are awaited.
 import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
-from .base import (DESCRIBE_JS, INVENTORY_JS, _member, inventory_rows, is_async_api,
-                   looks_like_locator, summary_from_js)
-from .playwright_sync import _raise_if_invalid, child_frames, frame_info, playwright_selector
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, _member, frame_selector,
+                   inventory_rows, is_async_api, looks_like_locator, summary_from_js)
+from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
+                              playwright_selector)
 
 
 async def _awaited(value):
@@ -120,16 +121,43 @@ class AsyncPlaywrightDriver:
 
     async def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one
-        element, as [{'name', 'url'}] (see PlaywrightSyncDriver.frame_matches)."""
+        element, as [{'name', 'url', 'count', 'nested', 'selector'}] (see
+        PlaywrightSyncDriver.frame_matches)."""
         target = playwright_selector(selector)
         found = []
         for frame in child_frames(self._page):
             try:
-                if await frame.locator(target).count() > 0:
-                    found.append(frame_info(frame))
+                n = await frame.locator(target).count()
             except Exception:
                 continue
+            if n > 0:
+                info = dict(frame_info(frame), count=n,
+                            nested=not is_direct_child(frame, self._page), selector=None)
+                if not info['nested']:
+                    try:
+                        handle = await frame.frame_element()
+                        attrs = await handle.evaluate(FRAME_ATTRS_JS)
+                        counts = {}
+                        for option in _frame_options(attrs):
+                            counts[option] = await self.count(option)
+                        info['selector'] = frame_selector(attrs, counts.get)
+                    except Exception:
+                        pass
+                found.append(info)
         return found
+
+    async def framed(self, frame_selector):
+        """An AsyncPlaywrightDriver for the document inside the one iframe that
+        frame_selector matches in this page, or None."""
+        try:
+            loc = self._build(*self._targets(frame_selector, ()))
+            if await loc.count() != 1:
+                return None
+            handle = await loc.element_handle(timeout=2000)
+            frame = await handle.content_frame()
+        except Exception:
+            return None
+        return AsyncPlaywrightDriver(frame) if frame is not None else None
 
     async def inventory(self, limit=200):
         """Up to ``limit`` interactive elements of the page (or frame) this driver wraps,
@@ -140,6 +168,14 @@ class AsyncPlaywrightDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+
+def _frame_options(attrs):
+    """Every selector frame_selector() may try for these attributes, so their counts can
+    be awaited first."""
+    tried = []
+    frame_selector(attrs, lambda s: tried.append(s) or 0)
+    return tried
 
 
 def detect(obj) -> bool:

@@ -14,8 +14,8 @@ import re
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
-from .base import (DESCRIBE_JS, INVENTORY_JS, inventory_rows, is_async_api,
-                   looks_like_locator, summary_from_js)
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, frame_selector, inventory_rows,
+                   is_async_api, looks_like_locator, summary_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -79,6 +79,18 @@ def frame_info(frame):
             value = ''
         out[field] = value if isinstance(value, str) else ''
     return out
+
+
+def is_direct_child(frame, page):
+    """True when frame sits directly in ``page`` (a Page, through its main frame, or a
+    Frame), not inside another iframe."""
+    try:
+        parent = getattr(frame, 'parent_frame', None)
+        if isinstance(getattr(page, 'frames', None), list):   # a Page
+            return parent is not None and getattr(parent, 'parent_frame', None) is None
+        return parent is page
+    except Exception:
+        return False
 
 
 class PlaywrightSyncDriver:
@@ -170,18 +182,41 @@ class PlaywrightSyncDriver:
 
     def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one
-        element, as [{'name', 'url'}]. mendwright looks only in the page or frame it was
-        opened on, so a selector that misses there may still match inside an iframe.
-        A malformed selector raises InvalidSelector; any other error skips that frame."""
+        element, as [{'name', 'url', 'count', 'nested', 'selector'}]: how many elements it
+        matches there, whether the frame sits inside another iframe, and, for one that does
+        not, a CSS selector for its iframe element in this page (see base.frame_selector),
+        or None when nothing tells it apart. A malformed selector raises InvalidSelector;
+        any other error skips that frame."""
         target = playwright_selector(selector)
         found = []
         for frame in child_frames(self._page):
             try:
-                if frame.locator(target).count() > 0:
-                    found.append(frame_info(frame))
+                n = frame.locator(target).count()
             except Exception:
                 continue
+            if n > 0:
+                info = dict(frame_info(frame), count=n,
+                            nested=not is_direct_child(frame, self._page), selector=None)
+                if not info['nested']:
+                    try:
+                        attrs = frame.frame_element().evaluate(FRAME_ATTRS_JS)
+                        info['selector'] = frame_selector(attrs, self.count)
+                    except Exception:
+                        pass
+                found.append(info)
         return found
+
+    def framed(self, frame_selector):
+        """A driver for the document inside the one iframe that frame_selector matches in
+        this page, or None when it matches none or several or has no document."""
+        try:
+            loc = self._build(*self._targets(frame_selector, ()))
+            if loc.count() != 1:
+                return None
+            frame = loc.element_handle(timeout=2000).content_frame()
+        except Exception:
+            return None
+        return PlaywrightSyncDriver(frame) if frame is not None else None
 
     def inventory(self, limit=200):
         """Up to ``limit`` interactive elements of the page (or frame) this driver wraps:

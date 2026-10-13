@@ -48,8 +48,8 @@ from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
-                     HealEvent, Role, Selector, _cookie_preset, _healed_target_error,
-                     _locator_args, _setup)
+                     HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
+                     _healed_target_error, _locator_args, _setup, latest_success)
 from .flow import InterruptionLoop, absent_message, is_interception_error
 from .interruptions import Budget
 from .limits import Guardrails
@@ -92,6 +92,14 @@ async def _in_thread(fn, *args):
         if not worker.cancelled():
             worker.exception()  # retrieved: the cancellation is what the caller sees
         raise
+
+
+def _scoped_heal(scope, resolve_fn, coordinator, key, meta, context):
+    """resolve_with_heal() with the coordinator scoped to an iframe (see
+    HealCoordinator.scoped). Runs in a worker thread."""
+    frame, bridge = scope
+    with coordinator.scoped(bridge, frame):
+        return resolve_with_heal(resolve_fn, coordinator, key, meta, context)
 
 
 # --- the bridge the sync heal core uses from its worker thread ---------------------------
@@ -509,8 +517,9 @@ class AsyncHealer:
             if skip:
                 core._record_skip(key, skip)
                 return _ABSENT
-            await self._stop_if_in_a_frame(key, exc)
-            native = await self._heal(key, exc, attempt)
+            native = await self._follow_into_frame(key, exc, attempt)
+            if native is _NOT_FOLLOWED:
+                native = await self._heal(key, exc, attempt)
         await self._check_healed_target(key)
         await self._learn(key, roles)
         core._remember_page(key, await _url(self._driver))
@@ -622,18 +631,47 @@ class AsyncHealer:
                 raise AttentionRequired(_no_match_message(key, candidates, errors))
             await self._sleep(poll_ms / 1000.0)
 
-    async def _stop_if_in_a_frame(self, key, exc):
-        """Healer._stop_if_in_a_frame(), with the frame lookups awaited."""
+    async def _follow_into_frame(self, key, exc, attempt):
+        """Healer._follow_into_frame(), with the frame lookups awaited and the live check
+        and the store write in a worker thread (through the coordinator's SyncBridge)."""
         __tracebackhide__ = True
+        core = self._core
         if not callable(_member(self._driver, 'frame_matches')):
-            return
-        for selector in self._core._frame_candidates(key):
+            return _NOT_FOLLOWED
+        opener = 'await mendwright.aio.open'
+        for selector in core._frame_candidates(key):
             try:
                 frames = await _awaited(self._driver.frame_matches(selector))
             except Exception:
                 continue
-            if frames:
-                self._core._frame_stop(key, exc, selector, frames, 'await mendwright.aio.open')
+            if not frames:
+                continue
+            frame, alt = core._frame_plan(key, selector, frames)
+            if frame is None:
+                core._frame_stop(key, exc, selector, frames, opener, alt)
+            core._frame_guard(key, exc, await _url(self._driver))
+            why = await _in_thread(core._frame_follow, key, selector, frame, alt,
+                                   self.coordinator.driver)
+            if why:
+                core._frame_stop(key, exc, selector, frames, opener,
+                                 "its element there failed mendwright's checks (" + why + ')')
+            return await attempt()
+        return _NOT_FOLLOWED
+
+    async def _heal_scope(self, key):
+        """Healer._heal_scope(), with the iframe's driver made on the event loop and wrapped
+        in a SyncBridge for the heal core."""
+        best = latest_success(self.store, key)
+        frame = best.get('frameXPath') if best else None
+        if not isinstance(frame, str) or not frame or not callable(_member(self._driver, 'framed')):
+            return None
+        try:
+            framed = await _awaited(self._driver.framed(frame))
+        except Exception:
+            return None
+        if framed is None:
+            return None
+        return frame, SyncBridge(framed, asyncio.get_running_loop())
 
     async def _heal(self, key, exc, attempt):
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
@@ -650,7 +688,12 @@ class AsyncHealer:
                 raise missed.pop()
             return None
 
-        await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
+        scope = await self._heal_scope(key)
+        if scope is None:
+            await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
+        else:
+            # The key was last found inside an iframe: capture, check and save the heal there.
+            await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta, context)
         return await attempt()
 
     async def _learn(self, key, roles):
@@ -670,7 +713,7 @@ class AsyncHealer:
         fp = None
         if callable(_member(self._driver, 'fingerprint')):
             try:
-                fp = await _awaited(self._driver.fingerprint(target, ()))
+                fp = await _awaited(self._driver.fingerprint(target, core._winner_target(key)[1]))
             except Exception:
                 fp = None
         core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)

@@ -8,6 +8,7 @@ quarantines the healed candidate. When a heal does not happen, the coordinator r
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
 """
 
+import contextlib
 import logging
 import time
 
@@ -45,6 +46,9 @@ def _role_needed(selector_key):
 
 # The provider name heals from the fingerprint tier get in the journal and the log.
 FINGERPRINT_PROVIDER = 'fingerprint'
+# The source of a key's own selector that matched inside an iframe and is now looked up
+# there (see Healer.locator): no model and no new selector, only a new place.
+FRAME_PROVIDER = 'frame'
 
 
 def _no_fingerprint(selector_key):
@@ -112,6 +116,8 @@ class HealCoordinator:
         self.auth_header = auth_header
         self.heal_across_pages = bool(heal_across_pages)
         self.entry = entry
+        # The selector of the iframe a heal runs in (see scoped()), saved with what it applies.
+        self.frame_xpath = None
         # selector_key -> applied_xpath awaiting an action-outcome canary. A dict (not a
         # single slot) so healing several fields on one page never drops an earlier
         # unproven selector's canary.
@@ -124,6 +130,43 @@ class HealCoordinator:
         # 'confirmed', 'source'}. confirmed is None until the canary reports, then True or
         # False. source is 'fingerprint', 'model', or 'intent' for a key that had no selector.
         self.heals = []
+
+    @contextlib.contextmanager
+    def scoped(self, driver, frame_xpath):
+        """Heal inside an iframe for the duration: capture, inventory and checks use
+        ``driver``, a driver for the iframe's document, and an applied heal is saved with
+        ``frame_xpath``, the iframe's selector in the page, so the resolver looks for it
+        there. Restores the page's driver afterwards."""
+        from .drivers import driver_inventory
+        saved = (self.driver, self.html_provider, self.inventory_provider, self.frame_xpath)
+
+        def html():
+            try:
+                return driver.outer_html() or ''
+            except Exception:
+                return ''
+
+        self.driver = driver
+        self.html_provider = html
+        self.inventory_provider = lambda: driver_inventory(driver)
+        self.frame_xpath = frame_xpath
+        try:
+            yield self
+        finally:
+            self.driver, self.html_provider, self.inventory_provider, self.frame_xpath = saved
+
+    def record_frame(self, selector_key, old, new, frame):
+        """Journal, remember and log that the key's own selector ``old`` matched only inside
+        the iframe ``frame`` and is now saved there as ``new``. It counts as a heal (strict
+        mode fails on it, and the canary checks it) with source 'frame'."""
+        self.journal.applied(selector_key, xpath=new, old=[old], provider=FRAME_PROVIDER,
+                             model=None, latency_ms=0, source=FRAME_PROVIDER, frame=frame)
+        self.heal_reasons.pop(selector_key, None)
+        self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
+                           'source': FRAME_PROVIDER})
+        self._emit(logging.WARNING, 'found ' + repr(selector_key) + ' inside the iframe '
+                   + frame + ': ' + old + ' matches nothing on the page, so it is looked up '
+                   'in that iframe from now on')
 
     def _emit(self, level, message):
         """Send one diagnostic line to log= when it was given, else to the logger."""
@@ -265,7 +308,8 @@ class HealCoordinator:
                     "but not applied. Turn off dry_run to let mendwright apply and retry.",
                     level=logging.INFO)
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
-                                    driver=self.driver, positional=not left_out)
+                                    driver=self.driver, positional=not left_out,
+                                    frame_xpath=self.frame_xpath)
             if applied:
                 self._record_applied(selector_key, broken_candidates, applied, started,
                                      type(self.provider).__name__, self._provider_model(),
@@ -310,7 +354,8 @@ class HealCoordinator:
                 "checked but not applied. Turn off dry_run to let mendwright apply and retry.",
                 level=logging.INFO), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
-        applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver)
+        applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
+                                frame_xpath=self.frame_xpath)
         if applied:
             self._record_applied(selector_key, broken_candidates, applied, started,
                                  FINGERPRINT_PROVIDER, None, FINGERPRINT_PROVIDER)
@@ -390,11 +435,11 @@ class HealCoordinator:
 
     def confirm(self, selector_key, xpath, success):
         """Canary report: route the outcome through the provider, and quarantine a healed
-        candidate whose retry failed. A heal from the fingerprint tier is not reported to
-        the provider, which did not propose it."""
+        candidate whose retry failed. A heal from the fingerprint tier, or a key followed
+        into an iframe, is not reported to the provider, which did not propose it."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
-        if heal is None or heal.get('source') != FINGERPRINT_PROVIDER:
+        if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER):
             try:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:

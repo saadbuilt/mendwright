@@ -202,7 +202,8 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
     return None
 
 
-def apply(store, selector_key, proposal, html, meta, driver=None, positional=True):
+def apply(store, selector_key, proposal, html, meta, driver=None, positional=True,
+          frame_xpath=None):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
     (None, <last reason>) so the caller can feed a real reason into a reprompt.
@@ -220,6 +221,10 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
 
     When one of the key's selectors in code is CSS, a CSS selector that matches the same
     element is saved with the heal as its ``css`` (see css_twin), for mendwright fix.
+
+    frame_xpath is the selector of the iframe the heal was made in, when the coordinator
+    healed inside one (``html`` and ``driver`` are then that iframe's); it is saved with the
+    candidate so the resolver looks for it there.
 
     positional=False rejects any candidate with a position in it ([2], last(),
     position()). The coordinator passes it when the model read a page with parts left out
@@ -262,11 +267,13 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             continue
         # proposal['frameXPath'] is unvalidated model output and is never stored. Frame
         # context comes from the gate, not from a proposal.
+        extra = {}
         css = css_twin(store, selector_key, doc, body, xpath, driver)
         if css:
-            store.add_candidate(selector_key, xpath, source='heal', css=css)
-        else:
-            store.add_candidate(selector_key, xpath, source='heal')
+            extra['css'] = css
+        if frame_xpath:
+            extra['frame_xpath'] = frame_xpath
+        store.add_candidate(selector_key, xpath, source='heal', **extra)
         return xpath, reason
     return None, reason
 

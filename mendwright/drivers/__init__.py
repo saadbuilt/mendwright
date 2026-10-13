@@ -7,7 +7,7 @@ drivers/playwright_async.py. Add your own with register_driver(detect, make).
 """
 
 from .base import (Driver, driver_act_on, driver_describe, driver_fingerprint,
-                   driver_inventory, is_driver)
+                   driver_framed, driver_inventory, is_driver)
 from .playwright_sync import PlaywrightSyncDriver, detect as _pw_detect
 from .selenium import SeleniumDriver, detect as _sel_detect
 from .registry import register_driver, register_driver_front, wrap
@@ -22,5 +22,6 @@ register_driver(_sel_detect, SeleniumDriver)
 __all__ = [
     'Driver', 'is_driver', 'wrap', 'register_driver', 'register_driver_front',
     'PlaywrightSyncDriver', 'SeleniumDriver',
-    'driver_act_on', 'driver_describe', 'driver_fingerprint', 'driver_inventory',
+    'driver_act_on', 'driver_describe', 'driver_fingerprint', 'driver_framed',
+    'driver_inventory',
 ]

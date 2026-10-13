@@ -29,7 +29,8 @@ import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
-from .base import INVENTORY_JS, element_summary, inventory_rows, is_async_api
+from .base import (FRAME_ATTRS_JS, INVENTORY_JS, element_summary, frame_selector,
+                   inventory_rows, is_async_api)
 
 
 def _by():
@@ -582,6 +583,55 @@ class SeleniumDriver:
 
         return self._read(selector, frame_chain, op, None)
 
+    def frame_matches(self, selector):
+        """The iframes of the page (not iframes inside them) in which selector matches at
+        least one element, as [{'name', 'url', 'count', 'nested', 'selector'}] like the
+        Playwright driver's. 'selector' is a CSS selector for the iframe element (see
+        base.frame_selector), or None when nothing tells it apart. The driver is back on
+        the page afterwards, even when a switch fails. A malformed selector raises
+        InvalidSelector; any other error skips that frame."""
+        self._precheck(selector, ())
+
+        def op():
+            found = []
+            for el in self._find_all('xpath=//iframe|//frame'):
+                try:
+                    attrs = self._driver.execute_script(
+                        'return (' + FRAME_ATTRS_JS + ')(arguments[0]);', el)
+                    self._driver.switch_to.frame(el)
+                    try:
+                        n = len(self._find_all(selector))
+                        url = self._driver.execute_script('return document.URL;')
+                    finally:
+                        self._driver.switch_to.default_content()
+                except InvalidSelector:
+                    raise
+                except Exception:
+                    continue
+                if n:
+                    attrs = attrs if isinstance(attrs, dict) else {}
+                    found.append({'name': str(attrs.get('name') or ''),
+                                  'url': url if isinstance(url, str) else '', 'count': n,
+                                  'nested': False, 'attrs': attrs})
+            return found
+
+        try:
+            found = self._run((), op)
+        except InvalidSelector:
+            raise
+        except Exception:
+            return []
+        for info in found:
+            info['selector'] = frame_selector(info.pop('attrs'), self.count)
+        return found
+
+    def framed(self, frame_selector):
+        """A driver for the document inside the one iframe that frame_selector matches on
+        the page (SeleniumFrameDriver), or None when it matches none or several."""
+        if self.count(frame_selector) != 1:
+            return None
+        return SeleniumFrameDriver(self, (frame_selector,))
+
     def inventory(self, limit=200):
         """Up to ``limit`` interactive elements of the current document:
         [{'tag', 'role', 'id', 'name', 'text', 'aria_label'}, ...] in document order. One
@@ -592,6 +642,59 @@ class SeleniumDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+
+class SeleniumFrameDriver:
+    """A SeleniumDriver for the document inside an iframe: every call switches into the
+    frame chain first and back to the page afterwards, as a frame candidate's calls do.
+    SeleniumDriver.framed() makes one; mendwright uses it to capture and check a heal
+    inside an iframe."""
+
+    def __init__(self, base, frame_chain):
+        self._base = base
+        self._chain = tuple(frame_chain)
+
+    def _in(self, frame_chain):
+        return self._chain + tuple(frame_chain)
+
+    def count(self, selector, frame_chain=()):
+        return self._base.count(selector, self._in(frame_chain))
+
+    def is_visible(self, selector, frame_chain=()):
+        return self._base.is_visible(selector, self._in(frame_chain))
+
+    def scroll_into_view(self, selector, frame_chain=()):
+        return self._base.scroll_into_view(selector, self._in(frame_chain))
+
+    def handle(self, selector, frame_chain=()):
+        return self._base.handle(selector, self._in(frame_chain))
+
+    def act(self, selector, verb, *args, frame_chain=(), **kwargs):
+        return self._base.act(selector, verb, *args, frame_chain=self._in(frame_chain), **kwargs)
+
+    def act_on(self, native, verb, *args, **kwargs):
+        return self._base.act_on(native, verb, *args, **kwargs)
+
+    def url(self):
+        return self._base.url()
+
+    def describe(self, selector, frame_chain=()):
+        return self._base.describe(selector, self._in(frame_chain))
+
+    def fingerprint(self, selector, frame_chain=()):
+        return self._base.fingerprint(selector, self._in(frame_chain))
+
+    def outer_html(self, scope=None):
+        try:
+            return self._base._run(self._chain, lambda: self._base.outer_html(scope))
+        except Exception:
+            return ''
+
+    def inventory(self, limit=200):
+        try:
+            return self._base._run(self._chain, lambda: self._base.inventory(limit))
+        except Exception:
+            return []
 
 
 def detect(obj) -> bool:

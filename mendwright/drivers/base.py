@@ -18,6 +18,8 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   describe(selector, frame_chain=())      {'tag', 'role', 'text', 'outer_html'} or None
   inventory(limit=200)                    [{'tag', 'role', 'id', 'name', 'text', 'aria_label'}]
   fingerprint(selector, frame_chain=())   the matched element's fingerprint, or None
+  frame_matches(selector)                 the child frames the selector matches in
+  framed(frame_selector)                  a driver for the document inside one iframe
 
 Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
@@ -100,6 +102,56 @@ def driver_fingerprint(driver, selector, frame_chain=()):
     except Exception:
         return None
     return out if valid(out) else None
+
+
+def driver_framed(driver, frame_selector):
+    """driver.framed(frame_selector) when the driver has it, else None: a driver for the
+    document inside the one iframe that frame_selector matches. None on any error."""
+    method = getattr(driver, 'framed', None)
+    if not callable(method):
+        return None
+    try:
+        return method(frame_selector)
+    except Exception:
+        return None
+
+
+# The attributes of an <iframe> or <frame> element that frame_selector() builds from.
+FRAME_ATTRS_JS = ('e => ({tag: e.tagName.toLowerCase(), id: e.id || "", '
+                  'name: e.getAttribute("name") || "", title: e.getAttribute("title") || "", '
+                  'src: e.getAttribute("src") || ""})')
+_FRAME_SRC_SKIP = ('about:', 'data:', 'javascript:', 'blob:')
+
+
+def frame_selector(info, count):
+    """A CSS selector that matches one iframe element and nothing else, built from its
+    attributes (``info``, as FRAME_ATTRS_JS reads them), or None. Tried in order: its id,
+    name, title, the start of its src without the query, and the bare tag when it is the
+    only frame; ``count(selector)`` must be 1. A generated-looking id or name is skipped."""
+    from ..candidates import generated
+    from ..css import css_string
+    if not isinstance(info, dict):
+        return None
+    tag = info.get('tag') if info.get('tag') in ('iframe', 'frame') else 'iframe'
+    options = []
+    for name in ('id', 'name', 'title'):
+        value = info.get(name)
+        if isinstance(value, str) and value.strip() and len(value) <= 200 and not (
+                name in ('id', 'name') and generated(value)):
+            options.append(tag + '[' + name + '=' + css_string(value) + ']')
+    src = info.get('src')
+    if isinstance(src, str) and src.strip() and not src.startswith(_FRAME_SRC_SKIP):
+        base = re.split(r'[?#]', src, maxsplit=1)[0]
+        if base and len(base) <= 300:
+            options.append(tag + '[src^=' + css_string(base) + ']')
+    options.append(tag)
+    for option in options:
+        try:
+            if count(option) == 1:
+                return option
+        except Exception:
+            continue
+    return None
 
 
 def driver_inventory(driver, limit=200):

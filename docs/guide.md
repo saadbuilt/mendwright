@@ -82,7 +82,7 @@ Other `Healer` members:
 - `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`.
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
-- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, or `"intent"` for a key that had no selector and was found from its `intent=`.
+- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
 - `heal.confirm_all(True)` or `heal.confirm_all(False)`: confirm or quarantine every pending heal.
 
@@ -149,7 +149,7 @@ Each time a key's selector matches, it saves a fingerprint of the element in `ov
 
 It never reads an input's value.
 It is read in one round trip after the selector matches, once per key and selector per Healer, and the store file is written only when the fingerprint changed.
-It isn't recorded for a key marked destructive, a match inside an iframe, a skipped step, or a heal made in this run that isn't confirmed yet.
+It isn't recorded for a key marked destructive, a skipped step, or a heal made in this run that isn't confirmed yet. A match inside an iframe is read inside the iframe.
 In a later run it is refreshed through whichever selector matches, so after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
 
 ### When it heals
@@ -577,8 +577,13 @@ register_driver(detect=lambda obj: hasattr(obj, "my_find"), make=MyDriver)
 
 ## Iframes
 
-Selectors in frames resolve when a stored candidate carries a `frameXPath` (see [Store and journal](#store-and-journal)).
-Healing is different: the capture and the checks run on one document, so a heal inside an iframe needs mendwright opened on the frame itself.
+mendwright opened on the page works with iframes one level down, on Playwright (sync and async) and Selenium.
+
+- **A selector that matches only inside an iframe.** When a key's selector matches nothing on the page but matches exactly one element inside one iframe, mendwright looks for it there from now on, with no model call. It saves the selector with its `xpath=` or `css=` prefix written out and the iframe's selector as `frameXPath`, for example `iframe[id="consent-frame"]`, built from the iframe's id, name, title or the start of its `src`, or plain `iframe` when it is the only one. It goes through the live check like a heal, logs `found 'terms' inside the iframe ...`, and counts as a heal with source `frame`, so strict mode fails on it and the canary checks it.
+- **A key last found inside an iframe.** When its selector breaks, the heal runs in that iframe: the fingerprint tier and the model get the iframe's HTML, the checks run in the iframe, and the new selector is saved with the same `frameXPath`. A fingerprint read while the key matched inside the iframe is used there.
+
+mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`, when the key is marked destructive, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), and on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)).
+For those, and for anything deeper than one level, open mendwright on the frame itself.
 
 Playwright:
 
@@ -601,9 +606,7 @@ driver.switch_to.default_content()
 
 On Selenium, switch into the frame each time before you use that Healer.
 
-If a selector matches nothing on the page but would match inside a child iframe, Playwright raises `AttentionRequired` and says so. It makes no model call, because a heal would be checked against the wrong document. Open mendwright on the frame as above.
-
-Both cases are covered by the real-browser test `test_the_iframe_workaround`, which also checks that the captured HTML is the frame's.
+The real-browser tests `test_a_selector_that_matches_only_inside_an_iframe_is_followed_there`, `test_a_key_last_found_in_an_iframe_heals_inside_it` and `test_the_iframe_workaround` cover these on every engine, including that the captured HTML is the iframe's.
 
 ## Layout changes
 
@@ -881,7 +884,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 ```
 
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.skip` and `flow.page_guard` (see [Log lines and journal events](#log-lines-and-journal-events)).
-`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). A model heal of a key that had a selector has no `source`.
+`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1151,7 +1154,7 @@ The first line names the key. The line after `->` says why there was no heal:
 | does not know what kind of element | Pass `role=` |
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |
-| the selector matches only inside a child iframe (Playwright) | Open mendwright on the frame (see [Iframes](#iframes)) |
+| is inside an iframe ... mendwright did not look for it there | The reason says why (a destructive key, several iframes or elements, an iframe inside an iframe, or one nothing tells apart). Open mendwright on the frame (see [Iframes](#iframes)) |
 | rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` |
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
 | turned off by MENDWRIGHT_DISABLE=1 | Unset it, or drop `--mendwright-disable` |

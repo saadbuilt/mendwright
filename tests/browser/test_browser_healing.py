@@ -219,21 +219,26 @@ def test_the_role_is_read_from_the_live_element_and_used_for_a_heal(tab, store_f
 
 
 @pytest.mark.engine_family('playwright')
-def test_a_selector_inside_an_iframe_says_so_without_a_model_call(tab, store_file,
-                                                                  stub_provider):
-    tab.load(page("<h1>Sign up</h1><iframe name='consent' srcdoc=\"<label><input "
-                  "type='checkbox' id='inner-terms'> I agree</label>\"></iframe>"))
-    tab.page.frame_locator("iframe[name='consent']").locator('#inner-terms').wait_for(
-        state='attached')
+def test_a_selector_in_two_iframes_says_so_without_a_model_call(tab, store_file,
+                                                                stub_provider):
+    # One iframe would be followed (see test_browser_drivers.py); in two, mendwright can't
+    # tell which one the step means, so it stops and says how to open the right one.
+    inner = "<label><input type='checkbox' id='inner-terms'> I agree</label>"
+    tab.load(page("<h1>Sign up</h1><iframe name='consent' srcdoc=\"" + inner + "\"></iframe>"
+                  "<iframe name='other' srcdoc=\"" + inner + "\"></iframe>"))
+    for name in ('consent', 'other'):
+        tab.page.frame_locator("iframe[name='" + name + "']").locator('#inner-terms').wait_for(
+            state='attached')
     provider = stub_provider("//input[@type='checkbox']")
     heal = _open(tab, provider, store_file)
 
     with pytest.raises(AttentionRequired) as info:
         heal.locator('frame_terms', '#inner-terms', role='checkbox', timeout_ms=FAST_MS,
                      poll_ms=POLL_MS)
-    assert "matches inside the iframe named 'consent'" in str(info.value)
+    assert "matches inside the iframe named 'consent' (and 1 more)" in str(info.value)
+    assert 'it matches in more than one iframe' in str(info.value)
     assert "heal = mendwright.open(page.frame(name='consent'))" in str(info.value)
-    assert provider.bundles == []
+    assert provider.bundles == [] and heal.heals == []
 
     # The advice works: on the Frame, the selector matches at once.
     framed = mendwright.open(tab.page.frame(name='consent'), provider=provider,

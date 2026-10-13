@@ -25,11 +25,13 @@ from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers import driver_act_on, driver_describe, driver_fingerprint, driver_inventory, wrap
+from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
+                      driver_inventory, wrap)
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, InterruptionLoop, absent_message,
                    handled_message, is_interception_error, journal_event, loop_message,
                    nothing_matched_message, page_path, skip_message, unhandled_message)
+from .gate import live_reason
 from .interruptions import (COOKIE_CHOICES, Budget, InterruptionEvent, cookie_choice_error,
                             cookie_preset, make_interruption, nth_targets)
 from .journal import Journal
@@ -37,7 +39,7 @@ from .limits import Guardrails, RateLimiter
 from .providers import GatewayProvider
 from .resolver import resolve
 from .roles import infer_role, role_choices
-from .selectors import XPATH, InvalidSelector, check_syntax, classify, normalize
+from .selectors import CSS, XPATH, InvalidSelector, check_syntax, classify, normalize, strip_prefix
 from .store import load_store
 
 logger = logging.getLogger('mendwright')
@@ -127,8 +129,9 @@ def _unregister(healer) -> None:
 class HealEvent:
     """One heal a Healer applied: the key, the selectors that had stopped matching, the
     new xpath, the canary result (None while unconfirmed, then True or False), and where
-    the new xpath came from: 'fingerprint' (no model call), 'model', or 'intent' (a key
-    that had no selector, found by a model from its intent=)."""
+    the new xpath came from: 'fingerprint' (no model call), 'model', 'intent' (a key
+    that had no selector, found by a model from its intent=), or 'frame' (the key's own
+    selector, which matched only inside an iframe and is looked up there now)."""
     key: str
     old: tuple
     new: str
@@ -361,8 +364,8 @@ def _bare_url(url):
         return ''
 
 
-def _frame_message(key, selector, frames, opener):
-    """Why a key whose selector matches only inside an iframe was not healed."""
+def _frame_message(key, selector, frames, opener, why=None):
+    """Why a key whose selector matches only inside an iframe was not followed there."""
     frame = frames[0]
     name, url = frame.get('name') or '', _bare_url(frame.get('url') or '')
     if name:
@@ -373,10 +376,42 @@ def _frame_message(key, selector, frames, opener):
         where, how = 'an iframe', 'the Frame from page.frames'
     if len(frames) > 1:
         where += ' (and ' + str(len(frames) - 1) + ' more)'
+    because = why or 'nothing tells that iframe apart from the others on the page'
     return ("'" + key + "' is inside an iframe: " + selector + ' matches nothing in the page '
-            'mendwright was opened on, but matches inside ' + where + '. mendwright looks '
-            'only in the page or frame it was opened on, so it did not ask a model to heal '
+            'mendwright was opened on, but matches inside ' + where + '. mendwright did not '
+            'look for it there, because ' + because + ', and did not ask a model to heal '
             'it. Open mendwright on that Frame instead: heal = ' + opener + '(' + how + ').')
+
+
+def frame_spelling(selector):
+    """The key's selector as it is saved for a lookup inside an iframe: with its 'xpath=' or
+    'css=' prefix written out, so the store keeps it apart from the same selector in the page
+    (the store tells candidates apart by their text). None for a Playwright engine selector."""
+    try:
+        kind = classify(selector)
+    except TypeError:
+        return None
+    if kind not in (XPATH, CSS):
+        return None
+    body = strip_prefix(selector)
+    alt = ('xpath=' if kind == XPATH else 'css=') + body
+    if alt == normalize(selector):
+        if kind != XPATH:
+            return None
+        alt = 'xpath=(' + body + ')'
+    return alt
+
+
+def latest_success(store, key):
+    """The key's active candidate that matched most recently, in any run, or None."""
+    try:
+        found = [c for c in store.candidates(key) if c.get('lastSucceededAt')]
+    except Exception:
+        return None
+    return max(found, key=lambda c: str(c['lastSucceededAt'])) if found else None
+
+
+_NOT_FOLLOWED = object()
 
 
 def _locator_args(key, selector, role, inline_xpath, intent=None):
@@ -636,14 +671,16 @@ class Healer:
             if skip:
                 self._record_skip(key, skip)
                 return ActionProxy(self, key, None, present=False)
-            self._stop_if_in_a_frame(key, exc)
-            native = self._heal(key, exc, attempt)
+            native = self._follow_into_frame(key, exc, attempt)
+            if native is _NOT_FOLLOWED:
+                native = self._heal(key, exc, attempt)
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
         target = self._fingerprint_target(key)
         if target is not None:
-            self._keep_fingerprint(key, target, driver_fingerprint(self._driver, target))
+            self._keep_fingerprint(key, target, driver_fingerprint(
+                self._driver, target, self._winner_target(key)[1]))
         return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms)
 
     def present(self, key: str) -> bool:
@@ -1003,13 +1040,13 @@ class Healer:
 
     def _fingerprint_target(self, key):
         """The selector to read key's fingerprint through after a match, or None when there
-        is nothing to record: the fingerprint tier is off, the match is inside an iframe, it
-        came from a heal made in this process that is not confirmed yet, the key is marked
-        destructive, or this Healer already read it for that selector."""
+        is nothing to record: the fingerprint tier is off, it came from a heal made in this
+        process that is not confirmed yet, the key is marked destructive, or this Healer
+        already read it for that selector. A match inside an iframe is read there."""
         if not getattr(self.coordinator, 'fingerprint', False):
             return None
         winner = self.store.last_success(key)
-        if not winner or winner.get('frameXPath') or not isinstance(winner.get('xpath'), str):
+        if not winner or not isinstance(winner.get('xpath'), str):
             return None
         xpath = winner['xpath']
         if (key, xpath) in self._fingerprinted or self.coordinator.pending.get(key) == xpath:
@@ -1047,28 +1084,100 @@ class Healer:
         return [c['xpath'] for c in self.store.candidates(key)
                 if not c.get('frameXPath') and isinstance(c.get('xpath'), str)]
 
-    def _frame_stop(self, key, exc, selector, frames, opener):
-        """Record and raise the AttentionRequired for a key found only inside an iframe."""
+    def _frame_stop(self, key, exc, selector, frames, opener, why=None):
+        """Record and raise the AttentionRequired for a key found only inside an iframe
+        that mendwright did not follow it into."""
         __tracebackhide__ = True
-        reason = _frame_message(key, selector, frames, opener)
+        reason = _frame_message(key, selector, frames, opener, why)
         self.coordinator._decline(key, reason)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
-    def _stop_if_in_a_frame(self, key, exc):
-        """After key missed on the page: if one of its selectors matches inside an iframe
-        (a driver with frame_matches(), such as Playwright's), raise AttentionRequired
-        saying so, before any model call. A model shown this page could not find it."""
+    def _frame_plan(self, key, selector, frames):
+        """(iframe selector, selector to save) when key can be followed into the one iframe
+        its selector matches in (see _follow_into_frame), else (None, why not)."""
+        try:
+            destructive = bool(self.store.meta(key).get('destructive'))
+        except Exception:
+            destructive = False
+        if destructive:
+            return None, "'" + key + "' is marked as a destructive control"
+        if len(frames) > 1:
+            return None, 'it matches in more than one iframe'
+        frame = frames[0]
+        if frame.get('nested'):
+            return None, 'that iframe is inside another iframe'
+        if frame.get('count', 1) != 1:
+            return None, 'it matches ' + str(frame.get('count')) + ' elements there'
+        if not frame.get('selector'):
+            return None, None
+        alt = frame_spelling(selector)
+        if alt is None:
+            return None, 'a Playwright engine selector is not followed into an iframe'
+        return frame['selector'], alt
+
+    def _frame_guard(self, key, exc, url):
+        """Raise like the page guard when key was never found on this page."""
+        __tracebackhide__ = True
+        moved = self.coordinator._flow_change(key, self._flow_context(key, url))
+        if moved:
+            self.coordinator._decline(key, moved)
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + moved) from exc
+
+    def _frame_follow(self, key, selector, frame, alt, driver):
+        """Check ``alt`` inside the iframe ``frame`` on the live page (exactly one visible
+        element of the key's role), then save it there and record it. Returns '' when the
+        key was followed, else the reason the check gave."""
+        reason = live_reason(driver, alt, self.store.meta(key), (frame,))
+        if reason:
+            return reason
+        self.store.add_candidate(key, alt, source='heal', frame_xpath=frame)
+        self.coordinator.record_frame(key, selector, alt, frame)
+        self.coordinator.pending[key] = alt
+        return ''
+
+    def _follow_into_frame(self, key, exc, attempt):
+        """After key missed on the page: if one of its own selectors matches one element
+        inside one iframe of the page (a driver with frame_matches(), as the built-in ones
+        have), look for it there from now on and return the retried step. No model is
+        asked: the selector is the key's own, and only the place changed. It counts as a
+        heal with source 'frame' (strict mode fails on it, the canary checks it).
+
+        Not followed, with AttentionRequired saying why: a key marked destructive, a match
+        in several iframes or several elements, an iframe inside another iframe, an iframe
+        nothing tells apart from the others, a Playwright engine selector, a page the key
+        was never found on (the page guard), or an element that fails the live check.
+        Returns _NOT_FOLLOWED when no selector of the key matches in an iframe."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
-            return
+            return _NOT_FOLLOWED
         for selector in self._frame_candidates(key):
             try:
                 frames = finder(selector)
             except Exception:
                 continue
-            if frames:
-                self._frame_stop(key, exc, selector, frames, 'mendwright.open')
+            if not frames:
+                continue
+            frame, alt = self._frame_plan(key, selector, frames)
+            if frame is None:
+                self._frame_stop(key, exc, selector, frames, 'mendwright.open', alt)
+            self._frame_guard(key, exc, self._url())
+            why = self._frame_follow(key, selector, frame, alt, self._driver)
+            if why:
+                self._frame_stop(key, exc, selector, frames, 'mendwright.open',
+                                 "its element there failed mendwright's checks (" + why + ')')
+            return attempt()
+        return _NOT_FOLLOWED
+
+    def _heal_scope(self, key):
+        """(iframe selector, driver for that iframe) when key was last found inside an
+        iframe that is still on the page, so the heal runs there; else None."""
+        best = latest_success(self.store, key)
+        frame = best.get('frameXPath') if best else None
+        if not isinstance(frame, str) or not frame:
+            return None
+        framed = driver_framed(self._driver, frame)
+        return (frame, framed) if framed is not None else None
 
     def _heal(self, key, exc, attempt):
         """Heal through the coordinator after attempt() raised exc, then retry attempt()."""
@@ -1080,8 +1189,15 @@ class Healer:
                 raise pending.pop()
             return attempt()
 
-        return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                 self._flow_context(key, self._url()))
+        context = self._flow_context(key, self._url())
+        scope = self._heal_scope(key)
+        if scope is None:
+            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
+                                     context)
+        # The key was last found inside an iframe: capture, check and save the heal there.
+        with self.coordinator.scoped(scope[1], scope[0]):
+            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
+                                     context)
 
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs
