@@ -60,9 +60,11 @@ NOTE = ('<!-- mendwright: this page is longer than the prompt allows, so parts t
         'predicates such as [2], last() or position(). -->')
 _MARKER = re.compile(r'^ mendwright: (\d+) elements? left out here $')
 _MARKER_SIZE = len('<!-- mendwright: 100 elements left out here -->')
-# A predicate that starts with a number ([2], [ 2 ], [(2)], [2.0], [1+1]) is a position,
-# and so is any use of position(), last() or number().
-_POSITIONAL = re.compile(r'\[\s*\(*\s*\d|\bposition\s*\(|\blast\s*\(|\bnumber\s*\(')
+# A predicate that is only a number ([2], [ 2 ], [(2)], [2.0], [1+1]) or only number(...)
+# is a position, and so is any use of position() or last(). A comparison such as
+# [number(@value)>0] or [@maxlength=5] is not.
+_POSITIONAL = re.compile(r'\[[\s\d.+\-*()]*\d[\s\d.+\-*()]*\]|\[\s*number\s*\([^\]]*\)\s*\]'
+                         r'|\bposition\s*\(|\blast\s*\(')
 # What capture.build_bundle() puts in place of a URL or a long number. They are not words
 # of the page or of the step.
 _PLACEHOLDER = re.compile(r'\[URL\]|\[redacted(?: number)?\]')
@@ -74,8 +76,8 @@ def _words(text):
 
 
 def has_position(xpath):
-    """True when an XPath depends on an element's position: a predicate that starts with a
-    number, such as [2], or position(), last() or number(). Quoted strings are ignored."""
+    """True when an XPath depends on an element's position: a predicate that is a number,
+    such as [2], or uses position() or last(). Quoted strings are ignored."""
     return bool(_POSITIONAL.search(_QUOTED.sub("''", xpath or '')))
 
 
@@ -221,15 +223,27 @@ def fit_html(html, words=(), role=None, budget=BUDGET):
         keep = {el for el, rank in ranks.items() if rank >= floor}
         sized = sorted(((len(_html(el)), el) for el in _removable(root, keep)),
                        key=lambda pair: pair[0], reverse=True)
+        removable = {el for _size, el in sized}
         total = len(out) + len(NOTE)
-        chosen = []
+        chosen, small = [], []
         for size, el in sized:
             if total <= budget:
                 break
             if size <= _MARKER_SIZE:
-                continue   # its marker would be as long as it is
+                # Alone, its marker would be as long as it is. Next to another subtree that
+                # goes, or to a marker, it shares that marker, so it is kept for last.
+                prev, after = el.getprevious(), el.getnext()
+                if (prev in removable or after in removable or _marker_count(prev) is not None
+                        or _marker_count(after) is not None):
+                    small.append((size, el))
+                continue
             chosen.append(el)
             total -= size - _MARKER_SIZE
+        for size, el in small:
+            if total <= budget:
+                break
+            chosen.append(el)
+            total -= size
         if chosen:   # in document order, so neighbours share one marker
             picked = set(chosen)
             chosen = [el for el in root.iter() if el in picked]

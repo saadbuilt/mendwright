@@ -96,7 +96,8 @@ def test_has_position_ignores_quoted_text():
     assert has_position('//li[last()]') and has_position('//li[position() > 1]')
     for xpath in ('//li[(3)]', '//li[2.0]', '//li[1+1]', "//a[number('2')]", '//x[ 2 ]'):
         assert has_position(xpath), xpath
-    for xpath in ("//a[@title='[2]']", "//button[@id='go']", '//a[@n=1]', '//a[.="1"]'):
+    for xpath in ("//a[@title='[2]']", "//button[@id='go']", '//a[@n=1]', '//a[.="1"]',
+                  '//input[number(@value)>0]', '//tr[0 < count(td)]', '//input[@step>0.5]'):
         assert not has_position(xpath), xpath
 
 
@@ -227,3 +228,13 @@ def test_dry_run_reports_a_position_on_a_fitted_page_as_not_valid():
     coord.log = logged.append
     coord.try_heal('apply_coupon', META, coord.store.candidates('apply_coupon'), {})
     assert any('valid=False' in line for line in logged), logged
+
+
+
+def test_a_run_of_small_siblings_is_left_out_together():
+    # Each cell alone is shorter than a marker, but the run shares one.
+    page = '<table><tr>' + ''.join('<td>' + str(i) + '</td>' for i in range(4000)) + \
+        '<td><button>Book</button></td></tr></table>'
+    html, left_out = fit_html(page, {'book'}, 'button', budget=20000)
+    assert 'Book' in html and len(html) <= 20000 and left_out > 0
+    assert html.count('left out here') < 10      # in runs, not one marker per cell

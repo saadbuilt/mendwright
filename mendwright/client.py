@@ -208,24 +208,28 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
 
 def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
     """store.add_candidate(key, xpath, source='heal'), with css= and frame_xpath= when they
-    are given. A store written for mendwright 0.5 or earlier, whose add_candidate takes
-    neither, still gets the heal without its CSS form. Returns False, and saves nothing,
-    when such a store would have to keep a heal that belongs inside an iframe."""
+    are given. A store whose add_candidate is older still gets the heal: without css= (new
+    in 0.6), and without frame_xpath= when it takes neither and the heal is on the page.
+    Returns False, and saves nothing, when it would have to keep a heal that belongs inside
+    an iframe and cannot."""
     extra = {}
     if css is not None:
         extra['css'] = css
     if frame_xpath is not None:
         extra['frame_xpath'] = frame_xpath
-    try:
-        store.add_candidate(selector_key, xpath, source='heal', **extra)
-        return True
-    except TypeError as exc:
-        if not extra or 'keyword' not in str(exc):
-            raise
-    if frame_xpath:
-        return False
-    store.add_candidate(selector_key, xpath, source='heal')
-    return True
+    tries = [extra]
+    if 'css' in extra:
+        tries.append({k: v for k, v in extra.items() if k != 'css'})
+    if not frame_xpath:
+        tries.append({})
+    for kwargs in tries:
+        try:
+            store.add_candidate(selector_key, xpath, source='heal', **kwargs)
+            return True
+        except TypeError as exc:
+            if not kwargs or 'keyword' not in str(exc):
+                raise
+    return False
 
 
 def apply(store, selector_key, proposal, html, meta, driver=None, positional=True,

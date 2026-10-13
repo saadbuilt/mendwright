@@ -344,7 +344,7 @@ LiteLLM needs the litellm package (`pip install "mendwright[litellm]"`), or an `
 The other extras are `[anthropic]`, `[openai]`, `[gemini]` and `[all]`. `[all]` installs every provider SDK and no browser library.
 
 Any object with `propose(bundle)` and `report_outcome(key, xpath, success)` works as a provider. [CONTRIBUTING.md](../CONTRIBUTING.md) describes the contract.
-On a page longer than 60,000 characters, a provider gets the bundle with the page fitted to the prompt (`mendwright.fit` says how), and a proposal with a position in it is refused. A provider that reads the whole page itself sets `wants_full_html = True` to get it unchanged, as `LocalModelProvider` does.
+On a page longer than 60,000 characters, a provider gets the bundle with the page fitted to the prompt (`mendwright.fit` says how), and while parts of the page are left out to fit, a proposal with a position in it is refused. A provider that reads the whole page itself sets `wants_full_html = True` to get it unchanged, as `LocalModelProvider` does.
 
 ### Local model
 
@@ -584,7 +584,7 @@ mendwright opened on the page works with iframes one level down, on Playwright (
 - **A key last found inside an iframe.** When its selector breaks, the heal runs in that iframe: the fingerprint tier and the model get the iframe's HTML, the checks run in the iframe, and the new selector is saved with the same `frameXPath`. A fingerprint read while the key matched inside the iframe is used there.
 
 mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the same lookup was quarantined before, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), and on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)).
-For those, and for anything deeper than one level, open mendwright on the frame itself.
+On Selenium, mendwright looks only one level down from the page, so a match deeper than that isn't seen at all, and the key heals on the page as before. For those, and for anything deeper than one level, open mendwright on the frame itself.
 
 Playwright:
 

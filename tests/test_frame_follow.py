@@ -295,3 +295,46 @@ def test_frame_selectors_match_the_src_whole_and_never_use_the_bare_tag():
     assert frame_selector({'tag': 'iframe', 'src': '/embed'}, count) == 'iframe[src="/embed"]'
     assert frame_selector({'tag': 'iframe', 'src': ''}, count) is None
     assert 'iframe' not in tried and not any('token' in t for t in tried)
+
+
+
+def test_a_store_with_the_0_5_signature_still_saves_iframe_heals():
+    from mendwright.client import add_heal
+
+    class Store05:
+        def __init__(self):
+            self.rows = []
+
+        def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, now=None):
+            self.rows.append((key, xpath, frame_xpath))
+
+    store = Store05()
+    assert add_heal(store, 'k', '//b', css='', frame_xpath='iframe[id="f"]') is True
+    assert store.rows == [('k', '//b', 'iframe[id="f"]')]
+
+
+def test_another_process_does_not_undo_a_move_to_the_page(tmp_path):
+    from mendwright.store import load_store
+    path = str(tmp_path / 's.json')
+    first = load_store(None, path)
+    first.add_candidate('k', '//b', source='heal', frame_xpath='iframe[id="f"]', css='b.x')
+    a, b = load_store(None, path), load_store(None, path)
+    a.add_candidate('k', '//b', source='heal', frame_xpath='', css='')   # healed on the page
+    b.add_candidate('other', '//c', source='heal')                        # an unrelated write
+    [row] = [c for c in load_store(None, path).candidates('k') if c['xpath'] == '//b']
+    assert not row.get('frameXPath') and not row.get('css')
+
+
+def test_a_seed_row_moved_to_the_page_stays_moved(tmp_path):
+    from mendwright.store import load_store
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'expectedRole': 'checkbox', 'candidates': [
+            {'xpath': '//b', 'source': 'seed', 'status': 'active', 'frameXPath': 'iframe[id="f"]'}]}}}),
+        encoding='utf-8')
+    path = str(tmp_path / 'o.json')
+    load_store(str(seed), path).add_candidate('k', '//b', source='heal', frame_xpath='')
+    second = load_store(str(seed), path)
+    second.add_candidate('other', '//c', source='heal')                   # a later write
+    [row] = [c for c in load_store(str(seed), path).candidates('k') if c['xpath'] == '//b']
+    assert not row.get('frameXPath')

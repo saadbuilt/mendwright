@@ -89,6 +89,30 @@ def merge(seed, override):
     return out
 
 
+_PLACE_FIELDS = ('frameXPath', 'css')
+
+
+def _place(c):
+    """(frameXPath, css) of a candidate, '' for either one it doesn't have."""
+    return tuple(c.get(field) or '' for field in _PLACE_FIELDS)
+
+
+def _row_state(c):
+    """What a seed row is compared on to tell whether this store changed it."""
+    return (c.get('status', 'active'), c.get('lastSucceededAt')) + _place(c)
+
+
+def _merge_place(local, theirs, base):
+    """Three-way merge of a candidate's frameXPath and css (see SelectorStore._absorb).
+    base is the pair the store last read or wrote, or None when it never saw the row."""
+    for i, field in enumerate(_PLACE_FIELDS):
+        if base is None:
+            if field in theirs and field not in local:
+                local[field] = theirs[field]
+        elif (local.get(field) or '') == base[i] and (theirs.get(field) or '') != base[i]:
+            local[field] = theirs.get(field) or ''
+
+
 class StoreReadError(ValueError):
     """A selector file exists but cannot be used: it is not valid JSON, or not a selector
     file. The message names the file and what to do."""
@@ -241,8 +265,7 @@ class SelectorStore:
         self._seed_state = {}
         for skey, sentry in (seed or {}).get('selectors', {}).items():
             for sc in sentry.get('candidates', []):
-                self._seed_state[(skey, sc.get('xpath'))] = (sc.get('status', 'active'),
-                                                             sc.get('lastSucceededAt'))
+                self._seed_state[(skey, sc.get('xpath'))] = _row_state(sc)
         # Keys whose destructive flag nothing can clear: the seed's flags (or, with no seed
         # given, the flags in data). destructive_keys is checked as well, in meta().
         source = seed if seed is not None else data
@@ -545,7 +568,7 @@ class SelectorStore:
             # Untouched seed row (direct construction with no pristine ref), or a row the
             # current seed no longer has: do NOT persist, it must not resurrect.
             return False
-        return (c.get('status', 'active'), c.get('lastSucceededAt')) != seed
+        return _row_state(c) != seed
 
     # --- writing the override file -------------------------------------------------
     #
@@ -640,8 +663,10 @@ class SelectorStore:
         return True
 
     def _remember_base(self, data):
-        """Record the candidate statuses and metadata of an override file's content."""
+        """Record the candidate statuses, places (frameXPath, css) and metadata of an
+        override file's content."""
         self._base = {}
+        self._base_place = {}
         self._base_meta = {}
         for key, entry in (data.get('selectors') or {}).items():
             if not isinstance(entry, dict):
@@ -649,6 +674,7 @@ class SelectorStore:
             for c in entry.get('candidates') or ():
                 if isinstance(c, dict) and isinstance(c.get('xpath'), str):
                     self._base[(key, c['xpath'])] = c.get('status', 'active')
+                    self._base_place[(key, c['xpath'])] = _place(c)
             self._base_meta[key] = _meta_fields(entry)
 
     def _absorb(self, disk):
@@ -660,7 +686,9 @@ class SelectorStore:
         - when both changed a status, 'quarantined' wins (a quarantine is never undone by
           a stale view), otherwise this store's;
         - when both changed the destructive flag, True wins;
-        - lastSucceededAt is the newer of the two.
+        - lastSucceededAt is the newer of the two;
+        - a candidate's frameXPath and css follow the same rule as a value: the file's when
+          only the other side changed them, this store's otherwise.
         New keys and candidates from the file are added."""
         for key, entry in (disk.get('selectors') or {}).items():
             if not isinstance(entry, dict):
@@ -682,10 +710,7 @@ class SelectorStore:
                                                 self._base.get((key, xpath)))
                 newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
                 local['lastSucceededAt'] = newest or None
-                if 'frameXPath' in c and 'frameXPath' not in local:
-                    local['frameXPath'] = c['frameXPath']
-                if 'css' in c and 'css' not in local:
-                    local['css'] = c['css']
+                _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):

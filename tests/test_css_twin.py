@@ -232,3 +232,12 @@ def test_fix_leaves_a_go_string_that_would_need_guessing(root, capsys):
     (root / 'save.go').write_text('sel := "#save"\n', encoding='utf-8')
     cli.main(['fix', '--apply', '--glob', '*.go'])
     assert (root / 'save.go').read_text(encoding='utf-8') == 'sel := "#save"\n'
+
+
+
+def test_fix_lists_a_csharp_verbatim_string_instead_of_escaping_it(root, capsys):
+    _project(root, 'save', '#save')
+    source = 'driver.FindElement(By.CssSelector(@"#save"));' + chr(10)
+    (root / 'Save.cs').write_text(source, encoding='utf-8')
+    cli.main(['fix', '--apply', '--glob', '*.cs'])
+    assert (root / 'Save.cs').read_text(encoding='utf-8') == source

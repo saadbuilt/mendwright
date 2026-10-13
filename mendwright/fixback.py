@@ -810,7 +810,12 @@ def scan_file(path, plan, result, needles):
                                 'XPath. Change the call to take an XPath (By.XPATH in Selenium) '
                                 'and the selector to: ' + new)
             continue
-        now = python_literal(new, lit.source) if python else generic_literal(new, lit.source, ext)
+        if python:
+            now = python_literal(new, lit.source)
+        elif ext == '.cs' and lit.start and text[lit.start - 1] == '@':
+            now = None   # a C# verbatim string: "" is its only escape
+        else:
+            now = generic_literal(new, lit.source, ext)
         if now is None:
             result.notes.append(shown + ':' + str(lit.line) + ' was not changed: ' + lit.source
                                 + ' is the old selector of ' + ', '.join(plan.keys_for[selector])
