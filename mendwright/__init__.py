@@ -88,6 +88,6 @@ try:
     try:
         __version__ = _dist_version('mendwright')
     except PackageNotFoundError:
-        __version__ = '0.4.0'
+        __version__ = '0.5.0'
 except Exception:  # pragma: no cover - importlib.metadata is stdlib on 3.10+
-    __version__ = '0.4.0'
+    __version__ = '0.5.0'

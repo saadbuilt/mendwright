@@ -7,9 +7,13 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-13
+
 - mendwright's own local model for heals that never leave your machine. `LocalModelProvider` asks `mendwright-selector`, Qwen2.5-1.5B-Instruct fine-tuned with QLoRA, in Ollama: mendwright lists at most 40 elements of the step's role from the captured page (`mendwright.candidates`), the model answers which one the step meant or that none fits (removed, ambiguous, or moved to another page), and mendwright builds the XPath for the pick itself, never from its position, and checks it like any proposal. A pick the model is less than 80% sure of is declined (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` or `min_confidence=` changes that). When the checks refuse a pick because it is hidden or not unique on the live page, the model is asked once more without it; after any other refusal it doesn't guess again. `MENDWRIGHT_LOCAL_MODEL=<name>` or `MENDWRIGHT_PROVIDER=local` selects it, after cloud keys and the gateway and before `OLLAMA_MODEL`, and `mendwright doctor` shows it. On 3,000 held-out synthetic redesigns it picked the right element for 97.1% of broken selectors and a wrong one for 0.14%, and declined 97.1% of the steps whose element was gone; on the benchmark, behind the fingerprint tier, it healed 31 of 35 with no wrong heal. `training/` has the generator, the training and export scripts and the full results ([training/README.md](https://github.com/saadbuilt/mendwright/blob/main/training/README.md)).
 - A provider that sets `wants_fingerprint = True` gets the key's saved fingerprint in the bundle, redacted like the expected text. Only `LocalModelProvider` does; hosted providers and gateways never get it.
 - `benchmarks/run.py --provider local [--model NAME]`. For this provider the prompt size column counts the candidate task it sends.
+- `mendwright model install` downloads the model file (about 1 GB, once) from this release's GitHub assets, checks it against a SHA-256 pinned in the code, writes an Ollama Modelfile next to it and runs `ollama create mendwright-selector`. `--dir`, `--name`, `--skip-create` and `--force` change where, what and whether. The Modelfile template now lives in `mendwright.model_install`, which `training/export.py` also uses.
+- `OpenAICompatibleProvider.for_ollama()` and an `OLLAMA_HOST` set to `localhost` now reach Ollama on 127.0.0.1. On Windows a request to `localhost` tried IPv6 first and waited about 2 seconds per call before reaching Ollama on IPv4.
 
 ## [0.4.0] - 2026-10-12
 
@@ -60,6 +64,7 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/saadbuilt/mendwright/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/saadbuilt/mendwright/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/saadbuilt/mendwright/releases/tag/v0.3.0
