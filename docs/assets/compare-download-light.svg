@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="559" viewBox="0 0 800 559" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title id="title">Python packages downloaded</title>
-<desc id="desc">Bar chart. mendwright 0.6.0: 4.26 MB, 2 packages; stagehand 4.2.0: 4.26 MB, 17 packages; robotframework-selfhealing-agents 0.1.7: 17.45 MB, 53 packages; robotframework-heal 0.4.0: 29.77 MB, 82 packages; browser-use 0.13.11: 57.03 MB, 106 packages; skyvern[local] 1.0.55: 178.83 MB, 162 packages.</desc>
+<desc id="desc">Bar chart. mendwright 0.6.0: 4.25 MB, 2 packages; stagehand 4.2.0: 4.26 MB, 17 packages; robotframework-selfhealing-agents 0.1.7: 17.45 MB, 53 packages; robotframework-heal 0.4.0: 29.77 MB, 82 packages; browser-use 0.13.11: 57.03 MB, 106 packages; skyvern[local] 1.0.55: 178.83 MB, 162 packages.</desc>
 <rect x="0.5" y="0.5" width="799" height="558" rx="12" fill="#fcfcfb" stroke="#0b0b0b" stroke-opacity="0.1"/>
 <text x="24" y="42" font-size="18" font-weight="600" fill="#0b0b0b">Python packages downloaded</text>
 <text x="24" y="66" font-size="13" fill="#52514e">Compressed wheels for the package and all its dependencies, excluding browser libraries. MB = 1,000,000 bytes.</text>
 <text x="24" y="102" font-size="13"><tspan font-weight="600" fill="#0b0b0b">mendwright</tspan><tspan dx="8" fill="#52514e">0.6.0</tspan></text>
 <line x1="24" y1="109" x2="24" y2="133" stroke="#898781" stroke-width="1"/>
-<path class="bar" d="M24 112H33.98A4 4 0 0 1 37.98 116V126A4 4 0 0 1 33.98 130H24z" fill="#2a78d6"/>
-<text x="45.98" y="125.5" font-size="13" font-weight="600" fill="#0b0b0b">4.26 MB, 2 packages</text>
+<path class="bar" d="M24 112H33.95A4 4 0 0 1 37.95 116V126A4 4 0 0 1 33.95 130H24z" fill="#2a78d6"/>
+<text x="45.95" y="125.5" font-size="13" font-weight="600" fill="#0b0b0b">4.25 MB, 2 packages</text>
 <text x="24" y="166" font-size="13"><tspan font-weight="600" fill="#0b0b0b">stagehand</tspan><tspan dx="8" fill="#52514e">4.2.0</tspan></text>
 <line x1="24" y1="173" x2="24" y2="197" stroke="#898781" stroke-width="1"/>
 <path class="bar" d="M24 176H33.98A4 4 0 0 1 37.98 180V190A4 4 0 0 1 33.98 194H24z" fill="#2a78d6"/>
@@ -30,6 +30,6 @@
 <text x="619" y="445.5" font-size="13" font-weight="600" fill="#0b0b0b">178.83 MB, 162 packages</text>
 <text x="24" y="478" font-size="12" fill="#52514e">Resolved with pip install --dry-run on CPython 3.12, Windows x64, on 2026-10-10. Sizes are the wheel files listed on PyPI.</text>
 <text x="24" y="500" font-size="12" fill="#52514e">Not counted: playwright, greenlet, pyee, patchright, selenium, robotframework, robotframework-browser, grpcio, Appium libraries,</text>
-<text x="24" y="517" font-size="12" fill="#52514e">and the Chrome that stagehand and browser-use drive. On Linux x86_64, mendwright and lxml come to 5.36 MB.</text>
+<text x="24" y="517" font-size="12" fill="#52514e">and the Chrome that stagehand and browser-use drive. On Linux x86_64, mendwright and lxml come to 5.35 MB.</text>
 <text x="24" y="539" font-size="12" fill="#52514e">Data and sources: docs/charts/data.json</text>
 </svg>

@@ -48,7 +48,7 @@ In the Actions tab, open Release, click Run workflow and choose `main`. It build
    - `version` in `pyproject.toml`
    - both `__version__ = '...'` fallback lines at the bottom of `mendwright/__init__.py`
 2. In `CHANGELOG.md`, change `## [X.Y.Z] - Unreleased` to `## [X.Y.Z] - YYYY-MM-DD`, and check that the link line `[X.Y.Z]: https://github.com/saadbuilt/mendwright/releases/tag/vX.Y.Z` is at the bottom.
-3. If `README.md` or the code changed since the wheel was last measured, measure it again. The wheel embeds the README, so its size changes. Build it with `python -m build --wheel`, put the new byte counts in `download.rows[0]` and the Linux total in `infra.rows[0]` of `docs/charts/data.json`, and run `python docs/charts/build_charts.py`. Then update the figures in `docs/comparison.md`: the download and infra tables, the chart descriptions and the Methodology bullets.
+3. If `README.md` or the code changed since the wheel was last measured, measure it again. The wheel embeds the README, so its size changes. Build it from a clean copy with LF line endings, as the release workflow does: `git -c core.autocrlf=false archive HEAD` into a scratch folder, then `python -m build --wheel` there (on Windows, an archive with CRLF endings gives a wheel about 1.7 KB larger). After the release, replace the figure with the size of the wheel PyPI serves. Then put the new byte counts in `download.rows[0]` and the Linux total in `infra.rows[0]` of `docs/charts/data.json`, and run `python docs/charts/build_charts.py`. Then update the figures in `docs/comparison.md`: the download and infra tables, the chart descriptions and the Methodology bullets.
 4. Reinstall and run the tests:
 
    ```
