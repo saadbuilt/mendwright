@@ -7,6 +7,8 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-14
+
 - A quarantine counts only in the place it was made. A selector quarantined inside an iframe no longer blocks an element that looks the same on the page, or the other way round. A heal made inside an iframe is saved with its `xpath=` prefix written out, as a key followed into an iframe already was, so it never shares a row in the store with the same XPath on the page; heal rows that 0.6.0 saved inside an iframe are respelled that way when a store is read. `SelectorStore.quarantined(key, frame_xpath=...)` lists the quarantines of one place; a custom store without that argument still blocks everywhere, as before.
 
 ## [0.6.0] - 2026-10-13
@@ -72,7 +74,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/saadbuilt/mendwright/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/saadbuilt/mendwright/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/saadbuilt/mendwright/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/saadbuilt/mendwright/compare/v0.3.0...v0.4.0
