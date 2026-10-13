@@ -127,7 +127,10 @@ def test_a_twin_that_matches_more_on_the_live_page_is_dropped():
     doc = _doc()
     body = PROPOSAL['xpath']
     assert css_twin(store, 'save', doc, body, body, _Live(PAGE)) == '[data-testid="save-btn"]'
-    assert css_twin(store, 'save', doc, body, body, _Live(PAGE, extra=1)) is None
+    assert css_twin(store, 'save', doc, body, body, _Live(PAGE, extra=1)) == ''
+    # Without a live page nothing confirms it (browsers match type= without case).
+    assert css_twin(store, 'save', doc, body, body, None) == ''
+    assert css_twin(_Store('//button'), 'save', doc, body, body, _Live(PAGE)) is None
 
 
 def test_the_store_keeps_the_twin_across_runs(tmp_path, make_page, stub_provider):
@@ -199,3 +202,33 @@ def test_an_href_with_a_query_is_not_used():
     doc = lxml.html.fromstring("<p><a href='/cart?session=abc'>Cart</a><a href='/help'>Help</a></p>")
     assert css_selectors(doc.xpath('//a')[0], doc) == []
     assert css_selectors(doc.xpath('//a')[1], doc) == ['a[href="/help"]']
+
+
+
+def test_an_id_with_a_newline_is_not_written_as_a_bare_id():
+    doc = lxml.html.fromstring('<p><button id="save">Delete</button><button id="save' + '\n' + '">Save</button></p>')
+    found = css_selectors(doc.xpath('//button')[1], doc)
+    assert not any(c.startswith('#') or '#save' in c for c in found)
+
+
+@pytest.mark.parametrize('ext, before, after', [
+    ('.java', 'driver.findElement(By.cssSelector("#save"));',
+     'driver.findElement(By.cssSelector("[data-testid=\\"save-btn\\"]"));'),
+    ('.kt', 'driver.findElement(By.cssSelector("#save"))',
+     'driver.findElement(By.cssSelector("[data-testid=\\"save-btn\\"]"))'),
+    ('.cs', 'driver.FindElement(By.CssSelector("#save"));',
+     'driver.FindElement(By.CssSelector("[data-testid=\\"save-btn\\"]"));'),
+    ('.ts', "await page.click('#save');", "await page.click('[data-testid=\"save-btn\"]');"),
+])
+def test_fix_keeps_double_quotes_where_only_they_make_a_string(ext, before, after, root, capsys):
+    _project(root, 'save', '#save')
+    (root / ('Save' + ext)).write_text(before + '\n', encoding='utf-8')
+    assert cli.main(['fix', '--apply', '--glob', '*' + ext]) == 0
+    assert (root / ('Save' + ext)).read_text(encoding='utf-8') == after + '\n'
+
+
+def test_fix_leaves_a_go_string_that_would_need_guessing(root, capsys):
+    _project(root, 'save', '#save')
+    (root / 'save.go').write_text('sel := "#save"\n', encoding='utf-8')
+    cli.main(['fix', '--apply', '--glob', '*.go'])
+    assert (root / 'save.go').read_text(encoding='utf-8') == 'sel := "#save"\n'

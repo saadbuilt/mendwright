@@ -185,21 +185,47 @@ def _same_live(driver, css, xpath):
 
 
 def css_twin(store, selector_key, doc, body, xpath, driver=None):
-    """A CSS selector for the element a healed XPath matches, when the key's code uses
-    CSS, else None. It must match that element and nothing else on the captured page (see
-    mendwright.css) and on the live page."""
-    if doc is None or not _code_uses_css(store, selector_key):
+    """The CSS form to save with a heal: None when the key's code doesn't use CSS (nothing
+    to save), '' when no CSS selector could be confirmed, else a CSS selector that matches
+    the healed element and nothing else on the captured page (see mendwright.css) and on
+    the live page. Without a live driver nothing is confirmed, because browsers match some
+    values (type, and ids and classes in quirks mode) without regard to case."""
+    if not _code_uses_css(store, selector_key):
         return None
+    if doc is None or driver is None:
+        return ''
     try:
         hits = [h for h in doc.xpath(body) if isinstance(getattr(h, 'tag', None), str)]
     except Exception:
-        return None
+        return ''
     if len(hits) != 1:
-        return None
+        return ''
     for css in css_selectors(hits[0], doc):
         if _same_live(driver, css, xpath):
             return css
-    return None
+    return ''
+
+
+def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
+    """store.add_candidate(key, xpath, source='heal'), with css= and frame_xpath= when they
+    are given. A store written for mendwright 0.5 or earlier, whose add_candidate takes
+    neither, still gets the heal without its CSS form. Returns False, and saves nothing,
+    when such a store would have to keep a heal that belongs inside an iframe."""
+    extra = {}
+    if css is not None:
+        extra['css'] = css
+    if frame_xpath is not None:
+        extra['frame_xpath'] = frame_xpath
+    try:
+        store.add_candidate(selector_key, xpath, source='heal', **extra)
+        return True
+    except TypeError as exc:
+        if not extra or 'keyword' not in str(exc):
+            raise
+    if frame_xpath:
+        return False
+    store.add_candidate(selector_key, xpath, source='heal')
+    return True
 
 
 def apply(store, selector_key, proposal, html, meta, driver=None, positional=True,
@@ -220,7 +246,9 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
     rejected as well, until that row is removed from the store.
 
     When one of the key's selectors in code is CSS, a CSS selector that matches the same
-    element is saved with the heal as its ``css`` (see css_twin), for mendwright fix.
+    element is saved with the heal as its ``css`` (see css_twin), for mendwright fix. A
+    candidate with the same text saved inside another iframe, or with an older CSS form,
+    is updated to this heal's.
 
     frame_xpath is the selector of the iframe the heal was made in, when the coordinator
     healed inside one (``html`` and ``driver`` are then that iframe's); it is saved with the
@@ -267,13 +295,11 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             continue
         # proposal['frameXPath'] is unvalidated model output and is never stored. Frame
         # context comes from the gate, not from a proposal.
-        extra = {}
+        # frame_xpath '' puts a candidate with the same text, saved inside an iframe before,
+        # on the page, where this heal was checked.
         css = css_twin(store, selector_key, doc, body, xpath, driver)
-        if css:
-            extra['css'] = css
-        if frame_xpath:
-            extra['frame_xpath'] = frame_xpath
-        store.add_candidate(selector_key, xpath, source='heal', **extra)
+        if not add_heal(store, selector_key, xpath, css=css, frame_xpath=frame_xpath or ''):
+            return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason
 

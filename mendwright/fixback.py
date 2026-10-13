@@ -58,6 +58,10 @@ PYTHON_EXTS = ('.py', '.pyw', '.pyi')
 C_LIKE_EXTS = frozenset({'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.java',
                          '.kt', '.kts', '.cs', '.groovy', '.scala', '.php', '.swift'})
 ESCAPING_EXTS = C_LIKE_EXTS | {'.rb'}
+# Languages in which only double quotes make a string ('x' is a char or a rune, or not
+# allowed). A selector with a double quote in it is escaped there, never re-quoted.
+DOUBLE_QUOTE_ONLY_EXTS = frozenset({'.java', '.kt', '.kts', '.cs', '.scala', '.swift', '.go',
+                                    '.rs', '.json', '.c', '.h', '.cc', '.cpp', '.hpp', '.m'})
 
 _NEEDLE_SPLIT = re.compile(r'''['"\\\s]''')
 _LINE = re.compile(r'[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+')
@@ -581,7 +585,10 @@ def generic_literal(new, token, ext):
     qchar = token[0]
     if '\n' in new or '\r' in new:
         return None
-    order = [qchar] + [q for q in ('\'', '"') if q != qchar]
+    if ext in DOUBLE_QUOTE_ONLY_EXTS:
+        order = [qchar]
+    else:
+        order = [qchar] + [q for q in ('\'', '"') if q != qchar]
     def needs_escape(q):
         return q in new or (q == '`' and '${' in new)
 

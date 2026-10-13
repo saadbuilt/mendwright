@@ -499,9 +499,12 @@ class SelectorStore:
         return not was_top
 
     def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None, now=None):
-        """Add a candidate selector for key. css is a CSS selector checked to match the same
-        element as a healed XPath (see mendwright.css); it is saved with the candidate for
-        mendwright fix, and never run."""
+        """Add a candidate selector for key, or update the one with the same text.
+
+        frame_xpath is the selector of the iframe the candidate runs in: '' moves an
+        existing candidate to the page, None leaves it where it is. css is a CSS selector
+        checked to match the same element as a healed XPath (see mendwright.css), saved for
+        mendwright fix and never run: '' drops one saved before, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         if not found:
@@ -512,8 +515,13 @@ class SelectorStore:
             if css:
                 cand['css'] = css
             entry['candidates'].append(cand)
-        elif css and not found.get('css'):
-            found['css'] = css
+        else:
+            # An empty value stays as a key, so _absorb() does not take an old one back
+            # from the file; _payload() writes no empty css.
+            if frame_xpath is not None and (found.get('frameXPath') or '') != frame_xpath:
+                found['frameXPath'] = frame_xpath
+            if css is not None and (found.get('css') or '') != css:
+                found['css'] = css
         self._dirty.add((key, xpath))
         self._persist_override()
 

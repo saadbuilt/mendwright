@@ -344,6 +344,7 @@ LiteLLM needs the litellm package (`pip install "mendwright[litellm]"`), or an `
 The other extras are `[anthropic]`, `[openai]`, `[gemini]` and `[all]`. `[all]` installs every provider SDK and no browser library.
 
 Any object with `propose(bundle)` and `report_outcome(key, xpath, success)` works as a provider. [CONTRIBUTING.md](../CONTRIBUTING.md) describes the contract.
+On a page longer than 60,000 characters, a provider gets the bundle with the page fitted to the prompt (`mendwright.fit` says how), and a proposal with a position in it is refused. A provider that reads the whole page itself sets `wants_full_html = True` to get it unchanged, as `LocalModelProvider` does.
 
 ### Local model
 
@@ -579,10 +580,10 @@ register_driver(detect=lambda obj: hasattr(obj, "my_find"), make=MyDriver)
 
 mendwright opened on the page works with iframes one level down, on Playwright (sync and async) and Selenium.
 
-- **A selector that matches only inside an iframe.** When a key's selector matches nothing on the page but matches exactly one element inside one iframe, mendwright looks for it there from now on, with no model call. It saves the selector with its `xpath=` or `css=` prefix written out and the iframe's selector as `frameXPath`, for example `iframe[id="consent-frame"]`, built from the iframe's id, name, title or the start of its `src`, or plain `iframe` when it is the only one. It goes through the live check like a heal, logs `found 'terms' inside the iframe ...`, and counts as a heal with source `frame`, so strict mode fails on it and the canary checks it.
+- **A selector that matches only inside an iframe.** When a key's selector matches nothing on the page but matches exactly one element inside one iframe, mendwright looks for it there from now on, with no model call. It saves the selector with its `xpath=` or `css=` prefix written out and the iframe's selector as `frameXPath`, for example `iframe[id="consent-frame"]`, built from the iframe's id, name or title, or from its `src` up to the query (the query itself is never saved). An iframe with none of these isn't followed: a bare `iframe` could match another iframe on a later page. It goes through the live check like a heal, logs `found 'terms' inside the iframe ...`, and counts as a heal with source `frame`, so strict mode fails on it and the canary checks it.
 - **A key last found inside an iframe.** When its selector breaks, the heal runs in that iframe: the fingerprint tier and the model get the iframe's HTML, the checks run in the iframe, and the new selector is saved with the same `frameXPath`. A fingerprint read while the key matched inside the iframe is used there.
 
-mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`, when the key is marked destructive, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), and on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)).
+mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the same lookup was quarantined before, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), and on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)).
 For those, and for anything deeper than one level, open mendwright on the frame itself.
 
 Playwright:
@@ -1091,7 +1092,7 @@ Which strings it changes:
 - In Python files, only plain string literals whose whole value is the old selector, as the store keeps it (`"xpath=//a"` and `" //a "` both match a stored `//a`). Not an f-string or bytes, not part of an implicit concatenation such as `"a" "b"`, not a comment, not a substring.
 - Not the key in `heal.locator(key, selector)` or `heal.interrupt(key, selector)`, and not a `role=`, `text=`, `intent=`, `action=` or `by=` value, even when it equals the selector.
 - A CSS selector in your code gets the heal's CSS form when it has one (see [Selectors](#selectors)), also where only CSS runs, such as `By.CSS_SELECTOR` or `querySelector()`. Without a CSS form, a value passed with a Selenium `By` other than `By.XPATH` (in a call, or a `(By.CSS_SELECTOR, "#x")` pair), or to a function with `css` in its name, is listed with the healed selector to put in by hand.
-- In other files (`--glob`), quoted strings on one line. Comments are skipped in C-like languages, and template strings with `${` and strings that span lines are left alone. A string right after `By.cssSelector(`, `querySelector(`, `css:` and the like is listed, not changed.
+- In other files (`--glob`), quoted strings on one line. Comments are skipped in C-like languages, and template strings with `${` and strings that span lines are left alone. A string right after `By.cssSelector(`, `querySelector(`, `css:` and the like gets the heal's CSS form when it has one, and is otherwise listed, not changed. In languages where only double quotes make a string (Java, Kotlin, C#, Scala, Swift, Go, Rust, JSON), a selector with a double quote in it is escaped, or listed for a hand edit where the escapes aren't known.
 - A file in which the same string belongs to more than one key is left alone whole, and listed, because mendwright can't tell which healed selector goes where.
 
 Each rewritten Python file must still parse, have the same structure, and differ only in the planned strings, or it isn't written.

@@ -60,13 +60,22 @@ NOTE = ('<!-- mendwright: this page is longer than the prompt allows, so parts t
         'predicates such as [2], last() or position(). -->')
 _MARKER = re.compile(r'^ mendwright: (\d+) elements? left out here $')
 _MARKER_SIZE = len('<!-- mendwright: 100 elements left out here -->')
-_POSITIONAL = re.compile(r'\[\s*\d+\s*\]|\bposition\s*\(|\blast\s*\(')
+# A predicate that starts with a number ([2], [ 2 ], [(2)], [2.0], [1+1]) is a position,
+# and so is any use of position(), last() or number().
+_POSITIONAL = re.compile(r'\[\s*\(*\s*\d|\bposition\s*\(|\blast\s*\(|\bnumber\s*\(')
+# What capture.build_bundle() puts in place of a URL or a long number. They are not words
+# of the page or of the step.
+_PLACEHOLDER = re.compile(r'\[URL\]|\[redacted(?: number)?\]')
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 
 
+def _words(text):
+    return tokens(_PLACEHOLDER.sub(' ', text)) if text else []
+
+
 def has_position(xpath):
-    """True when an XPath depends on an element's position: a numeric predicate such as
-    [2], or position() or last(). Quoted strings are ignored."""
+    """True when an XPath depends on an element's position: a predicate that starts with a
+    number, such as [2], or position(), last() or number(). Quoted strings are ignored."""
     return bool(_POSITIONAL.search(_QUOTED.sub("''", xpath or '')))
 
 
@@ -92,10 +101,12 @@ def _shorten(root):
 
 
 def _rank(el, words, role):
-    """How related one element is to the step (see _HIT and the others)."""
-    own = tokens(el.text)
+    """How related one element is to the step (see _HIT and the others). Its own text is
+    every text node directly in it, including what follows a child, such as the label
+    after an icon or a checkbox."""
+    own = _words(' '.join(el.xpath('text()')))
     for value in el.attrib.values():
-        own.extend(tokens(value))
+        own.extend(_words(value))
     if words and any(word in words for word in own):
         return _HIT
     if role and _role_of(el) == role:
@@ -147,26 +158,43 @@ def _marker(n):
 
 
 def _leave_out(elements):
-    """Replace each element by a marker comment, merging markers that end up next to each
-    other with only whitespace between them. Returns how many elements were left out."""
+    """Replace each element by a marker comment, merging it with a marker just before or
+    after it (only whitespace between them), and counting the elements behind any marker
+    of an earlier pass inside it. Returns how many elements were left out now."""
     total = 0
     for el in elements:
         parent = el.getparent()
         if parent is None:
             continue
-        n = 1 + sum(1 for node in el.iterdescendants() if isinstance(node.tag, str))
-        total += n
+        own = 0
+        shown = 1
+        for node in el.iterdescendants():
+            if isinstance(node.tag, str):
+                own += 1
+            else:
+                shown += _marker_count(node) or 0
+        total += 1 + own
+        n = shown + own
         tail = el.tail
-        prev = el.getprevious()
-        count = _marker_count(prev)
-        if count is not None and not (prev.tail or '').strip():
-            prev.text = _marker(count + n).text
-            prev.tail = tail
+        prev, after = el.getprevious(), el.getnext()
+        before = _marker_count(prev) if prev is not None and not (prev.tail or '').strip() else None
+        behind = _marker_count(after) if after is not None and not (tail or '').strip() else None
+        if before is not None:
+            n += before + (behind or 0)
+            prev.text = _marker(n).text
+            if behind is not None:
+                prev.tail = after.tail
+                parent.remove(after)
+            else:
+                prev.tail = tail
             parent.remove(el)
-            continue
-        marker = _marker(n)
-        parent.replace(el, marker)
-        marker.tail = tail
+        elif behind is not None:
+            after.text = _marker(n + behind).text
+            parent.remove(el)
+        else:
+            marker = _marker(n)
+            parent.replace(el, marker)
+            marker.tail = tail
     return total
 
 
@@ -198,8 +226,10 @@ def fit_html(html, words=(), role=None, budget=BUDGET):
         for size, el in sized:
             if total <= budget:
                 break
+            if size <= _MARKER_SIZE:
+                continue   # its marker would be as long as it is
             chosen.append(el)
-            total -= max(0, size - _MARKER_SIZE)
+            total -= size - _MARKER_SIZE
         if chosen:   # in document order, so neighbours share one marker
             picked = set(chosen)
             chosen = [el for el in root.iter() if el in picked]
@@ -219,7 +249,13 @@ def _clip_row(row):
 def fit_inventory(rows, words=(), role=None, budget=BUDGET):
     """The inventory with every row whole, fitted to ``budget`` characters of JSON: long
     strings shortened, then unrelated rows dropped from the end, then related ones."""
-    if not isinstance(rows, list) or len(json.dumps(rows)) <= budget:
+    if not isinstance(rows, list):
+        return rows
+    try:
+        size = len(json.dumps(rows))
+    except (TypeError, ValueError):
+        return rows   # not JSON: the provider says so when it builds the prompt
+    if size <= budget:
         return rows
     rows = [_clip_row(row) for row in rows]
     words = set(words or ())
@@ -229,7 +265,7 @@ def fit_inventory(rows, words=(), role=None, budget=BUDGET):
             return False
         if role and row.get('role') == role:
             return True
-        return any(w in words for v in row.values() if isinstance(v, str) for w in tokens(v))
+        return any(w in words for v in row.values() if isinstance(v, str) for w in _words(v))
 
     for drop_related in (False, True):
         for i in range(len(rows) - 1, -1, -1):

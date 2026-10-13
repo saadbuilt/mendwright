@@ -16,7 +16,7 @@ from . import fingerprint as _fingerprint
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
-from .fit import fit_bundle
+from .fit import fit_bundle, has_position
 from .flow import flow_change_message, journal_event
 from .journal import NullJournal
 from .providers import GatewayProvider
@@ -118,6 +118,8 @@ class HealCoordinator:
         self.entry = entry
         # The selector of the iframe a heal runs in (see scoped()), saved with what it applies.
         self.frame_xpath = None
+        # Set by mendwright.open() under MENDWRIGHT_DISABLE=1; stops the iframe follow too.
+        self.disabled = False
         # selector_key -> applied_xpath awaiting an action-outcome canary. A dict (not a
         # single slot) so healing several fields on one page never drops an earlier
         # unproven selector's canary.
@@ -274,7 +276,10 @@ class HealCoordinator:
         # the page, so a positional XPath is refused.
         left_out = 0
         if getattr(self.provider, 'wants_full_html', False) is not True:
-            bundle, left_out = fit_bundle(bundle, meta.get('fingerprint'))
+            try:
+                bundle, left_out = fit_bundle(bundle, meta.get('fingerprint'))
+            except Exception:
+                logger.debug('mendwright: could not fit the page to the prompt', exc_info=True)
         for _ in range(2):  # initial heal + one re-prompt on validation failure
             proposal = self.provider.propose(bundle)
             if not proposal:
@@ -296,6 +301,8 @@ class HealCoordinator:
             if self.dry_run:
                 valid = None
                 for xpath in [proposal.get('xpath')] + list(proposal.get('fallbacks') or []):
+                    if left_out and xpath and has_position(xpath):
+                        continue   # apply() would refuse it (see mendwright.fit)
                     if xpath and validate(xpath, html, expected_role=meta.get('expectedRole'),
                                           expected_text=meta.get('expectedText'),
                                           destructive=bool(meta.get('destructive'))).ok:

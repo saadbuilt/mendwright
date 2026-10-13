@@ -44,7 +44,7 @@ def css_string(value):
 
 def _attr(name, value):
     """(css, xpath predicate) for an exact attribute value."""
-    if name == 'id' and _IDENT.match(value):
+    if name == 'id' and _IDENT.fullmatch(value):
         return '#' + value, '@id=' + xpath_literal(value)
     return '[' + name + '=' + css_string(value) + ']', '@' + name + '=' + xpath_literal(value)
 
@@ -73,7 +73,7 @@ def _parts(el):
             continue   # a query or fragment is often a session or tracking value
         parts.append(_attr(name, value))
     for token in stable_classes(el.get('class'))[:3]:
-        if _class_ok(token) and _IDENT.match(token):
+        if _class_ok(token) and _IDENT.fullmatch(token):
             parts.append(_class(token))
     return parts
 
@@ -85,7 +85,7 @@ def _anchor_parts(anc):
         if _usable(value) and not (name in ('id', 'name') and generated(value)):
             parts.append(_attr(name, value))
     for token in stable_classes(anc.get('class'))[:2]:
-        if _class_ok(token) and _IDENT.match(token):
+        if _class_ok(token) and _IDENT.fullmatch(token):
             parts.append(_class(token))
     return parts
 
@@ -110,7 +110,7 @@ def css_selectors(el, doc=None, limit=3):
     if doc is None:
         doc = el.getroottree().getroot()
     tag = el.tag if isinstance(el.tag, str) else ''
-    if not _IDENT.match(tag) or any(a.tag in _FOREIGN for a in el.iterancestors()):
+    if not _IDENT.fullmatch(tag) or any(a.tag in _FOREIGN for a in el.iterancestors()):
         return []
     tag = tag.lower()
     out = []
@@ -134,7 +134,7 @@ def css_selectors(el, doc=None, limit=3):
         return out
     inner = [(tag, tag)] + targets
     for depth, anc in enumerate(el.iterancestors()):
-        if depth >= MAX_ANCESTORS or not isinstance(anc.tag, str) or not _IDENT.match(anc.tag):
+        if depth >= MAX_ANCESTORS or not isinstance(anc.tag, str) or not _IDENT.fullmatch(anc.tag):
             break
         for part in _anchor_parts(anc):
             a_css, a_xpath = _compound(anc.tag.lower(), [part])

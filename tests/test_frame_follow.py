@@ -24,8 +24,8 @@ def _find(doc, selector):
             body = body[len(prefix):]
     if body.startswith('#'):
         return doc.xpath('//*[@id=$i]', i=body[1:])
-    if body == FRAME:
-        return doc.xpath("//iframe[@name='consent']")
+    if body.startswith('iframe['):
+        return doc.xpath('//iframe')
     try:
         return [e for e in doc.xpath(body) if hasattr(e, 'tag')]
     except Exception:
@@ -40,9 +40,10 @@ class Doc:
         self.inner = inner
         self._url = url
         self.actions = []
+        self.frame_sel = FRAME
 
     def _doc(self, frame_chain):
-        if tuple(frame_chain) == (FRAME,):
+        if tuple(frame_chain) == (self.frame_sel,):
             return self.inner.doc
         assert not frame_chain, frame_chain
         return self.doc
@@ -89,17 +90,18 @@ class TwoDocs(Doc):
         super().__init__(OUTER, inner=Doc(inner_html))
         self.frame = dict({'name': 'consent', 'url': 'about:srcdoc', 'nested': False,
                            'selector': FRAME}, **frame)
+        self.frame_sel = self.frame['selector'] or FRAME
 
     def frame_matches(self, selector):
         n = self.inner.count(selector)
         return [dict(self.frame, count=n)] if n else []
 
     def framed(self, frame_selector):
-        return self.inner if frame_selector == FRAME else None
+        return self.inner if frame_selector == self.frame_sel else None
 
 
-def _open(page, tmp_path, provider):
-    return mendwright.open(page, provider=provider, store_path=str(tmp_path / 'o.json'))
+def _open(page, tmp_path, provider, **kwargs):
+    return mendwright.open(page, provider=provider, store_path=str(tmp_path / 'o.json'), **kwargs)
 
 
 def _saved(tmp_path, key):
@@ -197,3 +199,99 @@ def test_the_stop_message_gives_selenium_advice_on_selenium():
     text = _frame_message('terms', '#inner-terms', frames, 'mendwright.open', 'why', selenium=True)
     assert "driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, 'iframe[name=\"consent\"]'))" in text
     assert 'page.frame' not in text
+
+
+# --- what the pre-release review found ----------------------------------------------------
+
+@pytest.mark.parametrize('how, why', [
+    ({'dry_run': True}, 'dry-run mode is on'),
+    ({'guard': lambda: False}, 'a transaction guard is currently blocking heals'),
+])
+def test_dry_run_and_a_blocking_guard_do_not_follow(how, why, tmp_path, stub_provider):
+    heal = _open(TwoDocs(INNER), tmp_path, stub_provider(None), **how)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    assert why in str(info.value) and heal.heals == []
+    saved = tmp_path / 'o.json'
+    assert not saved.exists() or 'frameXPath' not in saved.read_text(encoding='utf-8')
+
+
+def test_mendwright_disable_does_not_follow(tmp_path, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_DISABLE', '1')
+    heal = _open(TwoDocs(INNER), tmp_path, stub_provider(None))
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    assert 'MENDWRIGHT_DISABLE=1' in str(info.value) and heal.heals == []
+
+
+def test_a_quarantined_lookup_is_not_followed_again(tmp_path, stub_provider):
+    first = _open(TwoDocs(INNER), tmp_path, stub_provider(None))
+    first.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    first.coordinator.confirm_pending('terms', False)          # the action there failed
+    heal = _open(TwoDocs(INNER), tmp_path, stub_provider(None))
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    assert 'that lookup is quarantined' in str(info.value) and heal.heals == []
+
+
+def test_an_iframe_that_changed_its_attributes_is_followed_to_its_new_selector(tmp_path,
+                                                                              stub_provider):
+    first = _open(TwoDocs(INNER), tmp_path, stub_provider(None))
+    first.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0).check()
+    page = TwoDocs(INNER, selector='iframe[title="Consent"]')
+    heal = _open(page, tmp_path, stub_provider(None))
+    heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0).check()
+    assert page.actions == [('check', 'css=#inner-terms', ('iframe[title="Consent"]',))]
+    assert _saved(tmp_path, 'terms')['css=#inner-terms']['frameXPath'] == 'iframe[title="Consent"]'
+
+
+def test_a_later_selector_is_followed_when_the_first_cannot_be(tmp_path, stub_provider):
+    page = TwoDocs(INNER + "<input type='checkbox' id='other'>")
+    heal = _open(page, tmp_path, stub_provider(None))
+    heal.locator('terms', ["//input[@type='checkbox']", '#inner-terms'], role='checkbox',
+                 timeout_ms=0, poll_ms=0).check()
+    assert page.actions == [('check', 'css=#inner-terms', (FRAME,))]
+
+
+def test_a_store_without_the_new_keywords_still_takes_page_heals():
+    from mendwright.client import add_heal
+
+    class OldStore:
+        def __init__(self):
+            self.rows = []
+
+        def add_candidate(self, key, xpath, *, source='heal'):
+            self.rows.append((key, xpath, source))
+
+    store = OldStore()
+    assert add_heal(store, 'k', '//a', css='a.b', frame_xpath='') is True
+    assert add_heal(store, 'k', '//b', frame_xpath='iframe[id="f"]') is False
+    assert store.rows == [('k', '//a', 'heal')]
+
+
+def test_the_store_moves_and_updates_a_candidate_with_the_same_text(tmp_path):
+    from mendwright.store import load_store
+    store = load_store(None, str(tmp_path / 's.json'))
+    store.add_candidate('k', '//input', source='heal', frame_xpath='iframe[id="f"]', css='#a')
+    store.add_candidate('k', '//input', source='heal', frame_xpath='', css='')
+    again = load_store(None, str(tmp_path / 's.json'))
+    [row] = [c for c in again.candidates('k') if c['xpath'] == '//input']
+    assert not row.get('frameXPath') and not row.get('css')
+    store.add_candidate('k', '//input', source='heal', frame_xpath='iframe[id="g"]')
+    store.add_candidate('k', '//input', source='heal')         # None: leaves it where it is
+    [row] = [c for c in store.candidates('k') if c['xpath'] == '//input']
+    assert row['frameXPath'] == 'iframe[id="g"]'
+
+
+def test_frame_selectors_match_the_src_whole_and_never_use_the_bare_tag():
+    from mendwright.drivers.base import frame_selector
+    tried = []
+
+    def count(selector):
+        tried.append(selector)
+        return 1 if selector.startswith('iframe[src') else 2
+
+    assert frame_selector({'tag': 'iframe', 'src': '/embed?token=abc'}, count) == 'iframe[src^="/embed?"]'
+    assert frame_selector({'tag': 'iframe', 'src': '/embed'}, count) == 'iframe[src="/embed"]'
+    assert frame_selector({'tag': 'iframe', 'src': ''}, count) is None
+    assert 'iframe' not in tried and not any('token' in t for t in tried)

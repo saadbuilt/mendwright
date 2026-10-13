@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
+from .client import _stored_status, add_heal
 from .coordinator import HealCoordinator, resolve_with_heal
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
@@ -339,6 +340,9 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         guard=guard or (lambda: True), dry_run=dry_run,
         guardrails=guardrails, journal=journal, heal_across_pages=heal_across_pages,
         entry=entry, fingerprint=fingerprint)
+    # MENDWRIGHT_DISABLE=1 swaps in a provider that declines, which the coordinator's heal
+    # path reads; the flag also stops a key being followed into an iframe.
+    coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
     return store, coord, timeout_ms
 
 
@@ -1109,6 +1113,11 @@ class Healer:
     def _frame_plan(self, key, selector, frames):
         """(iframe selector, selector to save) when key can be followed into the one iframe
         its selector matches in (see _follow_into_frame), else (None, why not)."""
+        coord = self.coordinator
+        if getattr(coord, 'disabled', False):
+            return None, 'healing is turned off by MENDWRIGHT_DISABLE=1'
+        if coord.dry_run:
+            return None, 'dry-run mode is on'
         try:
             destructive = bool(self.store.meta(key).get('destructive'))
         except Exception:
@@ -1127,7 +1136,27 @@ class Healer:
         alt = frame_spelling(selector)
         if alt is None:
             return None, 'a Playwright engine selector is not followed into an iframe'
+        status = _stored_status(self.store, key, alt)
+        if status == 'quarantined':
+            return None, ('it was looked up in an iframe before and an action on it failed '
+                          'there, so that lookup is quarantined')
+        if status == 'superseded':
+            return None, 'it was looked up in an iframe before and that lookup was superseded'
         return frame['selector'], alt
+
+    def _pick_frame(self, key, exc, matches, opener):
+        """From [(selector, frames)], the key's selectors that match inside an iframe, the
+        first one that can be followed, as (selector, frames, iframe selector, selector to
+        save). Raises the AttentionRequired for the first refusal when none can."""
+        __tracebackhide__ = True
+        refused = None
+        for selector, frames in matches:
+            frame, alt = self._frame_plan(key, selector, frames)
+            if frame is not None:
+                return selector, frames, frame, alt
+            if refused is None:
+                refused = (selector, frames, alt)
+        self._frame_stop(key, exc, refused[0], refused[1], opener, refused[2])
 
     def _frame_guard(self, key, exc, url):
         """Raise like the page guard when key was never found on this page."""
@@ -1138,13 +1167,16 @@ class Healer:
             raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + moved) from exc
 
     def _frame_follow(self, key, selector, frame, alt, driver):
-        """Check ``alt`` inside the iframe ``frame`` on the live page (exactly one visible
-        element of the key's role), then save it there and record it. Returns '' when the
-        key was followed, else the reason the check gave."""
+        """Check the guard, then ``alt`` inside the iframe ``frame`` on the live page
+        (exactly one visible element of the key's role), then save it there and record it.
+        Returns '' when the key was followed, else why not."""
+        if not self.coordinator.guard():
+            return 'a transaction guard is currently blocking heals'
         reason = live_reason(driver, alt, self.store.meta(key), (frame,))
         if reason:
-            return reason
-        self.store.add_candidate(key, alt, source='heal', frame_xpath=frame)
+            return "its element there failed mendwright's checks (" + reason + ')'
+        if not add_heal(self.store, key, alt, frame_xpath=frame):
+            return 'this store cannot save a selector inside an iframe'
         self.coordinator.record_frame(key, selector, alt, frame)
         self.coordinator.pending[key] = alt
         return ''
@@ -1156,32 +1188,32 @@ class Healer:
         asked: the selector is the key's own, and only the place changed. It counts as a
         heal with source 'frame' (strict mode fails on it, the canary checks it).
 
-        Not followed, with AttentionRequired saying why: a key marked destructive, a match
-        in several iframes or several elements, an iframe inside another iframe, an iframe
-        nothing tells apart from the others, a Playwright engine selector, a page the key
-        was never found on (the page guard), or an element that fails the live check.
-        Returns _NOT_FOLLOWED when no selector of the key matches in an iframe."""
+        Not followed, with AttentionRequired saying why: dry run, MENDWRIGHT_DISABLE=1 or a
+        guard that blocks heals, a key marked destructive, a match in several iframes or
+        several elements, an iframe inside another iframe, an iframe nothing tells apart
+        from the others, a Playwright engine selector, a lookup quarantined before, a page
+        the key was never found on (the page guard), or an element that fails the live
+        check. Returns _NOT_FOLLOWED when no selector of the key matches in an iframe."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
             return _NOT_FOLLOWED
+        matches = []
         for selector in self._frame_candidates(key):
             try:
                 frames = finder(selector)
             except Exception:
                 continue
-            if not frames:
-                continue
-            frame, alt = self._frame_plan(key, selector, frames)
-            if frame is None:
-                self._frame_stop(key, exc, selector, frames, 'mendwright.open', alt)
-            self._frame_guard(key, exc, self._url())
-            why = self._frame_follow(key, selector, frame, alt, self._driver)
-            if why:
-                self._frame_stop(key, exc, selector, frames, 'mendwright.open',
-                                 "its element there failed mendwright's checks (" + why + ')')
-            return attempt()
-        return _NOT_FOLLOWED
+            if frames:
+                matches.append((selector, frames))
+        if not matches:
+            return _NOT_FOLLOWED
+        selector, frames, frame, alt = self._pick_frame(key, exc, matches, 'mendwright.open')
+        self._frame_guard(key, exc, self._url())
+        why = self._frame_follow(key, selector, frame, alt, self._driver)
+        if why:
+            self._frame_stop(key, exc, selector, frames, 'mendwright.open', why)
+        return attempt()
 
     def _heal_scope(self, key):
         """(iframe selector, driver for that iframe) when key was last found inside an

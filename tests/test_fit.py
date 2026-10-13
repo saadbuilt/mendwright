@@ -94,7 +94,10 @@ def test_the_inventory_keeps_whole_rows_and_related_ones_first():
 def test_has_position_ignores_quoted_text():
     assert has_position("(//button[@type='submit'])[2]")
     assert has_position('//li[last()]') and has_position('//li[position() > 1]')
-    assert not has_position("//a[@title='[2]']") and not has_position("//button[@id='go']")
+    for xpath in ('//li[(3)]', '//li[2.0]', '//li[1+1]', "//a[number('2')]", '//x[ 2 ]'):
+        assert has_position(xpath), xpath
+    for xpath in ("//a[@title='[2]']", "//button[@id='go']", '//a[@n=1]', '//a[.="1"]'):
+        assert not has_position(xpath), xpath
 
 
 def test_apply_refuses_a_position_when_the_page_was_fitted():
@@ -157,3 +160,70 @@ def test_a_provider_that_reads_the_whole_page_gets_it_unchanged():
     assert applied == "(//button[@type='submit'])[1]"
     assert 'Apply coupon' in provider.bundles[0]['html']
     assert not provider.bundles[0]['html'].startswith(NOTE)
+
+
+
+# --- what the pre-release review found ----------------------------------------------------
+
+def _rows(n):
+    return ''.join('<tr><td>Item ' + str(i) + '</td><td><button>Remove</button></td></tr>'
+                   for i in range(n))
+
+
+def test_text_after_an_icon_counts_as_the_elements_own():
+    # The role pass can't fit 1,500 buttons, so only word matches are kept. The target's
+    # words follow its <svg>, so they are the svg's tail, and must still count.
+    page = ('<table>' + _rows(1500) + '</table><form><button type="submit"><svg class="icon">'
+            '</svg> Apply coupon</button></form>')
+    html, _ = fit_html(page, {'apply', 'coupon'}, 'button')
+    assert 'Apply coupon' in html and len(html) <= BUDGET
+
+
+def test_a_subtree_shorter_than_its_marker_is_not_left_out():
+    posts = _posts(400)
+    coupons = ''.join('<li><a href="/c/' + str(i) + '">Coupon ' + str(i) + '</a> <small>new</small></li>'
+                      for i in range(1000))
+    page = '<main>' + posts + '</main><ul>' + coupons + '</ul><button>Apply coupon</button>'
+    html, left_out = fit_html(page, {'apply', 'coupon'}, 'button')
+    assert left_out and len(html) <= BUDGET and 'Apply coupon' in html
+    assert '<small>new</small>' in html
+
+
+def test_redaction_placeholders_are_not_words():
+    items = ''.join('<div><img src="[URL]"><a href="[URL]">Product ' + str(i) + '</a></div>'
+                    for i in range(1500))
+    page = '<main>' + items + '</main><a href="/checkout">Checkout</a>'
+    bundle = {'key': 'checkout', 'expectedRole': 'link', 'expectedText': [],
+              'candidates': ["//a[@href='[URL]']"], 'inventory': [], 'html': page}
+    fitted, left_out = fit_bundle(bundle)
+    assert left_out and '/checkout' in fitted['html'] and len(fitted['html']) <= BUDGET
+
+
+def test_an_inventory_that_is_not_json_is_passed_on_for_the_provider_to_report():
+    rows = [{'tag': 'button', 'text': {'not', 'json'}}]
+    assert fit_inventory(rows) is rows
+
+
+def test_markers_merge_with_a_neighbour_from_another_pass_and_count_what_they_hide():
+    from mendwright.fit import _leave_out
+    root = lxml.html.fromstring('<div><p>a</p><p>b</p><span><i>x</i></span></div>')
+    first, second = root.xpath('//p')
+    assert _leave_out([second]) == 1
+    assert _leave_out([first]) == 1
+    assert lxml.html.tostring(root, encoding='unicode').count('left out here') == 1
+    assert '2 elements left out here' in lxml.html.tostring(root, encoding='unicode')
+    assert _leave_out(root.xpath('//i')) == 1
+    assert _leave_out(root.xpath('//span')) == 1
+    out = lxml.html.tostring(root, encoding='unicode')
+    assert out.count('left out here') == 1 and '4 elements left out here' in out
+
+
+def test_dry_run_reports_a_position_on_a_fitted_page_as_not_valid():
+    provider = _Provider("(//button[@type='submit'])[1]")
+    coord = HealCoordinator(_Store(), provider=provider, html_provider=lambda: LONG,
+                            inventory_provider=lambda: [], guard=lambda: True, dry_run=True,
+                            log=lambda line: logged.append(line))
+    logged = []
+    coord.log = logged.append
+    coord.try_heal('apply_coupon', META, coord.store.candidates('apply_coupon'), {})
+    assert any('valid=False' in line for line in logged), logged

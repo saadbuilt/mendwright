@@ -196,6 +196,7 @@ last_error: str | None
 
 `HealProvider` in `mendwright/providers/base.py` is the protocol.
 `last_error` is optional for providers outside this repo (the coordinator reads it with `getattr`), and required for built-in ones.
+Two optional class attributes change what the coordinator sends: `wants_fingerprint = True` adds the key's saved fingerprint to the bundle (only for a model on the user's machine), and `wants_full_html = True` sends the page as captured instead of fitted to the 60,000-character prompt (`mendwright/fit.py`), which also lets a proposal use a position such as `[2]`. A provider that builds its prompt with `build_prompt()` leaves both off.
 
 Rules:
 

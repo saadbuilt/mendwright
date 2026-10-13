@@ -639,24 +639,24 @@ class AsyncHealer:
         if not callable(_member(self._driver, 'frame_matches')):
             return _NOT_FOLLOWED
         opener = 'await mendwright.aio.open'
+        matches = []
         for selector in core._frame_candidates(key):
             try:
                 frames = await _awaited(self._driver.frame_matches(selector))
             except Exception:
                 continue
-            if not frames:
-                continue
-            frame, alt = core._frame_plan(key, selector, frames)
-            if frame is None:
-                core._frame_stop(key, exc, selector, frames, opener, alt)
-            core._frame_guard(key, exc, await _url(self._driver))
-            why = await _in_thread(core._frame_follow, key, selector, frame, alt,
-                                   self.coordinator.driver)
-            if why:
-                core._frame_stop(key, exc, selector, frames, opener,
-                                 "its element there failed mendwright's checks (" + why + ')')
-            return await attempt()
-        return _NOT_FOLLOWED
+            if frames:
+                matches.append((selector, frames))
+        if not matches:
+            return _NOT_FOLLOWED
+        selector, frames, frame, alt = core._pick_frame(key, exc, matches, opener)
+        core._frame_guard(key, exc, await _url(self._driver))
+        # In a worker thread: the guard and the live check reach the page through the bridge.
+        why = await _in_thread(core._frame_follow, key, selector, frame, alt,
+                               self.coordinator.driver)
+        if why:
+            core._frame_stop(key, exc, selector, frames, opener, why)
+        return await attempt()
 
     async def _heal_scope(self, key):
         """Healer._heal_scope(), with the iframe's driver made on the event loop and wrapped

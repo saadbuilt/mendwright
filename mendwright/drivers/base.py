@@ -126,8 +126,10 @@ _FRAME_SRC_SKIP = ('about:', 'data:', 'javascript:', 'blob:')
 def frame_selector(info, count):
     """A CSS selector that matches one iframe element and nothing else, built from its
     attributes (``info``, as FRAME_ATTRS_JS reads them), or None. Tried in order: its id,
-    name, title, the start of its src without the query, and the bare tag when it is the
-    only frame; ``count(selector)`` must be 1. A generated-looking id or name is skipped."""
+    name, title, then its src up to the query or fragment (matched whole, so /embed never
+    matches /embed-ads, and the query, which can hold a token, is never saved);
+    ``count(selector)`` must be 1. A generated-looking id or name is skipped. The bare tag
+    is never used: a later page could have one other iframe, and a heal would run there."""
     from ..candidates import generated
     from ..css import css_string
     if not isinstance(info, dict):
@@ -141,10 +143,13 @@ def frame_selector(info, count):
             options.append(tag + '[' + name + '=' + css_string(value) + ']')
     src = info.get('src')
     if isinstance(src, str) and src.strip() and not src.startswith(_FRAME_SRC_SKIP):
-        base = re.split(r'[?#]', src, maxsplit=1)[0]
+        cut = re.search(r'[?#]', src)
+        base = src[:cut.start()] if cut else src
         if base and len(base) <= 300:
-            options.append(tag + '[src^=' + css_string(base) + ']')
-    options.append(tag)
+            if cut:   # the src as far as its query or fragment, and that character
+                options.append(tag + '[src^=' + css_string(base + cut.group(0)) + ']')
+            else:
+                options.append(tag + '[src=' + css_string(base) + ']')
     for option in options:
         try:
             if count(option) == 1:
