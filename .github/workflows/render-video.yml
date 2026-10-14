@@ -1,0 +1,92 @@
+name: Render video
+
+# Renders the explainer video in video/ on GitHub's runners: the frames are split across
+# parallel jobs, then joined without re-encoding. The video is the "mendwright-explainer"
+# artifact of the run, with a few stills for a quick look.
+
+on:
+  push:
+    branches: [video]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-video-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  SEGMENTS: "10"
+
+jobs:
+  render:
+    name: render ${{ matrix.seg }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: true
+      matrix:
+        seg: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Fonts and ffmpeg
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg fonts-inter fonts-cascadia-code fonts-dejavu-core
+          fc-list : family | grep -i -E "^(inter|cascadia)" | sort -u
+      - name: Playwright
+        run: |
+          python -m pip install playwright==1.53.0
+          python -m playwright install --with-deps chromium
+      - name: Render part ${{ matrix.seg }} of ${{ env.SEGMENTS }}
+        run: python video/render.py --video "seg-${{ matrix.seg }}.mp4" --segment ${{ matrix.seg }} "$SEGMENTS"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: seg-${{ matrix.seg }}
+          path: seg-${{ matrix.seg }}.mp4
+          retention-days: 3
+          if-no-files-found: error
+
+  join:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: ffmpeg
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: seg-*
+          merge-multiple: true
+          path: segs
+      - name: Join the parts
+        run: |
+          for i in $(seq 0 $((SEGMENTS - 1))); do echo "file 'segs/seg-$i.mp4'"; done > list.txt
+          ffmpeg -y -loglevel error -f concat -safe 0 -i list.txt -c copy -movflags +faststart mendwright-explainer.mp4
+          ffprobe -v error -count_frames -show_entries format=duration,size:stream=nb_read_frames -of compact mendwright-explainer.mp4
+          dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 mendwright-explainer.mp4)
+          for f in 0.02 0.15 0.25 0.38 0.5 0.62 0.75 0.88 0.99; do
+            t=$(python3 -c "print(round($dur * $f, 2))")
+            ffmpeg -y -loglevel error -ss "$t" -i mendwright-explainer.mp4 -frames:v 1 "still-$f.png"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mendwright-explainer
+          path: |
+            mendwright-explainer.mp4
+            still-*.png
+          retention-days: 30
+          if-no-files-found: error

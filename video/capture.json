@@ -1,0 +1,242 @@
+{
+ "viewport": [
+  1080,
+  736
+ ],
+ "A_plain_v1": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.047,
+   "log": []
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.031,
+   "log": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.032,
+   "log": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.031,
+   "log": []
+  }
+ ],
+ "B_plain_banner": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": false,
+   "error_type": "TimeoutError",
+   "error": "Page.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"#email\")\n    - locator resolved to <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"/>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"cc-wrap\" class=\"cookie-consent\">\u2026</div> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"cc-wrap\" class=\"cookie-consent\">\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    58 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div id=\"cc-wrap\" class=\"cookie-consent\">\u2026</div> intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n",
+   "seconds": 30.0,
+   "log": []
+  }
+ ],
+ "B_banner_up_after": true,
+ "C_mendwright_banner": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.172,
+   "log": [
+    "mendwright: handled interruption 'cookie_banner' before '#email'"
+   ]
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.0,
+   "log": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.078,
+   "log": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.062,
+   "log": []
+  }
+ ],
+ "C_banner_up_after": false,
+ "C_heals": [],
+ "D_plain_v2": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": false,
+   "error_type": "TimeoutError",
+   "error": "Page.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"#email\")\n",
+   "seconds": 30.016,
+   "log": []
+  }
+ ],
+ "D_mendwright_v2": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 10.235,
+   "log": [
+    "mendwright: healed '#email': #email -> //input[@name='email'] (fingerprint, 0.0s)"
+   ]
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.0,
+   "log": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 10.64,
+   "log": [
+    "mendwright: healed '#accept-terms': #accept-terms -> //input[@id='opt-91c4'] (LocalModelProvider, 0.5s)"
+   ]
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 10.203,
+   "log": [
+    "mendwright: healed '#continue': #continue -> //button[normalize-space()='Continue to payment'] (fingerprint, 0.0s)"
+   ]
+  }
+ ],
+ "D_heals": [
+  {
+   "key": "#email",
+   "old": "('#email',)",
+   "new": "//input[@name='email']",
+   "source": "fingerprint"
+  },
+  {
+   "key": "#accept-terms",
+   "old": "('#accept-terms',)",
+   "new": "//input[@id='opt-91c4']",
+   "source": "model"
+  },
+  {
+   "key": "#continue",
+   "old": "('#continue',)",
+   "new": "//button[normalize-space()='Continue to payment']",
+   "source": "fingerprint"
+  }
+ ],
+ "D_winners": {
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:07+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:07+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
+  "#accept-terms": {
+   "xpath": "//input[@id='opt-91c4']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:18+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:18+00:00",
+   "status": "active",
+   "css": "#opt-91c4"
+  },
+  "#continue": {
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:28+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:28+00:00",
+   "status": "active"
+  }
+ },
+ "D_checked": [
+  [
+   "opt-77a1",
+   false
+  ],
+  [
+   "opt-91c4",
+   true
+  ]
+ ],
+ "D_email_value": "ada@example.com",
+ "E_mendwright_v2_again": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.094,
+   "log": []
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.0,
+   "log": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.078,
+   "log": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.063,
+   "log": []
+  }
+ ],
+ "E_seconds": 0.235,
+ "E_heals": [],
+ "E_winners": {
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:07+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:28+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
+  "#accept-terms": {
+   "xpath": "//input[@id='opt-91c4']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:18+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:28+00:00",
+   "status": "active",
+   "css": "#opt-91c4"
+  },
+  "#continue": {
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "source": "heal",
+   "addedAt": "2026-10-14T15:11:28+00:00",
+   "lastSucceededAt": "2026-10-14T15:11:28+00:00",
+   "status": "active"
+  }
+ }
+}
