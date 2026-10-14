@@ -69,8 +69,11 @@ def _payment(tab, nxt, me, field=None):
 
 
 def _review(tab, nxt, me, field=None):
-    return page('<h1>Review your order</h1><button type="button" id="place" onclick="'
-                + _go(tab.address(nxt)) + '">Place order</button>' + _SCRIPT, 'review')
+    # A hidden copy of the button comes first, as for a mobile layout: the landmark matches
+    # both, and the visible one shows the step.
+    return page('<h1>Review your order</h1><button type="button" hidden>Place order</button>'
+                '<button type="button" id="place" onclick="' + _go(tab.address(nxt))
+                + '">Place order</button>' + _SCRIPT, 'review')
 
 
 def _upsell(tab, nxt, me, field=None):
