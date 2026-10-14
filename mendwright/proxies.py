@@ -10,11 +10,16 @@ key its heals are saved under. Everything else (goto, wait_for_*, evaluate, fram
 keyboard, ...) is the real page's. A locator built with options (has_text=...), a chained
 locator (page.locator('a').locator('b')) and the get_by_* locators are the real ones, not
 healed. is_visible() never waits or heals: it answers from the selectors mendwright has
-for the key, as Playwright answers at once.
+for the key, as Playwright answers at once. Interruptions (heal.interrupt(),
+open(cookies=...)) are handled before the real locators' actions too: mendwright registers
+them with page.add_locator_handler (Playwright 1.42 and later, on a Page).
 
 On Selenium, driver.find_element(by, value) for By.XPATH, By.CSS_SELECTOR, By.ID and
-By.NAME goes through heal.locator(f'{by}={value}', selector) and returns the WebElement.
-find_elements and everything else are the real driver's.
+By.NAME goes through heal.locator(f'{by}={value}', selector). find_element (for any By),
+find_elements, and find_element(s) on an element return HealingElements: the element,
+whose click, send_keys, clear and submit handle interruptions as heal.locator()'s actions
+do. Only the elements heal.locator() found carry the heal canary. Everything else is the
+real driver's.
 
 The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
 and focus work on a hidden element in Playwright, and Selenium's find_element returns a
@@ -34,7 +39,7 @@ import functools
 from typing import Any
 
 from .exceptions import AttentionRequired
-from .facade import ACTIONS
+from .facade import ACTIONS, ActionProxy
 from .selectors import InvalidSelector, check_syntax
 
 # Locator methods that resolve the key (and heal it when it broke) before they run: the
@@ -291,32 +296,109 @@ def not_found_error(exc):
     return _not_found_class(NoSuchElementException)(str(exc))
 
 
+def _by_key(by, value):
+    """The key heal.driver logs an element found with find_element(by, value) under."""
+    return str(by) + '=' + str(value)
+
+
+def _found(healer, element, key):
+    """element, found by the real driver, as a HealingElement whose actions handle
+    interruptions without the heal canary: no heal found it."""
+    action = ActionProxy(healer, key, element)
+    action._canary = False
+    return HealingElement(healer, element, action)
+
+
+class HealingElement(_Proxy):
+    """What heal.driver's find_element and find_elements return: the WebElement (or the
+    FramedElement inside an iframe), whose click, send_keys, clear and submit run through
+    the same guard as heal.locator()'s actions (ActionProxy). Registered interruptions the
+    page shows are handled first, and an action that failed because something covered the
+    element is retried once, only after one was handled; otherwise its own error is raised.
+    With no interruption registered, an action costs no browser call more than the
+    element's own.
+
+    It passes isinstance(el, WebElement), compares and hashes equal to the element it
+    wraps, and works with execute_script, ActionChains and expected_conditions. One that
+    wraps a FramedElement does not, as a FramedElement does not: use its in_frame().
+    find_element and find_elements on it return elements wrapped the same way. Everything
+    else is the element's own; .native is the element."""
+
+    def __init__(self, healer, target, action):
+        super().__init__(healer, target)
+        object.__setattr__(self, '_mw_action', action)
+
+    def click(self):
+        return self._mw_action._act('click', (), {}, None)
+
+    def send_keys(self, *value):
+        return self._mw_action._act('send_keys', value, {}, None)
+
+    def clear(self):
+        return self._mw_action._act('clear', (), {}, None)
+
+    def submit(self):
+        return self._mw_action._act('submit', (), {}, None)
+
+    def find_element(self, by=BY_ID, value=None):
+        return _found(self._mw_healer, self._mw_target.find_element(by, value),
+                      _by_key(by, value))
+
+    def find_elements(self, by=BY_ID, value=None):
+        healer, key = self._mw_healer, _by_key(by, value)
+        return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
+
+    def __eq__(self, other):
+        return self._mw_target == unwrap(other)
+
+    def __ne__(self, other):
+        return self._mw_target != unwrap(other)
+
+    def __hash__(self):
+        return hash(self._mw_target)
+
+    def __repr__(self):
+        return '<HealingElement ' + repr(self._mw_action.key) + ' ' + repr(self._mw_target) + '>'
+
+
 class HealingDriver(_Proxy):
     """What heal.driver returns for a Selenium WebDriver: see the module docstring."""
 
     def find_element(self, by=BY_ID, value=None):
         """driver.find_element(by, value), healed for By.XPATH, By.CSS_SELECTOR, By.ID and
         By.NAME: it waits up to the Healer's timeout_ms, heals a selector that broke, and
-        returns the WebElement (a FramedElement inside an iframe). When the element cannot
-        be found or healed it raises AttentionRequired, which is also a selenium
-        NoSuchElementException, so except clauses and WebDriverWait that expect one still
-        work."""
+        returns the element as a HealingElement (see above), wrapping a FramedElement
+        inside an iframe. When the element cannot be found or healed it raises
+        AttentionRequired, which is also a selenium NoSuchElementException, so except
+        clauses and WebDriverWait that expect one still work. Any other By, and a selector
+        that matches a hidden element or several, goes to the real driver, and its element
+        comes back wrapped the same way."""
         selector = selenium_selector(by, value)
-        key = str(by) + '=' + str(value)
+        key = _by_key(by, value)
         if (selector is None or not _healable(selector)
                 or self._mw_healer._passes_through(key, selector)):
-            return self._mw_target.find_element(by, value)
+            return _found(self._mw_healer, self._mw_target.find_element(by, value), key)
         __tracebackhide__ = True
         try:
-            return self._mw_healer.locator(key, selector).native
+            action = self._mw_healer.locator(key, selector)
         except AttentionRequired as exc:
             raise not_found_error(exc) from exc
+        if not action.present:
+            return None     # a key registered with heal.interrupt(), and not on the page
+        return HealingElement(self._mw_healer, action.native, action)
+
+    def find_elements(self, by=BY_ID, value=None):
+        """The real driver's find_elements(by, value), not healed, with each element
+        wrapped as a HealingElement."""
+        healer, key = self._mw_healer, _by_key(by, value)
+        return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
 
     def __repr__(self):
         return '<HealingDriver ' + repr(self._mw_target) + '>'
 
 
-_PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator, HealingDriver)
+_PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator, HealingDriver,
+                HealingElement)
 
 __all__ = ['HealingPage', 'HealingLocator', 'AsyncHealingPage', 'AsyncHealingLocator',
-           'HealingDriver', 'selenium_selector', 'not_found_error', 'unwrap']
+           'HealingDriver', 'HealingElement', 'selenium_selector', 'not_found_error', 'unwrap']

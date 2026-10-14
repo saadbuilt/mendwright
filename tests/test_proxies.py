@@ -14,8 +14,8 @@ import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
-from mendwright.proxies import (AsyncHealingPage, HealingDriver, HealingLocator, HealingPage,
-                                selenium_selector, unwrap)
+from mendwright.proxies import (AsyncHealingPage, HealingDriver, HealingElement, HealingLocator,
+                                HealingPage, selenium_selector, unwrap)
 
 V1 = ("<form><input id='email' name='email'><label><input type='checkbox' id='terms'> I agree"
       "</label><button id='go' type='button' title='Go now'>Go</button>"
@@ -478,3 +478,236 @@ def test_find_element_keeps_selenium_s_first_match_and_hidden_elements(tmp_path,
     assert provider.bundles == []
     assert driver.find_element('id', 'go').get_attribute('title') == 'Go now'   # healed path
     assert web.direct == [('xpath', '//li'), ('id', 'csrf'), ('css selector', '#tpl')]
+
+
+# --- Selenium: interruptions on the elements heal.driver finds -------------------------------------
+
+class ElementClickInterceptedException(Exception):
+    """Named like Selenium's, which mendwright recognises by name."""
+
+
+class NoSuchElementException(Exception):
+    pass
+
+
+class CoveredElement(WebElement):
+    """A WebElement on CoveredDriver: a click outside a visible [data-overlay] element
+    fails the way Chrome words it, and a click inside one closes it unless it has
+    data-sticky. Every call is listed in driver.calls, one per browser round trip."""
+
+    def _call(self, verb):
+        drv = self._driver
+        drv.calls.append(verb)
+        if drv.during_action:
+            drv.during_action.pop(0)(drv)
+
+    def _overlay(self):
+        """The [data-overlay] element this element is in, or None."""
+        return next((a for a in self.el.iterancestors() if a.get('data-overlay') is not None),
+                    None)
+
+    def click(self):
+        self._call('click')
+        cover = self._driver.overlay()
+        if cover is not None and self._overlay() is not cover:
+            error = ElementClickInterceptedException(
+                'element click intercepted: Element is not clickable at point (10, 10). Other '
+                'element would receive the click')
+            self._driver.raised.append(error)
+            raise error
+        self._driver.clicks.append(self.el.get('id'))
+        mine = self._overlay()
+        if mine is not None and mine.get('data-sticky') is None:
+            mine.drop_tree()
+
+    def send_keys(self, *value):
+        self._call('send_keys')
+        self.el.set('value', (self.el.get('value') or '') + ''.join(value))
+
+    def clear(self):
+        self._call('clear')
+        self.el.set('value', '')
+
+    def submit(self):
+        self._call('submit')
+        self._driver.submitted.append(self.el.get('id'))
+
+    def find_element(self, by, value):
+        self._driver.calls.append('find_element')
+        found = self.el.xpath('.' + value) if by == 'xpath' else []
+        if not found:
+            raise NoSuchElementException(value)
+        return CoveredElement(self._driver, found[0])
+
+    def find_elements(self, by, value):
+        self._driver.calls.append('find_elements')
+        return [CoveredElement(self._driver, e) for e in self.el.xpath('.' + value)]
+
+
+class CoveredDriver(WebDriver):
+    """The lxml WebDriver with CoveredElements and link text lookups. calls lists every
+    call that would reach the browser."""
+
+    def __init__(self, html):
+        super().__init__(html)
+        self.calls = []
+        self.raised = []
+        self.submitted = []
+        self.during_action = []     # callables run once each, inside the next actions
+
+    def _found(self, by, value):
+        if by == 'link text':
+            return self.doc.xpath('//a[normalize-space()=$v]', v=value)
+        return [e.el for e in WebDriver.find_elements(self, by, value)]
+
+    def find_elements(self, by, value):
+        self.calls.append('find_elements')
+        return [CoveredElement(self, e) for e in self._found(by, value)]
+
+    def find_element(self, by, value):
+        self.calls.append('find_element')
+        found = self._found(by, value)
+        if not found:
+            raise NoSuchElementException(value)
+        return CoveredElement(self, found[0])
+
+    def execute_script(self, script, *args):
+        self.calls.append('execute_script')
+        return super().execute_script(script, *args)
+
+    def overlay(self):
+        for el in self.doc.xpath('//*[@data-overlay]'):
+            if WebElement(self, el).is_displayed():
+                return el
+        return None
+
+    def show(self, html):
+        self.doc.xpath('//body')[0].append(lxml.html.fragment_fromstring(html))
+
+
+COOKIES = ("<div id='cc' data-overlay='' class='cookie-consent' role='dialog' "
+           "aria-label='Cookie consent'><p>We use cookies.</p>"
+           "<button id='cc-reject' type='button'>Reject all</button>"
+           "<button id='cc-accept' type='button'>Accept all</button></div>")
+CHECKOUT = ("<html><body><form id='f'><input id='email' name='email'>"
+            "<a href='#terms' id='terms-link'>Terms</a>"
+            "<input type='checkbox' class='opt' id='opt-a'>"
+            "<input type='checkbox' class='opt' id='opt-b'>"
+            "<button id='go' type='button'>Continue</button></form>{}</body></html>")
+
+
+def _covered(banner=True):
+    return CoveredDriver(CHECKOUT.format(COOKIES if banner else ''))
+
+
+def _interrupts(heal):
+    return [(e.key, e.before) for e in heal.handled_interruptions]
+
+
+@pytest.mark.parametrize('preset', [False, True])
+def test_an_element_from_heal_driver_handles_a_banner_before_it_clicks(tmp_path, preset):
+    web = _covered()
+    if preset:
+        heal = _open(web, tmp_path, cookies='reject')
+        key = 'cookie_banner'
+    else:
+        heal = _open(web, tmp_path)
+        heal.interrupt('cookies', '#cc-reject')
+        key = 'cookies'
+    el = heal.driver.find_element('id', 'email')
+    assert type(el) is HealingElement and isinstance(el, CoveredElement)
+    el.click()
+    assert web.overlay() is None and web.clicks == ['cc-reject', 'email']
+    assert _interrupts(heal) == [(key, 'id=email')]
+
+
+EVERY_WAY = {
+    'link text': lambda d: d.find_element('link text', 'Terms').click(),
+    'find_elements': lambda d: d.find_elements('xpath', "//input[@class='opt']")[1].click(),
+    'child': lambda d: d.find_element('id', 'f').find_element('xpath', '//button').click(),
+    'children': lambda d: d.find_element('id', 'f').find_elements('xpath', '//a')[0].click(),
+    'send_keys': lambda d: d.find_element('name', 'email').send_keys('ada@example.com'),
+    'clear': lambda d: d.find_element('css selector', '#email').clear(),
+    'submit': lambda d: d.find_element('xpath', '//form').submit(),
+}
+
+
+@pytest.mark.parametrize('way', sorted(EVERY_WAY))
+def test_every_way_to_find_an_element_gives_one_that_handles_the_banner(tmp_path, way):
+    web = _covered()
+    heal = _open(web, tmp_path)
+    heal.interrupt('cookies', '#cc-reject')
+    EVERY_WAY[way](heal.driver)
+    assert web.overlay() is None
+    assert web.clicks[0] == 'cc-reject'
+    assert [key for key, _ in _interrupts(heal)] == ['cookies']
+    assert web.raised == []
+
+
+def test_a_banner_that_opens_during_the_click_is_handled_and_the_click_retried(tmp_path):
+    web = _covered(banner=False)
+    heal = _open(web, tmp_path)
+    heal.interrupt('cookies', '#cc-reject')
+    el = heal.driver.find_element('link text', 'Terms')
+    web.during_action.append(lambda d: d.show(COOKIES))   # after the check before the click
+    el.click()
+    assert web.clicks == ['cc-reject', 'terms-link']
+    assert len(web.raised) == 1                           # the first click, once
+    assert _interrupts(heal) == [('cookies', 'link text=Terms')]
+
+
+def test_an_action_no_interruption_explains_raises_its_own_error(tmp_path):
+    web = _covered()                                       # a banner nobody registered
+    heal = _open(web, tmp_path)
+    heal.interrupt('promo', '#promo-close')
+    el = heal.driver.find_element('link text', 'Terms')
+    with pytest.raises(ElementClickInterceptedException) as info:
+        el.click()
+    assert info.value is web.raised[0] and len(web.raised) == 1     # not retried
+    assert heal.handled_interruptions == []
+
+
+def test_only_an_element_heal_locator_found_reports_to_the_heal_canary(tmp_path, monkeypatch):
+    web = _covered()                                       # every click outside it fails
+    heal = _open(web, tmp_path)
+    reported = []
+    monkeypatch.setattr(heal.coordinator, 'confirm_pending',
+                        lambda key, success: reported.append((key, success)))
+    driver = heal.driver
+    for el in (driver.find_element('link text', 'Terms'), driver.find_elements('css selector', '#go')[0],
+               driver.find_element('id', 'f').find_element('xpath', '//button')):
+        with pytest.raises(ElementClickInterceptedException):
+            el.click()
+    assert reported == []
+    with pytest.raises(ElementClickInterceptedException):
+        driver.find_element('id', 'go').click()           # resolved by heal.locator()
+    assert reported == [('id=go', False)]
+
+
+def test_with_no_interruption_registered_an_action_costs_no_extra_browser_call(tmp_path):
+    web = _covered(banner=False)
+    driver = _open(web, tmp_path).driver
+    found = [driver.find_element('link text', 'Terms'), driver.find_elements('css selector', '#email')[0],
+             driver.find_element('id', 'email'),          # passed through, listed, healed
+             driver.find_element('id', 'f').find_element('xpath', '//input')]
+    for el in found:
+        web.calls.clear()
+        el.click()
+        el.send_keys('x')
+        el.clear()
+        el.submit()
+        assert web.calls == ['click', 'send_keys', 'clear', 'submit']
+
+
+def test_a_healing_element_stands_in_for_the_element(tmp_path):
+    web = _covered(banner=False)
+    driver = _open(web, tmp_path).driver
+    el = driver.find_element('id', 'email')
+    raw = el.native
+    assert isinstance(el, CoveredElement) and unwrap(el) is raw
+    assert el == raw and raw == el and not (el != raw) and hash(el) == hash(raw)
+    assert el != driver.find_element('id', 'go')
+    assert el.get_attribute('name') == 'email' and el.tag_name == 'input'
+    assert repr(el).startswith("<HealingElement 'id=email' <")
+    el.marker = 1                                          # attributes land on the element
+    assert raw.marker == 1

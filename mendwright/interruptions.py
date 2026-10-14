@@ -4,7 +4,10 @@ a newsletter modal or an "are you still there?" dialog.
 heal.interrupt(key, selector) registers one. mendwright looks for it only when a step
 needs help: when a locator() misses, before an action while the page shows it, and when an
 action fails because something covered the element. When it is there and visible,
-mendwright performs its action (a click by default) and goes on with the step.
+mendwright performs its action (a click by default) and goes on with the step. The actions
+are those of heal.locator(), heal.page's selector shortcuts and the elements heal.driver
+finds; on a Playwright Page it is also registered with page.add_locator_handler, so
+Playwright hands over before any other action on the page (see Healer._watch).
 
 mendwright.open(page, cookies='reject' | 'accept') registers a ready-made one for the
 consent banners of common consent managers. This module holds its selectors:
@@ -24,7 +27,8 @@ consent banners of common consent managers. This module holds its selectors:
 
 The selectors are XPath, so they also run on Selenium. Usercentrics draws its banner
 inside a shadow root, which XPath cannot reach; a CSS selector for its buttons is tried as
-well, which Playwright's CSS engine can reach and Selenium's cannot.
+well, which Playwright's CSS engine can reach and Selenium's cannot. Playwright's overlay
+handler watches for all of them, the CSS one included.
 """
 
 from dataclasses import dataclass, field
@@ -193,14 +197,19 @@ _NOT_REJECT = ('reject', 'decline', 'deny', 'disagree', 'necessary', 'essential'
 
 
 def generic_xpath(choice):
-    """The fallback for consent banners no listed manager made (see the module docs)."""
+    """The fallback for consent banners no listed manager made (see the module docs).
+
+    The banner check comes before the label checks: XPath stops at the first false
+    operand of 'and', and on a page without a banner the attribute test fails at once for
+    each button, where the label tests would read every button's text a dozen times.
+    Playwright runs this before every action on the page (see Healer._watch)."""
     if choice == 'reject':
         says = ('(' + _says(_REJECT_WORDS) + ' or ' + _CLOSE + ') and '
                 + _says_none(_NOT_ACCEPT))
     else:
         says = _says(_ACCEPT_WORDS) + ' and ' + _says_none(_NOT_REJECT)
-    return ('//*[' + _BUTTONISH + ' and string-length(normalize-space(.)) <= 40 and ' + says
-            + ' and ' + _CONTAINER + ']')
+    return ('//*[' + _BUTTONISH + ' and ' + _CONTAINER
+            + ' and string-length(normalize-space(.)) <= 40 and ' + says + ']')
 
 
 # Per manager: (reject buttons, close buttons, accept buttons), as XPath expressions.

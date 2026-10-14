@@ -8,6 +8,8 @@ page, have changed.
 - is_interception_error(): whether an action failed because something covered the
   element (a cookie banner, a modal). mendwright then looks for a registered interruption
   and retries the action once, only after it handled one.
+- UNROUTED_STEP: what an interruption is logged as handled before when it showed up
+  during a Playwright action mendwright did not route.
 - The texts mendwright logs or raises for interruptions, skipped steps and the page
   guard. Sync and async healers use the same ones.
 """
@@ -25,6 +27,12 @@ MAX_INTERRUPTIONS_PER_STEP = 3
 # After an interruption's action, how long mendwright waits for it to go away (a banner
 # that fades out), at most. The step's own timeout_ms is used when it is shorter.
 SETTLE_MS = 2000
+
+# The step an interruption is handled before when Playwright's overlay handler (see
+# Healer._watch) ran for an action mendwright did not route, such as
+# heal.page.get_by_role(...).click(): mendwright never sees that action, so it has no key
+# to name it by. The angle brackets keep it from reading as a key in the log and journal.
+UNROUTED_STEP = '<page action>'
 
 _UUID = re.compile(r'^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$')
 # Hex of 16 or more characters: database ids such as MongoDB's 24, hashes.
@@ -122,6 +130,16 @@ def loop_message(before, key, count):
             'handling it again. Check that the action registered with heal.interrupt('
             + repr(key) + ', ...) really closes it, for example with action="press", '
             'args=("Escape",) or a selector for its close button.')
+
+
+def stuck_message(key, count):
+    """The WARNING for an interruption that stayed on the page after its action, when
+    Playwright's overlay handler stops handling it (see Healer._overlay_wanted)."""
+    return (repr(key) + ' was still on the page after mendwright handled it ' + str(count)
+            + ' times in a row, so Playwright\'s overlay handler leaves it alone until it is '
+            'gone. Check that the action registered with heal.interrupt(' + repr(key)
+            + ', ...) really closes it, for example with action="press", args=("Escape",) or '
+            'a selector for its close button.')
 
 
 def nothing_matched_message(before, keys, preset=False):

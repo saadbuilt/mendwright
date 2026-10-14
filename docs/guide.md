@@ -235,7 +235,7 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 - The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text` and `get_attribute` on the page.
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
-- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
+- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on). Interruptions are still handled before their actions, from Playwright 1.42: see [Interruptions](#interruptions).
 - The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
 - `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
 - `strict=` is dropped, because a mendwright lookup is always strict.
@@ -245,14 +245,16 @@ On a Playwright healer, `heal.driver` is still mendwright's own driver object.
 
 ### Selenium
 
-`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the `WebElement` (a `FramedElement` inside an iframe).
+`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the element as a `HealingElement` (around a `FramedElement` inside an iframe).
 `By.ID` and `By.NAME` become `[id="..."]` and `[name="..."]` CSS selectors, and the key for `find_element(By.ID, "terms")` is `id=terms`.
 
 - A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
 - When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
-- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, `find_element()` on a returned element, and every other driver method.
+- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, and `find_element()` or `find_elements()` on a returned element. Their elements come back as `HealingElement`s too. Every other driver method is the real driver's.
+- A `HealingElement`'s `click()`, `send_keys()`, `clear()` and `submit()` handle registered [interruptions](#interruptions) first, as a proxy action does, and try a click that something covered once more after handling one. Otherwise they raise Selenium's own error. With no interruption registered they make no browser call besides the element's own.
+- A `HealingElement` passes `isinstance(el, WebElement)`, is equal to the element it wraps (and hashes the same), and works with `driver.execute_script(..., el)`, `ActionChains` and `expected_conditions`. One around a `FramedElement` needs `in_frame()` for those, as before (see [Selenium](#selenium-1)). Everything else is the element's own, and `el.native` is the element.
 - A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)` or `driver.native`.
-- Actions on the returned `WebElement` are Selenium's own, so a wrong heal isn't quarantined when the action fails. The pytest plugin confirms it when the test passes, and `heal.confirm_all(False)` quarantines it.
+- When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The elements of the other `By` values and of `find_elements()` were never healed, so their actions confirm and quarantine nothing. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
 
 On a Selenium healer, `heal.page` is still the WebDriver.
 
@@ -516,7 +518,7 @@ print(await heal.present("newsletter"))
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` raises `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
-- `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
+- `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
 - Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
@@ -651,6 +653,16 @@ mendwright looks for registered interruptions only when a step needs help:
 - before an action, when the page shows one of them (a quick check for each registered interruption, only when you registered any)
 - when an action fails because something covered the element: Playwright's "intercepts pointer events" or "element is not visible", Selenium's `ElementClickInterceptedException` or `ElementNotInteractableException`
 
+On Selenium, the elements `heal.driver` returns look for registered interruptions in the same way before `click()`, `send_keys()`, `clear()` and `submit()`, whatever `By` found them (see [No changes per step](#no-changes-per-step)).
+
+On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` also register each interruption with `page.add_locator_handler()`. Playwright then checks for it before every action on the page, and again each time an action that waits (for a disabled button, say) tries once more, and hands over to mendwright when the page shows it. So it is handled before the actions mendwright does not route as well: `get_by_role()` and the other `get_by_*` locators, chained locators, `.first` and `.nth()`, and the page's own methods, on `heal.page` or on the page itself. A banner that opens while an action waits is handled at once, instead of after the action's timeout.
+
+- Such an action has no key, so the WARNING line and the journal event say `before '<page action>'`. One that happens during a step of mendwright, such as the scroll before a click, is logged before that step and counts toward its 3.
+- An interruption that is still on the page after mendwright handled it 3 times in a row this way is left alone, with one WARNING, until mendwright sees it gone.
+- Registering a key again replaces its handler. From Playwright 1.44 the old one is removed from the page; before that it stays and does nothing.
+- Playwright runs the check before every action, so each registered interruption costs one query of the page per action. With `cookies=`, on a page of 2,000 elements in Chromium, that added 15 to 30 ms to each action.
+- A `Frame` has no `add_locator_handler()`, so a healer opened on one, and Playwright before 1.42, keep the checks above only.
+
 When one is there and visible, mendwright performs its action, waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
 A failed action is tried again once, and only after an interception error and a handled interruption, so an action that may already have taken effect is never repeated. An error whose Playwright call log says the action was done (`click action done`), such as a click that went through and then timed out waiting for the next page, is never tried again, even when an earlier attempt in the same log was intercepted.
 At most 3 interruptions are handled for one step (one `locator()` call, or one action). If one is still there after that, mendwright raises `AttentionRequired` and tries no heal. That stops an interruption that comes back each time it is closed, for example when its action doesn't close it.
@@ -721,6 +733,7 @@ Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes th
 
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
+WARNING mendwright: handled interruption 'cookie_banner' before '<page action>'
 WARNING mendwright: the action on 'email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (heal.interrupt(): 'cookies') matched a visible element, so it did not try the action again. If the element in the way is one of those registered with heal.interrupt(), its selector no longer matches: update it. Otherwise register the button that closes the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
@@ -728,7 +741,7 @@ INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is no
 
 | Event | Fields |
 |---|---|
-| `flow.interrupt` | `key`, `before` (the step it was handled for), `action`, and `selector` or `preset` |
+| `flow.interrupt` | `key`, `before` (the step it was handled for, or `<page action>`), `action`, and `selector` or `preset` |
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
 

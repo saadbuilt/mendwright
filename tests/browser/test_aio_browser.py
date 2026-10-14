@@ -410,6 +410,57 @@ def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
     assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
 
 
+def test_flow_actions_mendwright_does_not_route_reject_the_banner_first(engine, tmp_path):
+    # get_by_role and a chained locator are the real page's: Playwright's overlay handler
+    # hands over to mendwright before them.
+    async def main():
+        page = await engine.page(_ONETRUST)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, cookies='reject')
+            await heal.page.get_by_role('button', name='Create account').click(timeout=5000)
+            await heal.page.locator('form').locator('#email').fill('ada@example.com')
+            return heal, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, texts = engine.run(main())
+    assert texts == ('ada@example.com', 'rejected', 'created')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookie_banner', '<page action>')]
+
+
+_RACE = _ONETRUST.replace('id="onetrust-consent-sdk"', 'id="onetrust-consent-sdk" hidden') + """
+<script>const create = document.getElementById('create'); create.disabled = true;
+setTimeout(() => document.getElementById('onetrust-consent-sdk').hidden = false, 500);
+setTimeout(() => { create.disabled = false; }, 1200);</script>"""
+
+
+@pytest.mark.parametrize('routed', [True, False])
+def test_flow_a_banner_that_opens_while_an_action_waits(engine, tmp_path, routed):
+    # Create account is disabled until 1.2 s and the banner opens at 0.5 s, after the
+    # check before the click: Playwright hands over to mendwright while the click waits.
+    async def main():
+        page = await engine.page(_RACE)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, cookies='reject')
+            started = asyncio.get_running_loop().time()
+            if routed:
+                await heal.locator('create', '#create').click(timeout=30000)
+            else:
+                await heal.page.get_by_role('button', name='Create account').click(timeout=30000)
+            return heal, asyncio.get_running_loop().time() - started, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, elapsed, texts = engine.run(main())
+    assert elapsed < 6              # without the handler: the click's whole 30 s timeout
+    assert texts[1:] == ('rejected', 'created')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookie_banner', 'create' if routed else '<page action>')]
+
+
 def test_flow_an_optional_step(engine, tmp_path):
     provider = Stub("//button[@id='create']")
 
