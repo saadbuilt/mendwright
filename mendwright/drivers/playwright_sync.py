@@ -14,8 +14,9 @@ import re
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
-from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, frame_selector, inventory_rows,
-                   is_async_api, looks_like_locator, summary_from_js)
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
+                   POPUP_CONTROLS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, frame_selector,
+                   inventory_rows, is_async_api, looks_like_locator, summary_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -227,6 +228,51 @@ class PlaywrightSyncDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+    # --- popups, for open(dismiss=True) (see mendwright.dismiss) ---------------------------
+
+    def popup_probe(self, native, known=None):
+        """What covers the element of a handle() result (POPUP_PROBE_JS), in one round trip
+        that does not wait: null unless the Locator matches one element. known is a popup's
+        root from popup_root(), to learn whether it is gone."""
+        return native.evaluate_all(POPUP_PROBE_JS, {'known': known})
+
+    def popup_root(self, native, expect):
+        """An ElementHandle on the root of the popup over the element (POPUP_ROOT_JS), or
+        None when it is no longer what mendwright.dismiss.expect_of() describes."""
+        handle = native.evaluate_handle(POPUP_ROOT_JS, expect, timeout=2000)
+        element = handle.as_element()
+        if element is None:
+            handle.dispose()
+        return element
+
+    def popup_controls(self, native, root):
+        return root.evaluate(POPUP_CONTROLS_JS)
+
+    def popup_click(self, native, root, expect, timeout_ms):
+        """Click control number expect['index'] of the popup, a real click through
+        Playwright's checks, when it is still the one mendwright chose. True when it was
+        clicked."""
+        handle = root.evaluate_handle(POPUP_CONTROL_JS, expect)
+        element = handle.as_element()
+        if element is None:
+            handle.dispose()
+            return False
+        try:
+            element.click(timeout=timeout_ms)
+        finally:
+            element.dispose()
+        return True
+
+    def press_escape(self, native):
+        """Press Escape on the page's keyboard (a Frame's page for a Frame)."""
+        page = self._page
+        keyboard = getattr(page, 'keyboard', None) or page.page.keyboard
+        keyboard.press('Escape')
+        return True
+
+    def popup_release(self, root):
+        root.dispose()
 
 
 def detect(obj) -> bool:

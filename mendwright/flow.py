@@ -10,8 +10,10 @@ page, have changed.
   and retries the action once, only after it handled one.
 - UNROUTED_STEP: what an interruption is logged as handled before when it showed up
   during a Playwright action mendwright did not route.
-- The texts mendwright logs or raises for interruptions, skipped steps and the page
-  guard. Sync and async healers use the same ones.
+- DISMISS_KEY: the key a popup that open(dismiss=True) dismissed is listed under (see
+  mendwright.dismiss).
+- The texts mendwright logs or raises for interruptions, dismissed popups, skipped steps
+  and the page guard. Sync and async healers use the same ones.
 """
 
 import re
@@ -33,6 +35,10 @@ SETTLE_MS = 2000
 # heal.page.get_by_role(...).click(): mendwright never sees that action, so it has no key
 # to name it by. The angle brackets keep it from reading as a key in the log and journal.
 UNROUTED_STEP = '<page action>'
+
+# The key handled_interruptions lists a popup under that open(dismiss=True) dismissed (see
+# mendwright.dismiss): nobody registered it, so it has no key of its own.
+DISMISS_KEY = '<popup>'
 
 _UUID = re.compile(r'^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$')
 # Hex of 16 or more characters: database ids such as MongoDB's 24, hashes.
@@ -142,6 +148,53 @@ def stuck_message(key, count):
             'a selector for its close button.')
 
 
+def _listed(items):
+    items = list(items)
+    if len(items) < 2:
+        return ''.join(items)
+    return ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+def dismissed_message(before, popup, how, tried):
+    """The WARNING for a popup open(dismiss=True) dismissed. popup is how
+    mendwright.dismiss.summary() names it, how is 'Escape' or the label of the button it
+    clicked, and tried lists what it did before that did not close it."""
+    text = 'dismissed a popup in the way of ' + repr(before) + ': ' + popup + ' with ' + how
+    if tried:
+        text += ', after ' + _listed(tried) + ' did not close it'
+    return text
+
+
+def undismissed_message(before, popup, tried):
+    """The WARNING for a popup in the way of a step that open(dismiss=True) found and could
+    not dismiss. tried lists what it did, in order: Escape, then the buttons it clicked."""
+    if not tried:
+        did = 'it changed before mendwright could act on it'
+    elif len(tried) == 1:
+        did = (tried[0] + ' did not close it, and it has no close or decline button that '
+               'mendwright may click')
+    else:
+        did = (_listed(tried) + ' did not close it, and it has no other close or decline '
+               'button that mendwright may click')
+    return ('could not dismiss a popup in the way of ' + repr(before) + ': ' + popup + '. '
+            + did[0].upper() + did[1:] + ', so mendwright left it alone: the action goes '
+            'ahead, and fails with the browser\'s own error if the popup blocks it. Register '
+            'the button that closes it with heal.interrupt("<name>", '
+            '"<selector of the button>"). If it needs data first, register its field before '
+            'the button: heal.interrupt("<name>_field", "<selector of the field>", '
+            'action="fill", args=("<value>",)).')
+
+
+def dismiss_loop_message(before, popup, count):
+    """The AttentionRequired text for a step whose budget is used up while a popup still
+    covers its element, such as one that comes back each time it is dismissed."""
+    return ('mendwright: ' + str(count) + ' interruptions and popups were handled for '
+            + repr(before) + ' and a popup is still in the way: ' + popup + '. It comes back '
+            'each time it is dismissed, so mendwright stopped instead of dismissing it again. '
+            'Register the button that closes it for good with heal.interrupt(), or find out '
+            'what opens it again.')
+
+
 def nothing_matched_message(before, keys, preset=False):
     """The WARNING for an action that failed because something covered its element or it
     could not be reached, when no interruption matched a visible element. keys are the
@@ -186,7 +239,7 @@ def absent_message(key):
 
 
 _JOURNAL_HELPERS = {'flow.interrupt': 'interrupted', 'flow.skip': 'skipped',
-                    'flow.page_guard': 'page_guard'}
+                    'flow.page_guard': 'page_guard', 'flow.dismiss': 'dismissed'}
 
 
 def journal_event(journal, name, key, **fields):

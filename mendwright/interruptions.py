@@ -60,16 +60,26 @@ class Interruption:
 
 @dataclass(frozen=True)
 class InterruptionEvent:
-    """One interruption a healer handled: its key, and the step it was handled for."""
+    """One interruption a healer handled: its key, and the step it was handled for.
+
+    A popup that open(dismiss=True) dismissed is listed too, under the key
+    flow.DISMISS_KEY ('<popup>'), with popup (how the log line names it, as
+    mendwright.dismiss.summary() does) and how ('Escape', or the label of the button it
+    clicked, in quotes). Both are None for a registered interruption."""
     key: str
     before: str
+    popup: str | None = None
+    how: str | None = None
 
 
 @dataclass
 class Budget:
-    """How many interruptions one step has handled (see flow.MAX_INTERRUPTIONS_PER_STEP)."""
+    """How many interruptions one step has handled (see flow.MAX_INTERRUPTIONS_PER_STEP).
+    gave_up names a popup open(dismiss=True) could not dismiss in this step, so it is
+    tried once per step and named in one WARNING."""
     used: int = 0
     handled: list = field(default_factory=list)
+    gave_up: str | None = None
 
 
 def make_interruption(key, selector, *, action='click', args=(), role=None, actions=()):

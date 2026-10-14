@@ -12,7 +12,10 @@ locator (page.locator('a').locator('b')) and the get_by_* locators are the real 
 healed. is_visible() never waits or heals: it answers from the selectors mendwright has
 for the key, as Playwright answers at once. Interruptions (heal.interrupt(),
 open(cookies=...)) are handled before the real locators' actions too: mendwright registers
-them with page.add_locator_handler (Playwright 1.42 and later, on a Page).
+them with page.add_locator_handler (Playwright 1.42 and later, on a Page). With
+open(dismiss=True), those locators come back as GuardedLocators instead: the real ones,
+still not healed, whose actions look for interruptions and popups first, as
+heal.locator()'s do.
 
 On Selenium, driver.find_element(by, value) for By.XPATH, By.CSS_SELECTOR, By.ID and
 By.NAME goes through heal.locator(f'{by}={value}', selector). find_element (for any By),
@@ -38,6 +41,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
+from .drivers.base import looks_like_locator
 from .exceptions import AttentionRequired
 from .facade import ACTIONS, ActionProxy
 from .selectors import InvalidSelector, check_syntax
@@ -137,7 +141,12 @@ class HealingLocator(_Proxy):
             return self._mw_healed(name)
         if name == 'is_visible':
             return self._mw_is_visible
-        return getattr(self._mw_target, name)
+        # With open(dismiss=True), a locator chained from this one is guarded (see
+        # GuardedLocator); otherwise it is the real one, as everything else is.
+        return _chained(self, name, getattr(self._mw_target, name))
+
+    def _mw_step(self):
+        return 'page.locator(' + repr(self._mw_selector) + ')'
 
     def _mw_is_visible(self, **kwargs):
         if not self._mw_healer._knows(self._mw_selector):
@@ -154,8 +163,19 @@ class HealingPage(_Proxy):
     def locator(self, selector, *args, **kwargs):
         target = self._mw_target.locator(selector, *args, **kwargs)
         if args or kwargs or not _healable(selector):
-            return target            # options, or a selector mendwright cannot store
+            if not self._mw_healer._dismiss_on:
+                return target        # options, or a selector mendwright cannot store
+            # With open(dismiss=True), that real locator is guarded (see GuardedLocator).
+            return _guard(self, target, 'page.' + _call_text('locator', (selector,) + args,
+                                                             kwargs))
         return HealingLocator(self._mw_healer, target, selector)
+
+    def __getattr__(self, name):
+        # With open(dismiss=True), get_by_* and frame_locator() hand back guarded locators.
+        return _chained(self, name, getattr(self._mw_target, name))
+
+    def _mw_step(self):
+        return 'page'
 
     def _mw_shortcut(self, name, selector, args, kwargs):
         if not _healable(selector) or (name in ANY_STATE
@@ -190,6 +210,100 @@ for _name in PAGE_SHORTCUTS:
     setattr(HealingPage, _name, _page_shortcut(_name))
 
 
+# --- guard-only locators, for open(dismiss=True) ----------------------------------------------
+
+# What builds another locator on a Page, Frame, Locator or FrameLocator, as methods and as
+# properties. With open(dismiss=True), heal.page hands back what they build as a
+# GuardedLocator; with it off, the real one, as before.
+LOCATOR_BUILDERS = frozenset(('locator', 'get_by_role', 'get_by_text', 'get_by_label',
+                              'get_by_placeholder', 'get_by_alt_text', 'get_by_title',
+                              'get_by_test_id', 'frame_locator', 'nth', 'filter', 'and_',
+                              'or_'))
+LOCATOR_PROPERTIES = frozenset(('first', 'last', 'owner', 'content_frame'))
+
+
+def _arg_text(value):
+    """An argument as a GuardedLocator's name shows it."""
+    if type(value) in (HealingLocator, AsyncHealingLocator, GuardedLocator, AsyncGuardedLocator):
+        return value._mw_step()
+    if looks_like_locator(value):
+        return '<locator>'
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + '...'
+
+
+def _call_text(name, args, kwargs):
+    """A call as a GuardedLocator's name shows it: get_by_role('button', name='Go')."""
+    parts = [_arg_text(a) for a in args] + [k + '=' + _arg_text(v) for k, v in kwargs.items()]
+    return name + '(' + ', '.join(parts) + ')'
+
+
+def _guard(proxy, value, name):
+    """value as a guard-only locator of the same family as proxy, when open(dismiss=True)
+    was passed and value is a Locator or FrameLocator; else value itself."""
+    if not proxy._mw_healer._dismiss_on or not looks_like_locator(value):
+        return value
+    return proxy._mw_guard_type(proxy._mw_healer, value, name)
+
+
+def _chained(proxy, name, value):
+    """Attribute ``name`` of proxy's target (``value``), as proxy hands it back: a locator
+    it builds is guarded (_guard), named after proxy's step (_mw_step) and the call;
+    anything else is value."""
+    if not proxy._mw_healer._dismiss_on:
+        return value
+    if name in LOCATOR_PROPERTIES:
+        return _guard(proxy, value, proxy._mw_step() + '.' + name)
+    if name in LOCATOR_BUILDERS and callable(value):
+        def build(*args, **kwargs):
+            return _guard(proxy, value(*args, **kwargs),
+                          proxy._mw_step() + '.' + _call_text(name, args, kwargs))
+        build.__name__ = name
+        return build
+    return value
+
+
+class GuardedLocator(_Proxy):
+    """With open(dismiss=True), what heal.page hands back for the locators it does not
+    heal: get_by_role() and the other get_by_* locators, a locator built with options, a
+    chained locator, .first, .last, .nth() and .filter(), on a sync Playwright page or
+    frame. It is the real Locator (or FrameLocator), not healed, and nothing about it is
+    saved. Its actions run through the same guard as heal.locator()'s (ActionProxy),
+    without the heal canary: registered interruptions are handled first, a popup that
+    covers the element is dismissed (see mendwright.dismiss), and an action that failed
+    because something covered the element is tried once more after one was. Locators built
+    from it are guarded the same way.
+
+    It passes isinstance() checks for the Locator, so Playwright's expect() takes it, and
+    .native is the Locator. Log lines and handled_interruptions name its step after the
+    calls that built it, such as "page.get_by_role('button', name='Continue')"."""
+
+    def __init__(self, healer, target, name):
+        super().__init__(healer, target)
+        object.__setattr__(self, '_mw_name', name)
+
+    def __getattr__(self, name):
+        value = getattr(self._mw_target, name)
+        if name in ACTIONS and callable(value):
+            return self._mw_guarded(name)
+        return _chained(self, name, value)
+
+    def _mw_step(self):
+        return self._mw_name
+
+    def _mw_guarded(self, verb):
+        def call(*args, **kwargs):
+            action = ActionProxy(self._mw_healer, self._mw_name, self._mw_target,
+                                 timeout_ms=_timeout_ms(kwargs))
+            action._canary = False     # no heal found this element
+            return action._act(verb, args, kwargs, None)
+        call.__name__ = verb
+        return call
+
+    def __repr__(self):
+        return '<GuardedLocator ' + repr(self._mw_name) + '>'
+
+
 # --- Playwright, async ---------------------------------------------------------------------------
 
 class AsyncHealingLocator(HealingLocator):
@@ -217,7 +331,10 @@ class AsyncHealingPage(HealingPage):
     def locator(self, selector, *args, **kwargs):
         target = self._mw_target.locator(selector, *args, **kwargs)
         if args or kwargs or not _healable(selector):
-            return target
+            if not self._mw_healer._dismiss_on:
+                return target
+            return _guard(self, target, 'page.' + _call_text('locator', (selector,) + args,
+                                                             kwargs))
         return AsyncHealingLocator(self._mw_healer, target, selector)
 
     async def _mw_shortcut(self, name, selector, args, kwargs):
@@ -235,6 +352,29 @@ class AsyncHealingPage(HealingPage):
 
     def __repr__(self):
         return '<AsyncHealingPage ' + repr(self._mw_target) + '>'
+
+
+class AsyncGuardedLocator(GuardedLocator):
+    """GuardedLocator on an AsyncHealer: its actions are coroutines."""
+
+    def _mw_guarded(self, verb):
+        async def call(*args, **kwargs):
+            from .aio import _guarded
+            action = _guarded(self._mw_healer, self._mw_name, self._mw_target,
+                              _timeout_ms(kwargs))
+            return await action._act(verb, args, kwargs, None)
+        call.__name__ = verb
+        return call
+
+    def __repr__(self):
+        return '<AsyncGuardedLocator ' + repr(self._mw_name) + '>'
+
+
+# The guard-only locator each proxy builds (see _guard).
+HealingPage._mw_guard_type = HealingLocator._mw_guard_type = GuardedLocator
+GuardedLocator._mw_guard_type = GuardedLocator
+AsyncHealingPage._mw_guard_type = AsyncHealingLocator._mw_guard_type = AsyncGuardedLocator
+AsyncGuardedLocator._mw_guard_type = AsyncGuardedLocator
 
 
 # --- Selenium ------------------------------------------------------------------------------------
@@ -398,7 +538,8 @@ class HealingDriver(_Proxy):
 
 
 _PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator, HealingDriver,
-                HealingElement)
+                HealingElement, GuardedLocator, AsyncGuardedLocator)
 
 __all__ = ['HealingPage', 'HealingLocator', 'AsyncHealingPage', 'AsyncHealingLocator',
-           'HealingDriver', 'HealingElement', 'selenium_selector', 'not_found_error', 'unwrap']
+           'HealingDriver', 'HealingElement', 'GuardedLocator', 'AsyncGuardedLocator',
+           'selenium_selector', 'not_found_error', 'unwrap']

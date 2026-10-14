@@ -24,7 +24,10 @@ Every safety decision is made by the sync core, unchanged:
   and handling an interruption runs the sync Healer's code in a worker thread through
   SyncBridge, so both make the same decisions. Interruptions are also registered with
   page.add_locator_handler, as on the sync Healer; Playwright calls that handler on the
-  event loop, and it hands the work to a worker thread the same way.
+  event loop, and it hands the work to a worker thread the same way. With
+  open(dismiss=True), the look at what covers an element before an action is awaited on
+  the event loop; dismissing a popup runs the sync Healer's code in a worker thread, as
+  handling an interruption does.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -51,10 +54,12 @@ from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
+from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
                      _healed_target_error, _locator_args, _overlay_locator, _overlay_options,
                      _setup, latest_success)
+from .facade import _dismiss_choice
 from .flow import InterruptionLoop, absent_message, is_interception_error
 from .interruptions import Budget
 from .limits import Guardrails
@@ -121,8 +126,9 @@ class SyncBridge:
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
     handle, url, outer_html, describe, inventory, fingerprint), act_on for an
-    interruption's action, and run() for any other callable. describe and fingerprint are
-    None when the async driver has none."""
+    interruption's action, the popup methods of open(dismiss=True) (popup_probe and the
+    others), and run() for any other callable. describe, fingerprint and the popup methods
+    are None when the async driver has none."""
 
     timeout = 30.0
 
@@ -139,6 +145,9 @@ class SyncBridge:
             self.describe = None
         if not callable(_member(driver, 'fingerprint')):
             self.fingerprint = None
+        for name in _POPUP_METHODS:
+            if not callable(_member(driver, name)):
+                setattr(self, name, None)   # open(dismiss=True) leaves popups alone
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -209,6 +218,31 @@ class SyncBridge:
             return self.run(self._driver.act_on, native, verb, *args, **kwargs)
         return self.run(getattr(native, verb), *args, **kwargs)
 
+    # The popup methods of open(dismiss=True) (see mendwright.drivers.base). None when the
+    # async driver has none.
+
+    def popup_probe(self, native, known=None):
+        return self.run(self._driver.popup_probe, native, known)
+
+    def popup_root(self, native, expect):
+        return self.run(self._driver.popup_root, native, expect)
+
+    def popup_controls(self, native, root):
+        return self.run(self._driver.popup_controls, native, root)
+
+    def popup_click(self, native, root, expect, timeout_ms):
+        return self.run(self._driver.popup_click, native, root, expect, timeout_ms)
+
+    def press_escape(self, native):
+        return self.run(self._driver.press_escape, native)
+
+    def popup_release(self, root):
+        return self.run(self._driver.popup_release, root)
+
+
+_POPUP_METHODS = ('popup_probe', 'popup_root', 'popup_controls', 'popup_click', 'press_escape',
+                  'popup_release')
+
 
 # --- opening -------------------------------------------------------------------------------
 
@@ -259,20 +293,22 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                guardrails: Guardrails | None = None, journal: Any = None,
                rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
                timeout_ms: int | None = None, cookies: str | None = None,
-               heal_across_pages: bool = False, fingerprint: bool | None = None) -> AsyncHealer:
+               heal_across_pages: bool = False, fingerprint: bool | None = None,
+               dismiss: bool = False) -> AsyncHealer:
     """Wrap an async Playwright Page or Frame into an AsyncHealer. Await it inside the
     event loop that runs the page.
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
     MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT)
-    and defaults as mendwright.open(), cookies=, heal_across_pages= and fingerprint=
-    included. guard may be a plain or an async callable; it runs on the event loop. The
-    provider stays sync and is called in a worker thread. A driver whose count, is_visible
-    and handle are coroutine functions is used as it is.
+    and defaults as mendwright.open(), cookies=, heal_across_pages=, fingerprint= and
+    dismiss= included. guard may be a plain or an async callable; it runs on the event
+    loop. The provider stays sync and is called in a worker thread. A driver whose count,
+    is_visible and handle are coroutine functions is used as it is.
     """
     from .proxies import unwrap
     page = unwrap(page)    # heal.page of another healer: use the real page
     preset = _cookie_preset(cookies, 'mendwright.aio.open()')
+    _dismiss_choice(dismiss, 'mendwright.aio.open()')
     driver = _async_driver(page)
     bridge = SyncBridge(driver, asyncio.get_running_loop())
     if guard is not None:
@@ -291,6 +327,7 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
         entry='mendwright.aio.open()', heal_across_pages=heal_across_pages,
         fingerprint=fingerprint)
     healer = AsyncHealer(page, driver, store, coord, timeout_ms=timeout_ms)
+    healer._core._dismiss_on = dismiss
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
         await healer._watch(preset)
@@ -612,6 +649,47 @@ class AsyncHealer:
         await self._interrupt_for_action(key, budget, timeout_ms, poll_ms)
         return budget
 
+    @property
+    def _dismiss_on(self):
+        """Whether open(dismiss=True) was passed (see Healer._dismiss)."""
+        return self._core._dismiss_on
+
+    async def _dismiss_before(self, key, native, verb, budget, timeout_ms, poll_ms):
+        """Healer._dismiss_before(), awaited."""
+        __tracebackhide__ = True
+        if not self._core._dismiss_on or budget.handled or verb in NOT_LOOKED_AT:
+            return False
+        return await self._dismiss_for_action(key, native, budget, timeout_ms, poll_ms)
+
+    async def _unblock_for_action(self, key, native, budget, timeout_ms, poll_ms):
+        """Healer._unblock(), awaited: a registered interruption first, then a popup."""
+        __tracebackhide__ = True
+        if await self._interrupt_for_action(key, budget, timeout_ms, poll_ms):
+            return True
+        return await self._dismiss_for_action(key, native, budget, timeout_ms, poll_ms)
+
+    async def _dismiss_for_action(self, key, native, budget, timeout_ms, poll_ms):
+        """Healer._dismiss() for an action. The look at what covers the element is awaited
+        on the event loop, so an action whose element is not covered costs one round trip
+        and no thread. A popup is dismissed by the sync Healer's code in a worker thread
+        through SyncBridge, under the lock, as _interrupt_for_action() handles an
+        interruption: two actions awaited together never click the same popup. That code
+        looks again first, since another action may have dismissed it meanwhile."""
+        __tracebackhide__ = True
+        core = self._core
+        probe = _member(self._driver, 'popup_probe')
+        if not core._dismiss_on or native is None or budget.gave_up or not callable(probe):
+            return False
+        try:
+            seen = await _awaited(self._driver.popup_probe(native, None))
+        except Exception:
+            return False
+        if popup_of(parse_probe(seen)) is None:
+            return False
+        async with self._lock:
+            return await _in_thread(core._dismiss, key, native, budget, timeout_ms, poll_ms,
+                                    self._sync_driver())
+
     async def _watch(self, item):
         """Healer._watch() for an async Playwright Page: register interruption ``item``
         with page.add_locator_handler (Playwright 1.42 and later), replacing a handler
@@ -854,7 +932,8 @@ class AsyncActionProxy:
     ``await heal.locator(...).inner_text()`` resolves first.
 
     Interruptions are handled before an action and after an interception error, as on
-    ActionProxy. A skipped step (.present is False once resolved) does nothing."""
+    ActionProxy, and so are popups with open(dismiss=True). A skipped step (.present is
+    False once resolved) does nothing."""
 
     def __init__(self, healer: AsyncHealer, key: str, plan: tuple) -> None:
         self._healer = healer
@@ -920,6 +999,7 @@ class AsyncActionProxy:
         healer = self._healer
         timeout, poll_ms = self._plan[4], self._plan[5]
         budget = await healer._before_action(self._key, timeout, poll_ms)
+        await healer._dismiss_before(self._key, native, verb, budget, timeout, poll_ms)
         with healer._core._running(self._key, budget, timeout, poll_ms):
             try:
                 result = await _act_on(healer._driver, native, verb, *args, **kwargs)
@@ -927,9 +1007,9 @@ class AsyncActionProxy:
                 raise
             except Exception as exc:
                 intercepted, used = is_interception_error(exc), budget.used
-                if not (intercepted and await healer._interrupt_for_action(
-                        self._key, budget, timeout, poll_ms)):
-                    if intercepted and budget.used == used:
+                if not (intercepted and await healer._unblock_for_action(
+                        self._key, native, budget, timeout, poll_ms)):
+                    if intercepted and budget.used == used and not budget.gave_up:
                         healer._core._report_nothing_matched(self._key)
                     await healer._confirm(self._key, False)  # the browser action failed
                     raise
@@ -1045,3 +1125,14 @@ class AsyncActionProxy:
             return '<AsyncActionProxy key=' + repr(self._key) + ' skipped: not on the page>'
         native = 'unresolved' if self._native is _UNRESOLVED else repr(self._native)
         return '<AsyncActionProxy key=' + repr(self._key) + ' native=' + native + '>'
+
+
+def _guarded(healer, key, native, timeout_ms=None):
+    """An AsyncActionProxy on a Locator mendwright did not resolve, for heal.page's
+    guard-only locators with open(dismiss=True) (see mendwright.proxies.GuardedLocator):
+    its actions get the checks of AsyncActionProxy._act, and nothing is healed, confirmed
+    or saved."""
+    timeout = healer.timeout_ms if timeout_ms is None else timeout_ms
+    proxy = AsyncActionProxy(healer, key, ((), None, None, None, timeout, 200, False, None))
+    proxy._native = native
+    return proxy

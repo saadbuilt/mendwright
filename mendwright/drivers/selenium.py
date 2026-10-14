@@ -29,7 +29,8 @@ import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
-from .base import (FRAME_ATTRS_JS, INVENTORY_JS, element_summary, frame_selector,
+from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
+                   POPUP_PROBE_JS, POPUP_ROOT_JS, element_summary, frame_selector,
                    inventory_rows, is_async_api)
 
 
@@ -654,6 +655,74 @@ class SeleniumDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+    # --- popups, for open(dismiss=True) (see mendwright.dismiss) ---------------------------
+
+    def _where(self, native, op, probe=True):
+        """op() where the element of a handle() result lives: as it is for a WebElement,
+        inside its frame chain for a FramedElement (with the implicit wait at 0 while the
+        frames are looked up, for probe=True). The page is restored afterwards."""
+        if isinstance(native, FramedElement):
+            return native._mw[0]._run(native.frame_chain, op, probe=probe)
+        return op()
+
+    def _element(self, native):
+        """The WebElement of a handle() result, for use inside _where()."""
+        if isinstance(native, FramedElement):
+            return native._mw[0]._find_one(native.selector)
+        return native
+
+    def popup_probe(self, native, known=None):
+        """What covers the element (POPUP_PROBE_JS), in one execute_script for a WebElement.
+        known is a popup's root from popup_root(): one that was removed from the page is a
+        stale reference, which Selenium refuses as an argument, so it reads as gone."""
+        script = 'return (' + POPUP_PROBE_JS + ')([arguments[0]], {known: arguments[1]});'
+
+        def op():
+            el = self._element(native)
+            try:
+                return self._driver.execute_script(script, el, known)
+            except Exception as exc:
+                if known is None or not _is_stale(exc):
+                    raise
+            out = self._driver.execute_script(script, el, None)
+            if isinstance(out, dict):
+                out['gone'] = True
+            return out
+        return self._where(native, op)
+
+    def popup_root(self, native, expect):
+        script = 'return (' + POPUP_ROOT_JS + ')(arguments[0], arguments[1]);'
+        return self._where(native, lambda: self._driver.execute_script(
+            script, self._element(native), expect))
+
+    def popup_controls(self, native, root):
+        script = 'return (' + POPUP_CONTROLS_JS + ')(arguments[0]);'
+        return self._where(native, lambda: self._driver.execute_script(script, root))
+
+    def popup_click(self, native, root, expect, timeout_ms):
+        """Click control number expect['index'] of the popup with WebElement.click(), when
+        it is still the one mendwright chose. True when it was clicked."""
+        script = 'return (' + POPUP_CONTROL_JS + ')(arguments[0], arguments[1]);'
+
+        def op():
+            el = self._driver.execute_script(script, root, expect)
+            if el is None:
+                return False
+            el.click()
+            return True
+        return self._where(native, op, probe=False)
+
+    def press_escape(self, native):
+        """Press Escape in the element's document, through ActionChains."""
+        def op():
+            _action_chains(self._driver).send_keys(_key_value('ESCAPE')).perform()
+            return True
+        return self._where(native, op, probe=False)
+
+
+def _is_stale(exc):
+    return any(cls.__name__ == 'StaleElementReferenceException' for cls in type(exc).__mro__)
 
 
 class SeleniumFrameDriver:

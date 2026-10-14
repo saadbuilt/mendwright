@@ -21,9 +21,20 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   frame_matches(selector)                 the child frames the selector matches in
   framed(frame_selector)                  a driver for the document inside one iframe
 
+For open(dismiss=True) (see mendwright.dismiss), each on a handle() result and run where it
+lives (inside its frame chain on Selenium):
+
+  popup_probe(native, known=None)         what covers the element (POPUP_PROBE_JS)
+  popup_root(native, expect)              a handle on the popup's root (POPUP_ROOT_JS)
+  popup_controls(native, root)            the buttons in it (POPUP_CONTROLS_JS)
+  popup_click(native, root, expect, timeout_ms)   click one of them (POPUP_CONTROL_JS)
+  press_escape(native)                    press Escape in the element's document
+  popup_release(root)                     let the root's handle go
+
 Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
-when a driver lacks the method.
+when a driver lacks the method, and through the driver_popup_* helpers, which fall back to
+None or False: a driver without them never dismisses anything.
 """
 
 import inspect
@@ -157,6 +168,50 @@ def frame_selector(info, count):
         except Exception:
             continue
     return None
+
+
+def _optional(driver, name, default, *args):
+    """driver.<name>(*args) when the driver has it, else default. Also default on any
+    error: a popup that cannot be read or reached is left alone."""
+    method = getattr(driver, name, None)
+    if not callable(method):
+        return default
+    try:
+        return method(*args)
+    except Exception:
+        return default
+
+
+def driver_popup_probe(driver, native, known=None):
+    """driver.popup_probe(native, known): POPUP_PROBE_JS's result for the element, or None
+    when the driver lacks it or the read failed."""
+    return _optional(driver, 'popup_probe', None, native, known)
+
+
+def driver_popup_root(driver, native, expect):
+    """driver.popup_root(native, expect): a handle on the popup's root, or None."""
+    return _optional(driver, 'popup_root', None, native, expect)
+
+
+def driver_popup_controls(driver, native, root):
+    """driver.popup_controls(native, root): the controls POPUP_CONTROLS_JS lists, or []."""
+    out = _optional(driver, 'popup_controls', None, native, root)
+    return out if isinstance(out, list) else []
+
+
+def driver_popup_click(driver, native, root, expect, timeout_ms):
+    """driver.popup_click(...): True when the control was found as expected and clicked."""
+    return _optional(driver, 'popup_click', False, native, root, expect, timeout_ms) is True
+
+
+def driver_press_escape(driver, native):
+    """driver.press_escape(native): True when Escape was pressed."""
+    return _optional(driver, 'press_escape', False, native) is True
+
+
+def driver_popup_release(driver, root):
+    """driver.popup_release(root), when the driver has it. Never raises."""
+    _optional(driver, 'popup_release', None, root)
 
 
 def driver_inventory(driver, limit=200):
@@ -298,6 +353,136 @@ INVENTORY_JS = r"""(limit) => {
               aria_label: e.getAttribute('aria-label') || ''});
   }
   return out;
+}"""
+
+
+# --- popups, for open(dismiss=True) (see mendwright.dismiss) -------------------------------
+#
+# The scripts below only report what the page shows; mendwright.dismiss decides. Each is a
+# function expression with the helpers inside it, so it runs as it is in Playwright's
+# evaluate calls and, called with its arguments, in Selenium's execute_script.
+
+_POPUP_HELPERS = r"""
+  // An element's parent, out of a shadow root to its host.
+  const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  // Whether a is b or holds it, across shadow roots.
+  const holds = (a, b) => { for (let n = b; n; n = up(n)) { if (n === a) return true; } return false; };
+  const style = (el) => (el.ownerDocument.defaultView || window).getComputedStyle(el);
+  const shown = (el) => {
+    if (!el || !el.isConnected) return false;
+    const s = style(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const clean = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+  // What is on top at the middle of t: {hit, w, h}, or {why} when t is not covered or
+  // cannot be: it has no size, is hidden, or its middle is outside the window.
+  const cover = (t) => {
+    const win = t.ownerDocument.defaultView || window;
+    const w = win.innerWidth, h = win.innerHeight;
+    const r = t.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0) || !shown(t)) return {why: 'hidden'};
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x >= w || y >= h) return {why: 'outside'};
+    let hit = t.ownerDocument.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (!hit || holds(t, hit) || holds(hit, t)) return {why: 'free'};
+    return {hit: hit, w: w, h: h};
+  };
+  // The controls of a popup in page order, open shadow roots included: what may be a
+  // button. mendwright.dismiss.is_control decides which of them count.
+  const controls = (root) => {
+    const out = [];
+    const walk = (scope) => {
+      for (const el of scope.querySelectorAll('*')) {
+        const role = (el.getAttribute('role') || '').trim().toLowerCase();
+        if ((el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT'
+             || role === 'button') && shown(el)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+        if (out.length >= 50) return;
+      }
+    };
+    if (root.shadowRoot) walk(root.shadowRoot);
+    walk(root);
+    return out.slice(0, 50);
+  };
+  // A control's facts. The value attribute is read for button-like inputs only, whose
+  // value is their label: a text field's can hold what was typed.
+  const facts = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').trim().toLowerCase();
+    return {
+      tag: tag, type: type, role: (el.getAttribute('role') || '').trim().toLowerCase(),
+      href: tag === 'a' ? el.getAttribute('href') : null,
+      text: clean(el.textContent, 200),
+      value: tag === 'input' && ['button', 'submit', 'reset'].includes(type)
+        ? clean(el.getAttribute('value'), 200) : '',
+      aria: clean(el.getAttribute('aria-label'), 200),
+      title: clean(el.getAttribute('title'), 200),
+      disabled: el.disabled === true
+        || (el.getAttribute('aria-disabled') || '').trim().toLowerCase() === 'true',
+    };
+  };
+"""
+
+# For a Locator's evaluate_all, or (with [element]) execute_script: null unless one element
+# matched. Else {covered, gone} and, when covered, chain: the element on top and each
+# container up to (not including) body, with what mendwright.dismiss.popup_of reads. gone
+# says whether arg.known (a popup's root from POPUP_ROOT_JS) was removed or hidden.
+POPUP_PROBE_JS = r"""(els, arg) => {""" + _POPUP_HELPERS + r"""
+  if (!els || els.length !== 1) return null;
+  const t = els[0];
+  const known = arg && arg.known ? arg.known : null;
+  const gone = known ? !shown(known) : null;
+  const c = cover(t);
+  if (!c.hit) return {covered: false, why: c.why, gone: gone};
+  const doc = c.hit.ownerDocument;
+  const chain = [];
+  for (let n = c.hit; n && n.nodeType === 1 && n !== doc.body && n !== doc.documentElement
+       && chain.length < 60; n = up(n)) {
+    const s = style(n), r = n.getBoundingClientRect();
+    const iw = Math.max(0, Math.min(r.right, c.w) - Math.max(r.left, 0));
+    const ih = Math.max(0, Math.min(r.bottom, c.h) - Math.max(r.top, 0));
+    const role = (n.getAttribute('role') || '').trim().toLowerCase();
+    const modal = (n.getAttribute('aria-modal') || '').trim().toLowerCase() === 'true';
+    const open = n.tagName === 'DIALOG' && n.open === true;
+    const inside = holds(n, t);
+    const named = !inside && (role === 'dialog' || role === 'alertdialog' || modal || open
+                              || s.position === 'fixed' || s.position === 'sticky');
+    chain.push({tag: n.tagName.toLowerCase(), id: clean(n.getAttribute('id'), 100),
+                cls: clean(n.getAttribute('class'), 200), role: role, modal: modal, open: open,
+                pos: s.position, area: c.w * c.h ? (iw * ih) / (c.w * c.h) : 0, holds: inside,
+                text: named ? clean(n.innerText || n.textContent, 120) : ''});
+  }
+  return {covered: true, gone: gone, chain: chain};
+}"""
+
+# For a Locator's evaluate_handle (element first): the element arg.depth steps up from the
+# one on top at the middle of el, when its tag and id are still arg.tag and arg.id; else null.
+POPUP_ROOT_JS = r"""(t, arg) => {""" + _POPUP_HELPERS + r"""
+  const c = cover(t);
+  if (!c.hit) return null;
+  let n = c.hit;
+  for (let i = 0; n && i < arg.depth; i++) n = up(n);
+  if (!n || n.tagName.toLowerCase() !== arg.tag || clean(n.getAttribute('id'), 100) !== arg.id) return null;
+  return n;
+}"""
+
+# For a root's evaluate: the facts of each control in it, in page order.
+POPUP_CONTROLS_JS = r"""(root) => {""" + _POPUP_HELPERS + r"""
+  return controls(root).map(facts);
+}"""
+
+# For a root's evaluate_handle: control number arg.index, when it still has the tag, text
+# and aria-label mendwright chose it by; else null.
+POPUP_CONTROL_JS = r"""(root, arg) => {""" + _POPUP_HELPERS + r"""
+  const el = controls(root)[arg.index];
+  if (!el) return null;
+  const f = facts(el);
+  return f.tag === arg.tag && f.text === arg.text && f.aria === arg.aria ? el : null;
 }"""
 
 

@@ -21,7 +21,7 @@ LAST_HEALS = 25
 LAST_FLOW = 50
 
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
-_FLOW_EVENTS = ('flow.interrupt', 'flow.skip', 'flow.page_guard')
+_FLOW_EVENTS = ('flow.interrupt', 'flow.skip', 'flow.page_guard', 'flow.dismiss')
 
 
 def h(value):
@@ -154,6 +154,8 @@ def _summary(report, records, quarantines, flow_counts):
         _card(flow_counts['flow.page_guard'] if have else '-', 'page guard stops',
               'heals declined on another page'),
     ]
+    if have and flow_counts['flow.dismiss']:
+        cards.append(_card(flow_counts['flow.dismiss'], 'popups dismissed', 'with dismiss=True'))
     return ['<section aria-labelledby="summary"><h2 id="summary">Summary</h2>',
             '<div class="cards">'] + cards + ['</div></section>']
 
@@ -255,6 +257,12 @@ def _flow_detail(event):
                 + h(action or 'action') + (' via ' + how if how else '') + '.')
     if name == 'flow.skip':
         return 'Skipped instead of healed: ' + h(event.get('reason') or 'no reason recorded') + '.'
+    if name == 'flow.dismiss':
+        how = event.get('how')
+        with_ = ('Escape' if how == 'escape' else
+                 'its button ' + _code(event.get('label')) if event.get('label') else 'a button')
+        return ('Dismissed a popup in the way: ' + _code(event.get('popup') or 'a popup')
+                + ', with ' + with_ + '.')
     last, here = event.get('last_page'), event.get('page')
     return ('Heal declined. The key was last found on ' + (_code(last) if last else 'another page')
             + ' and the page is now ' + (_code(here) if here else 'a different one') + '.')
@@ -273,11 +281,13 @@ def _flow_section(report, events, flow_counts):
         return out
     out.append('<p class="lead">' + _plural(flow_counts['flow.interrupt'], 'interruption') + ' handled, '
                + _plural(flow_counts['flow.skip'], 'step') + ' skipped, '
-               + _plural(flow_counts['flow.page_guard'], 'heal') + ' declined by the page guard. Newest '
+               + _plural(flow_counts['flow.page_guard'], 'heal') + ' declined by the page guard'
+               + (', ' + _plural(flow_counts['flow.dismiss'], 'popup') + ' dismissed'
+                  if flow_counts['flow.dismiss'] else '') + '. Newest '
                'first' + (', the last ' + str(LAST_FLOW) + ' of ' + str(len(flow))
                           if len(flow) > LAST_FLOW else '') + '.</p>')
     kinds = {'flow.interrupt': ('interruption', 'info'), 'flow.skip': ('skipped step', 'muted'),
-             'flow.page_guard': ('page guard', 'warn')}
+             'flow.page_guard': ('page guard', 'warn'), 'flow.dismiss': ('popup', 'info')}
     rows = []
     for e in flow[-LAST_FLOW:][::-1]:
         label, kind = kinds[e['event']]

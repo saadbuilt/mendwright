@@ -243,6 +243,24 @@ def test_flow_events_name_the_step_and_what_happened(capsys, sample):
         parsed.text
 
 
+def test_a_dismissed_popup_is_a_flow_event_and_a_card(capsys, tmp_path):
+    store = write_sample(tmp_path / "s", extra_events=[
+        {"ts": "2026-10-04T11:00:04+00:00", "event": "flow.dismiss", "key": "email",
+         "popup": '<div role="dialog" class="nl"> ("Get 10% off")', "how": "decline",
+         "label": "No thanks", "tried": ["escape"]},
+        {"ts": "2026-10-04T11:00:05+00:00", "event": "flow.dismiss", "key": "go",
+         "popup": "<aside>", "how": "escape", "tried": []}])
+    parsed = Page(page(capsys, "--store", str(store)))
+    rows = parsed.tables["Flow events"]
+    assert rows[0][3] == "Dismissed a popup in the way: <aside>, with Escape."
+    assert rows[1][1:] == ["2026-10-04 11:00:04 UTC", "email",
+                           'Dismissed a popup in the way: <div role="dialog" class="nl"> '
+                           '("Get 10% off"), with its button No thanks.']
+    assert cards(page(capsys, "--store", str(store)))["popups dismissed"] == "2"
+    assert ("2 interruptions handled, 1 step skipped, 1 heal declined by the page guard, "
+            "2 popups dismissed.") in parsed.text
+
+
 def test_quarantines_come_from_the_store_and_the_journal(capsys, tmp_path):
     store = write_sample(tmp_path / "s", extra_events=[
         {"ts": "2026-10-05T00:00:00+00:00", "event": "heal.quarantine", "key": "gone",

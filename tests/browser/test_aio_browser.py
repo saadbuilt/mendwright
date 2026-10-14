@@ -617,3 +617,56 @@ def test_a_key_is_followed_into_an_iframe_and_heals_there(engine, tmp_path):
     assert [h.source for h in followed] == ['frame'] and first.bundles == []
     assert [h.source for h in heals] == ['model'] and checked
     assert 'terms-v2' in second.bundles[0]['html'] and 'Outer' not in second.bundles[0]['html']
+
+
+# --- popups mendwright was never told about: open(dismiss=True) -------------------------------
+
+_NEWSLETTER = _SIGNUP + """<p id='log'></p><div id="nl" role="dialog" aria-modal="true"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 300px; margin: 140px auto; padding: 16px">
+    <p>Get 10% off your first order.</p><input id="nl-email" type="email">
+    <button type="button" onclick="document.getElementById('log').textContent += 'signup '">Sign up</button>
+    <button type="button" onclick="document.getElementById('log').textContent += 'no-thanks ';
+      document.getElementById('nl').remove()">No thanks</button>
+  </div></div>"""
+
+
+@pytest.mark.parametrize('how', ['locator', 'get_by_role'])
+def test_flow_dismiss_a_newsletter_modal(engine, tmp_path, how):
+    async def main():
+        page = await engine.page(_NEWSLETTER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, dismiss=True)
+            if how == 'locator':
+                await heal.locator('create', '#create').click()
+            else:
+                await heal.page.get_by_role('button', name='Create account').click(timeout=5000)
+            return (heal, await page.text_content('#log'), await page.text_content('#done'),
+                    await page.locator('#nl').count())
+        finally:
+            await _close(page)
+
+    heal, log, done, left = engine.run(main())
+    assert (log, done, left) == ('no-thanks ', 'created', 0)       # never Sign up
+    [event] = heal.handled_interruptions
+    assert (event.key, event.how) == ('<popup>', '“No thanks”')
+    assert event.before == ('create' if how == 'locator'
+                            else "page.get_by_role('button', name='Create account')")
+
+
+def test_flow_dismiss_is_off_by_default(engine, tmp_path):
+    async def main():
+        page = await engine.page(_NEWSLETTER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            with pytest.raises(Exception) as caught:
+                await heal.locator('create', '#create').click(timeout=1000)
+            return heal, caught.value, await page.text_content('#log')
+        finally:
+            await _close(page)
+
+    heal, error, log = engine.run(main())
+    assert 'intercepts pointer events' in str(error)
+    assert log == '' and heal.handled_interruptions == []

@@ -13,7 +13,8 @@ queries and actions are awaited.
 import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
-from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, _member, frame_selector,
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
+                   POPUP_CONTROLS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, _member, frame_selector,
                    inventory_rows, is_async_api, looks_like_locator, summary_from_js)
 from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
                               playwright_selector)
@@ -168,6 +169,42 @@ class AsyncPlaywrightDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+    # --- popups, for open(dismiss=True) (see PlaywrightSyncDriver) --------------------------
+
+    async def popup_probe(self, native, known=None):
+        return await native.evaluate_all(POPUP_PROBE_JS, {'known': known})
+
+    async def popup_root(self, native, expect):
+        handle = await native.evaluate_handle(POPUP_ROOT_JS, expect, timeout=2000)
+        element = handle.as_element()
+        if element is None:
+            await handle.dispose()
+        return element
+
+    async def popup_controls(self, native, root):
+        return await root.evaluate(POPUP_CONTROLS_JS)
+
+    async def popup_click(self, native, root, expect, timeout_ms):
+        handle = await root.evaluate_handle(POPUP_CONTROL_JS, expect)
+        element = handle.as_element()
+        if element is None:
+            await handle.dispose()
+            return False
+        try:
+            await element.click(timeout=timeout_ms)
+        finally:
+            await element.dispose()
+        return True
+
+    async def press_escape(self, native):
+        page = self._page
+        keyboard = getattr(page, 'keyboard', None) or page.page.keyboard
+        await keyboard.press('Escape')
+        return True
+
+    async def popup_release(self, root):
+        await root.dispose()
 
 
 def _frame_options(attrs):

@@ -1,6 +1,6 @@
 """Append-only JSONL event journal for heal activity: one line per event
 (heal.requested / proposed / rejected / applied / canary / quarantine, and for flow
-changes flow.interrupt / skip / page_guard), recording the provider, model, latency and
+changes flow.interrupt / dismiss / skip / page_guard), recording the provider, model, latency and
 token counts when they are known. Writing is best-effort and
 never raises, so a bad path or a full disk cannot break a heal in progress.
 
@@ -29,6 +29,7 @@ APPLIED = 'heal.applied'
 CANARY = 'heal.canary'
 QUARANTINE = 'heal.quarantine'
 FLOW_INTERRUPT = 'flow.interrupt'     # an interruption was handled before a step
+FLOW_DISMISS = 'flow.dismiss'         # a popup nobody registered was dismissed (dismiss=True)
 FLOW_SKIP = 'flow.skip'               # a step was skipped instead of healed
 FLOW_PAGE_GUARD = 'flow.page_guard'   # a heal was declined: the page is not one the key was found on
 
@@ -118,6 +119,9 @@ class _BaseJournal:
 
     def interrupted(self, key=None, **f):
         return self.event(FLOW_INTERRUPT, key=key, **f)
+
+    def dismissed(self, key=None, **f):
+        return self.event(FLOW_DISMISS, key=key, **f)
 
     def skipped(self, key=None, **f):
         return self.event(FLOW_SKIP, key=key, **f)

@@ -50,6 +50,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
 | `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
+| `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -79,7 +80,7 @@ It raises `AttentionRequired` when the element can't be found or healed, `Invali
 Other `Healer` members:
 
 - `heal.interrupt(key, selector, *, action="click", args=(), role=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions).
-- `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`.
+- `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`. With `dismiss=True`, the popups it dismissed are listed too, under the key `<popup>` (see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about)).
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
@@ -235,7 +236,7 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 - The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text` and `get_attribute` on the page.
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
-- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on). Interruptions are still handled before their actions, from Playwright 1.42: see [Interruptions](#interruptions).
+- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on). Interruptions are still handled before their actions, from Playwright 1.42: see [Interruptions](#interruptions). With `dismiss=True`, the locators among them come back as guard-only proxies whose actions look for interruptions and popups first: see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about).
 - The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
 - `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
 - `strict=` is dropped, because a mendwright lookup is always strict.
@@ -486,6 +487,7 @@ Update the selector in your code to the new one, or run without --mendwright-str
 ```
 
 Strict mode only fires on the run that makes the heal.
+It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`) or a dismissed popup (`flow.dismiss`) doesn't fail a test.
 On the next run with the same store, the saved heal resolves as a fallback, no heal happens, and the test passes.
 For a strict CI job, give each run a fresh store (see [CI](#ci)).
 Strict mode also covers reruns from pytest-rerunfailures: a rerun that passes only because of a heal fails too.
@@ -518,7 +520,7 @@ print(await heal.present("newsletter"))
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` raises `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
-- `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
+- `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
 - Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
@@ -626,6 +628,7 @@ What mendwright does with each kind:
 | Change | What mendwright does |
 |---|---|
 | A step that can show up anywhere: a cookie banner, a newsletter modal, an "are you still there?" dialog | Handles it when it is in the way, if you registered it with `heal.interrupt()` or `cookies=` |
+| A popup nobody registered: a newsletter or discount modal, a survey, a chat invite | Dismisses it when it covers the element of an action, if you pass `dismiss=True`: Escape, then its close button, then a button such as No thanks |
 | A step that may not be there | Skips it, if you pass `optional=True` |
 | A step that moved to another page | Declines to heal the key on a page where it was never found, before any model call |
 | A step that moved away while the address stayed the same | Leaves it to the model, which is told it may answer that no element fits. The error then gives the model's reason. |
@@ -694,6 +697,68 @@ The selector lists are in `mendwright/interruptions.py`.
 
 If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way.
 
+### Popups mendwright wasn't told about
+
+```python
+heal = mendwright.open(page, dismiss=True)
+
+heal.locator("email", "#email").fill("ada@example.com")   # a newsletter modal opened first
+```
+
+`mendwright.open(page, dismiss=True)` dismisses a popup that nobody registered when it is in the way of an action: a newsletter or discount modal, a prompt for your address or location that can be skipped, an app-install banner, a survey, a chat invite, or a consent banner when `cookies=` isn't set.
+It is off by default, and with `dismiss=False` mendwright makes no browser call for it.
+
+mendwright acts only when the action's element is covered:
+
+- before an action, when the middle of the element is inside the window and the browser says another element is on top there (`document.elementFromPoint`, into open shadow roots): not the element, not inside it, and not one of its containers
+- when an action fails because something covered the element (the same errors as for [interruptions](#interruptions)), after which it looks in the same way
+
+[Registered interruptions](#interruptions) come first: a popup is dismissed only when none of them was handled for the action.
+
+The element on top belongs to a popup when it is in a dialog (`role="dialog"` or `"alertdialog"`, `aria-modal="true"`, or an open `<dialog>`). The nearest one is the popup. Otherwise the popup is the outermost fixed or sticky element it is in, other than `body`, and only when that element covers at least a quarter of the window.
+mendwright leaves these alone:
+
+- a popup that holds the action's element: you are using it
+- a fixed header, footer or toolbar over the element, which covers less than a quarter of the window. Playwright scrolls to get around one, and the action's own error stands.
+- an element on top that is in neither, such as an absolutely positioned one
+
+For a popup, mendwright tries these in order, and after each looks again for up to 2 seconds (or the step's `timeout_ms`, when that is shorter) until the popup is gone or hidden or the element is no longer covered:
+
+1. It presses Escape.
+2. It clicks the popup's close button: one whose whole label is Close (or Close dialog, Close popup, Close banner, Close notice or Close message), an icon whose aria-label or title says close, or one that shows x, ×, ✕ or ✖ and has no aria-label or title that says anything else.
+3. It clicks a button of the popup that declines: one whose label is, starts with or ends with no thanks, no, thanks, not now, maybe later, later, skip, skip for now, dismiss, reject, reject all, decline, not interested or continue without, or is just Close.
+
+A button is a `<button>`, an element with `role="button"`, an `<input>` of type `button` or `submit`, or a link with no `href`, or with `#` or `javascript:`. Its label is its text, value, aria-label and title, in lower case and with punctuation read as spaces, as for the [cookie banners](#cookie-banners). The first close button and the first decline button in page order are tried.
+
+mendwright never:
+
+- clicks a link that goes somewhere, or a disabled button
+- clicks a button whose label also says accept, agree, allow, subscribe, sign up, sign in, log in, join, register, yes, ok, confirm, continue (unless it says continue without), buy, pay, order, save, submit, delete, remove, install, enable, notify, start, get, claim or try, or one of these words with the same risk: signup, signin, login, okay, unsubscribe, saving, discard, create, purchase, checkout, cancel, send, share, download, upgrade, unlock, redeem, apply, book, donate, follow, open, next, proceed, verify, activate, connect, log out, logout, sign out or leave. So "No thanks, I'll pay full price" and "Continue without saving" are never clicked.
+- types, checks a box or selects an option
+- acts on a popup only because it is visible somewhere on the page
+
+When a popup was dismissed, mendwright logs one WARNING line, writes a `flow.dismiss` journal event, lists it in `heal.handled_interruptions` as `InterruptionEvent("<popup>", before, popup=..., how=...)`, and goes on with the action, or tries a failed one once more, as after an interruption.
+Each popup counts once toward the 3 interruptions a step may handle, whatever was tried on it. A popup that comes back each time it is dismissed raises `InterruptionLoop`, an `AttentionRequired`, once the step has handled 3.
+
+When nothing worked, mendwright logs one WARNING that names the popup and says how to handle it, and leaves the popup alone. It doesn't try again in that step. The action goes ahead as it would without mendwright, and if the popup blocks it, the browser's own error is raised and the action isn't tried again.
+
+What it can't do:
+
+- A popup that needs data before it closes, such as a postcode prompt with no skip. Register its field and then its button with `heal.interrupt()`, which handles them in that order: `heal.interrupt("postcode", "#postcode", action="fill", args=("10115",))`, then `heal.interrupt("postcode_ok", "#postcode-ok")`.
+- A popup whose only way out is a button mendwright never clicks, such as Subscribe or OK. Register the button you want with `heal.interrupt()`.
+- A backdrop that is a separate element from the popup's buttons, as some consent managers draw one. Only Escape is tried there. Use `cookies=` or `heal.interrupt()` for those.
+- A popup of the page over an iframe that holds the element. mendwright looks in the element's own document, so a popup inside the iframe is handled, and one outside it isn't.
+- A popup that opens while Playwright waits on an action is found only when the action fails, after its timeout.
+- A popup that hides the element instead of covering it, such as a wall that replaces the page until you answer. The lookup then misses, and mendwright looks for popups only over an element it found. Register it with `heal.interrupt()`, which is also handled when a lookup misses.
+
+On Playwright, with `dismiss=True`, the locators `heal.page` doesn't heal are guarded too: `get_by_role()` and the other `get_by_*` locators, a locator built with options, chained locators, `.first`, `.last`, `.nth()` and `.filter()`.
+They come back as `GuardedLocator`s, the real locators with the checks above and the interruption checks before their actions. They aren't healed and nothing about them is saved. They pass `isinstance()` checks, so `expect()` takes them, and `.native` is the real locator. Log lines name their step after the calls that built it, such as `"page.get_by_role('button', name='Continue')"`. With `dismiss=False` they are the real locators, as before.
+On Selenium, the elements `heal.driver` finds are covered whatever `By` found them (see [No changes per step](#no-changes-per-step)), inside iframes too.
+
+The look costs one browser round trip before each action, and none before `focus()` and `set_input_files()`, which work on a covered element.
+On Selenium it runs inside the element's iframe, with the implicit wait at 0 while mendwright finds the iframe, and Escape is sent with `ActionChains`. The async healer awaits the look on the event loop, and dismisses a popup in a worker thread, as it handles interruptions.
+A dismissed popup isn't a heal: `--mendwright-strict` doesn't fail a test because of one, as it doesn't for a handled interruption.
+
 ### Optional steps
 
 ```python
@@ -734,6 +799,8 @@ Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes th
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
 WARNING mendwright: handled interruption 'cookie_banner' before '<page action>'
+WARNING mendwright: dismissed a popup in the way of 'email': <div role="dialog" class="nl"> ("Get 10% off your first order. Sign up No thanks") with “No thanks”, after Escape did not close it
+WARNING mendwright: could not dismiss a popup in the way of 'create': <div id="promo" role="dialog"> ("Join our list. Subscribe Yes, sign me up"). Escape did not close it, and it has no close or decline button that mendwright may click, so mendwright left it alone: the action goes ahead, and fails with the browser's own error if the popup blocks it. Register the button that closes it with heal.interrupt("<name>", "<selector of the button>"). If it needs data first, register its field before the button: heal.interrupt("<name>_field", "<selector of the field>", action="fill", args=("<value>",)).
 WARNING mendwright: the action on 'email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (heal.interrupt(): 'cookies') matched a visible element, so it did not try the action again. If the element in the way is one of those registered with heal.interrupt(), its selector no longer matches: update it. Otherwise register the button that closes the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
@@ -742,6 +809,7 @@ INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is no
 | Event | Fields |
 |---|---|
 | `flow.interrupt` | `key`, `before` (the step it was handled for, or `<page action>`), `action`, and `selector` or `preset` |
+| `flow.dismiss` | `key` (the step the popup was in the way of), `popup` (as the WARNING names it), `how` (`escape`, `close` or `decline`), `label` (the button's, for `close` and `decline`), `tried` (what was tried before and did not close it, such as `["escape"]`) |
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
 
