@@ -58,13 +58,15 @@ from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import _dismiss_choice
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
-                     _healed_target_error, _locator_args, _overlay_locator, _overlay_options,
-                     _setup, latest_success)
-from .flow import InterruptionLoop, absent_message, is_interception_error
+                     _healed_target_error, _join_overlay, _leave_overlay, _locator_args,
+                     _overlay_locator, _overlay_options, _overlay_owner, _removable, _setup,
+                     latest_success)
+from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
+                   rejected_selector_message)
 from .interruptions import Budget
 from .limits import Guardrails
 from .resolver import _frame_chain, _no_match_message, _require_visible, _split_runnable
-from .selectors import InvalidSelector
+from .selectors import XPATH, InvalidSelector, classify
 
 # 'open' is left out on purpose, as in the package: `from mendwright.aio import *` must not
 # shadow builtins.open. Call it as mendwright.aio.open(page).
@@ -83,6 +85,14 @@ async def _awaited(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _registering(shared):
+    """The asyncio.Lock under which the async healers of a page change its overlay
+    handlers (see AsyncHealer._watch), kept on the page's _PageOverlays."""
+    if shared.registering is None:
+        shared.registering = asyncio.Lock()
+    return shared.registering
 
 
 async def _in_thread(fn, *args):
@@ -460,37 +470,45 @@ class AsyncHealer:
     def timeout_ms(self, value: int) -> None:
         self._core.timeout_ms = value
 
-    def interrupt(self, key: str, selector: Selector, *, action: str = 'click',
+    def interrupt(self, key: str, selector: Selector | None, *, action: str = 'click',
                   args: Sequence[Any] = (), role: Role | None = None) -> None:
         """Register a step that may appear at any point of the flow, as
-        Healer.interrupt() does. Sync: it only registers. The action is awaited when the
-        interruption is handled.
+        Healer.interrupt() does, or remove one with interrupt(key, None). Sync: it only
+        registers. The action is awaited when the interruption is handled.
 
         On an async Playwright Page (Playwright 1.42 and later) Playwright's overlay
         handler is registered too, as on the sync Healer. That call is a coroutine, so it
         runs as a task on the event loop and is in place a moment later, before Playwright
-        checks the page again while an action waits."""
+        checks the page again while an action waits. Removing it works the same way, and
+        the changes to one page's handlers run one at a time, in the order of the calls."""
         core = self._core
         core.interrupt(key, selector, action=action, args=args, role=role)
-        item = core._interruptions[key]
         if not isinstance(self._driver, AsyncPlaywrightDriver):
             return
+        if selector is None:
+            self._on_loop(self._unwatch, key)
+        else:
+            self._on_loop(self._watch, core._interruptions[key])
+
+    def _on_loop(self, fn, arg):
+        """Run coroutine function fn(arg) on the page's event loop: as a task when called
+        on that loop, else (from another thread) through the SyncBridge, which waits for
+        it. Never raises."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
         if loop is not None:
-            task = loop.create_task(self._watch(item))
+            task = loop.create_task(fn(arg))
             self._watching.add(task)        # the loop keeps only a weak reference to a task
             task.add_done_callback(self._watching.discard)
-        else:
-            # Called from another thread: register on the page's own event loop.
-            bridge = getattr(self.coordinator, 'driver', None)
-            try:
-                bridge.run(self._watch, item)
-            except Exception:
-                logger.debug('mendwright: could not register an overlay handler for %r', key,
-                             exc_info=True)
+            return
+        bridge = getattr(self.coordinator, 'driver', None)
+        try:
+            bridge.run(fn, arg)
+        except Exception:
+            logger.debug('mendwright: could not change an overlay handler for %r',
+                         getattr(arg, 'key', arg), exc_info=True)
 
     @property
     def handled_interruptions(self) -> list:
@@ -692,39 +710,82 @@ class AsyncHealer:
 
     async def _watch(self, item):
         """Healer._watch() for an async Playwright Page: register interruption ``item``
-        with page.add_locator_handler (Playwright 1.42 and later), replacing a handler
-        registered for its key before. Does nothing for a Frame or a custom driver."""
-        core, page = self._core, self._page
+        with page.add_locator_handler (Playwright 1.42 and later), keeping one handler per
+        page and key as the sync Healer does. Does nothing for a Frame or a custom driver.
+
+        It changes the page's handlers only under the page's registering lock: it awaits
+        Playwright between reading the shared entries and writing them, and two calls for
+        one key could otherwise both add a handler, one of which would stay on the page
+        and never act."""
+        page, shared, key = self._page, self._core._overlays, item.key
+        overlays = shared.handlers
         if not isinstance(self._driver, AsyncPlaywrightDriver) or not callable(
                 getattr(page, 'add_locator_handler', None)):
             return
-        old = core._overlays.pop(item.key, None)
-        remove = getattr(page, 'remove_locator_handler', None)
-        if old is not None and callable(remove):
+        async with _registering(shared):
+            shared.listen(page)
+            selectors = await self._parsed(item)
+            if selectors and _join_overlay(overlays, key, selectors, self):
+                return
+            old = overlays.pop(key, None)
+            if old is not None:
+                await self._remove_overlay(old[0])
+            if not selectors:
+                return
+            token = object()
+
+            async def handler(*_locator):
+                healer = _overlay_owner(overlays, key, token)   # the page keeps no healer alive
+                if healer is not None:
+                    await healer._overlay(key)
+
             try:
-                await remove(old[1])
+                locator = _overlay_locator(page, selectors)
+                overlays[key] = (selectors, (weakref.ref(self),), token)
+                await page.add_locator_handler(locator, handler,
+                                               **_overlay_options(page.add_locator_handler))
             except Exception:
-                pass    # left on the page, it does nothing: its token is gone
-        token = object()
-        ref = weakref.ref(self)    # the page must not keep the healer alive
+                if overlays.get(key, (None, None, None))[2] is token:
+                    overlays.pop(key, None)
+                logger.debug('mendwright: could not register an overlay handler for %r', key,
+                             exc_info=True)
 
-        async def handler(*_locator):
-            healer = ref()
-            if healer is not None:
-                await healer._overlay(item.key, token)
+    async def _unwatch(self, key):
+        """Healer._unwatch(), awaited, under the page's registering lock."""
+        shared = self._core._overlays
+        async with _registering(shared):
+            await self._remove_overlay(_leave_overlay(shared.handlers, key, self))
 
+    async def _remove_overlay(self, selectors):
+        """Healer._remove_overlay(), awaited."""
+        remove = getattr(self._page, 'remove_locator_handler', None)
+        if not callable(remove) or not _removable(self._core._overlays.handlers, selectors):
+            return
         try:
-            locator = _overlay_locator(page, item.selectors)
-            core._overlays[item.key] = (token, locator)
-            await page.add_locator_handler(locator, handler,
-                                           **_overlay_options(page.add_locator_handler))
+            await remove(_overlay_locator(self._page, selectors))
         except Exception:
-            if core._overlays.get(item.key, (None,))[0] is token:
-                core._overlays.pop(item.key, None)
-            logger.debug('mendwright: could not register an overlay handler for %r', item.key,
-                         exc_info=True)
+            pass    # left on the page, it does nothing: its token is gone
 
-    async def _overlay(self, key, token):
+    async def _parsed(self, item):
+        """Healer._parsed(), awaited: the selectors of item that the browser can parse."""
+        from .drivers.playwright_sync import browser_rejected, playwright_selector
+        core = self._core
+        parsed, kept = core._overlays.parsed, []
+        for selector in item.selectors:
+            if classify(selector) != XPATH and selector not in parsed:
+                try:
+                    await self._page.locator(playwright_selector(selector)).count()
+                except Exception as exc:
+                    if browser_rejected(exc):
+                        core.coordinator._emit(logging.WARNING, rejected_selector_message(
+                            item.key, selector, exc))
+                        continue
+                else:
+                    parsed.add(selector)
+            kept.append(selector)
+        return tuple(kept)
+
+    async def _overlay(self, key):
         """What Playwright runs on the event loop when the page shows interruption key's
         element before an action (see Healer._watch). The sync Healer's code decides and
         acts, in a worker thread through SyncBridge, as _interrupt() does.
@@ -734,7 +795,7 @@ class AsyncHealer:
         would then wait for itself. That step handles interruptions itself, and an action
         mendwright did not route gets the handler again when Playwright retries it."""
         core = self._core
-        if not core._overlay_wanted(key, token) or self._lock.locked():
+        if not core._overlay_wanted(key) or self._lock.locked():
             return
         async with self._lock:
             await _in_thread(core._overlay_run, key, self._sync_driver())
@@ -1011,14 +1072,16 @@ class AsyncActionProxy:
                         self._key, native, budget, timeout, poll_ms)):
                     if intercepted and budget.used == used and not budget.gave_up:
                         healer._core._report_nothing_matched(self._key)
-                    await healer._confirm(self._key, False)  # the browser action failed
+                    if not is_stale_error(exc):
+                        await healer._confirm(self._key, False)  # the browser action failed
                     raise
                 try:
                     result = await _act_on(healer._driver, native, verb, *args, **kwargs)
                 except _USAGE_ERRORS:
                     raise
-                except Exception:
-                    await healer._confirm(self._key, False)
+                except Exception as again:
+                    if not is_stale_error(again):
+                        await healer._confirm(self._key, False)
                     raise
         if expect is not None:
             try:

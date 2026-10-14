@@ -12,8 +12,9 @@ locator (page.locator('a').locator('b')) and the get_by_* locators are the real 
 healed. is_visible() never waits or heals: it answers from the selectors mendwright has
 for the key, as Playwright answers at once. Interruptions (heal.interrupt(),
 open(cookies=...)) are handled before the real locators' actions too: mendwright registers
-them with page.add_locator_handler (Playwright 1.42 and later, on a Page). With
-open(dismiss=True), those locators come back as GuardedLocators instead: the real ones,
+them with page.add_locator_handler (Playwright 1.42 and later, on a Page), which
+Playwright does not run for page.mouse, page.keyboard or an action with force=True.
+With open(dismiss=True), those locators come back as GuardedLocators instead: the real ones,
 still not healed, whose actions look for interruptions and popups first, as
 heal.locator()'s do.
 
@@ -453,10 +454,10 @@ class HealingElement(_Proxy):
     """What heal.driver's find_element and find_elements return: the WebElement (or the
     FramedElement inside an iframe), whose click, send_keys, clear and submit run through
     the same guard as heal.locator()'s actions (ActionProxy). Registered interruptions the
-    page shows are handled first, and an action that failed because something covered the
-    element is retried once, only after one was handled; otherwise its own error is raised.
-    With no interruption registered, an action costs no browser call more than the
-    element's own.
+    page shows over the element are handled first, and an action that failed because
+    something covered the element is retried once, only after one was handled; otherwise
+    its own error is raised. With no interruption registered, an action costs no browser
+    call more than the element's own. ActionChains actions on it are Selenium's own.
 
     It passes isinstance(el, WebElement), compares and hashes equal to the element it
     wraps, and works with execute_script, ActionChains and expected_conditions. One that

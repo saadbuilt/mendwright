@@ -33,6 +33,20 @@ from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROL
                    POPUP_PROBE_JS, POPUP_ROOT_JS, element_summary, frame_selector,
                    inventory_rows, is_async_api)
 
+# What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
+# its in-view centre, where WebDriver's click lands (the middle of its first box, clipped
+# to the viewport), or null when no part of that box is in the viewport. elementFromPoint
+# is asked of the element's own root, so an element in a shadow root is found there.
+_COVERED_JS = (
+    'const el = arguments[0], box = el.getClientRects()[0];'
+    ' if (!box) return null;'
+    ' const left = Math.max(box.left, 0), right = Math.min(box.right, window.innerWidth);'
+    ' const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, window.innerHeight);'
+    ' if (right <= left || bottom <= top) return null;'
+    ' const root = el.getRootNode(), from = root.elementFromPoint ? root : document;'
+    ' const hit = from.elementFromPoint((left + right) / 2, (top + bottom) / 2);'
+    ' return hit === null ? null : !(hit === el || el.contains(hit));')
+
 
 def _by():
     """Selenium's By.XPATH, imported lazily so ``import mendwright`` works without
@@ -408,7 +422,8 @@ class SeleniumDriver:
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
     through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
-    fingerprint."""
+    fingerprint. The interruption checks also use covered and inside_frame, which only
+    this driver has."""
 
     def __init__(self, driver):
         self._driver = driver
@@ -534,6 +549,29 @@ class SeleniumDriver:
             run = selenium_verb(verb, args, kwargs, native._mw[3])
             return native.in_frame(lambda el: run(self._driver, el))
         return selenium_verb(verb, args, kwargs)(self._driver, native)
+
+    def covered(self, native):
+        """Whether another element covers native (a handle() result, or any WebElement of
+        this driver) at the point a click on it lands: True or False, or None when that
+        cannot be told. One round trip. None for a FramedElement, whose iframe may be
+        covered on the page around it, for an element outside the viewport or without a
+        size, and when the check fails."""
+        if isinstance(native, FramedElement):
+            return None
+        try:
+            found = self._driver.execute_script(_COVERED_JS, native)
+        except Exception:
+            return None
+        return found if isinstance(found, bool) else None
+
+    def inside_frame(self):
+        """True when the driver is switched into a frame (the script called
+        switch_to.frame() itself), from where the page around the frame is out of reach.
+        False on the top document, or when that cannot be told."""
+        try:
+            return self._driver.execute_script('return window.self !== window.top;') is True
+        except Exception:
+            return False
 
     def url(self):
         try:
