@@ -641,7 +641,10 @@ def test_flow_dismiss_a_newsletter_modal(engine, tmp_path, how):
             if how == 'locator':
                 await heal.locator('create', '#create').click()
             else:
-                await heal.page.get_by_role('button', name='Create account').click(timeout=5000)
+                from playwright.async_api import expect
+                go = heal.page.get_by_role('button', name='Create account')
+                await go.click(timeout=5000)
+                await expect(go).to_have_text('Create account')    # takes the guarded locator
             return (heal, await page.text_content('#log'), await page.text_content('#done'),
                     await page.locator('#nl').count())
         finally:

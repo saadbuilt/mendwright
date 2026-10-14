@@ -10,6 +10,7 @@ from markup the tests write:
   window it covers. An element without them is static and covers nothing.
 - data-escape: Escape removes it. data-closes="<id>" on a button: a click removes that
   element. data-reopens="<id>" too: a fresh copy of it is put back at once.
+  data-drops="<id>": a click removes that element as well (the page changed).
 
 A pointer action (click, check, hover, ...) on a covered element fails the way Playwright
 words it; fill and press go through, as in Playwright. Every call that would reach the
@@ -35,7 +36,7 @@ from mendwright.dismiss import (MIN_AREA, Probe, classify, control_text, forbidd
 from mendwright.drivers.base import (DESCRIBE_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
                                      POPUP_PROBE_JS, POPUP_ROOT_JS)
 from mendwright.flow import (DISMISS_KEY, InterruptionLoop, dismiss_loop_message,
-                             dismissed_message, undismissed_message)
+                             dismissed_message, lost_message, undismissed_message)
 from mendwright.interruptions import InterruptionEvent
 from mendwright.proxies import AsyncGuardedLocator, GuardedLocator, unwrap
 
@@ -184,6 +185,9 @@ class Doc:
     def click(self, el):
         """A click that reached el."""
         self.clicked.append(el.get('id') or _clean(el.text_content(), 40))
+        drops = el.get('data-drops')
+        if drops:
+            self.by_id(drops).drop_tree()
         closes = el.get('data-closes')
         if closes:
             target = self.by_id(closes)
@@ -305,8 +309,12 @@ class Locator:
             raise AttributeError(verb)
 
         def action(*args, **kwargs):
-            [el] = self._els()
-            return self._page.doc.act(el, verb, args)
+            els = self._els()
+            if len(els) != 1:
+                self._page.doc.calls.append(verb)
+                raise RuntimeError('Locator.' + verb + ': Timeout 50ms exceeded.\nCall log:\n'
+                                   '  - waiting for locator')
+            return self._page.doc.act(els[0], verb, args)
         return action
 
 
@@ -912,6 +920,28 @@ def test_a_popup_that_comes_back_each_time_stops_the_step(side, tmp_path, caplog
     assert isinstance(caught.value, AttentionRequired)
     assert page.doc.clicked == ['nl-no'] * 3
     assert [e.key for e in heal.handled_interruptions] == [DISMISS_KEY] * 3
+
+
+def test_a_step_after_which_the_element_is_gone_is_not_a_dismissal(side, tmp_path,
+                                                                   caplog):
+    # A No thanks that submits a form, say: the element left the page, so mendwright cannot
+    # tell what the click did.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    drops = NO_THANKS.replace('data-closes="nl"', 'data-closes="nl" data-drops="signup"')
+    page = _page(FORM, modal(SIGN_UP + drops))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    proxy = heal.locator('go', '#go', timeout_ms=0, poll_ms=0)
+
+    with pytest.raises(RuntimeError, match='waiting for locator'):
+        side.act(proxy, 'click')
+
+    assert page.doc.clicked == ['nl-no']
+    assert page.calls.count('click') == 2                     # No thanks, and the action once
+    assert _warnings(caplog) == ['mendwright: ' + lost_message('go', _nl(), 'clicked “No thanks”')]
+    assert _warnings(caplog)[0].startswith(
+        "mendwright: Clicked “No thanks” on a popup in the way of 'go': " + _nl() + ', and then '
+        "could not find the element of 'go' as before")
+    assert heal.handled_interruptions == [] and _events(tmp_path) == []
 
 
 def test_a_registered_interruption_is_handled_first(side, tmp_path):

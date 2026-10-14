@@ -55,11 +55,11 @@ from .drivers.registry import _REGISTRY
 from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
+from .facade import _dismiss_choice
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
                      _healed_target_error, _locator_args, _overlay_locator, _overlay_options,
                      _setup, latest_success)
-from .facade import _dismiss_choice
 from .flow import InterruptionLoop, absent_message, is_interception_error
 from .interruptions import Budget
 from .limits import Guardrails

@@ -10,6 +10,7 @@ never names. The page logs every key press and every button its popup's buttons 
 import importlib
 import json
 import logging
+import time
 
 import pytest
 
@@ -232,17 +233,25 @@ def test_a_popup_that_comes_back_each_time_stops_the_step(tab, store_file, stub_
     assert tab.text('#done') == ''
 
 
-def test_a_popup_inside_an_iframe_is_dismissed_there(tab, store_file, stub_provider):
-    # The key is followed into the iframe, so the look runs in the iframe's document.
+def _framed():
+    """A page whose terms checkbox is inside an iframe, under a newsletter modal there."""
     inner = page('<label><input type="checkbox" data-testid="legal-consent"> I accept the '
                  'terms</label>' + _modal([SIGN_UP, NO_THANKS]).replace("log(", "void("),
                  'consent')
-    tab.load(page('<h1>Outer page</h1><iframe id="consent-frame" width="600" height="400" '
-                  'srcdoc="' + inner.replace('&', '&amp;').replace('"', '&quot;')
-                  + '"></iframe>', 'iframe'))
+    return page('<h1>Outer page</h1><iframe id="consent-frame" width="600" height="400" '
+                'srcdoc="' + inner.replace('&', '&amp;').replace('"', '&quot;')
+                + '"></iframe>', 'iframe')
+
+
+TERMS = "//input[@data-testid='legal-consent']"
+
+
+def test_a_popup_inside_an_iframe_is_dismissed_there(tab, store_file, stub_provider):
+    # The key is followed into the iframe, so the look runs in the iframe's document.
+    tab.load(_framed())
     heal = _open(tab, stub_provider(None), store_file, dismiss=True)
 
-    _step(heal, 'terms', "//input[@data-testid='legal-consent']", role='checkbox').check()
+    _step(heal, 'terms', TERMS, role='checkbox').check()
 
     frame = 'document.querySelector("#consent-frame").contentDocument'
     assert tab.js(frame + '.querySelector("[data-testid=legal-consent]").checked') is True
@@ -262,6 +271,33 @@ def test_selenium_find_element_and_click(tab, store_file, stub_provider):
 
     assert tab.text('#done') == 'go ' and tab.value('#email') == 'ada@example.com'
     assert _log(tab) == ['key:Escape', 'no-thanks']
+
+
+@pytest.mark.engine_family('selenium')
+def test_with_an_implicit_wait_looking_and_dismissing_do_not_wait(tab, store_file,
+                                                                  stub_provider):
+    from selenium.webdriver.common.by import By
+    raw = tab.target
+    raw.implicitly_wait(5)
+    try:
+        tab.load(_page())                                      # nothing in the way
+        driver = _open(tab, stub_provider(None), store_file, dismiss=True).driver
+        started = time.monotonic()
+        driver.find_element(By.ID, 'go').click()
+        driver.find_elements(By.ID, 'email')[0].send_keys('ada@x.test')
+        plain = time.monotonic() - started
+
+        tab.load(_framed())                                    # a popup inside an iframe
+        heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+        started = time.monotonic()
+        _step(heal, 'terms', TERMS, role='checkbox').check()
+        framed = time.monotonic() - started
+        kept = raw.timeouts.implicit_wait
+    finally:
+        raw.implicitly_wait(0)
+    assert plain < 2.5 and framed < 4.5    # one lookup that waited would take 5 s
+    assert kept == 5
+    assert [e.how for e in heal.handled_interruptions] == ['“No thanks”']
 
 
 @pytest.mark.engine_family('playwright')

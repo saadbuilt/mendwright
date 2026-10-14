@@ -185,6 +185,16 @@ def undismissed_message(before, popup, tried):
             'action="fill", args=("<value>",)).')
 
 
+def lost_message(before, popup, did):
+    """The WARNING for an element that could not be looked at any more once mendwright did
+    ``did`` ('pressed Escape', 'clicked “No thanks”') on a popup in its way."""
+    return (did[0].upper() + did[1:] + ' on a popup in the way of ' + repr(before) + ': '
+            + popup + ', and then could not find the element of ' + repr(before) + ' as '
+            'before (it matches no element or several now, or it left the page). That step '
+            'may have changed the page, so mendwright does not count the popup as dismissed '
+            'and does not try a failed action again.')
+
+
 def dismiss_loop_message(before, popup, count):
     """The AttentionRequired text for a step whose budget is used up while a popup still
     covers its element, such as one that comes back each time it is dismissed."""

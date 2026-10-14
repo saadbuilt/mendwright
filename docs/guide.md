@@ -741,6 +741,7 @@ When a popup was dismissed, mendwright logs one WARNING line, writes a `flow.dis
 Each popup counts once toward the 3 interruptions a step may handle, whatever was tried on it. A popup that comes back each time it is dismissed raises `InterruptionLoop`, an `AttentionRequired`, once the step has handled 3.
 
 When nothing worked, mendwright logs one WARNING that names the popup and says how to handle it, and leaves the popup alone. It doesn't try again in that step. The action goes ahead as it would without mendwright, and if the popup blocks it, the browser's own error is raised and the action isn't tried again.
+When the action's element can't be found as before after one of the steps, for example because a button submitted a form and the page changed, mendwright can't tell what that step did. It stops there with a WARNING that says so, doesn't count the popup as dismissed, and doesn't try a failed action again.
 
 What it can't do:
 
