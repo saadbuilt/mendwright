@@ -659,8 +659,9 @@ On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` 
 
 - Such an action has no key, so the WARNING line and the journal event say `before '<page action>'`. One that happens during a step of mendwright, such as the scroll before a click, is logged before that step and counts toward its 3.
 - An interruption that is still on the page after mendwright handled it 3 times in a row this way is left alone, with one WARNING, until mendwright sees it gone.
-- Registering a key again replaces its handler. From Playwright 1.44 the old one is removed from the page; before that it stays and does nothing.
-- Playwright runs the check before every action, so each registered interruption costs one query of the page per action. With `cookies=`, on a page of 2,000 elements in Chromium, that added 15 to 30 ms to each action.
+- A page keeps one handler per key, however many healers you open on it: one that registers the same selectors joins the handler there, which acts for the newest of them still in use. Registering a key with other selectors replaces it. From Playwright 1.44 the old one is removed from the page; before that it stays and does nothing.
+- Playwright runs the check before every action, so each registered interruption costs one query of the page per action. With `cookies=`, on a page of 2,000 elements in Chromium, that added 15 to 50 ms to each action.
+- Playwright also runs it before an auto-waiting assertion. So `expect(page.locator("#cookie-banner")).to_be_visible()` fails once the banner is registered: mendwright closes it first. A step of your own that clicks the banner through a locator mendwright does not route, such as `page.get_by_role("button", name="Accept all").click()`, now finds it gone and waits out its timeout. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there.
 - A `Frame` has no `add_locator_handler()`, so a healer opened on one, and Playwright before 1.42, keep the checks above only.
 
 When one is there and visible, mendwright performs its action, waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
@@ -692,7 +693,7 @@ So a consent screen that isn't about cookies, such as an OAuth screen with Allow
 The selectors are XPath, so they run on Playwright and Selenium. Usercentrics draws its banner in a shadow root, which XPath can't reach, so its buttons are also looked for with CSS, which Playwright reaches and Selenium doesn't.
 The selector lists are in `mendwright/interruptions.py`.
 
-If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way.
+If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way, and on Playwright a step that reaches the banner through `get_by_role()` or another locator mendwright does not route finds it closed already (see [Interruptions](#interruptions)).
 
 ### Optional steps
 

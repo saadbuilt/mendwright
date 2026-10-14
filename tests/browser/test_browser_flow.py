@@ -458,3 +458,33 @@ def test_a_banner_that_opens_while_an_action_waits_is_handled_at_once(
     assert _rejected_once(tab, heal)
     assert [e.before for e in heal.handled_interruptions] == [
         '#continue' if routed else '<page action>']
+
+
+# Usercentrics draws its banner inside a shadow root, which only the preset's CSS selector
+# reaches.
+_USERCENTRICS = """<div id="usercentrics-root" style="position: fixed; inset: 0; z-index: 10"></div>
+<script>
+const root = document.getElementById('usercentrics-root').attachShadow({mode: 'open'});
+root.innerHTML = '<div style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.4)">'
+  + '<p>We use cookies.</p>'
+  + '<button data-testid="uc-deny-all-button">Deny</button>'
+  + '<button data-testid="uc-accept-all-button">Accept All</button></div>';
+for (const [id, choice] of [['uc-deny-all-button', 'rejected'], ['uc-accept-all-button', 'accepted']]) {
+  root.querySelector('[data-testid="' + id + '"]').onclick = () => {
+    document.getElementById('consent').textContent = choice;
+    document.getElementById('usercentrics-root').remove();
+  };
+}
+</script>"""
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_banner_in_a_shadow_root_is_handled_before_an_action_mendwright_does_not_route(
+        tab, store_file, stub_provider):
+    tab.load(_checkout('never').replace('</body>', _USERCENTRICS + '</body>'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject')
+
+    heal.page.get_by_role('button', name='Continue').click()
+
+    assert tab.text('#done') == 'continued '
+    assert _rejected_once(tab, heal)

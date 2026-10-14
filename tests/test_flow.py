@@ -752,6 +752,11 @@ class HandlerLocator(FlowLocator):
     def first(self):
         return self._with(self.selectors, self.narrowed + ' >> nth=0')
 
+    def same(self, other):
+        """Locator._equals: the same frame and selector."""
+        return (self._page, self.selectors, self.narrowed) == (other._page, other.selectors,
+                                                                other.narrowed)
+
     def overlay_visible(self):
         found = [el for s in self.selectors for el in self._page.query(s)]
         if self.narrowed == ' >> visible=true >> nth=0':
@@ -786,7 +791,7 @@ class HandlerPage(FlowPage):
 
     def remove_locator_handler(self, locator):
         self.removed.append(locator)
-        self.handlers = [h for h in self.handlers if h[0] is not locator]
+        self.handlers = [h for h in self.handlers if not h[0].same(locator)]
 
     def checkpoint(self):
         if self._running:
@@ -903,8 +908,40 @@ def test_registering_a_key_again_replaces_its_handler(tmp_path):
     heal.interrupt('cookies', '#cookie-accept')
     first = page.handlers[0][0]
     heal.interrupt('cookies', '#cookie-reject')
-    assert page.removed == [first]
+    assert [r.selectors for r in page.removed] == [first.selectors]
     assert [h[0].selectors for h in page.handlers] == [('css=#cookie-reject',)]
+
+
+def test_a_page_keeps_one_handler_per_key_for_all_its_healers(tmp_path):
+    page = _handler_page(CONSENT + SIGNUP)
+    first, second, third = (_open_sync(page, tmp_path / str(n), cookies='reject')
+                            for n in range(3))
+    assert len(page.handlers) == 1 and page.removed == []
+    page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second, third)] == [0, 0, 1]
+
+    del third               # the newest healer still alive acts for the handler
+    gc.collect()
+    page.during_action.append(_show(CONSENT))
+    page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second)] == [0, 1]
+
+    first.interrupt(COOKIE_BANNER_KEY, '#consent-reject')     # other selectors: replaced
+    assert [h[0].selectors for h in page.handlers] == [('css=#consent-reject',)]
+    assert len(page.removed) == 1
+
+
+def test_the_handler_stays_out_while_any_healer_of_the_page_clicks_the_banner(tmp_path):
+    hidden = SIGNUP.replace('<form>', '<form id="form" style="display: none">')
+    page = _handler_page(BANNER.replace('id="cookie-accept"',
+                                        'id="cookie-accept" data-reveal="form"') + hidden)
+    first, second = _open_sync(page, tmp_path / 'a'), _open_sync(page, tmp_path / 'b')
+    for heal in (first, second):
+        heal.interrupt('cookies', '#cookie-accept')     # one handler, acting for second
+    first.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('ada@example.com')
+    assert page.handler_runs == 1 and page.clicks('css=#cookie-accept') == 1
+    assert first.handled_interruptions == [InterruptionEvent('cookies', 'email')]
+    assert second.handled_interruptions == []
 
 
 def test_on_playwright_1_42_an_old_handler_stays_but_does_nothing(tmp_path):
@@ -975,7 +1012,7 @@ def test_no_overlay_handler_without_add_locator_handler(tmp_path):
     page = _page(BANNER + SIGNUP)       # a Frame, or Playwright before 1.42
     heal = _open_sync(page, tmp_path, cookies='accept')
     heal.interrupt('cookies', '#cookie-accept')
-    assert heal._overlays == {}
+    assert heal._overlays.handlers == {}
 
 
 class AsyncHandlerLocator(AsyncFlowLocator):
@@ -1029,7 +1066,7 @@ class AsyncHandlerPage(AsyncFlowPage):
 
     async def remove_locator_handler(self, locator):
         self.removed.append(locator)
-        self.handlers = [h for h in self.handlers if h[0] is not locator]
+        self.handlers = [h for h in self.handlers if not h[0]._loc.same(locator._loc)]
 
     async def checkpoint(self):
         if self._running:

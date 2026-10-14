@@ -53,8 +53,8 @@ from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
-                     _healed_target_error, _locator_args, _overlay_locator, _overlay_options,
-                     _setup, latest_success)
+                     _healed_target_error, _join_overlay, _locator_args, _overlay_locator,
+                     _overlay_options, _overlay_owner, _setup, latest_success)
 from .flow import InterruptionLoop, absent_message, is_interception_error
 from .interruptions import Budget
 from .limits import Guardrails
@@ -614,39 +614,40 @@ class AsyncHealer:
 
     async def _watch(self, item):
         """Healer._watch() for an async Playwright Page: register interruption ``item``
-        with page.add_locator_handler (Playwright 1.42 and later), replacing a handler
-        registered for its key before. Does nothing for a Frame or a custom driver."""
-        core, page = self._core, self._page
+        with page.add_locator_handler (Playwright 1.42 and later), keeping one handler per
+        page and key as the sync Healer does. Does nothing for a Frame or a custom driver."""
+        page, overlays, key = self._page, self._core._overlays.handlers, item.key
         if not isinstance(self._driver, AsyncPlaywrightDriver) or not callable(
                 getattr(page, 'add_locator_handler', None)):
             return
-        old = core._overlays.pop(item.key, None)
+        if _join_overlay(overlays, item, self):
+            return
+        old = overlays.pop(key, None)
         remove = getattr(page, 'remove_locator_handler', None)
         if old is not None and callable(remove):
             try:
-                await remove(old[1])
+                await remove(_overlay_locator(page, old[0]))
             except Exception:
                 pass    # left on the page, it does nothing: its token is gone
         token = object()
-        ref = weakref.ref(self)    # the page must not keep the healer alive
 
         async def handler(*_locator):
-            healer = ref()
+            healer = _overlay_owner(overlays, key, token)   # the page keeps no healer alive
             if healer is not None:
-                await healer._overlay(item.key, token)
+                await healer._overlay(key)
 
         try:
             locator = _overlay_locator(page, item.selectors)
-            core._overlays[item.key] = (token, locator)
+            overlays[key] = (item.selectors, (weakref.ref(self),), token)
             await page.add_locator_handler(locator, handler,
                                            **_overlay_options(page.add_locator_handler))
         except Exception:
-            if core._overlays.get(item.key, (None,))[0] is token:
-                core._overlays.pop(item.key, None)
-            logger.debug('mendwright: could not register an overlay handler for %r', item.key,
+            if overlays.get(key, (None, None, None))[2] is token:
+                overlays.pop(key, None)
+            logger.debug('mendwright: could not register an overlay handler for %r', key,
                          exc_info=True)
 
-    async def _overlay(self, key, token):
+    async def _overlay(self, key):
         """What Playwright runs on the event loop when the page shows interruption key's
         element before an action (see Healer._watch). The sync Healer's code decides and
         acts, in a worker thread through SyncBridge, as _interrupt() does.
@@ -656,7 +657,7 @@ class AsyncHealer:
         would then wait for itself. That step handles interruptions itself, and an action
         mendwright did not route gets the handler again when Playwright retries it."""
         core = self._core
-        if not core._overlay_wanted(key, token) or self._lock.locked():
+        if not core._overlay_wanted(key) or self._lock.locked():
             return
         async with self._lock:
             await _in_thread(core._overlay_run, key, self._sync_driver())

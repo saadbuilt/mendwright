@@ -491,6 +491,80 @@ def _overlay_options(add_locator_handler):
     return {'no_wait_after': True} if 'no_wait_after' in params else {}
 
 
+class _PageOverlays:
+    """What the healers of one page share about Playwright's overlay handlers (see
+    Healer._watch).
+
+    handlers maps an interruption key to (selectors, healer refs, token) for the one
+    handler registered on the page for it. Playwright checks every handler's locator before
+    every action, so a page that outlives many healers keeps one handler per key, not one
+    from each healer: a healer that registers the same selectors joins the one there, which
+    acts for the newest of its healers still alive. It keeps the selectors, not the
+    Locator, which would keep the page alive.
+
+    busy is above 0 while a healer of the page handles interruptions itself: its own action
+    on the banner runs Playwright's check too, and the page's handlers must stay out of
+    it."""
+
+    def __init__(self):
+        self.handlers: dict = {}
+        self.busy = 0
+        self._lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def handling(self):
+        with self._lock:
+            self.busy += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self.busy -= 1
+
+
+# {native page: _PageOverlays}
+_OVERLAYS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_OVERLAYS_LOCK = threading.Lock()
+
+
+def _page_overlays(page):
+    """page's _PageOverlays, or one of its own for a page that cannot be weakly
+    referenced."""
+    try:
+        with _OVERLAYS_LOCK:
+            found = _OVERLAYS.get(page)
+            if found is None:
+                found = _OVERLAYS[page] = _PageOverlays()
+            return found
+    except TypeError:
+        return _PageOverlays()
+
+
+def _overlay_owner(overlays, key, token):
+    """The healer the overlay handler registered with ``token`` for key acts for: the
+    newest healer that registered key's selectors on the page and is still alive. None
+    when that handler was replaced, or none of its healers is left."""
+    entry = overlays.get(key)
+    if entry is None or entry[2] is not token:
+        return None
+    for ref in reversed(entry[1]):
+        healer = ref()
+        if healer is not None:
+            return healer
+    return None
+
+
+def _join_overlay(overlays, item, healer):
+    """When key's handler on the page watches item's selectors already, add healer to the
+    healers it acts for and return True; else False."""
+    entry = overlays.get(item.key)
+    if entry is None or entry[0] != item.selectors:
+        return False
+    refs = [r for r in entry[1] if r() is not None and r() is not healer]
+    overlays[item.key] = (entry[0], tuple(refs) + (weakref.ref(healer),), entry[2])
+    return True
+
+
 class Healer:
     """Resolves selector keys on one page, heals them when they break, and hands back an
     ActionProxy. Made by mendwright.open()."""
@@ -511,16 +585,12 @@ class Healer:
         # key -> how many times in a row an interruption was still on the page after its
         # action. The overlay handler stops acting on one at MAX_INTERRUPTIONS_PER_STEP.
         self._stuck: dict = {}
-        # Playwright's overlay handlers (see _watch): key -> (token, Locator) of the one
-        # registered for that interruption now. A handler whose token is not here does
-        # nothing.
-        self._overlays: dict = {}
+        # Playwright's overlay handlers on this page, shared with the other healers of the
+        # page (see _PageOverlays and _watch).
+        self._overlays = _page_overlays(page)
         # The steps running now, as (key, budget, timeout_ms, poll_ms), so the overlay
         # handler counts what it handles in the middle of one against that step.
         self._steps: list = []
-        # Above 0 while _interrupt() runs: mendwright's own action on an interruption runs
-        # Playwright's overlay check too, and the handler must stay out of it.
-        self._interrupting = 0
         # (key, xpath) pairs whose fingerprint this Healer has read already.
         self._fingerprinted: set = set()
         self._proxies: dict = {}
@@ -648,7 +718,9 @@ class Healer:
         while one waits: a get_by_* or chained locator of heal.page, or of the page itself.
         Such an action is logged as before '<page action>'. An interruption still on the
         page after 3 such actions in a row is left alone (one WARNING) until mendwright sees
-        it gone.
+        it gone. Playwright does the same before its auto-waiting assertions, so an
+        expect() on the interruption's own element, or a get_by_* step that clicks it,
+        finds it closed: drop such a step, or write it as heal.locator(key, ...).
 
         An interruption is never healed by a model. A later heal.locator(key, ...) for the
         same key is skipped (no heal, no error, its actions do nothing) when the element is
@@ -1002,8 +1074,7 @@ class Healer:
             return False
         driver = driver or self._driver
         handled = False
-        self._interrupting += 1
-        try:
+        with self._overlays.handling():     # Playwright's handlers stay out of it
             for item in others:
                 target = self._interruption_target(item, driver)
                 if target is None:
@@ -1015,8 +1086,6 @@ class Healer:
                 if self._run_interruption(item, target, before, timeout_ms, poll_ms, driver):
                     budget.handled.append(item.key)
                     handled = True
-        finally:
-            self._interrupting -= 1
         return handled
 
     def _interruption_target(self, item, driver):
@@ -1116,53 +1185,55 @@ class Healer:
         route (get_by_* and chained locators, the page's own methods) and a banner that
         opens after an action began. Only a sync Playwright Page has it; for a Frame or
         another driver this does nothing, and the checks of the steps mendwright routes
-        stay as they are. A handler registered for the key before is removed (Playwright
-        1.44 and later) or left to do nothing."""
+        stay as they are.
+
+        The page keeps one handler per key (see _OVERLAYS). One with the same selectors is
+        joined. One with other selectors, from this healer or another, is removed
+        (Playwright 1.44 and later) or left to do nothing."""
         from .drivers.playwright_sync import PlaywrightSyncDriver
-        page = self._page
+        page, overlays, key = self._page, self._overlays.handlers, item.key
         if not isinstance(self._driver, PlaywrightSyncDriver) or not callable(
                 getattr(page, 'add_locator_handler', None)):
             return
-        old = self._overlays.pop(item.key, None)
+        if _join_overlay(overlays, item, self):
+            return
+        old = overlays.pop(key, None)
         remove = getattr(page, 'remove_locator_handler', None)
         if old is not None and callable(remove):
             try:
-                remove(old[1])
+                remove(_overlay_locator(page, old[0]))
             except Exception:
                 pass    # left on the page, it does nothing: its token is gone
         token = object()
-        ref = weakref.ref(self)    # the page must not keep the healer alive
 
         def handler(*_locator):
-            healer = ref()
+            healer = _overlay_owner(overlays, key, token)   # the page keeps no healer alive
             if healer is not None:
-                healer._overlay(item.key, token)
+                healer._overlay(key)
 
         try:
             locator = _overlay_locator(page, item.selectors)
-            self._overlays[item.key] = (token, locator)
+            overlays[key] = (item.selectors, (weakref.ref(self),), token)
             page.add_locator_handler(locator, handler,
                                      **_overlay_options(page.add_locator_handler))
         except Exception:
-            self._overlays.pop(item.key, None)
-            logger.debug('mendwright: could not register an overlay handler for %r', item.key,
+            if overlays.get(key, (None, None, None))[2] is token:
+                overlays.pop(key, None)
+            logger.debug('mendwright: could not register an overlay handler for %r', key,
                          exc_info=True)
 
-    def _overlay(self, key, token):
+    def _overlay(self, key):
         """What Playwright runs, on this thread, when the page shows interruption key's
         element before an action (see _watch)."""
-        if self._overlay_wanted(key, token):
+        if self._overlay_wanted(key):
             self._overlay_run(key, self._driver)
 
-    def _overlay_wanted(self, key, token):
-        """Whether the overlay handler for key should look at the page now. Not when it is
-        a handler registered for key before, not while mendwright handles interruptions
-        itself (its own action on the banner runs Playwright's check too), and not for an
-        interruption that was still on the page after MAX_INTERRUPTIONS_PER_STEP actions in
-        a row, until mendwright sees it gone."""
-        entry = self._overlays.get(key)
-        return (entry is not None and entry[0] is token and not self._interrupting
-                and key in self._interruptions
+    def _overlay_wanted(self, key):
+        """Whether the overlay handler for key should look at the page now. Not while a
+        healer of the page handles interruptions itself (its own action on the banner runs
+        Playwright's check too), and not for an interruption that was still on the page
+        after MAX_INTERRUPTIONS_PER_STEP actions in a row, until mendwright sees it gone."""
+        return (not self._overlays.busy and key in self._interruptions
                 and self._stuck.get(key, 0) < MAX_INTERRUPTIONS_PER_STEP)
 
     def _overlay_run(self, key, driver):
