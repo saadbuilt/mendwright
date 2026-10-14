@@ -224,6 +224,7 @@ It also handles some changes in your script's flow:
 - The consent banners of common consent managers, with `cookies="reject"` or `cookies="accept"`. This is off by default.
 - Popups you never registered, such as a newsletter modal, a survey or a chat invite, with `dismiss=True`. When one covers the element of an action, mendwright presses Escape (only while the keyboard focus is on the page or in the popup, so a field you filled keeps its text), then clicks the popup's close button, then a button such as No thanks or Not now, and looks again after each. It never clicks a button that says Subscribe, Accept, Yes or Continue (unless it says Continue without, as in Continue without an account), a link that goes somewhere, or a button that submits a form, and it never types into the popup. A popup it can't dismiss is named in a WARNING and the action fails with its own error. This is off by default. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#popups-mendwright-wasnt-told-about) lists what counts as a popup and as each button.
 - A step that may not be there, with `heal.locator(..., optional=True)`.
+- Steps the site shows in another order, puts on one page, or leaves out, such as a checkout that now asks for the card before the address. Register each step with `heal.step(name, when=...)`, where `when` is something only that step shows, such as its heading, and `heal.run_steps()` runs whichever step the site shows, each once, until the last one. A step that is on the page again after it ran, such as payment after a declined card, or a page where no step shows, stops the flow with an error instead of a guess. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#steps-in-any-order) has an example.
 
 <!-- readme-test: flow -->
 ```python
@@ -234,7 +235,7 @@ heal.locator("email", "#email").fill("ada@example.com")
 heal.locator("create_account", "#create-account").click()
 ```
 
-A step that moved to another page, steps in a new order, or a new required step still need a change to your script.
+A new required step still needs a change to your script, and so do a step that moved to another page and steps in a new order, unless the flow runs through `heal.run_steps()`.
 mendwright remembers the last few pages each key was found on and doesn't heal a key on another page, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, or the same steps run under language paths such as `/en/` and `/de/`, pass `heal_across_pages=True` to `mendwright.open()`.
 The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
 

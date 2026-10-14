@@ -27,7 +27,8 @@ Every safety decision is made by the sync core, unchanged:
   event loop, and it hands the work to a worker thread the same way. With
   open(dismiss=True), the look at what covers an element before an action is awaited on
   the event loop; dismissing a popup runs the sync Healer's code in a worker thread, as
-  handling an interruption does.
+  handling an interruption does. heal.step() and run_steps() (see mendwright.steps) look
+  at the landmarks on the event loop and await each step's function.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -67,6 +68,7 @@ from .interruptions import Budget
 from .limits import Guardrails
 from .resolver import _frame_chain, _no_match_message, _require_visible, _split_runnable
 from .selectors import XPATH, InvalidSelector, classify
+from . import steps as _steps
 
 # 'open' is left out on purpose, as in the package: `from mendwright.aio import *` must not
 # shadow builtins.open. Call it as mendwright.aio.open(page).
@@ -957,6 +959,24 @@ class AsyncHealer:
         async with self._lock:
             if key in self.coordinator.pending:
                 await _in_thread(self.coordinator.confirm_pending, key, bool(success))
+
+    # --- steps in any order (see mendwright.steps) ------------------------------------
+
+    def step(self, name: str, when: Selector | None = None,
+             fn: Callable[[Any], Any] | None = None, *, url: str | None = None,
+             last: bool = False, optional: bool = False) -> Any:
+        """Register a step for run_steps(), as Healer.step() does. The function may be async
+        (it is awaited) or plain, and gets heal.page. Sync: it only registers."""
+        return _steps.add(self._core, name, when, fn, url=url, last=last, optional=optional,
+                          awaits=True)
+
+    async def run_steps(self, *, timeout_ms: int | None = None, poll_ms: int = 200) -> list:
+        """Healer.run_steps(), with the page work awaited: the landmarks are looked at on
+        the event loop, the interruptions are handled as before an action, and each step's
+        function is awaited. The healer's lock is not held while a step runs, so its
+        actions take it as usual."""
+        __tracebackhide__ = True  # pytest shows the caller
+        return await _steps.run_async(self, timeout_ms, poll_ms)
 
     def __repr__(self) -> str:
         return '<AsyncHealer page=' + repr(self._page) + '>'

@@ -9,7 +9,8 @@ than hardcoded, so the store can serve any tool.
 Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive, intent
 and fingerprint) is saved in the override file next to the candidates, so the next process
 sees it, and so is where the key's element was last found (``set_last_page``: lastPage
-and pages). The file stays schema 2; the fields are optional. A key is destructive when the seed says
+and pages) and the steps of run_steps() it was found during (``set_last_step``: steps).
+The file stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these.
 
@@ -209,15 +210,17 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
         '"selectors": {...}}). Point mendwright at the right file, or delete this one.')
 
 
-# Metadata fields saved in the override file: the ones set_meta() sets, and the pages
-# set_last_page() records. intent is what the element is for, in words (locator(intent=));
-# fingerprint is what the element looked like the last time it matched (see
-# mendwright.fingerprint).
+# Metadata fields saved in the override file: the ones set_meta() sets, the pages
+# set_last_page() records and the steps set_last_step() records. intent is what the element
+# is for, in words (locator(intent=)); fingerprint is what the element looked like the last
+# time it matched (see mendwright.fingerprint).
 META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
-               'fingerprint')
+               'fingerprint', 'steps')
 
-# How many pages set_last_page() keeps per key, most recent first.
+# How many pages set_last_page() keeps per key, most recent first, and how many steps
+# set_last_step() keeps.
 MAX_PAGES = 5
+MAX_STEPS = 5
 
 
 def _known_role(role):
@@ -243,6 +246,9 @@ def _meta_fields(entry):
     pages = _pages(entry.get('pages'))
     if pages:
         out['pages'] = pages
+    steps = _pages(entry.get('steps'))
+    if steps:
+        out['steps'] = steps
     intent = entry.get('intent')
     if isinstance(intent, str) and intent.strip():
         out['intent'] = intent
@@ -333,9 +339,9 @@ class SelectorStore:
             e['expectedText'] = list(fields['expectedText'])
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
-        for name in ('lastPage', 'pages', 'intent', 'fingerprint'):
+        for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint'):
             if name in fields:
-                e[name] = list(fields[name]) if name == 'pages' else fields[name]
+                e[name] = list(fields[name]) if name in ('pages', 'steps') else fields[name]
 
     def is_locked_destructive(self, key):
         """True when the seed or destructive_keys marks key destructive. set_meta() cannot
@@ -356,6 +362,7 @@ class SelectorStore:
                 'maxCandidates': e.get('maxCandidates', 5),
                 'lastPage': e['lastPage'] if isinstance(e.get('lastPage'), str) else None,
                 'pages': _pages(e.get('pages')),
+                'steps': _pages(e.get('steps')),
                 'intent': e['intent'] if isinstance(e.get('intent'), str) and e['intent'] else None,
                 'fingerprint': e['fingerprint'] if _valid_fingerprint(e.get('fingerprint')) else None}
 
@@ -484,6 +491,22 @@ class SelectorStore:
         if saved.get('lastPage') != path or saved.get('pages') != pages:
             self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
             if set(saved.get('pages') or ()) != set(pages):
+                self._persist_override()
+
+    def set_last_step(self, key, step):
+        """Record that key's element was just found while run_steps() ran the step named
+        ``step`` (see mendwright.steps). steps keeps the last few distinct names, most
+        recent first, and is saved in the override file, which is written only when the set
+        of names changes, as for set_last_page(). A name of None or '' is ignored."""
+        if not isinstance(step, str) or not step:
+            return
+        e = self._entry(key)
+        steps = ([step] + [s for s in _pages(e.get('steps')) if s != step])[:MAX_STEPS]
+        e['steps'] = steps
+        saved = self._meta.get(key, {})
+        if saved.get('steps') != steps:
+            self._meta[key] = dict(saved, steps=list(steps))
+            if set(saved.get('steps') or ()) != set(steps):
                 self._persist_override()
 
     def guess_role(self, key, role, *, replace=False):
@@ -821,8 +844,8 @@ def _merge_status(mine, theirs, base):
 
 def _merge_meta(mine, theirs, base):
     """Saved metadata after a three-way merge (see SelectorStore._absorb). When both sides
-    recorded pages for a key, both sets are kept (this store's first), so a page another
-    process found the key on is not lost."""
+    recorded pages (or steps) for a key, both sets are kept (this store's first), so a page
+    another process found the key on is not lost."""
     out = {}
     for field in META_FIELDS:
         m, t, b = mine.get(field), theirs.get(field), base.get(field)
@@ -834,6 +857,8 @@ def _merge_meta(mine, theirs, base):
             value = bool(m) or bool(t)
         elif field == 'pages':
             value = list(dict.fromkeys(_pages(m) + _pages(t)))[:MAX_PAGES] or None
+        elif field == 'steps':
+            value = list(dict.fromkeys(_pages(m) + _pages(t)))[:MAX_STEPS] or None
         else:
             value = m
         if value is not None:

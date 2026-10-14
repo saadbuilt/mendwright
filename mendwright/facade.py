@@ -11,7 +11,8 @@ It also handles changes in a script's flow (see mendwright.flow): interruptions 
 appear at any point (heal.interrupt(), and the cookies= preset of open()), popups nobody
 registered (open(dismiss=True), see mendwright.dismiss), optional steps
 (locator(optional=True)), and a guard that does not heal a key on a page it was never
-found on (open(heal_across_pages=...)).
+found on (open(heal_across_pages=...)). Steps the site shows in another order, on one page
+or not at all run through heal.step() and heal.run_steps() (see mendwright.steps).
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ from .resolver import resolve
 from .roles import infer_role, role_choices
 from .selectors import (XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
                         normalize)
+from . import steps as _steps
 from .store import load_store
 
 logger = logging.getLogger('mendwright')
@@ -703,6 +705,10 @@ class Healer:
         # (key, xpath) pairs whose fingerprint this Healer has read already.
         self._fingerprinted: set = set()
         self._proxies: dict = {}
+        # Steps registered with step(), by name in the order registered, and the name of the
+        # one run_steps() runs now (see mendwright.steps and _step_pages).
+        self._step_book: dict = {}
+        self._current_step = None
         _register(self)
 
     @property
@@ -1669,7 +1675,9 @@ class Healer:
             return ''
 
     def _remember_page(self, key, url=None):
-        """Save the page key's element was just found on (see mendwright.flow.page_path)."""
+        """Save the page key's element was just found on (see mendwright.flow.page_path),
+        and the step run_steps() runs now, if any (see _remember_step)."""
+        self._remember_step(key)
         setter = getattr(self.store, 'set_last_page', None)
         if not callable(setter):
             return
@@ -1708,13 +1716,14 @@ class Healer:
             logger.debug('mendwright: could not save the fingerprint of %r', key, exc_info=True)
 
     def _flow_context(self, key, url):
-        """The heal context: the URL, and the pages the page guard compares."""
+        """The heal context: the URL, and the pages the page guard compares (this page among
+        them while a step that key was found during runs, see _step_pages)."""
         try:
             meta = self.store.meta(key)
         except Exception:
             meta = {}
         return {'url': url, 'page': page_path(url), 'lastPage': meta.get('lastPage'),
-                'pages': list(meta.get('pages') or ())}
+                'pages': self._step_pages(key, meta, page_path(url))}
 
     # --- healing -------------------------------------------------------------------
 
@@ -1869,6 +1878,93 @@ class Healer:
         with self.coordinator.scoped(scope[1], scope[0]):
             return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
                                      context)
+
+    # --- steps in any order: step() and run_steps() (see mendwright.steps) -------------
+
+    def step(self, name: str, when: Selector | None = None,
+             fn: Callable[[Any], Any] | None = None, *, url: str | None = None,
+             last: bool = False, optional: bool = False) -> Any:
+        """Register a step of a flow whose steps the site may show in another order, on one
+        page, or not at all, for run_steps(). Use it as a decorator,
+        @heal.step('payment', '#card-number'), or pass the function:
+        heal.step('payment', '#card-number', payment). Returns the function.
+
+        when is what shows the step is on the page: one selector or a list, and any visible
+        match counts (a landmark: a heading's text, a field's name). It is never healed, so
+        pick one that stays. url is a pattern for the page's path, such as
+        '/checkout/payment' or '*/payment*', normalized as the page guard normalizes paths:
+        instead of when=, or as one more condition with it. last=True marks the step that
+        ends the flow, such as placing the order; a flow has one. optional=True marks one
+        that may not show at all, such as an upsell.
+
+        The function gets heal.page on Playwright and heal.driver on Selenium, so its
+        selectors heal as usual. Registering a name again replaces its step, which keeps its
+        place in the order. Raises TypeError, ValueError or InvalidSelector for arguments
+        that can never work, before anything touches the page."""
+        return _steps.add(self, name, when, fn, url=url, last=last, optional=optional)
+
+    def run_steps(self, *, timeout_ms: int | None = None, poll_ms: int = 200) -> list:
+        """Run the steps registered with step() in the order the site shows them, each
+        once, until the last=True step ran (or, with no last step, every step that is not
+        optional ran), and return their names in the order they ran.
+
+        Each time, it waits up to timeout_ms (default: the healer's) for a step that has not
+        run to show, then runs it. Steps that show at the same time run in the order they
+        were registered, and the last step only when no other shows. Registered
+        interruptions the page shows meanwhile are handled.
+
+        While a step runs, a key found during that step before heals on any page, since
+        the step's landmark shows it is that step's page: the page guard declines only keys
+        never found during it. Outside run_steps() the guard is as before.
+
+        Raises AttentionRequired when a step that ran is on the page again with no new step
+        for the whole timeout (its submit probably failed: it is never run twice), when no
+        step shows (the message names the page and every landmark), and after 3 times as
+        many step runs as there are steps. An error from a step's function is raised as it
+        is, after the flow.step journal event records it. Each run logs one INFO line, a
+        step run after one registered later logs a WARNING, and so does each step that is
+        not optional and never showed. See mendwright.steps."""
+        __tracebackhide__ = True  # pytest shows the caller
+        return _steps.run(self, timeout_ms, poll_ms)
+
+    def _step_page(self):
+        """What a step's function gets: heal.driver on Selenium, heal.page otherwise."""
+        from .drivers.selenium import SeleniumDriver
+        return self.driver if isinstance(self._driver, SeleniumDriver) else self.page
+
+    @contextlib.contextmanager
+    def _in_step(self, name):
+        """Mark step ``name`` as the one running for the block (see _step_pages)."""
+        saved = self._current_step
+        self._current_step = name
+        try:
+            yield
+        finally:
+            self._current_step = saved
+
+    def _remember_step(self, key):
+        """While run_steps() runs a step, save its name with key (SelectorStore.set_last_step),
+        so a later run lets key heal wherever that step shows."""
+        setter = getattr(self.store, 'set_last_step', None)
+        if self._current_step is not None and callable(setter):
+            setter(key, self._current_step)
+
+    def _step_pages(self, key, meta, here):
+        """The pages the page guard compares for key: the ones saved with it, and, while
+        run_steps() runs a step that key was found during before, this page too. The step's
+        landmark shows, so this is that step's page whatever its address: a site that moved
+        the step to another page or another place in the flow still heals the key. One INFO
+        line says so when the page is new to the key. Outside run_steps(), or for a key never
+        found during the step that runs, nothing changes."""
+        pages = list(meta.get('pages') or ())
+        step, steps = self._current_step, meta.get('steps') or ()
+        if step is None or not here or step not in steps:
+            return pages
+        last = meta.get('lastPage')
+        if (here not in pages and here != last and (pages or last)
+                and not self.coordinator.heal_across_pages):
+            self.coordinator._emit(logging.INFO, _steps.scope_message(key, step, here, last))
+        return pages + [here]
 
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs
