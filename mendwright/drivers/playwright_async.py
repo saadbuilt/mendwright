@@ -14,8 +14,9 @@ import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
-                   POPUP_CONTROLS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, _member, frame_selector,
-                   inventory_rows, is_async_api, looks_like_locator, summary_from_js)
+                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, _member,
+                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
+                   summary_from_js)
 from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
                               playwright_selector)
 
@@ -172,8 +173,8 @@ class AsyncPlaywrightDriver:
 
     # --- popups, for open(dismiss=True) (see PlaywrightSyncDriver) --------------------------
 
-    async def popup_probe(self, native, known=None):
-        return await native.evaluate_all(POPUP_PROBE_JS, {'known': known})
+    async def popup_probe(self, native, known=None, scroll=False):
+        return await native.evaluate_all(POPUP_PROBE_JS, {'known': known, 'scroll': scroll})
 
     async def popup_root(self, native, expect):
         handle = await native.evaluate_handle(POPUP_ROOT_JS, expect, timeout=2000)
@@ -197,7 +198,9 @@ class AsyncPlaywrightDriver:
             await element.dispose()
         return True
 
-    async def press_escape(self, native):
+    async def press_escape(self, native, root):
+        if await root.evaluate(POPUP_FOCUS_JS) is not True:
+            return False      # the key would not reach the popup (see the sync driver)
         page = self._page
         keyboard = getattr(page, 'keyboard', None) or page.page.keyboard
         await keyboard.press('Escape')

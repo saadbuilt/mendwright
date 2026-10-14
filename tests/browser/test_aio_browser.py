@@ -653,7 +653,7 @@ def test_flow_dismiss_a_newsletter_modal(engine, tmp_path, how):
     heal, log, done, left = engine.run(main())
     assert (log, done, left) == ('no-thanks ', 'created', 0)       # never Sign up
     [event] = heal.handled_interruptions
-    assert (event.key, event.how) == ('<popup>', '“No thanks”')
+    assert (event.key, event.how, event.label) == ('<popup>', 'decline', 'No thanks')
     assert event.before == ('create' if how == 'locator'
                             else "page.get_by_role('button', name='Create account')")
 
@@ -673,3 +673,45 @@ def test_flow_dismiss_is_off_by_default(engine, tmp_path):
     heal, error, log = engine.run(main())
     assert 'intercepts pointer events' in str(error)
     assert log == '' and heal.handled_interruptions == []
+
+
+_ESCAPE_ONLY = _SIGNUP + """<p id='log'></p><div id="nl" role="dialog" aria-modal="true"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 300px; margin: 140px auto; padding: 16px">
+    <p>Get 10% off your first order.</p>
+    <button type="button" onclick="document.getElementById('log').textContent += 'subscribe '">Subscribe</button>
+  </div></div>
+<script>document.addEventListener('keydown', (e) => { if (e.key === 'Escape') {
+  document.getElementById('log').textContent += 'escape ';
+  const m = document.getElementById('nl'); if (m) m.remove(); } });</script>"""
+
+
+@pytest.mark.parametrize('focused', [False, True])
+def test_flow_dismiss_presses_escape_only_while_the_focus_lets_it_reach_the_popup(
+        engine, tmp_path, focused):
+    from mendwright.flow import is_interception_error
+
+    async def main():
+        page = await engine.page(_ESCAPE_ONLY)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, dismiss=True)
+            if focused:
+                await page.focus('#email')        # a field outside the popup has the focus
+            error = None
+            try:
+                await heal.locator('create', '#create').click(timeout=1500)
+            except Exception as exc:
+                error = exc
+            return (heal, error, await page.text_content('#log'),
+                    await page.text_content('#done'))
+        finally:
+            await _close(page)
+
+    heal, error, log, done = engine.run(main())
+    if focused:
+        assert is_interception_error(error) and (log, done) == ('', '')
+        assert heal.handled_interruptions == []
+    else:
+        assert error is None and (log, done) == ('escape ', 'created')
+        assert [(e.how, e.label) for e in heal.handled_interruptions] == [('escape', None)]

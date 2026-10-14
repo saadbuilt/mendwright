@@ -66,12 +66,14 @@ class InterruptionEvent:
 
     A popup that open(dismiss=True) dismissed is listed too, under the key
     flow.DISMISS_KEY ('<popup>'), with popup (how the log line names it, as
-    mendwright.dismiss.summary() does) and how ('Escape', or the label of the button it
-    clicked, in quotes). Both are None for a registered interruption."""
+    mendwright.dismiss.summary() does), how ('escape', 'close' or 'decline', as in the
+    flow.dismiss journal event) and label (the label of the button that closed it, None
+    for Escape). All three are None for a registered interruption."""
     key: str
     before: str
     popup: str | None = None
     how: str | None = None
+    label: str | None = None
 
 
 @dataclass

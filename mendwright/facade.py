@@ -29,8 +29,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .client import _stored_status, add_heal
 from .coordinator import HealCoordinator, resolve_with_heal
-from .dismiss import (NOT_LOOKED_AT, control_text, expect_control, expect_of, parse_probe,
-                      pick, popup_of)
+from .dismiss import (NOT_LOOKED_AT, control_text, expect_control, expect_of, is_consent,
+                      parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
 from .drivers.base import (driver_popup_click, driver_popup_controls, driver_popup_probe,
@@ -40,11 +40,11 @@ from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, Interru
                    absent_message, handled_message, is_interception_error, is_stale_error,
                    journal_event, loop_message, nothing_matched_message, page_path,
                    rejected_selector_message, skip_message, stuck_message, unhandled_message)
-from .flow import (DISMISS_KEY, dismiss_loop_message, dismissed_message, lost_message,
-                   undismissed_message)
+from .flow import (DISMISS_KEY, consent_message, dismiss_loop_message, dismissed_message,
+                   lost_message, step_text, undismissed_message)
 from .gate import live_reason
-from .interruptions import (COOKIE_CHOICES, Budget, InterruptionEvent, cookie_choice_error,
-                            cookie_preset, make_interruption, nth_targets)
+from .interruptions import (COOKIE_BANNER_KEY, COOKIE_CHOICES, Budget, InterruptionEvent,
+                            cookie_choice_error, cookie_preset, make_interruption, nth_targets)
 from .journal import Journal
 from .limits import Guardrails, RateLimiter
 from .providers import GatewayProvider
@@ -251,22 +251,24 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
       By default such a heal is declined before any model call, because it looks like a
       step that moved to another page rather than a renamed element.
     - dismiss=True dismisses a popup nobody registered when it covers the element of an
-      action and no interruption was handled for it: a newsletter modal, a survey, a chat
-      invite, a consent banner when cookies= is not set. Before each action mendwright then
-      asks the browser what is on top at the middle of the element (one round trip), and
-      looks again after an action failed because something covered it. It acts only on a
-      dialog, or a fixed element that covers at least a quarter of the window, that does
-      not hold the element. It presses Escape, then clicks a close button of the popup,
-      then a button that declines (No thanks, Not now, Skip, Reject, ...), and looks again
-      after each. It never clicks a button whose label says accept, subscribe, sign up,
-      yes, continue or the like, never a link that goes somewhere, and never types, checks
-      or selects. A popup it cannot dismiss is named in one WARNING and left alone, and
-      the action raises its own error. Each dismissal logs one WARNING, writes a
-      flow.dismiss journal event and is listed in handled_interruptions under '<popup>'.
-      With dismiss=True, heal.page's get_by_* locators, locators built with options,
-      chained locators, .first, .last, .nth() and .filter() run the same check before
-      their actions, without healing. False (the default) makes no browser call for it.
-      See mendwright.dismiss.
+      action: a newsletter modal, a survey, a chat invite, a consent banner when cookies=
+      is not set. Registered interruptions come first: before each action, once those the
+      page shows are handled, mendwright asks the browser what is on top at the middle of
+      the element (one round trip), and after an action failed because something covered
+      it, it looks again when none of them is on the page. It acts only on a dialog, or a
+      fixed element that covers at least a quarter of the window, that does not hold the
+      element. It presses Escape (only while the keyboard focus is on the page's body or
+      in the popup, and not in an iframe), then clicks a close button of the popup, then a
+      button that declines (No thanks, Not now, Skip, Reject, ...), and looks again after
+      each. It never clicks a button whose label says accept, subscribe, sign up, yes,
+      continue (but for "continue without ...") or the like, a link that goes somewhere,
+      or a button that submits a form, and never types, checks or selects. A popup it
+      cannot dismiss is named in one WARNING, and the action raises its own error. Each
+      dismissal logs one WARNING, writes a flow.dismiss journal event and is listed in
+      handled_interruptions under '<popup>'. With dismiss=True, heal.page's get_by_*
+      locators, locators built with options, chained locators, .first, .last, .nth() and
+      .filter() run the same check before their actions, without healing. False (the
+      default) makes no browser call for it. See mendwright.dismiss.
 
     Settings an argument leaves at None come from the environment:
     MENDWRIGHT_STORE (store_path, default ./.mendwright/overrides.json),
@@ -490,9 +492,17 @@ def _code_selectors(key, selector):
     return list(dict.fromkeys(out))
 
 
-def _quoted(label):
-    """A button's label as a log line names it: in quotes, as people read buttons."""
-    return '“' + label + '”' if label else 'an unlabelled button'
+def _popup_state(probe):
+    """What a look at an element after a step on the popup over it says: 'gone' when the
+    popup's root was removed or hidden, or the element is on top again ('free'); 'lost'
+    when the element could not be looked at (it matches none or several now) or is hidden
+    or outside the window now, so mendwright cannot tell what the step did; 'there' when
+    the popup still covers it."""
+    if probe is None:
+        return 'lost'
+    if probe.gone or (not probe.covered and probe.why == 'free'):
+        return 'gone'
+    return 'lost' if not probe.covered else 'there'
 
 
 # --- Playwright's overlay handler (page.add_locator_handler) ---------------------------------
@@ -1447,12 +1457,12 @@ class Healer:
     # --- popups nobody registered: open(dismiss=True) ---------------------------------
 
     def _dismiss_before(self, key, native, verb, budget, timeout_ms, poll_ms):
-        """Before an action on native, after _before_action(): with open(dismiss=True), and
-        when no registered interruption was handled for it, dismiss a popup that covers its
-        element (see _dismiss). Not before focus() or set_input_files(), which work on a
+        """Before an action on native, after _before_action() handled the registered
+        interruptions the page shows: with open(dismiss=True), dismiss a popup that covers
+        its element (see _dismiss). Not before focus() or set_input_files(), which work on a
         covered element. With dismiss off it makes no browser call."""
         __tracebackhide__ = True
-        if not self._dismiss_on or budget.handled or verb in NOT_LOOKED_AT:
+        if not self._dismiss_on or verb in NOT_LOOKED_AT:
             return False
         return self._dismiss(key, native, budget, timeout_ms, poll_ms)
 
@@ -1469,31 +1479,46 @@ class Healer:
         the step's budget lasts. True when at least one was dismissed.
 
         What counts as covered and as a popup is mendwright.dismiss's to say: it never
-        acts on a popup that holds the element or on a small fixed bar. Each popup counts
+        acts on a popup that holds the element or on a small fixed bar. Nothing is
+        dismissed while an interruption the step handled is still on the page (one that
+        fades out slowly may be the popup over the element), nor, with
+        open(cookies="accept"), a popup that looks like a consent banner. Each popup counts
         once against the budget, whatever was tried on it, and InterruptionLoop is raised
         when the budget is used up and one is still in the way (one that comes back each
-        time, say). A popup that could not be dismissed is named in one WARNING, left alone,
-        and not looked at again in this step (budget.gave_up). driver is the driver to use
-        (the async healer passes its SyncBridge, from a worker thread)."""
+        time, say). A popup that could not be dismissed is named in one WARNING and not
+        looked at again in this step (budget.gave_up). driver is the driver to use (the
+        async healer passes its SyncBridge, from a worker thread)."""
         __tracebackhide__ = True
         if not self._dismiss_on or native is None or budget.gave_up:
             return False
         driver = driver or self._driver
         dismissed = again = False
         with self._overlays_out():
-            probe = parse_probe(driver_popup_probe(driver, native))
+            if self._interruption_left(budget, driver):
+                return False
+            probe = parse_probe(driver_popup_probe(driver, native, None, True))
             while True:
                 popup = popup_of(probe)
                 if popup is None:
                     return dismissed
+                if self._accepts_consent() and is_consent(popup):
+                    self.coordinator._emit(logging.WARNING,
+                                           consent_message(before, popup.summary))
+                    budget.gave_up = popup.summary
+                    return dismissed
                 if budget.used >= MAX_INTERRUPTIONS_PER_STEP:
-                    raise InterruptionLoop(dismiss_loop_message(before, popup.summary,
-                                                                budget.used))
+                    raise InterruptionLoop(dismiss_loop_message(
+                        before, popup.summary, budget.used, DISMISS_KEY in budget.handled))
                 root = driver_popup_root(driver, native, expect_of(popup))
-                if root is None and not again:
-                    again = True    # it changed between two looks: look once more
-                    probe = parse_probe(driver_popup_probe(driver, native))
-                    continue
+                if root is None:
+                    if not again:
+                        again = True    # it changed between two looks: look once more
+                        probe = parse_probe(driver_popup_probe(driver, native, None, True))
+                        continue
+                    self.coordinator._emit(logging.WARNING, undismissed_message(
+                        before, popup.summary, [], changed=True))
+                    budget.gave_up = popup.summary
+                    return dismissed
                 again = False
                 budget.used += 1
                 done, probe = self._dismiss_popup(before, native, popup, root, timeout_ms,
@@ -1504,6 +1529,21 @@ class Healer:
                 dismissed = True
                 budget.handled.append(DISMISS_KEY)
 
+    def _interruption_left(self, budget, driver):
+        """Whether an interruption the step handled is still on the page: the popup over
+        the element may be that one, a banner that fades out slowly, say, and declining it
+        could undo what its registered action did."""
+        for key in budget.handled:
+            item = self._interruptions.get(key)
+            if item is not None and self._interruption_target(item, driver) is not None:
+                return True
+        return False
+
+    def _accepts_consent(self):
+        """Whether open(cookies="accept") registered its preset."""
+        item = self._interruptions.get(COOKIE_BANNER_KEY)
+        return item is not None and item.preset == 'accept'
+
     @contextlib.contextmanager
     def _overlays_out(self):
         """Run the block with Playwright's overlay handlers left out, as _interrupt() does:
@@ -1512,89 +1552,99 @@ class Healer:
             yield
 
     def _dismiss_popup(self, before, native, popup, root, timeout_ms, poll_ms, driver):
-        """Press Escape, then click the popup's close button, then a decline button, and
-        look again after each (_popup_settle). root is the handle on the popup that
+        """Press Escape (when the keyboard focus lets the key reach the popup, see
+        driver_press_escape), then click the popup's close button, then a decline button,
+        and look again after each (_popup_settle). root is the handle on the popup that
         popup_root() gave, which this lets go of. (True, the last probe) once one worked;
         else (False, None) after the WARNING that names the popup. When the element can no
-        longer be looked at after a step (it left the page, say), mendwright cannot tell
-        what that step did: it stops there and does not count the popup as dismissed."""
-        if root is None:
-            self.coordinator._emit(logging.WARNING, undismissed_message(before, popup.summary,
-                                                                        []))
-            return False, None
+        longer be looked at after a step (it left the page or was hidden, say), mendwright
+        cannot tell what that step did: it stops there and does not count the popup as
+        dismissed."""
         limit = min(max(timeout_ms or 0, 0), SETTLE_MS)
-        tried, kinds = [], []
+        done = []      # (how, label) of each step that did not close it, in order
+        escaped = False
         try:
-            if driver_press_escape(driver, native):
-                probe, state = self._popup_settle(native, root, limit, poll_ms, driver)
-                if state == 'lost':
-                    return self._lost(before, popup, 'pressed Escape')
-                if state == 'gone':
-                    self._record_dismissal(before, popup, 'escape', None, tried, kinds)
-                    return True, probe
-                tried.append('Escape')
-                kinds.append('escape')
+            if driver_press_escape(driver, native, root):
+                escaped = True
+                outcome = self._after_step(before, native, popup, root, limit, poll_ms,
+                                           driver, ('escape', None), done)
+                if outcome is not None:
+                    return outcome
             for kind in ('close', 'decline'):
                 chosen = pick(driver_popup_controls(driver, native, root)).get(kind)
                 if chosen is None:
                     continue
                 index, control = chosen
-                label = control_text(control)
-                clicked = driver_popup_click(driver, native, root,
-                                             expect_control(index, control),
-                                             max(limit, 1000))   # 0 is no limit to Playwright
-                tried.append(_quoted(label))
-                kinds.append(kind)
-                if not clicked:
-                    continue
-                probe, state = self._popup_settle(native, root, limit, poll_ms, driver)
-                if state == 'lost':
-                    return self._lost(before, popup, 'clicked ' + _quoted(label))
-                if state == 'gone':
-                    tried.pop()
-                    kinds.pop()
-                    self._record_dismissal(before, popup, kind, label, tried, kinds)
+                if not driver_popup_click(driver, native, root,
+                                          expect_control(index, control),
+                                          max(limit, 1000)):   # 0 is no limit to Playwright
+                    continue     # it changed since it was listed, and was not clicked
+                outcome = self._after_step(before, native, popup, root, limit, poll_ms,
+                                           driver, (kind, control_text(control)), done)
+                if outcome is not None:
+                    return outcome
+            if done:
+                # One last look: a popup that closes with an animation may be gone by now.
+                probe = parse_probe(driver_popup_probe(driver, native, root))
+                if _popup_state(probe) == 'gone':
+                    how, label = done.pop()
+                    self._record_dismissal(before, popup, how, label, done)
                     return True, probe
         finally:
             driver_popup_release(driver, root)
-        self.coordinator._emit(logging.WARNING, undismissed_message(before, popup.summary,
-                                                                    tried))
+        self.coordinator._emit(logging.WARNING, undismissed_message(
+            before, popup.summary, [step_text(*step) for step in done], escaped))
+        if done:
+            self._journal_dismiss(before, popup, 'failed', None, None, done)
         return False, None
+
+    def _after_step(self, before, native, popup, root, limit_ms, poll_ms, driver, step, done):
+        """Look again after one step, (how, label), on the popup. (True, probe) once it was
+        recorded as dismissed; (False, None) after the WARNING for an element that can no
+        longer be looked at; None when the popup is still there, with step added to done."""
+        probe, state = self._popup_settle(native, root, limit_ms, poll_ms, driver)
+        if state == 'gone':
+            self._record_dismissal(before, popup, step[0], step[1], done)
+            return True, probe
+        done.append(step)
+        if state == 'lost':
+            how, label = step
+            did = 'pressed Escape' if how == 'escape' else 'clicked ' + step_text(how, label)
+            self.coordinator._emit(logging.WARNING, lost_message(before, popup.summary, did))
+            self._journal_dismiss(before, popup, 'lost', None, None, done)
+            return False, None
+        return None
 
     def _popup_settle(self, native, root, limit_ms, poll_ms, driver):
         """Look at native's element again until the popup's root is gone or hidden, or the
         element is no longer covered, for up to limit_ms. Looks at least once, even with no
-        time to wait. Returns (probe, state): the last probe, and 'gone' when that
-        happened, 'there' when it did not, or 'lost' when the element could not be looked
-        at (it matches none or several now, or it left the page)."""
+        time to wait. Returns (probe, state): the last probe, and _popup_state() of it:
+        'gone', 'lost' or, at the end, 'there'."""
         deadline = time.monotonic() + limit_ms / 1000.0
         while True:
             probe = parse_probe(driver_popup_probe(driver, native, root))
-            if probe is None:
-                return None, 'lost'
-            if not probe.covered or probe.gone:
-                return probe, 'gone'
-            if time.monotonic() >= deadline:
-                return probe, 'there'
+            state = _popup_state(probe)
+            if state != 'there' or time.monotonic() >= deadline:
+                return probe, state
             time.sleep(max(poll_ms, 20) / 1000.0)
 
-    def _lost(self, before, popup, did):
-        """(False, None), after the WARNING for an element that could not be looked at
-        once mendwright did ``did`` on the popup."""
-        self.coordinator._emit(logging.WARNING, lost_message(before, popup.summary, did))
-        return False, None
-
-    def _record_dismissal(self, before, popup, kind, label, tried, kinds):
+    def _record_dismissal(self, before, popup, how, label, done):
         """One WARNING, a flow.dismiss journal event and an entry in handled_interruptions
-        for a popup that was dismissed with kind ('escape', 'close' or 'decline'; label is
-        the button's) after the steps in tried did not close it."""
-        how = 'Escape' if kind == 'escape' else _quoted(label)
+        for a popup that was dismissed with how ('escape', 'close' or 'decline'; label is
+        the button's) after the steps in done did not close it."""
         self._interrupt_log.append(InterruptionEvent(DISMISS_KEY, before, popup=popup.summary,
-                                                     how=how))
-        self.coordinator._emit(logging.WARNING, dismissed_message(before, popup.summary, how,
-                                                                  tried))
-        journal_event(self.coordinator.journal, 'flow.dismiss', before, popup=popup.summary,
-                      how=kind, label=label, tried=list(kinds))
+                                                     how=how, label=label))
+        self.coordinator._emit(logging.WARNING, dismissed_message(
+            before, popup.summary, step_text(how, label), [step_text(*s) for s in done]))
+        self._journal_dismiss(before, popup, 'dismissed', how, label, done)
+
+    def _journal_dismiss(self, before, popup, outcome, how, label, done):
+        """The flow.dismiss journal event: outcome is 'dismissed' (how and label say with
+        what), 'failed' or 'lost'; tried lists each step before it that did not close the
+        popup, so every key mendwright pressed and button it clicked is on record."""
+        tried = [{'how': h} if lab is None else {'how': h, 'label': lab} for h, lab in done]
+        journal_event(self.coordinator.journal, 'flow.dismiss', DISMISS_KEY, before=before,
+                      popup=popup.summary, outcome=outcome, how=how, label=label, tried=tried)
 
     def _report_nothing_matched(self, key):
         """After an action on key was intercepted and no registered interruption matched a

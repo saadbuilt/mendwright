@@ -15,8 +15,9 @@ import re
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
-                   POPUP_CONTROLS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, frame_selector,
-                   inventory_rows, is_async_api, looks_like_locator, summary_from_js)
+                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS,
+                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
+                   summary_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -237,11 +238,12 @@ class PlaywrightSyncDriver:
 
     # --- popups, for open(dismiss=True) (see mendwright.dismiss) ---------------------------
 
-    def popup_probe(self, native, known=None):
+    def popup_probe(self, native, known=None, scroll=False):
         """What covers the element of a handle() result (POPUP_PROBE_JS), in one round trip
         that does not wait: null unless the Locator matches one element. known is a popup's
-        root from popup_root(), to learn whether it is gone."""
-        return native.evaluate_all(POPUP_PROBE_JS, {'known': known})
+        root from popup_root(), to learn whether it is gone. scroll=True scrolls an element
+        whose middle is outside the window into view first."""
+        return native.evaluate_all(POPUP_PROBE_JS, {'known': known, 'scroll': scroll})
 
     def popup_root(self, native, expect):
         """An ElementHandle on the root of the popup over the element (POPUP_ROOT_JS), or
@@ -270,8 +272,13 @@ class PlaywrightSyncDriver:
             element.dispose()
         return True
 
-    def press_escape(self, native):
-        """Press Escape on the page's keyboard (a Frame's page for a Frame)."""
+    def press_escape(self, native, root):
+        """Press Escape on the page's keyboard (a Frame's page for a Frame), when
+        POPUP_FOCUS_JS says the key reaches the popup whose root is root: the keyboard sends
+        it to the focused element, in whatever frame has the focus. True when it was
+        pressed."""
+        if root.evaluate(POPUP_FOCUS_JS) is not True:
+            return False
         page = self._page
         keyboard = getattr(page, 'keyboard', None) or page.page.keyboard
         keyboard.press('Escape')

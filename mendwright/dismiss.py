@@ -1,32 +1,38 @@
 """Popups mendwright was never told about: mendwright.open(page, dismiss=True).
 
-With dismiss=True, mendwright dismisses a popup that blocks an action when no interruption
-registered with heal.interrupt() or cookies= was handled for it: a newsletter or discount
-modal, a prompt for an address or a location that can be skipped, an app-install banner,
-a survey, a chat invite, a consent banner when cookies= is not set. It is off by default,
-and then mendwright makes no browser call for it.
+With dismiss=True, mendwright dismisses a popup that blocks an action and that no
+interruption registered with heal.interrupt() or cookies= accounts for: a newsletter or
+discount modal, a prompt for an address or a location that can be skipped, an app-install
+banner, a survey, a chat invite, a consent banner when cookies= is not set. It is off by
+default, and then mendwright makes no browser call for it.
 
 It acts only on evidence, and does nothing when unsure:
 
-- The action's element is covered. Before an action, the driver looks at the point in the
-  middle of the element, when it is inside the window, and asks the browser which element
-  is on top there (document.elementFromPoint, into open shadow roots). The element is
-  covered when that is neither the element, nor inside it, nor one of its ancestors. After
-  an action failed because something covered its element (flow.is_interception_error),
-  it looks the same way.
+- The action's element is covered. Before an action, once the registered interruptions
+  the page shows are handled, the driver looks at the point in the middle of the element,
+  when it is inside the window, and asks the browser which element is on top there
+  (document.elementFromPoint, into open shadow roots). The element is covered when that is
+  neither the element, nor inside it, nor one of its ancestors. After an action failed
+  because something covered its element (flow.is_interception_error), and no registered
+  interruption is on the page, it looks the same way.
 - The covering element belongs to a popup (popup_of): the nearest dialog it is in, or
-  else the outermost fixed or sticky element it is in that covers at least a quarter of
-  the window. A popup that holds the action's element is being used, and is left alone.
-- It tries the least risky step first and looks again after each: Escape, then a close
-  button of the popup, then a decline button (classify). It never clicks a button whose
-  label says accept, subscribe, sign up, yes, continue and the like (NEVER), never a link
-  that goes somewhere, and it never types, checks or selects anything.
+  else the outermost fixed or sticky element it is in that takes pointer events and
+  covers at least a quarter of the window. A popup that holds the action's element is
+  being used, and is left alone.
+- It tries the least risky step first and looks again after each: Escape, when the
+  keyboard focus is on the page's body or in the popup (Escape goes to the focused
+  element), then a close button of the popup, then a decline button (classify). It never
+  clicks a button whose label says accept, subscribe, sign up, yes, continue and the like
+  (NEVER), a link that goes somewhere, a button that submits a form or one in a label,
+  and it never types, checks or selects anything.
 
 The drivers report what the page shows (mendwright.drivers.base.POPUP_PROBE_JS and the
 scripts after it); the rules are here, so they are the same on Playwright and Selenium.
 Healer._dismiss runs them.
 """
 
+import re
+import unicodedata
 from dataclasses import dataclass
 
 from .capture import _scrub
@@ -43,26 +49,47 @@ MIN_AREA = 0.25
 # A button that shows one of these, and no label that says something else, closes.
 CLOSE_GLYPHS = ('x', '×', '✕', '✖')
 
-# What a decline button's label says: all of it, or how it starts or ends ("No thanks, I'd
-# rather not", "Remind me later"). 'close' counts only as the whole label, so "Close
-# account" never does.
-DECLINE = ('no thanks', 'no', 'thanks', 'not now', 'maybe later', 'later', 'skip',
-           'skip for now', 'dismiss', 'reject', 'reject all', 'decline', 'not interested',
-           'continue without')
+# What may follow "continue without": what the button leaves out. "Continue without
+# accepting" declines; "Continue without delay" is not a decline button.
+WITHOUT = ('accepting', 'accepting all', 'accepting cookies', 'agreeing', 'an account',
+           'account', 'signing in', 'signing up', 'logging in', 'registering', 'subscribing',
+           'cookies')
+
+# The phrases a decline button's label says. "No thank you" is "no thanks" spelled
+# otherwise. 'close' counts only as the whole label, so "Close account" never does.
+DECLINE = (('no thanks', 'no thank you', 'not now', 'maybe later', 'later', 'skip',
+            'skip for now', 'dismiss', 'reject', 'reject all', 'decline', 'not interested')
+           + tuple('continue without ' + w for w in WITHOUT))
+
+# The words that may come with a decline phrase in a label, at most MAX_FILLER of them:
+# "No thanks, I'd rather not", "Remind me later", "Not now, thanks". Any other word keeps
+# the label from being a decline: "Skip the line", "Thanks, I'm in", "No-risk trial".
+FILLER = frozenset(('i', 'im', 'id', 'ill', 'ive', 'm', 'd', 'll', 've', 'am', 'me', 'you',
+                    'it', 'this', 'that', 'the', 'a', 'for', 'now', 'today', 'time', 'right',
+                    'just', 'all', 'please', 'thanks', 'thank', 'no', 'not', 'but', 'rather',
+                    'really', 'maybe', 'later', 'again', 'good', 'fine', 'browsing', 'remind',
+                    'ask', 'step', 'tour', 'intro', 'survey', 'offer', 'question',
+                    'questions'))
+MAX_FILLER = 4
 
 # Words that keep a button from ever being clicked, anywhere in its label (its text,
-# value, aria-label and title): it may take an action, spend, send, or leave the page.
-# 'continue' is one too, unless the label says 'continue without'.
+# hidden text included, value, aria-label and title): it may take an action, spend, send,
+# or leave the page. Each matches as a word stem: 'pay' also catches "payment" and
+# "paying", 'subscribe' catches "subscribed" (see _stem). 'continue' is one too, unless the
+# label says 'continue without' and what it leaves out (WITHOUT).
 NEVER = ('accept', 'agree', 'allow', 'subscribe', 'sign up', 'sign in', 'log in', 'join',
          'register', 'yes', 'ok', 'confirm', 'buy', 'pay', 'order', 'save', 'submit',
          'delete', 'remove', 'install', 'enable', 'notify', 'start', 'get', 'claim', 'try',
          # The same, spelled otherwise, and others like them.
-         'signup', 'signin', 'login', 'okay', 'unsubscribe', 'saving', 'discard', 'create',
-         'purchase', 'checkout', 'cancel', 'send', 'share', 'download', 'upgrade', 'unlock',
-         'redeem', 'apply', 'book', 'donate', 'follow', 'open', 'next', 'proceed', 'verify',
-         'activate', 'connect', 'log out', 'logout', 'sign out', 'leave')
+         'signup', 'signin', 'login', 'unsubscribe', 'subscription', 'registration',
+         'submission', 'signing up', 'signing in', 'logging in', 'trial', 'tried', 'tries',
+         'bought', 'paid', 'sent', 'discard', 'create', 'purchase', 'checkout', 'cancel',
+         'send', 'share', 'download', 'upgrade', 'unlock', 'redeem', 'apply', 'book',
+         'donate', 'follow', 'open', 'next', 'proceed', 'verify', 'activate', 'connect',
+         'log out', 'logout', 'sign out', 'leave')
 
 _TRANSLATE = {ord(c): ' ' for c in _PUNCT}
+_LABEL_KEYS = ('text', 'all', 'value', 'aria', 'title')
 
 
 def words(text):
@@ -75,29 +102,70 @@ def _says(label, phrase):
     return (' ' + phrase + ' ') in (' ' + label + ' ')
 
 
-def _declines(label):
-    """Whether one label, already words(), is a decline: a DECLINE phrase as the whole
-    label, or at its start or end, or exactly 'close'."""
-    if label == 'close':
-        return True
-    return any(label == p or label.startswith(p + ' ') or label.endswith(' ' + p)
-               for p in DECLINE)
+def _stem(word):
+    """How a NEVER word matches: as the start of a word, without a last e or y in a word of
+    more than three letters, so 'save' catches "saving" and 'notify' "notification"."""
+    return word[:-1] if len(word) > 3 and word[-1] in 'ey' else word
+
+
+def _entry(word):
+    parts = word.split()
+    return word, parts[:-1], _stem(parts[-1])
+
+
+_NEVER_STEMS = tuple(_entry(w) for w in NEVER)
+_CONTINUE = _entry('continue')
+
+
+def _matches(found, entry):
+    """Whether the words found say a NEVER entry: its words before the last one exactly,
+    then a word that starts with the last one's stem."""
+    _, head, stem = entry
+    n = len(head)
+    return any(found[i:i + n] == head and found[i + n].startswith(stem)
+               for i in range(len(found) - n))
+
+
+_LEFT_OUT = re.compile(r'(?<!\S)(?:' + '|'.join(
+    re.escape('continue without ' + w) for w in sorted(WITHOUT, key=len, reverse=True))
+    + r')(?!\S)')
+
+
+def _left_out(label):
+    """label, already words(), with each "continue without <what it leaves out>" taken
+    out."""
+    return ' '.join(_LEFT_OUT.sub(' ', label).split())
 
 
 def forbidden(control):
-    """The NEVER word a control's label says, or None."""
-    label = words(' '.join((control.get('text') or '', control.get('value') or '',
-                            control.get('aria') or '', control.get('title') or '')))
-    if _says(label, 'continue') and not _says(label, 'continue without'):
+    """The NEVER word a control's label says (see _stem), or None. The label is its text,
+    the text it hides, its value, aria-label and title."""
+    label = words(' '.join(str(control.get(k) or '') for k in _LABEL_KEYS))
+    found = _left_out(label).split()
+    if _matches(found, _CONTINUE):
         return 'continue'
-    return next((w for w in NEVER if _says(label, w)), None)
+    return next((entry[0] for entry in _NEVER_STEMS if _matches(found, entry)), None)
+
+
+def priced(control):
+    """Whether a control's label has a digit or a currency sign in it, as in "Skip the
+    line - $9.99" or "No, I want 10% off": such a button may cost or decide something, so
+    it is never a close or decline button."""
+    text = ' '.join(str(control.get(k) or '') for k in _LABEL_KEYS)
+    return any(c.isdigit() or unicodedata.category(c) == 'Sc' for c in text)
 
 
 def is_control(control):
     """A control mendwright may click: a button, an element with role=button, an input of
     type button or submit, or a link that goes nowhere (no href, '#' or javascript:).
-    Never one that is disabled, and never a link with a real href, whatever its role."""
-    if control.get('disabled'):
+
+    Never one that is disabled; a link with a real href, whatever its role; one inside a
+    link that goes somewhere or that holds one (a click on it follows the link); one in a
+    <label>, or a label itself (a click on it checks the label's box); one that holds a
+    field (a click on it may land on the field); or one that submits or resets its form (a
+    <button> in a form whose type is missing, submit or reset, or an input of type submit
+    in a form), unless the form has method="dialog", which only closes its dialog."""
+    if any(control.get(k) for k in ('disabled', 'link', 'label', 'field', 'submits')):
         return False
     tag, role = control.get('tag'), control.get('role')
     if tag == 'a':
@@ -106,7 +174,49 @@ def is_control(control):
             'javascript:')
     if tag == 'input':
         return control.get('type') in ('button', 'submit')
+    if tag == 'label':
+        return False
     return tag == 'button' or role == 'button'
+
+
+def _declines(label):
+    """Whether one label, already words(), is a decline: a DECLINE phrase in it, and no
+    other word than FILLER, at most MAX_FILLER of them; or exactly 'close'."""
+    if label == 'close':
+        return True
+    found = label.split()
+    for phrase in DECLINE:
+        size = len(phrase.split())
+        for i in range(len(found) - size + 1):
+            if ' '.join(found[i:i + size]) != phrase:
+                continue
+            rest = found[:i] + found[i + size:]
+            if len(rest) <= MAX_FILLER and all(w in FILLER for w in rest):
+                return True
+    return False
+
+
+def _shown(control):
+    """What a control shows: its rendered text (text hidden with display: none left out),
+    and that with an input's value, as words()."""
+    raw = ' '.join(str(control.get('text') or '').split())
+    return raw, words(raw + ' ' + str(control.get('value') or ''))
+
+
+def _decline_label(control):
+    """The label a control declines by: what it shows, or, when that is one character or
+    none (an icon), its aria-label or title."""
+    raw, shown = _shown(control)
+    if len(raw) > 1 or shown:
+        return shown
+    return words(control.get('aria')) or words(control.get('title'))
+
+
+def whole_decline(control):
+    """Whether a decline control's label (_decline_label) is a DECLINE phrase and nothing
+    else, such as "No thanks". pick() prefers those."""
+    label = _decline_label(control)
+    return label in DECLINE or label == 'close'
 
 
 def classify(control):
@@ -116,14 +226,15 @@ def classify(control):
     close: the label it shows is exactly a close phrase ("Close", "Close dialog", ... as
     for the cookies= preset), or it shows one character or none (an icon) and its
     aria-label or title says close, or it shows x, ×, ✕ or ✖ and has no aria-label or title
-    that says anything else. decline: its text, aria-label or title says no thanks, not
-    now, maybe later, skip, dismiss, reject, decline, not interested, continue without or
-    the like (DECLINE). Neither for a control mendwright never clicks (is_control,
-    forbidden)."""
-    if not is_control(control) or forbidden(control):
+    that says anything else. decline: what it shows (for an icon, its aria-label or title)
+    says no thanks, not now, maybe later, skip, dismiss, reject, decline, not interested,
+    continue without and what it leaves out (DECLINE), with no other words than a few
+    harmless ones (FILLER), such as "Remind me later". Neither for a control mendwright
+    never clicks (is_control, forbidden), or one whose label has a digit or a currency
+    sign (priced)."""
+    if not is_control(control) or forbidden(control) or priced(control):
         return None
-    raw = ' '.join(str(control.get('text') or '').split())
-    shown = words(raw + ' ' + (control.get('value') or ''))
+    raw, shown = _shown(control)
     named = words((control.get('aria') or '') + ' ' + (control.get('title') or ''))
     if shown in _CLOSE_PHRASES:
         return 'close'
@@ -131,22 +242,30 @@ def classify(control):
         return 'close'
     if raw.lower() in CLOSE_GLYPHS and (not named or _says(named, 'close')):
         return 'close'
-    parts = (shown, words(control.get('aria')), words(control.get('title')))
-    if any(part and _declines(part) for part in parts):
+    label = _decline_label(control)
+    if label and _declines(label):
         return 'decline'
     return None
 
 
 def pick(controls):
-    """{'close': (index, control), 'decline': (index, control)} for the first control of
-    each kind, in the order the page lists them."""
-    out = {}
+    """{'close': (index, control), 'decline': (index, control)}: the first close control
+    in the order the page lists them, and the first decline control whose label is a
+    decline phrase and nothing else ("No thanks"), else the first decline control."""
+    out, loose = {}, None
     for index, control in enumerate(controls or ()):
         if not isinstance(control, dict):
             continue
         kind = classify(control)
-        if kind and kind not in out:
-            out[kind] = (index, control)
+        if kind == 'close' and 'close' not in out:
+            out['close'] = (index, control)
+        elif kind == 'decline' and 'decline' not in out:
+            if whole_decline(control):
+                out['decline'] = (index, control)
+            elif loose is None:
+                loose = (index, control)
+    if 'decline' not in out and loose is not None:
+        out['decline'] = loose
     return out
 
 
@@ -164,16 +283,21 @@ def control_text(control):
 # --- what the page showed --------------------------------------------------------------------
 
 _ELEMENT_KEYS = ('tag', 'id', 'cls', 'role', 'modal', 'open', 'pos', 'area', 'holds', 'text')
+_WHY = ('free', 'hidden', 'outside')
 
 
 @dataclass(frozen=True)
 class Probe:
     """What POPUP_PROBE_JS saw at the middle of an element: covered, the elements from the
     one on top up to (not including) body when it is covered, and, when a popup was passed
-    as known, whether it is gone (removed or hidden). gone is None when nothing was passed."""
+    as known, whether it is gone (removed or hidden). gone is None when nothing was passed.
+    why says why an element is not covered: 'free' (it, or part of it, is on top), 'hidden'
+    (it has no size or is hidden) or 'outside' (its middle is outside the window); it is ''
+    when the element is covered or the driver did not say."""
     covered: bool
     chain: tuple = ()
     gone: bool | None = None
+    why: str = ''
 
 
 def parse_probe(raw):
@@ -185,7 +309,8 @@ def parse_probe(raw):
     gone = raw.get('gone')
     gone = gone if isinstance(gone, bool) else None
     if not raw['covered']:
-        return Probe(False, (), gone)
+        why = raw.get('why')
+        return Probe(False, (), gone, why if why in _WHY else '')
     chain = raw.get('chain')
     if not isinstance(chain, list) or not chain or not all(
             isinstance(el, dict) and all(k in el for k in _ELEMENT_KEYS) for el in chain):
@@ -211,8 +336,10 @@ class Popup:
 def popup_of(probe):
     """The Popup covering the element, or None: when it is not covered, when the element
     is inside the popup (the dialog that covers it holds it too), or when what covers it
-    is not a popup (no dialog, and no fixed or sticky element outside the element's own
-    containers that covers at least MIN_AREA of the window, such as a sticky header)."""
+    is not a popup: no dialog, and no fixed or sticky element outside the element's own
+    containers that takes pointer events and covers at least MIN_AREA of the window. A
+    sticky header is not one, nor the full-window layer with pointer-events: none that
+    toast libraries put a small toast in."""
     if probe is None or not probe.covered:
         return None
     chain = probe.chain
@@ -220,7 +347,8 @@ def popup_of(probe):
         if is_dialog(element):
             return None if element['holds'] else Popup(depth, element, summary(element))
     fixed = [depth for depth, element in enumerate(chain)
-             if element['pos'] in ('fixed', 'sticky') and not element['holds']]
+             if element['pos'] in ('fixed', 'sticky') and not element['holds']
+             and element.get('events') is not False]
     if not fixed:
         return None
     depth = fixed[-1]                    # the outermost
@@ -230,6 +358,19 @@ def popup_of(probe):
     except (TypeError, ValueError):
         big = False
     return Popup(depth, element, summary(element)) if big else None
+
+
+_CONSENT_TEXT = re.compile(r'cookie|consent', re.I)
+_CONSENT_NAME = re.compile(r'cookie|consent|gdpr|privacy', re.I)
+
+
+def is_consent(popup):
+    """Whether a popup looks like a consent banner: its text says cookie or consent, or its
+    id, class or aria-label says cookie, consent, gdpr or privacy."""
+    element = popup.element
+    name = ' '.join(str(element.get(k) or '') for k in ('id', 'cls', 'aria'))
+    return bool(_CONSENT_TEXT.search(str(element.get('text') or ''))
+                or _CONSENT_NAME.search(name))
 
 
 def _attr(value, limit=60):

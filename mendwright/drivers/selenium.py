@@ -30,8 +30,8 @@ import inspect
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
-                   POPUP_PROBE_JS, POPUP_ROOT_JS, element_summary, frame_selector,
-                   inventory_rows, is_async_api)
+                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, element_summary,
+                   frame_selector, inventory_rows, is_async_api)
 
 # What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
 # its in-view centre, where WebDriver's click lands (the middle of its first box, clipped
@@ -710,20 +710,22 @@ class SeleniumDriver:
             return native._mw[0]._find_one(native.selector)
         return native
 
-    def popup_probe(self, native, known=None):
+    def popup_probe(self, native, known=None, scroll=False):
         """What covers the element (POPUP_PROBE_JS), in one execute_script for a WebElement.
         known is a popup's root from popup_root(): one that was removed from the page is a
-        stale reference, which Selenium refuses as an argument, so it reads as gone."""
-        script = 'return (' + POPUP_PROBE_JS + ')([arguments[0]], {known: arguments[1]});'
+        stale reference, which Selenium refuses as an argument, so it reads as gone.
+        scroll=True scrolls an element whose middle is outside the window into view first."""
+        script = ('return (' + POPUP_PROBE_JS + ')([arguments[0]], '
+                  '{known: arguments[1], scroll: arguments[2]});')
 
         def op():
             el = self._element(native)
             try:
-                return self._driver.execute_script(script, el, known)
+                return self._driver.execute_script(script, el, known, scroll)
             except Exception as exc:
                 if known is None or not _is_stale(exc):
                     raise
-            out = self._driver.execute_script(script, el, None)
+            out = self._driver.execute_script(script, el, None, scroll)
             if isinstance(out, dict):
                 out['gone'] = True
             return out
@@ -751,9 +753,16 @@ class SeleniumDriver:
             return True
         return self._where(native, op, probe=False)
 
-    def press_escape(self, native):
-        """Press Escape in the element's document, through ActionChains."""
+    def press_escape(self, native, root):
+        """Press Escape through ActionChains, when POPUP_FOCUS_JS says the key reaches the
+        popup whose root is root: ActionChains sends it to the focused element of the
+        window, which inside a frame may be in the page around it. True when it was
+        pressed."""
+        script = 'return (' + POPUP_FOCUS_JS + ')(arguments[0]);'
+
         def op():
+            if self._driver.execute_script(script, root) is not True:
+                return False
             _action_chains(self._driver).send_keys(_key_value('ESCAPE')).perform()
             return True
         return self._where(native, op, probe=False)

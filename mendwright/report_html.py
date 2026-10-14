@@ -258,14 +258,42 @@ def _flow_detail(event):
     if name == 'flow.skip':
         return 'Skipped instead of healed: ' + h(event.get('reason') or 'no reason recorded') + '.'
     if name == 'flow.dismiss':
-        how = event.get('how')
-        with_ = ('Escape' if how == 'escape' else
-                 'its button ' + _code(event.get('label')) if event.get('label') else 'a button')
-        return ('Dismissed a popup in the way: ' + _code(event.get('popup') or 'a popup')
-                + ', with ' + with_ + '.')
+        return _dismiss_detail(event)
     last, here = event.get('last_page'), event.get('page')
     return ('Heal declined. The key was last found on ' + (_code(last) if last else 'another page')
             + ' and the page is now ' + (_code(here) if here else 'a different one') + '.')
+
+
+def _step(step):
+    """One step on a popup, as the detail of a flow.dismiss event names it."""
+    if not isinstance(step, dict):
+        return 'a step'
+    if step.get('how') == 'escape':
+        return 'Escape'
+    return 'its button ' + _code(step['label']) if step.get('label') else 'a button'
+
+
+def _dismissed(event):
+    """Whether a flow.dismiss event is a dismissal, not a popup mendwright gave up on."""
+    return event.get('outcome', 'dismissed') == 'dismissed'
+
+
+def _dismiss_detail(event):
+    before = event.get('before')
+    where = ' in the way of ' + _code(before) if before else ' in the way'
+    popup = _code(event.get('popup') or 'a popup')
+    tried = event.get('tried') if isinstance(event.get('tried'), list) else []
+    after = (', after ' + ', '.join(_step(t) for t in tried) + ' did not close it') if tried else ''
+    if _dismissed(event):
+        return ('Dismissed a popup' + where + ': ' + popup + ', with '
+                + _step({'how': event.get('how'), 'label': event.get('label')}) + after + '.')
+    if event.get('outcome') == 'lost':
+        return ('Stopped on a popup' + where + ': ' + popup + '. Tried '
+                + ', '.join(_step(t) for t in tried) + ', and then the element could not be '
+                'looked at as before, so it was not counted as dismissed.')
+    return ('Could not dismiss a popup' + where + ': ' + popup
+            + ('. Tried ' + ', '.join(_step(t) for t in tried) + ', which did not close it.'
+               if tried else '.'))
 
 
 def _flow_section(report, events, flow_counts):
@@ -291,6 +319,8 @@ def _flow_section(report, events, flow_counts):
     rows = []
     for e in flow[-LAST_FLOW:][::-1]:
         label, kind = kinds[e['event']]
+        if e['event'] == 'flow.dismiss' and not _dismissed(e):
+            label, kind = 'popup left', 'warn'
         key = e.get('key')
         rows.append('<tr>' + _cell('Event', _badge(label, kind))
                     + _cell('When', h(_when(e.get('ts'))), 'nowrap')
@@ -410,6 +440,8 @@ def render_html(report, events, *, version=None):
     records = _heal_records(events)
     quarantines = _quarantines(report, events)
     flow_counts = {name: sum(1 for e in events if e.get('event') == name) for name in _FLOW_EVENTS}
+    flow_counts['flow.dismiss'] = sum(1 for e in events
+                                      if e.get('event') == 'flow.dismiss' and _dismissed(e))
     journal = report['journal']
     stamps = [e['ts'] for e in events if isinstance(e.get('ts'), str)]
     if journal['exists']:

@@ -456,8 +456,11 @@ class HealingElement(_Proxy):
     the same guard as heal.locator()'s actions (ActionProxy). Registered interruptions the
     page shows over the element are handled first, and an action that failed because
     something covered the element is retried once, only after one was handled; otherwise
-    its own error is raised. With no interruption registered, an action costs no browser
-    call more than the element's own. ActionChains actions on it are Selenium's own.
+    its own error is raised. With open(dismiss=True), a popup nobody registered that
+    covers the element is dismissed first too (see mendwright.dismiss). With no
+    interruption registered and dismiss off, an action costs no browser call more than the
+    element's own; with dismiss=True, one more, to look for a popup. ActionChains actions
+    on it are Selenium's own.
 
     It passes isinstance(el, WebElement), compares and hashes equal to the element it
     wraps, and works with execute_script, ActionChains and expected_conditions. One that

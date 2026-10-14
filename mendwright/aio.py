@@ -231,8 +231,8 @@ class SyncBridge:
     # The popup methods of open(dismiss=True) (see mendwright.drivers.base). None when the
     # async driver has none.
 
-    def popup_probe(self, native, known=None):
-        return self.run(self._driver.popup_probe, native, known)
+    def popup_probe(self, native, known=None, scroll=False):
+        return self.run(self._driver.popup_probe, native, known, scroll)
 
     def popup_root(self, native, expect):
         return self.run(self._driver.popup_root, native, expect)
@@ -243,8 +243,8 @@ class SyncBridge:
     def popup_click(self, native, root, expect, timeout_ms):
         return self.run(self._driver.popup_click, native, root, expect, timeout_ms)
 
-    def press_escape(self, native):
-        return self.run(self._driver.press_escape, native)
+    def press_escape(self, native, root):
+        return self.run(self._driver.press_escape, native, root)
 
     def popup_release(self, root):
         return self.run(self._driver.popup_release, root)
@@ -675,7 +675,7 @@ class AsyncHealer:
     async def _dismiss_before(self, key, native, verb, budget, timeout_ms, poll_ms):
         """Healer._dismiss_before(), awaited."""
         __tracebackhide__ = True
-        if not self._core._dismiss_on or budget.handled or verb in NOT_LOOKED_AT:
+        if not self._core._dismiss_on or verb in NOT_LOOKED_AT:
             return False
         return await self._dismiss_for_action(key, native, budget, timeout_ms, poll_ms)
 
@@ -699,7 +699,7 @@ class AsyncHealer:
         if not core._dismiss_on or native is None or budget.gave_up or not callable(probe):
             return False
         try:
-            seen = await _awaited(self._driver.popup_probe(native, None))
+            seen = await _awaited(self._driver.popup_probe(native, None, True))
         except Exception:
             return False
         if popup_of(parse_probe(seen)) is None:

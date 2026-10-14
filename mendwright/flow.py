@@ -166,54 +166,94 @@ def _listed(items):
     return ', '.join(items[:-1]) + ' and ' + items[-1]
 
 
+def step_text(how, label=None):
+    """How a log line names one step on a popup: 'Escape', or a button's label in quotes,
+    as people read buttons."""
+    if how == 'escape':
+        return 'Escape'
+    return '“' + label + '”' if label else 'an unlabelled button'
+
+
+def _did(tried):
+    """What mendwright did, from step_text() results: 'pressed Escape and clicked “Close”'."""
+    return _listed('pressed Escape' if t == 'Escape' else 'clicked ' + t for t in tried)
+
+
 def dismissed_message(before, popup, how, tried):
     """The WARNING for a popup open(dismiss=True) dismissed. popup is how
-    mendwright.dismiss.summary() names it, how is 'Escape' or the label of the button it
-    clicked, and tried lists what it did before that did not close it."""
+    mendwright.dismiss.summary() names it, how is step_text() of the step that closed it,
+    and tried lists the steps before that did not close it."""
     text = 'dismissed a popup in the way of ' + repr(before) + ': ' + popup + ' with ' + how
     if tried:
         text += ', after ' + _listed(tried) + ' did not close it'
     return text
 
 
-def undismissed_message(before, popup, tried):
+_REGISTER = ('Register the button that closes it with heal.interrupt("<name>", "<selector of '
+             'the button>"). If it needs data first, register its field before the button: '
+             'heal.interrupt("<name>_field", "<selector of the field>", action="fill", '
+             'args=("<value>",)).')
+
+
+def undismissed_message(before, popup, tried, escaped=True, changed=False):
     """The WARNING for a popup in the way of a step that open(dismiss=True) found and could
-    not dismiss. tried lists what it did, in order: Escape, then the buttons it clicked."""
-    if not tried:
-        did = 'it changed before mendwright could act on it'
-    elif len(tried) == 1:
-        did = (tried[0] + ' did not close it, and it has no close or decline button that '
+    not dismiss. tried lists the steps it took, in order (step_text()). escaped=False says
+    it did not press Escape, because the keyboard focus was outside the popup or the popup
+    is in an iframe. changed=True says the popup changed before mendwright could act."""
+    if changed:
+        did = 'It changed before mendwright could act on it, so mendwright left it alone'
+    elif tried:
+        did = ('mendwright ' + _did(tried) + ', which did not close it, and it has no '
+               + ('other ' if tried != ['Escape'] else '') + 'close or decline button that '
                'mendwright may click')
     else:
-        did = (_listed(tried) + ' did not close it, and it has no other close or decline '
-               'button that mendwright may click')
+        did = ('It has no close or decline button that mendwright may click, so mendwright '
+               'left it alone')
+    if not escaped and not changed:
+        did += ('. mendwright did not press Escape, which goes to the element that has the '
+                'keyboard focus: that was outside the popup, or the popup is in an iframe')
     return ('could not dismiss a popup in the way of ' + repr(before) + ': ' + popup + '. '
-            + did[0].upper() + did[1:] + ', so mendwright left it alone: the action goes '
-            'ahead, and fails with the browser\'s own error if the popup blocks it. Register '
-            'the button that closes it with heal.interrupt("<name>", '
-            '"<selector of the button>"). If it needs data first, register its field before '
-            'the button: heal.interrupt("<name>_field", "<selector of the field>", '
-            'action="fill", args=("<value>",)).')
+            + did + '. The action goes ahead, and fails with the browser\'s own error if the '
+            'popup blocks it. ' + _REGISTER)
 
 
 def lost_message(before, popup, did):
     """The WARNING for an element that could not be looked at any more once mendwright did
     ``did`` ('pressed Escape', 'clicked “No thanks”') on a popup in its way."""
     return (did[0].upper() + did[1:] + ' on a popup in the way of ' + repr(before) + ': '
-            + popup + ', and then could not find the element of ' + repr(before) + ' as '
-            'before (it matches no element or several now, or it left the page). That step '
-            'may have changed the page, so mendwright does not count the popup as dismissed '
-            'and does not try a failed action again.')
+            + popup + ', and then could not look at the element of ' + repr(before) + ' as '
+            'before (it matches no element or several now, it is hidden or outside the '
+            'window, or it left the page). That step may have changed the page, so '
+            'mendwright does not count the popup as dismissed and does not try a failed '
+            'action again.')
 
 
-def dismiss_loop_message(before, popup, count):
+def consent_message(before, popup):
+    """The WARNING for a popup that looks like a consent banner, with open(cookies="accept")
+    and dismiss=True: dismissing it would turn the consent down."""
+    return ('left a popup in the way of ' + repr(before) + ' alone: ' + popup + '. It looks '
+            'like a consent banner the cookies="accept" preset does not know, and Escape, a '
+            'close or a decline button could turn the consent down, so mendwright does not '
+            'dismiss it. The action goes ahead, and fails with the browser\'s own error if the '
+            'banner blocks it. Register its accept button with heal.interrupt("<name>", '
+            '"<selector of the button>").')
+
+
+def dismiss_loop_message(before, popup, count, again=True):
     """The AttentionRequired text for a step whose budget is used up while a popup still
-    covers its element, such as one that comes back each time it is dismissed."""
-    return ('mendwright: ' + str(count) + ' interruptions and popups were handled for '
-            + repr(before) + ' and a popup is still in the way: ' + popup + '. It comes back '
-            'each time it is dismissed, so mendwright stopped instead of dismissing it again. '
-            'Register the button that closes it for good with heal.interrupt(), or find out '
-            'what opens it again.')
+    covers its element. again=True: a popup was dismissed in this step already, so it is
+    likely one that comes back each time; False: the budget went to interruptions."""
+    if again:
+        return ('mendwright: ' + str(count) + ' interruptions and popups were handled for '
+                + repr(before) + ' and a popup is still in the way: ' + popup + '. It comes '
+                'back each time it is dismissed, so mendwright stopped instead of dismissing it '
+                'again. Register the button that closes it for good with heal.interrupt(), or '
+                'find out what opens it again.')
+    return ('mendwright: ' + str(count) + ' interruptions were handled for ' + repr(before)
+            + ' and a popup is still in the way: ' + popup + '. A step handles at most '
+            + str(MAX_INTERRUPTIONS_PER_STEP) + ', so mendwright stopped instead of '
+            'dismissing it. Find out what keeps opening them, or register the button that '
+            'closes the popup with heal.interrupt().')
 
 
 def rejected_selector_message(key, selector, error):
