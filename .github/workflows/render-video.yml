@@ -78,6 +78,14 @@ jobs:
           ffmpeg -y -loglevel error -f concat -safe 0 -i list.txt -c copy -movflags +faststart mendwright-explainer.mp4
           ffprobe -v error -count_frames -show_entries format=duration,size:stream=nb_read_frames -of compact mendwright-explainer.mp4
           dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 mendwright-explainer.mp4)
+          # GitHub plays videos up to 10 MB in a README: a smaller copy for that, same frames.
+          for crf in 23 25 27 29; do
+            ffmpeg -y -loglevel error -i mendwright-explainer.mp4 -c:v libx264 -preset slow -tune animation \
+              -crf "$crf" -pix_fmt yuv420p -profile:v high -movflags +faststart mendwright-explainer-web.mp4
+            size=$(stat -c %s mendwright-explainer-web.mp4)
+            echo "web copy at crf $crf: $size bytes"
+            [ "$size" -le 9800000 ] && break
+          done
           for f in 0.02 0.15 0.25 0.38 0.5 0.62 0.75 0.88 0.99; do
             t=$(python3 -c "print(round($dur * $f, 2))")
             ffmpeg -y -loglevel error -ss "$t" -i mendwright-explainer.mp4 -frames:v 1 "still-$f.png"
@@ -87,6 +95,7 @@ jobs:
           name: mendwright-explainer
           path: |
             mendwright-explainer.mp4
+            mendwright-explainer-web.mp4
             still-*.png
           retention-days: 30
           if-no-files-found: error

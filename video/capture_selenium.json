@@ -1,0 +1,46 @@
+{
+ "plain": [
+  {
+   "by": "id",
+   "value": "email",
+   "act": "click",
+   "ok": false,
+   "error_type": "ElementClickInterceptedException",
+   "error": "Message: element click intercepted: Element <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"> is not clickable at point (271, 249). Other element would receive the click: <div id=\"cc-wrap\" class=\"cookie-consent\" style=\"display:flex;position:fixed;top:0;left:0;bottom:0;right:0;",
+   "seconds": 1.063,
+   "log": []
+  }
+ ],
+ "mendwright": [
+  {
+   "by": "id",
+   "value": "email",
+   "act": "click",
+   "ok": true,
+   "seconds": 0.203,
+   "log": [
+    "WARNING mendwright: handled interruption 'cookie_banner' before 'id=email'"
+   ]
+  },
+  {
+   "by": "id",
+   "value": "accept-terms",
+   "act": "click",
+   "ok": true,
+   "seconds": 0.078,
+   "log": []
+  },
+  {
+   "by": "id",
+   "value": "continue",
+   "act": "click",
+   "ok": true,
+   "seconds": 0.063,
+   "log": []
+  }
+ ],
+ "banner_up_after": false,
+ "terms_checked": true,
+ "version": "0.6.1",
+ "mendwright_file": "C:\\Users\\Omen\\Documents\\Software\\mw-dismiss\\mendwright\\__init__.py"
+}

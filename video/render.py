@@ -45,6 +45,45 @@ def error_html(err):
     return '\n'.join(out)
 
 
+def flow_data():
+    """What the flow act shows, from the real runs in capture_flow.json."""
+    fl = json.load(open(os.path.join(HERE, 'capture_flow.json'), encoding='utf-8'))
+    msg = lambda line: line.split(' ', 1)[1] if line.split(' ', 1)[0] in ('INFO', 'WARNING', 'ERROR') else line
+    f1 = {s['step']: s for s in fl['F1']['steps']}
+    f3 = {s['step']: s for s in fl['F3']['steps']}
+    assert all(s['ok'] for s in fl['F1']['steps']), fl['F1']
+    assert fl['F1']['popup_up_after'] is False and fl['F1']['sign_up'] == 'never clicked'
+    promo = next(msg(l) for l in f1['promo']['log'] if 'promo' in l)
+    dismiss = next(msg(l) for l in f1['#email']['log'] if 'popup' in l.lower() or 'dismiss' in l.lower())
+    guard = f3['#continue']
+    assert not guard['ok'] and f3['#email']['ok'], fl['F3']
+    gm = guard['error'].split('-> ', 1)[-1].strip()   # the reason, after the summary line
+    short = gm[:gm.index('so mendwright did not heal it.') + len('so mendwright did not heal it.')] if 'so mendwright did not heal it.' in gm else gm
+    return {
+        'goto_s': f1['goto']['seconds'], 'promo_log': promo, 'dismiss_log': dismiss,
+        'email_s': f1['#email']['seconds'], 'cont_s': f1['#continue']['seconds'],
+        'popup_label': '“Get 10% off your first order”',
+        'F3': {'goto_s': f3['goto']['seconds'], 'email_s': f3['#email']['seconds'],
+               'guard_type': guard['error_type'], 'guard_msg': gm, 'guard_short': short},
+        'pages': {'v2_nl': fl['pages']['v2_nl'], 'shipping': fl['pages']['shipping']},
+        'placeholder': fl.get('placeholder', False),
+    }
+
+
+def sel_data():
+    """What the Selenium beat shows, from the real runs in capture_selenium.json."""
+    sl = json.load(open(os.path.join(HERE, 'capture_selenium.json'), encoding='utf-8'))
+    plain, mw = sl['plain'][0], sl['mendwright']
+    assert not plain['ok'] and all(s['ok'] for s in mw) and not sl['banner_up_after'] and sl['terms_checked']
+    msg = re.sub(r' style="[^"]*$', ' \u2026>', plain['error'])
+    msg = msg.replace('Message: ', '', 1)
+    msg = re.sub(r'(<input id="email")[^>]*>', r'\1 …>', msg)
+    log = mw[0]['log'][0]
+    return {'plain_type': plain['error_type'], 'plain_msg': msg,
+            'log': log.split(' ', 1)[1] if log.startswith(('INFO ', 'WARNING ')) else log,
+            'mendwright': mw}
+
+
 def build():
     cap = json.load(open(os.path.join(HERE, 'capture.json'), encoding='utf-8'))
     pages = json.load(open(os.path.join(HERE, 'pages.json'), encoding='utf-8'))
@@ -64,12 +103,18 @@ def build():
                    'cont': win['#continue']['xpath']},
         'B_error_lines': error_html(cap['B_plain_banner'][0]['error']),
     }
+    data['F'] = flow_data()
+    data['SEL'] = sel_data()
+    assert not data['F']['placeholder'], 'capture_flow.json is a placeholder: run capture_flow.py'
     assert cap['B_banner_up_after'] and not cap['C_banner_up_after']
     assert [h['source'] for h in cap['D_heals']] == ['fingerprint', 'model', 'fingerprint']
     css = open(os.path.join(HERE, 'compose.css'), encoding='utf-8').read()
     js = open(os.path.join(HERE, 'compose.js'), encoding='utf-8').read()
+    js_flow = open(os.path.join(HERE, 'compose_flow.js'), encoding='utf-8').read()
+    js_sel = open(os.path.join(HERE, 'compose_sel.js'), encoding='utf-8').read()
     page = ('<!doctype html><html><head><meta charset="utf-8"><style>' + css + '</style></head><body>'
-            '<script>window.DATA = ' + json.dumps(data) + ';</script><script>' + js + '</script></body></html>')
+            '<script>window.DATA = ' + json.dumps(data) + ';</script><script>' + js + '</script>'
+            '<script>' + js_flow + '</script><script>' + js_sel + '</script></body></html>')
     out = os.path.join(HERE, 'compose.html')
     with open(out, 'w', encoding='utf-8') as f:
         f.write(page)

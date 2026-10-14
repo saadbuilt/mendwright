@@ -70,7 +70,7 @@ const LH = 36;
 const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#5aa9ff', purple: '#b98cff', amber: '#f2c14e' };
 
 // ---------- timeline (seconds) ----------
-const S = { title: 0, s1: 3.4, s2: 9.8, s3: 19.6, s4: 29.0, s5: 48.6, end: 53.6, total: 61.0 };
+const S = { title: 0, s1: 3.4, s2: 9.8, s3: 19.6, s4: 29.0, s5: 48.6, s6: 53.6, s7: 72.6, end: 79.6, total: 87.0 };
 window.DURATION = S.total * K;
 
 // ---------- build ----------
@@ -127,7 +127,7 @@ const ov = el('div', '', null, stage); ov.id = 'ov';
 // top bar
 const runPlain = el('div', '', `<span class="d" style="background:rgba(255,255,255,.45)"></span>Plain Playwright`, stage); runPlain.id = 'run';
 const runMw = el('div', '', `<span class="d" style="background:${C.purple};box-shadow:0 0 12px ${C.purple}"></span>Playwright <span style="color:var(--ink3);font-weight:500">+</span> <span style="color:#d9c4ff">mendwright</span>`, stage); runMw.id = 'run';
-const STEPS = ['Today', 'Cookie banner', '+ mendwright', 'Redesign', 'Next run'];
+const STEPS = ['Today', 'Cookie banner', '+ mendwright', 'Redesign', 'Next run', 'Flow', 'Selenium'];
 const stepsEl = el('div', '', STEPS.map(s => `<div class="s"><i></i><span>${s}</span></div>`).join(''), stage); stepsEl.id = 'steps';
 const stepEls = [...stepsEl.children];
 
@@ -172,7 +172,7 @@ const GROUPS = [
     [46.3, 'ok', okRow('page.click("#continue")', sec(D.D[3]))],
     [46.55, 'sum', `<span style="color:${C.green}">Passed</span> · 3 selectors repaired and saved`],
   ]],
-  [S.s5 + .1, S.end, [
+  [S.s5 + .1, S.s6, [
     [49.4, 'cmd', '$ python checkout.py'],
     [50.05, 'ok', okRow('page.click("#email")  · saved fix', sec(D.E[0]))],
     [50.8, 'ok', okRow('page.check("#accept-terms")  · saved fix', sec(D.E[2]))],
@@ -228,7 +228,7 @@ const STATUS = [
   [11.5, 'run', 'Running'], [14.8, 'bad', 'Failed at line 1'], [S.s3, null],
   [21.9, 'run', 'Running'], [26.2, 'ok', 'Passed'], [S.s4, null],
   [33.0, 'run', 'Running'], [46.5, 'ok', 'Passed · 3 repaired'], [S.s5, null],
-  [49.4, 'run', 'Running'], [51.5, 'ok', `Passed · ${D.E_total} s`], [S.end - .2, null],
+  [49.4, 'run', 'Running'], [51.5, 'ok', `Passed · ${D.E_total} s`], [S.s6 - .2, null],
 ];
 const statusEls = [];
 STATUS.forEach(([t, kind, text], i) => {
@@ -252,10 +252,11 @@ const end = el('div', 'card', `<div class="wm" style="font-size:104px"><b>mendwr
  <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Fixes from memory first, with no AI.</div>
  <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A 1 GB local model for the hard ones. No API key.</div>
  <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
- <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners rejected along the way.</div>
+ <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners and popups out of the way, optional steps skipped.</div>
+ <div><span class="ic" style="background:${C.red}22;color:${C.red}">⊘</span>A step that moved to another page stops instead of guessing.</div>
 </div>
 <div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>mendwright model install</div></div>
-<div class="repo">github.com/saadbuilt/mendwright · MIT</div>`, document.body);
+<div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
 const [eWm, eFeat, ePills, eRepo] = end.children;
 const featRows = [...eFeat.children];
 
@@ -296,6 +297,8 @@ function measure() {
     selTok[tok.dataset.k] = { line: id, dx: tr.left - lr.left, w: tr.width, h: tr.height, tok };
   }
   buildScenes();
+  if (window.measureFlow) measureFlow();
+  if (window.measureSel) measureSel();
 }
 
 const P = (r, dx = 0, dy = 0) => [r.cx + dx, r.cy + dy];
@@ -421,14 +424,14 @@ function render(t) {
   mat(runPlain, pres(t, S.s1 + .4, 21.0), { dy: -10, blur: 6 });
   mat(runMw, pres(t, 21.05, S.end), { dy: -10, blur: 6 });
   mat(stepsEl, spring(t - S.s1 - .5, .6), { dy: -10, blur: 6 });
-  const scene = t < S.s2 ? 0 : t < S.s3 ? 1 : t < S.s4 ? 2 : t < S.s5 ? 3 : 4;
-  const sceneStart = [S.s1, S.s2, S.s3, S.s4, S.s5][scene];
+  const scene = t < S.s2 ? 0 : t < S.s3 ? 1 : t < S.s4 ? 2 : t < S.s5 ? 3 : t < S.s6 ? 4 : t < S.s7 ? 5 : 6;
+  const sceneStart = [S.s1, S.s2, S.s3, S.s4, S.s5, S.s6, S.s7][scene];
   stepEls.forEach((s, i) => {
     const on = i === scene, done = i < scene;
     const p = on ? spring(t - sceneStart, .4) : 0;
     s.style.color = on ? `rgba(238,242,247,${lerp(.4, .95, p)})` : done ? 'rgba(238,242,247,.55)' : '';
     const dot = s.firstChild;
-    const col = i >= 2 ? C.purple : i === 1 ? C.amber : C.blue;
+    const col = i === 6 ? C.blue : i === 5 ? C.green : i >= 2 ? C.purple : i === 1 ? C.amber : C.blue;
     dot.style.background = on ? col : done ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.18)';
     dot.style.boxShadow = on ? `0 0 ${lerp(0, 14, p)}px ${col}` : 'none';
     dot.style.transform = `scale(${on ? lerp(1, 1.35, spring(t - sceneStart, .35, .6)) : 1})`;
@@ -445,6 +448,8 @@ function render(t) {
   drawRun(t);
   drawBrowser(t);
   drawOverlay(t);
+  if (window.drawFlow) drawFlow(t);
+  if (window.drawSel) drawSel(t);
   drawCaps(t);
   drawCards(t);
 }
@@ -475,7 +480,7 @@ function drawEditor(t) {
   for (const k of Object.keys(selTok)) {
     let st = null, t0 = 0;
     for (const [tt, s] of tokState[k]) if (t >= tt) { st = s; t0 = tt; }
-    if (t >= S.end) st = null;
+    if (t >= S.s6) st = null;
     const tok = selTok[k].tok;
     const col = st === 'broken' ? C.red : st === 'mem' ? C.blue : st === 'ai' ? C.purple : st === 'saved' ? C.green : null;
     if (!col) { tok.style.textDecoration = 'none'; tok.style.background = 'transparent'; continue; }
@@ -499,10 +504,10 @@ function drawEditor(t) {
   hl.style.boxShadow = failed ? 'inset 0 0 0 1px rgba(255,107,107,.4)' : 'inset 0 0 0 1px rgba(90,169,255,.28)';
   // per-line results
   const MARKS = {
-    L1: [[5.65, '✓', C.green, S.s2], [14.7, '✕', C.red, S.s3], [24.1, '✓', C.green, S.s4], [37.0, '✓', C.green, S.s5], [50.05, '✓', C.green, S.end]],
-    L2: [[6.35, '✓', C.green, S.s2], [24.8, '✓', C.green, S.s4], [37.6, '✓', C.green, S.s5], [50.4, '✓', C.green, S.end]],
-    L3: [[6.95, '✓', C.green, S.s2], [25.4, '✓', C.green, S.s4], [43.1, '✓', C.green, S.s5], [50.8, '✓', C.green, S.end]],
-    L4: [[7.6, '✓', C.green, S.s2], [26.0, '✓', C.green, S.s4], [46.3, '✓', C.green, S.s5], [51.2, '✓', C.green, S.end]],
+    L1: [[5.65, '✓', C.green, S.s2], [14.7, '✕', C.red, S.s3], [24.1, '✓', C.green, S.s4], [37.0, '✓', C.green, S.s5], [50.05, '✓', C.green, S.s6]],
+    L2: [[6.35, '✓', C.green, S.s2], [24.8, '✓', C.green, S.s4], [37.6, '✓', C.green, S.s5], [50.4, '✓', C.green, S.s6]],
+    L3: [[6.95, '✓', C.green, S.s2], [25.4, '✓', C.green, S.s4], [43.1, '✓', C.green, S.s5], [50.8, '✓', C.green, S.s6]],
+    L4: [[7.6, '✓', C.green, S.s2], [26.0, '✓', C.green, S.s4], [46.3, '✓', C.green, S.s5], [51.2, '✓', C.green, S.s6]],
     L0: [],
   };
   for (const id of Object.keys(lineEls)) {
@@ -691,5 +696,4 @@ function drawCards(t) {
 const drawStory = render;   // a top-level function is window.render: keep the original
 window.render = t => { SS = 1 / K; drawStory(t / K); };
 window.ready = false;
-let loaded = 0;
-for (const f of [f1, f2]) f.addEventListener('load', () => { if (++loaded === 2) { measure(); render(0); window.ready = true; } });
+window.addEventListener('load', () => { measure(); window.render(0); window.ready = true; });

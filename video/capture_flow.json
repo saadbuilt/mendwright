@@ -1,0 +1,97 @@
+{
+ "F0_without": [
+  {
+   "step": "goto",
+   "ok": true,
+   "seconds": 0.0,
+   "log": []
+  },
+  {
+   "step": "#email",
+   "ok": false,
+   "error_type": "TimeoutError",
+   "error": "Locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\"//input[@name='email']\")\n    - locator resolved to <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\"/>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"nl\" role=\"dialog\" aria-modal=\"true\" class=\"nl-overlay\" aria-labelledby=\"nl-t\">\u2026</div> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"nl\" role=\"dialog\" aria-modal=\"true\" class=\"nl-overlay\" aria-labelledby=\"nl-t\">\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    9 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"nl\" role=\"dialog\" aria-modal=\"true\" class=\"nl-overlay\" aria-labelledby=\"nl-t\">\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n",
+   "seconds": 5.109,
+   "log": [
+    "WARNING mendwright: the action on '#email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (the cookies= preset) matched a visible element, so it did not try the action again. If the element in the way is a cookie banner the preset does not know, or anything else, register the button that closes it with heal.interrupt()."
+   ]
+  }
+ ],
+ "F1": {
+  "steps": [
+   {
+    "step": "goto",
+    "ok": true,
+    "seconds": 0.016,
+    "log": []
+   },
+   {
+    "step": "promo",
+    "ok": true,
+    "seconds": 10.078,
+    "log": [
+     "INFO mendwright: skipped 'promo': it is optional (optional=True) and is not on the page."
+    ]
+   },
+   {
+    "step": "#email",
+    "ok": true,
+    "seconds": 2.25,
+    "log": [
+     "WARNING mendwright: dismissed a popup in the way of '#email': <div id=\"nl\" role=\"dialog\" class=\"nl-overlay\"> (\"MEMBERS ONLY Get 10% off your first order Join our newslette\u2026\") with \u201cNo thanks\u201d, after Escape did not close it"
+    ]
+   },
+   {
+    "step": "#continue",
+    "ok": true,
+    "seconds": 0.094,
+    "log": []
+   }
+  ],
+  "url": "https://northwind.example/checkout",
+  "popup_up_after": false,
+  "sign_up": "never clicked",
+  "handled": [
+   "InterruptionEvent(key='<popup>', before='#email', popup='<div id=\"nl\" role=\"dialog\" class=\"nl-overlay\"> (\"MEMBERS ONLY Get 10% off your first order Join our newslette\u2026\")', how='decline', label='No thanks')"
+  ]
+ },
+ "F3": {
+  "steps": [
+   {
+    "step": "goto",
+    "ok": true,
+    "seconds": 0.015,
+    "log": []
+   },
+   {
+    "step": "promo",
+    "ok": true,
+    "seconds": 10.094,
+    "log": [
+     "INFO mendwright: skipped 'promo': it is optional (optional=True) and is not on the page."
+    ]
+   },
+   {
+    "step": "#email",
+    "ok": true,
+    "seconds": 0.078,
+    "log": []
+   },
+   {
+    "step": "#continue",
+    "ok": false,
+    "error_type": "AttentionRequired",
+    "error": "No matching element for: #continue (tried 2 candidate(s)).\n  -> '#continue' was last found on /checkout, and this page is /checkout/shipping. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open().",
+    "seconds": 10.094,
+    "log": [
+     "WARNING mendwright: did not heal '#continue': '#continue' was last found on /checkout, and this page is /checkout/shipping. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open()."
+    ]
+   }
+  ],
+  "url": "https://northwind.example/checkout/shipping"
+ },
+ "pages": {
+  "v2_nl": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"x8k2\"><h2>Your details</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-77a1\"> Email me deals and news</label>\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-91c4\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\">Back to cart</button>\n</div></div>\n\n<div id=\"nl\" class=\"nl-overlay\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"nl-t\"\n  style=\"position:fixed;inset:0;background:rgba(18,16,40,.52);display:flex;align-items:center;justify-content:center\">\n  <div class=\"nl-card\" style=\"background:#fff;border-radius:18px;padding:28px 30px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,.28)\">\n    <div style=\"font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a6fd0;font-weight:700\">Members only</div>\n    <div id=\"nl-t\" style=\"font-size:25px;font-weight:700;margin:6px 0 8px\">Get 10% off your first order</div>\n    <div style=\"color:#57606a;font-size:15px;line-height:1.45;margin-bottom:16px\">Join our newsletter for deals and new arrivals.</div>\n    <input type=\"email\" placeholder=\"Your email\" style=\"width:100%;padding:12px;border:1px solid #d0d7de;border-radius:9px;font-size:16px;margin-bottom:12px\">\n    <button type=\"button\" class=\"nl-yes\" onclick=\"window.mwSignedUp=true;this.textContent='Thanks!'\"\n      style=\"width:100%;padding:13px;border:0;border-radius:10px;background:#3b2a86;color:#fff;font-size:16px;font-weight:600\">Sign up</button>\n    <button type=\"button\" class=\"nl-no\" onclick=\"document.getElementById('nl').remove()\"\n      style=\"width:100%;margin-top:8px;padding:10px;border:0;background:none;color:#57606a;font-size:15px\">No thanks</button>\n  </div>\n</div>\n</body></html>",
+  "shipping": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e}\n.st b{color:#3b2a86}\n.x8k2{padding:18px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.btn-q71{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"st\"><b>1 Shipping</b><span>\u203a</span><span>2 Delivery</span><span>\u203a</span><span>3 Payment</span></div>\n<div class=\"x8k2\"><h2>Shipping address</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"s-e\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <span class=\"lbl\">Full name</span>\n  <input id=\"s-n\" name=\"name\" placeholder=\"Ada Lovelace\">\n  <span class=\"lbl\">Street and number</span>\n  <input id=\"s-a\" name=\"street\" placeholder=\"12 Market Street\">\n  <button class=\"btn-q71\" type=\"button\">Continue to delivery</button>\n</div></div>\n</body></html>"
+ }
+}
