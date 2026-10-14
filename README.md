@@ -14,6 +14,10 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
+https://github.com/user-attachments/assets/865797e6-5642-4f81-9b8d-e6f5d97d9200
+
+<p align="center"><sub>A real run on a made-up shop: the site redeploys and a cookie banner now pops up first. mendwright rejects the banner, repairs two selectors from memory and one with its 1 GB local model, and the next run uses the saved fixes.</sub></p>
+
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
 For the model it supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock, LiteLLM, or a local model through Ollama, including mendwright's own small selector model.
