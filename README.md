@@ -111,7 +111,7 @@ driver = mendwright.open(driver).driver    # Selenium (By from selenium.webdrive
 driver.find_element(By.ID, "terms").click()
 ```
 
-Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. Interruptions such as a cookie banner (below) are still handled before their actions. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
+Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. Interruptions such as a cookie banner (below) are still handled before their actions: on a Playwright `Page` from Playwright 1.42, and before `click()`, `send_keys()`, `clear()` and `submit()` of the elements `heal.driver` returns (not through `.native`). The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
 
 ## Selenium
 
@@ -220,7 +220,7 @@ mendwright repairs a selector on the page your script is on. It handles layout c
 It also handles some changes in your script's flow:
 
 - A step that can show up at any point, such as a cookie banner, a newsletter modal or an "are you still there?" dialog. Register it once with `heal.interrupt()`. When it is in the way of a step (the step's element is missing, or the page shows the interruption), mendwright handles it first (a click, unless you register another action) and goes on with the step. If your script also has its own step for it, that step is skipped once the interruption was handled, so a cookie banner that now appears before signup instead of after it needs no other change.
-  This covers every action of the script, not only `heal.locator()`: on Playwright 1.42 and later mendwright registers the interruption with `page.add_locator_handler`, so Playwright hands over to it before a `get_by_*` or chained locator acts too, and while an action waits; on Selenium the elements `heal.driver` finds check for it before `click()`, `send_keys()`, `clear()` and `submit()`.
+  This also covers actions that don't go through `heal.locator()`. On Playwright 1.42 and later mendwright registers the interruption with `page.add_locator_handler`, so Playwright hands over to it before a `get_by_*` or chained locator acts too, and while an action waits (not before `page.mouse`, `page.keyboard` or an action with `force=True`). On Selenium the elements `heal.driver` finds check for it before `click()`, `send_keys()`, `clear()` and `submit()` (not `ActionChains`, and only inside the frame after your own `switch_to.frame()`).
 - The consent banners of common consent managers, with `cookies="reject"` or `cookies="accept"`. This is off by default.
 - A step that may not be there, with `heal.locator(..., optional=True)`.
 

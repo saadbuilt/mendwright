@@ -8,6 +8,8 @@ page, have changed.
 - is_interception_error(): whether an action failed because something covered the
   element (a cookie banner, a modal). mendwright then looks for a registered interruption
   and retries the action once, only after it handled one.
+- is_stale_error(): whether an action failed because the page replaced the element after
+  it was found. That says nothing about a heal, so it quarantines none.
 - UNROUTED_STEP: what an interruption is logged as handled before when it showed up
   during a Playwright action mendwright did not route.
 - The texts mendwright logs or raises for interruptions, skipped steps and the page
@@ -103,6 +105,15 @@ def is_interception_error(exc):
 _ACTION_RAN = re.compile(r'\baction done\b|waiting for scheduled navigations')
 
 
+def is_stale_error(exc):
+    """True when an action failed because the element it had was removed or replaced
+    after it was found: Selenium's StaleElementReferenceException, when the page
+    re-rendered the element between find_element() and the action. The element was the
+    right one when it was found, so the failure says nothing about a heal, and the heal
+    canary is not told. Matched by name, as is_interception_error() is."""
+    return 'StaleElementReferenceException' in {cls.__name__ for cls in type(exc).__mro__}
+
+
 # --- messages ------------------------------------------------------------------------------
 
 def flow_change_message(key, last, here, entry='mendwright.open()'):
@@ -136,17 +147,28 @@ def stuck_message(key, count):
     """The WARNING for an interruption that stayed on the page after its action, when
     Playwright's overlay handler stops handling it (see Healer._overlay_wanted)."""
     return (repr(key) + ' was still on the page after mendwright handled it ' + str(count)
-            + ' times in a row, so Playwright\'s overlay handler leaves it alone until it is '
-            'gone. Check that the action registered with heal.interrupt(' + repr(key)
-            + ', ...) really closes it, for example with action="press", args=("Escape",) or '
-            'a selector for its close button.')
+            + ' times in a row, so Playwright\'s overlay handler leaves it alone until '
+            'mendwright sees it gone or the page navigates. Check that the action registered '
+            'with heal.interrupt(' + repr(key) + ', ...) really closes it, for example with '
+            'action="press", args=("Escape",) or a selector for its close button.')
 
 
-def nothing_matched_message(before, keys, preset=False):
+def rejected_selector_message(key, selector, error):
+    """The WARNING for a selector of interruption key that the browser cannot parse,
+    which Playwright's overlay handler leaves out (see Healer._watch)."""
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return ('the browser rejected the selector ' + repr(selector) + ' of interruption '
+            + repr(key) + ' (' + first[:200] + '), so mendwright never finds the interruption '
+            'with it, and Playwright\'s overlay handler leaves it out. Fix the selector, or use '
+            'an XPath, which heal.interrupt() checks without a browser.')
+
+
+def nothing_matched_message(before, keys, preset=False, framed=False):
     """The WARNING for an action that failed because something covered its element or it
     could not be reached, when no interruption matched a visible element. keys are the
     ones registered with heal.interrupt(); preset is True when open(cookies=...) added
-    its own."""
+    its own. framed is True when the Selenium driver was inside a frame the script had
+    switched into, from where mendwright cannot see the page around the frame."""
     looked = []
     if keys:
         looked.append('heal.interrupt(): ' + ', '.join(repr(k) for k in keys))
@@ -156,6 +178,16 @@ def nothing_matched_message(before, keys, preset=False):
             'element or it could not be reached, and none of the interruptions mendwright '
             'looks for (' + '; '.join(looked) + ') matched a visible element, so it did not '
             'try the action again.')
+    if framed:
+        text += (' The driver is inside a frame the script switched into, so mendwright looked '
+                 'for them in that frame only, and one on the page around the frame, such as a '
+                 'cookie banner over it, is out of reach from there. Handle that one before '
+                 'switch_to.frame(), or find the element from the page without switching: '
+                 'heal.driver follows a selector into an iframe one level down.')
+        if keys:
+            text += (' If the element in the way is in the frame and is one of those registered '
+                     'with heal.interrupt(), its selector no longer matches: update it.')
+        return text
     if keys:
         return (text + ' If the element in the way is one of those registered with '
                 'heal.interrupt(), its selector no longer matches: update it. Otherwise '

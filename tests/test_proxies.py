@@ -546,7 +546,8 @@ class CoveredElement(WebElement):
 
 class CoveredDriver(WebDriver):
     """The lxml WebDriver with CoveredElements and link text lookups. calls lists every
-    call that would reach the browser."""
+    call that would reach the browser. execute_script answers SeleniumDriver.covered()
+    (an element outside the visible [data-overlay] element is covered) and inside_frame()."""
 
     def __init__(self, html):
         super().__init__(html)
@@ -554,6 +555,7 @@ class CoveredDriver(WebDriver):
         self.raised = []
         self.submitted = []
         self.during_action = []     # callables run once each, inside the next actions
+        self.in_frame = False       # as if the script had called switch_to.frame()
 
     def _found(self, by, value):
         if by == 'link text':
@@ -573,6 +575,11 @@ class CoveredDriver(WebDriver):
 
     def execute_script(self, script, *args):
         self.calls.append('execute_script')
+        if 'elementFromPoint' in script:        # SeleniumDriver.covered()
+            cover = self.overlay()
+            return cover is not None and args[0]._overlay() is not cover
+        if 'window.top' in script:              # SeleniumDriver.inside_frame()
+            return self.in_frame
         return super().execute_script(script, *args)
 
     def overlay(self):
@@ -711,3 +718,65 @@ def test_a_healing_element_stands_in_for_the_element(tmp_path):
     assert repr(el).startswith("<HealingElement 'id=email' <")
     el.marker = 1                                          # attributes land on the element
     assert raw.marker == 1
+
+
+@pytest.mark.parametrize('how', ['cookies=', 'heal.interrupt()', 'its other button'])
+def test_a_step_on_the_banner_itself_clicks_it_and_handles_nothing_first(tmp_path, how):
+    # The script's own step for the banner, which handling the banner first would remove.
+    web = _covered()
+    heal = _open(web, tmp_path, **({'cookies': 'reject'} if how == 'cookies=' else {}))
+    if how != 'cookies=':
+        heal.interrupt('cookies', '#cc-reject')
+    button = 'cc-accept' if how == 'its other button' else 'cc-reject'
+    heal.driver.find_element('xpath', "//button[@id='" + button + "']").click()
+    assert web.clicks == [button] and web.overlay() is None
+    assert heal.handled_interruptions == [] and web.raised == []
+
+
+def test_the_covered_check_runs_only_while_the_page_shows_an_interruption(tmp_path):
+    web = _covered(banner=False)
+    heal = _open(web, tmp_path)
+    heal.interrupt('cookies', '#cc-reject')
+    el = heal.driver.find_element('link text', 'Terms')
+    web.calls.clear()
+    el.click()
+    assert 'execute_script' not in web.calls and web.clicks == ['terms-link']
+
+
+class StaleElementReferenceException(Exception):
+    """Named like Selenium's, which mendwright recognises by name."""
+
+
+def test_a_stale_element_says_nothing_about_its_heal(tmp_path, monkeypatch):
+    web = _covered(banner=False)
+    heal = _open(web, tmp_path)
+    reported = []
+    monkeypatch.setattr(heal.coordinator, 'confirm_pending',
+                        lambda key, success: reported.append((key, success)))
+    el = heal.driver.find_element('id', 'go')             # resolved by heal.locator()
+
+    def rerendered():
+        raise StaleElementReferenceException('stale element reference: stale element not '
+                                             'found in the current frame')
+    el.native.click = rerendered
+    with pytest.raises(StaleElementReferenceException):
+        el.click()
+    assert reported == []
+    with pytest.raises(ElementClickInterceptedException):
+        web.show(COOKIES)
+        heal.driver.find_element('id', 'go').click()      # any other failure still reports
+    assert reported == [('id=go', False)]
+
+
+def test_inside_a_frame_the_script_switched_into_the_warning_says_why(tmp_path, caplog):
+    web = _covered()                                       # covered by a banner on the page
+    web.in_frame = True
+    heal = _open(web, tmp_path)
+    heal.coordinator.log = None
+    heal.interrupt('promo', '#promo-close')
+    with pytest.raises(ElementClickInterceptedException):
+        heal.driver.find_element('link text', 'Terms').click()
+    [line] = [r.getMessage() for r in caplog.records if 'covered its element' in r.getMessage()]
+    assert 'inside a frame the script switched into' in line
+    assert 'heal.driver follows a selector into an iframe' in line
+    assert "registered with heal.interrupt(), its selector no longer matches" in line

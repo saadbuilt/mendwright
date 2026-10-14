@@ -385,17 +385,23 @@ def test_an_element_from_heal_driver_works_where_selenium_takes_a_web_element(
     assert 'HealingElement' in repr(el)
 
 
+def _iframe_with_consent(display):
+    end = IFRAME_PAGE.rindex('</body>')
+    return (IFRAME_PAGE[:end] + _CONSENT.replace('DISPLAY', display)
+            + "<script>function consent(c) { document.getElementById('cc-wrap').remove(); }"
+            + '</script>' + IFRAME_PAGE[end:])
+
+
 @pytest.mark.engine_family('selenium')
 def test_an_element_found_inside_an_iframe_acts_there(tab, store_file, stub_provider):
-    # The key is followed into the iframe, so find_element wraps a FramedElement.
+    # The key is followed into the iframe, so find_element wraps a FramedElement. The
+    # banner opens after that, so only the check before the click can handle it.
     from selenium.webdriver.common.by import By
-    end = IFRAME_PAGE.rindex('</body>')
-    tab.load(IFRAME_PAGE[:end] + _CONSENT.replace('DISPLAY', 'block')
-             + "<script>function consent(c) { document.getElementById('cc-wrap').remove(); }"
-             + '</script>' + IFRAME_PAGE[end:])
+    tab.load(_iframe_with_consent('none'))
     heal = _open(tab, stub_provider(None), store_file, cookies='reject', timeout_ms=FAST_MS)
 
     box = heal.driver.find_element(By.XPATH, "//input[@type='checkbox'][@data-testid='legal-consent']")
+    tab.js("document.getElementById('cc-wrap').style.display = 'block'")
     box.click()
 
     assert tab.js('document.getElementById("cc-wrap") === null') is True
@@ -403,6 +409,90 @@ def test_an_element_found_inside_an_iframe_acts_there(tab, store_file, stub_prov
                   '.querySelector("[name=agreement]").checked') is True
     assert tab.js('window.frameElement === null') is True        # back on the page
     assert [h.source for h in heal.heals] == ['frame']
+    assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
+
+
+@pytest.mark.engine_family('selenium')
+def test_inside_a_frame_the_script_switched_into_the_warning_says_the_banner_is_out_of_reach(
+        tab, store_file, stub_provider, caplog):
+    from selenium.webdriver.common.by import By
+    tab.load(_iframe_with_consent('block'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject', timeout_ms=FAST_MS)
+    driver = heal.driver
+    driver.switch_to.frame(driver.find_element(By.ID, 'consent-frame'))
+    try:
+        box = driver.find_element(By.XPATH, "//input[@type='checkbox'][@data-testid='legal-consent']")
+        try:
+            box.click()
+            intercepted = False
+        except Exception as exc:
+            assert type(exc).__name__ == 'ElementClickInterceptedException'
+            intercepted = True
+        inside = tab.js('window.self !== window.top')
+    finally:
+        driver.switch_to.default_content()
+
+    assert inside is True                           # mendwright left the driver in the frame
+    assert heal.handled_interruptions == []         # the banner is out of reach in there
+    warned = [r.getMessage() for r in caplog.records if 'covered its element' in r.getMessage()]
+    if intercepted:                                 # Chrome sees the banner over the iframe
+        [line] = warned
+        assert 'inside a frame the script switched into' in line
+        assert 'its selector no longer matches' not in line
+    else:
+        assert warned == []
+
+
+# The script's own step for the banner. It clicks the banner itself, and the check before
+# the click must not handle the banner first: the button would be gone.
+_OWN_BANNER_STEPS = {
+    'cookies= and its Reject button': ({'cookies': 'reject'}, None, 'Reject all', 'rejected'),
+    'heal.interrupt() on the same button': ({}, 'Reject all', 'Reject all', 'rejected'),
+    'heal.interrupt() on another button': ({}, 'Reject all', 'Accept all', 'accepted'),
+}
+
+
+@pytest.mark.engine_family('selenium')
+@pytest.mark.parametrize('way', list(_OWN_BANNER_STEPS))
+def test_a_step_of_the_script_on_the_banner_itself_clicks_it(tab, store_file, stub_provider,
+                                                              way):
+    from selenium.webdriver.common.by import By
+    opened, registered, button, consent = _OWN_BANNER_STEPS[way]
+    tab.load(_checkout('now'))
+    heal = _open(tab, stub_provider(None), store_file, timeout_ms=FAST_MS, **opened)
+    if registered:
+        heal.interrupt('cookies', "xpath=//button[normalize-space()='" + registered + "']")
+
+    heal.driver.find_element(By.XPATH, "//button[normalize-space()='" + button + "']").click()
+
+    assert tab.text('#consent') == consent
+    assert heal.handled_interruptions == []
+    heal.driver.find_element(By.ID, 'email').send_keys('ada@x.test')
+    assert tab.value('#email') == 'ada@x.test'
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_stale_element_from_heal_driver_keeps_its_heal(tab, store_file, stub_provider):
+    # The page re-renders the element between find_element() and the click.
+    from selenium.common.exceptions import StaleElementReferenceException
+    from selenium.webdriver.common.by import By
+    form = ('<form id="f"><button id="ID" type="button" '
+            'onclick="document.title = \'clicked\'">Go</button></form>')
+    tab.load(page(form.replace('ID', 'go-old')))
+    _open(tab, stub_provider(None), store_file).driver.find_element(By.ID, 'go-old')
+    tab.load(page(form.replace('ID', 'go-new')))
+    heal = _open(tab, stub_provider(None), store_file, timeout_ms=FAST_MS)
+    el = heal.driver.find_element(By.ID, 'go-old')         # healed from its fingerprint
+    healed = {'id=go-old': "//button[@id='go-new']"}
+    assert heal.pending() == healed
+
+    tab.js("(() => { const f = document.getElementById('f'); f.innerHTML = f.innerHTML; })()")
+    with pytest.raises(StaleElementReferenceException):
+        el.click()
+
+    assert heal.pending() == healed and heal.store.quarantined('id=go-old') == []
+    heal.driver.find_element(By.ID, 'go-old').click()
+    assert tab.js('document.title') == 'clicked'
 
 
 # How a Playwright script reaches an element that mendwright does not route, and what

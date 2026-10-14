@@ -38,6 +38,12 @@ def playwright_selector(selector):
     return selector.strip()
 
 
+def browser_rejected(exc):
+    """True for a Playwright error that says the browser cannot parse a selector."""
+    lines = str(exc).strip().splitlines()
+    return bool(lines) and bool(_BROWSER_SELECTOR_ERROR.search(lines[0]))
+
+
 def _raise_if_invalid(exc, selector, frame_chain):
     """Re-raise a Playwright 'cannot parse this selector' error as InvalidSelector."""
     lines = str(exc).strip().splitlines()
