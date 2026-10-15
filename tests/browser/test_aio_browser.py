@@ -940,6 +940,62 @@ def test_flow_what_an_async_run_function_raises_stops_the_step(engine, tmp_path)
     assert saved == 'no' and len(calls) == 1 and heal.handled_interruptions == []
 
 
+# A Next button and a list of rows that stay disabled, and a session popup that _LATER
+# opens 0.3 seconds on, while an action on them waits.
+_LATE_RELOGIN = """<button id="next" type="button" disabled>Next</button>
+<ul><li><button class="row" type="button" disabled>Ada</button></li>
+  <li><button class="row" type="button" disabled>Grace</button></li></ul>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <input id="user" aria-label="User"></div>"""
+_LATER = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; }, "
+          "300)")
+
+
+@pytest.mark.parametrize('how', ['healed', 'guarded', 'list'])
+def test_flow_a_step_waits_for_a_slow_async_run_function_of_the_overlay_handler(engine, tmp_path,
+                                                                                how):
+    # As on the sync healer: the popup opens while the click waits, so Playwright's overlay
+    # handler awaits the function, which takes longer than the click's 1 second and then
+    # raises. The click gives up while it runs: the step waits for it and raises its error,
+    # and a heal made in this run stays pending.
+    calls = []
+
+    async def relogin(page):
+        calls.append(page)
+        await page.fill('#user', 'ada')
+        await asyncio.sleep(1.5)
+        raise LookupError('no password for ada in the test vault')
+
+    async def main():
+        page = await engine.page(_LATE_RELOGIN)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub("//button[@id='next']"),
+                                             store_path=_store(tmp_path), timeout_ms=300,
+                                             dismiss=how == 'guarded')
+            if how == 'healed':
+                target = await heal.locator('next', '#next-old', role='button')
+            elif how == 'guarded':
+                target = heal.page.get_by_role('button', name='Next')
+            else:
+                target = (await heal.locator_all('rows', 'button.row'))[0]
+            heal.interrupt('relogin', '#relogin', run=relogin)
+            while heal._watching:
+                await asyncio.sleep(0)
+            await page.evaluate('() => ' + _LATER)
+            with pytest.raises(LookupError, match='no password for ada'):
+                await target.click(timeout=1000)
+            return heal, await page.input_value('#user')
+        finally:
+            await _close(page)
+
+    heal, user = engine.run(main())
+    assert len(calls) == 1 and user == 'ada'
+    if how == 'healed':
+        assert heal.pending() == {'next': "//button[@id='next']"}
+        assert heal.store.status('next', "//button[@id='next']") == 'active'
+
+
 def test_flow_cancelling_a_step_cancels_its_async_run_function(engine, tmp_path):
     seen = []
 

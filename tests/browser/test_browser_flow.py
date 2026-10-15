@@ -777,6 +777,56 @@ def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, st
     assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
 
 
+# A Next button and a list of rows that stay disabled, and a session popup that _LATER
+# opens 0.3 seconds on, while an action on them waits.
+_LATE_RELOGIN = page("""
+<button id="next" type="button" disabled>Next</button>
+<ul><li><button class="row" type="button" disabled>Ada</button></li>
+  <li><button class="row" type="button" disabled>Grace</button></li></ul>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <input id="user" aria-label="User"></div>""", 'late relogin')
+_LATER = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; }, "
+          "300)")
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('how', ['healed', 'guarded', 'list'])
+def test_a_step_waits_for_a_slow_run_function_of_the_overlay_handler(tab, store_file,
+                                                                      stub_provider, how):
+    # The popup opens while the click waits, so Playwright's overlay handler calls the
+    # function, which takes longer than the click's 1 second and then raises. The click
+    # gives up while it runs: the step waits for it and raises its error, and a heal made in
+    # this run stays pending, since the click's failure says nothing about it.
+    tab.load(_LATE_RELOGIN)
+    heal = _open(tab, stub_provider("//button[@id='next']"), store_file,
+                 dismiss=how == 'guarded')
+    calls = []
+
+    def relogin(page):
+        calls.append(page)
+        page.fill('#user', 'ada')
+        page.wait_for_timeout(1500)
+        raise LookupError('no password for ada in the test vault')
+
+    if how == 'healed':
+        target = _step(heal, 'next', '#next-old', role='button')
+    elif how == 'guarded':
+        target = heal.page.get_by_role('button', name='Next')
+    else:
+        target = heal.locator_all('rows', 'button.row')[0]
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    tab.js(_LATER)
+
+    with pytest.raises(LookupError, match='no password for ada'):
+        target.click(timeout=1000)
+
+    assert len(calls) == 1 and tab.value('#user') == 'ada'
+    if how == 'healed':
+        assert heal.pending() == {'next': "//button[@id='next']"}
+        assert heal.store.status('next', "//button[@id='next']") == 'active'
+
+
 # A popup that asks which saved address to deliver to, over the page: it closes once one of
 # the addresses in its list is picked.
 ADDRESS_PAGE = page("""

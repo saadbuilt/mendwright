@@ -65,7 +65,7 @@ from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import _dismiss_choice
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
-                     HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
+                     HealEvent, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _cookie_preset,
                      _healed_target_error, _join_overlay, _leave_overlay, _locator_args,
                      _overlay_locator, _overlay_options, _overlay_owner, _raised_by_run,
                      _removable, _reraise, _setup, latest_success)
@@ -893,6 +893,27 @@ class AsyncHealer:
         await self._interrupt_for_action(key, budget, timeout_ms, poll_ms)
         return budget
 
+    async def _await_runs(self, budget, poll_ms):
+        """Healer._await_runs(), awaited: wait for the run= functions of this healer that
+        run in another context, then raise what one of them raised for the step of budget
+        (_reraise).
+
+        That context is the task in which Playwright's overlay handler awaits the function.
+        When the function takes longer than the action's timeout, the action gives up while
+        the function still fills in its form, and the step must not go on, nor report the
+        action's failure to the heal canary, before it knows what the function did. It
+        waits with no limit, as a step that awaits the function itself does, through
+        asyncio.sleep, so the function, on this event loop too, goes on meanwhile. It does
+        not take the lock, which the handler holds while the function runs."""
+        __tracebackhide__ = True
+        runs = self._core._runs
+        while True:
+            mine = _IN_RUN.get()
+            if not any(run not in mine for run in list(runs)):
+                break
+            await asyncio.sleep(max(poll_ms, 20) / 1000.0)
+        _reraise(budget)
+
     @property
     def _dismiss_on(self):
         """Whether open(dismiss=True) was passed (see Healer._dismiss)."""
@@ -1368,32 +1389,43 @@ class AsyncActionProxy:
             except _USAGE_ERRORS:
                 raise
             except Exception as exc:
-                _reraise(budget)    # a run= function failed in the overlay handler meanwhile
+                # A run= function the overlay handler ran meanwhile: wait for it, and raise
+                # what it raised.
+                await healer._await_runs(budget, poll_ms)
                 intercepted, used = is_interception_error(exc), budget.used
                 if not (intercepted and await healer._unblock_for_action(
                         self._key, native, budget, timeout, poll_ms)):
                     if intercepted and budget.used == used and not budget.gave_up:
                         healer._core._report_nothing_matched(self._key)
-                    if self._canary and not is_stale_error(exc):
-                        await healer._confirm(self._key, False)  # the browser action failed
+                    await self._failed(exc)  # the browser action failed
                     raise
                 try:
                     result = await _act_on(healer._driver, native, verb, *args, **kwargs)
                 except _USAGE_ERRORS:
                     raise
                 except Exception as again:
-                    _reraise(budget)
-                    if self._canary and not is_stale_error(again):
-                        await healer._confirm(self._key, False)
+                    await healer._await_runs(budget, poll_ms)
+                    await self._failed(again)
                     raise
-            _reraise(budget)
-        if expect is not None and self._canary:
+            await healer._await_runs(budget, poll_ms)
+        if expect is not None:
             try:
                 ok = bool(await _awaited(expect()))
             except Exception:
                 ok = False
-            await healer._confirm(self._key, ok)
+            await self._confirm(ok)
         return result
+
+    async def _failed(self, error):
+        """ActionProxy._failed(), awaited: report a failed action to the heal canary, unless
+        error is a stale element (see mendwright.flow.is_stale_error)."""
+        if not is_stale_error(error):
+            await self._confirm(False)
+
+    async def _confirm(self, success):
+        """Report the action's outcome to the heal canary, unless _canary is off."""
+        if self._canary:
+            await self._healer._confirm(self._key, success)
 
     async def click(self, *args: Any, expect: AsyncExpect | None = None, **kwargs: Any) -> Any:
         return await self._act('click', args, kwargs, expect)

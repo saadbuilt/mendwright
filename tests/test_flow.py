@@ -31,8 +31,8 @@ from mendwright.flow import (UNROUTED_STEP, flow_change_message, handled_message
                              rejected_selector_message, run_cancelled_message,
                              run_failed_message, run_plain_message, several_message,
                              skip_message, stuck_message, unhandled_message)
-from mendwright.interruptions import (COOKIE_BANNER_KEY, InterruptionEvent, cookie_preset,
-                                      precise_selectors)
+from mendwright.interruptions import (COOKIE_BANNER_KEY, Budget, InterruptionEvent,
+                                      cookie_preset, precise_selectors)
 
 SIDES = ('sync', 'async')
 
@@ -2015,6 +2015,91 @@ def test_async_an_action_that_went_through_raises_what_its_run_function_raised(t
 
     assert asyncio.run(main()) is error
     assert len(calls) == 1 and sync.clicks('css=#next') == 1
+
+
+class TimedHandlerPage(AsyncHandlerPage):
+    """An AsyncHandlerPage whose action gives up after action_timeout seconds while the
+    handler it runs goes on, as Playwright's does when the handler takes longer than the
+    action's timeout."""
+
+    action_timeout = 0.2
+
+    async def checkpoint(self):
+        if self._running:
+            return
+        for locator, handler, _ in list(self.handlers):
+            if locator._loc.overlay_visible():
+                self._running = True
+                task = asyncio.ensure_future(handler(locator))
+                task.add_done_callback(lambda _task: setattr(self, '_running', False))
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), self.action_timeout)
+                except asyncio.TimeoutError:
+                    raise TimeoutError('Locator.click: Timeout 200ms exceeded.') from None
+
+
+@pytest.mark.parametrize('how', ['healed', 'guarded'])
+def test_async_a_step_waits_for_a_slow_run_function_in_the_overlay_handler(tmp_path, how,
+                                                                            stub_provider):
+    # The function takes longer than the action's timeout, so the action gives up while it
+    # still runs. The step waits for it, as on the sync healer, and raises what it raised.
+    # A heal made in this run stays pending: the action's failure says nothing about it.
+    # guarded is a Locator mendwright did not resolve: the elements of heal.locator_all()
+    # and heal.page's guarded locators act through one (aio._guarded).
+    sync = _page(SIGNUP)
+    finished, error = [], ValueError('wrong password')
+
+    async def relogin(p):
+        await asyncio.sleep(0.6)
+        finished.append(time.monotonic())
+        raise error
+
+    async def main():
+        page = TimedHandlerPage(sync)
+        heal = await mendwright.aio.open(page, provider=stub_provider("//button[@id='next']"),
+                                         store_path=_store(tmp_path), timeout_ms=0)
+        heal.coordinator.log = None
+        if how == 'healed':
+            nxt = await heal.locator('next', '#next-old', role='button', poll_ms=0)
+        else:
+            nxt = mendwright.aio._guarded(heal, 'next', page.locator('css=#next'))
+        heal.interrupt('relogin', '#relogin', run=relogin)
+        await _registered(heal)
+        page.on_action.append(_show_async(sync, RELOGIN))     # it opens as the click starts
+        with pytest.raises(ValueError) as caught:
+            await nxt.click()
+        return heal, caught.value, time.monotonic()
+
+    heal, raised, raised_at = asyncio.run(main())
+    assert raised is error and finished and raised_at >= finished[0]
+    assert [verb for _, verb, _ in sync.actions] == []
+    if how == 'healed':
+        assert heal.pending() == {'next': "//button[@id='next']"}
+        assert heal.store.status('next', "//button[@id='next']") == 'active'
+
+
+def test_the_overlay_handler_keeps_a_run_function_s_error_before_the_run_ends(tmp_path):
+    # On the async healer the step waits for the run from the event loop while the handler
+    # runs in a worker thread (AsyncHealer._await_runs): once the run is over, the step must
+    # find the error in its budget, or it would report the action's own failure instead.
+    page = _handler_page(RELOGIN + SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    budget, error, seen = Budget(), ValueError('wrong password'), []
+
+    class Runs(list):
+        def remove(self, record):
+            seen.append(budget.raised)
+            super().remove(record)
+
+    def relogin(p):
+        raise error
+
+    heal._runs = Runs()
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    with heal._running('next', budget, 0, 0):
+        heal._overlay_run('relogin', heal._driver)
+
+    assert seen == [error] and budget.raised is error
 
 
 def test_a_popup_its_run_function_leaves_is_left_alone_after_three_times_in_a_row(tmp_path,

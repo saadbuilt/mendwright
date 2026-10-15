@@ -1623,7 +1623,7 @@ class Healer:
                         function_name(item.run) if item.run is not None else None))
                 budget.used += 1
                 if self._run_interruption(item, target, before, timeout_ms, poll_ms, driver,
-                                          overlay):
+                                          overlay, budget):
                     budget.handled.append(item.key)
                     handled = True
         return handled
@@ -1716,14 +1716,14 @@ class Healer:
         return bool(described) and described.get('role') in item.roles
 
     def _run_interruption(self, item, target, before, timeout_ms, poll_ms, driver,
-                          overlay=False):
+                          overlay=False, budget=None):
         """Perform the interruption's action on target, or call its run= function (see
         _run_function), wait for it to go away, and record it. False (with a WARNING) when
         the action failed in the browser; what a run= function raised is raised."""
         function = None
         if item.run is not None:
             function = function_name(item.run)
-            self._run_function(item, target, before, driver, overlay)
+            self._run_function(item, target, before, driver, overlay, budget)
         else:
             try:
                 native = driver.handle(target)
@@ -1746,7 +1746,7 @@ class Healer:
                       selector=None if item.preset else target, function=function)
         return True
 
-    def _run_function(self, item, target, before, driver, overlay):
+    def _run_function(self, item, target, before, driver, overlay, budget=None):
         """Call interruption item's run= function with heal.page (heal.driver on Selenium),
         or, on the async healer, have _runner await it on the event loop. While it runs
         (_IN_RUN, _runs), its own actions do not handle item again and dismiss no popup, so
@@ -1757,8 +1757,11 @@ class Healer:
         run_steps() runs, whose page its keys are not saved for. What it raises gets one
         WARNING and a flow.interrupt event with outcome 'failed', and is raised as it is,
         marked (_raised_by_run): the step it was handled for does not take an
-        AttentionRequired from it for a miss of its own. On the async healer, a step that
-        is cancelled cancels it (see aio._in_thread)."""
+        AttentionRequired from it for a miss of its own. When Playwright's overlay handler
+        called it (overlay), the error goes into budget, the step's, before the run ends:
+        on the async healer the step waits for the run in another thread (see
+        aio.AsyncHealer._await_runs), and must find the error once the run is over. On the
+        async healer, a step that is cancelled cancels it (see aio._in_thread)."""
         record = _Run(self, item.key)
         running, step = _IN_RUN.set(_IN_RUN.get() + (record,)), _RUNNING_STEP.set(None)
         self._runs.append(record)
@@ -1780,6 +1783,8 @@ class Healer:
                 exc._mendwright_run = True
             except Exception:
                 pass        # an exception class with __slots__: it is raised unmarked
+            if overlay and budget is not None and _raised_by_run(exc):
+                budget.raised = exc     # the step raises it (see _overlay_run)
             raise
         finally:
             self._runs.remove(record)
