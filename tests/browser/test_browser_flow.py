@@ -813,8 +813,8 @@ def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, st
     assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
 
 
-# A Next button and a list of rows that stay disabled, and a session popup that _LATER
-# opens 0.3 seconds on, while an action on them waits.
+# A Next button and a list of rows that stay disabled, and a session popup that
+# _SHOW_RELOGIN opens 0.3 seconds on, while an action on them waits.
 _LATE_RELOGIN = page("""
 <button id="next" type="button" disabled>Next</button>
 <ul><li><button class="row" type="button" disabled>Ada</button></li>
@@ -822,8 +822,8 @@ _LATE_RELOGIN = page("""
 <div id="relogin" role="dialog" aria-label="Session expired"
   style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
   <input id="user" aria-label="User"></div>""", 'late relogin')
-_LATER = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; }, "
-          "300)")
+_SHOW_RELOGIN = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; },"
+                 " 300)")
 
 
 @pytest.mark.engine_family('playwright')
@@ -852,7 +852,7 @@ def test_a_step_waits_for_a_slow_run_function_of_the_overlay_handler(tab, store_
     else:
         target = heal.locator_all('rows', 'button.row')[0]
     heal.interrupt('relogin', '#relogin', run=relogin)
-    tab.js(_LATER)
+    tab.js(_SHOW_RELOGIN)
 
     with pytest.raises(LookupError, match='no password for ada'):
         target.click(timeout=1000)

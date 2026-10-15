@@ -970,16 +970,16 @@ def test_flow_what_an_async_run_function_raises_stops_the_step(engine, tmp_path)
     assert saved == 'no' and len(calls) == 1 and heal.handled_interruptions == []
 
 
-# A Next button and a list of rows that stay disabled, and a session popup that _LATER
-# opens 0.3 seconds on, while an action on them waits.
+# A Next button and a list of rows that stay disabled, and a session popup that
+# _SHOW_RELOGIN opens 0.3 seconds on, while an action on them waits.
 _LATE_RELOGIN = """<button id="next" type="button" disabled>Next</button>
 <ul><li><button class="row" type="button" disabled>Ada</button></li>
   <li><button class="row" type="button" disabled>Grace</button></li></ul>
 <div id="relogin" role="dialog" aria-label="Session expired"
   style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
   <input id="user" aria-label="User"></div>"""
-_LATER = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; }, "
-          "300)")
+_SHOW_RELOGIN = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; },"
+                 " 300)")
 
 
 @pytest.mark.parametrize('how', ['healed', 'guarded', 'list'])
@@ -1012,7 +1012,7 @@ def test_flow_a_step_waits_for_a_slow_async_run_function_of_the_overlay_handler(
             heal.interrupt('relogin', '#relogin', run=relogin)
             while heal._watching:
                 await asyncio.sleep(0)
-            await page.evaluate('() => ' + _LATER)
+            await page.evaluate('() => ' + _SHOW_RELOGIN)
             with pytest.raises(LookupError, match='no password for ada'):
                 await target.click(timeout=1000)
             return heal, await page.input_value('#user')
