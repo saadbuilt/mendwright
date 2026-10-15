@@ -765,9 +765,11 @@ def _control(text='', tag='button', **more):
     (_control('Not now, thanks'), 'decline'),
     (_control('Maybe later'), 'decline'),
     (_control('Remind me later'), 'decline'),
-    (_control('Skip'), 'decline'),
-    (_control('Skip for now'), 'decline'),
-    (_control('Dismiss'), 'decline'),
+    # A bare Skip or Dismiss declines only in a popup that reads as a promotion or
+    # onboarding (see test_what_a_popup_says_changes_what_its_buttons_mean).
+    (_control('Skip'), None),
+    (_control('Skip for now'), None),
+    (_control('Dismiss'), None),
     # Outside a popup about cookies, reject and decline answer a request: an expense, an
     # invitation, new terms (see test_what_a_popup_says_changes_what_its_buttons_mean).
     (_control('Reject'), None),
@@ -790,7 +792,7 @@ def _control(text='', tag='button', **more):
     (_control('Continue without delay'), None),
     (_control('Remind me in 7 days'), None),                       # a digit
     (_control('Not now', aria='Not now, 5 € off'), None),          # a currency sign
-    (_control('', aria='Dismiss'), 'decline'),
+    (_control('', aria='Dismiss'), None),
     (_control('No thanks', tag='a'), 'decline'),                  # a link that goes nowhere
     (_control('No thanks', tag='a', href='#'), 'decline'),
     (_control('No thanks', tag='a', href='javascript:void(0)'), 'decline'),
@@ -908,25 +910,85 @@ def _popup(text, prose=None, **more):
     (_control('Close'), Setting(prose=words('Close position: 100 AAPL at market?')), None),
     (_control('×', aria='Close'), Setting(prose=words('Closing this banner means you agree')),
      None),
-    (_control('Skip'), Setting(prose=words("Skip next week's delivery?")), None),
-    (_control('Dismiss'), Setting(prose=words('Dismiss this security alert for good?')), None),
+    (_control('Skip'), Setting(prose=words("Skip next week's delivery? Free shipping on every "
+                                           'box.')), None),
+    (_control('Dismiss'), Setting(prose=words('Dismiss these tips for good?')), None),
     # A popup with a Cancel or Keep button asks a question: none of its buttons counts.
     (_control('Close'), Setting(asks=True), None),
     (_control('No thanks'), Setting(asks=True), None),
-    (_control('Skip'), Setting(asks=True), None),
+    (_control('Skip'), Setting(prose=words('Take a quick tour?'), asks=True), None),
     # Text that does not say the verb changes nothing.
     (_control('Close'), Setting(prose=words('Find your closest store')), 'close'),
     (_control('Skip'), Setting(prose=words('Take a quick tour?')), 'decline'),
     (_control('No thanks'), Setting(prose=words('Skip the queue with Plus')), 'decline'),
+    # A bare Skip or Dismiss declines only in a popup whose own text reads as a promotion
+    # or onboarding. Elsewhere it may acknowledge something that matters.
+    (_control('Dismiss'), Setting(prose=words('New sign-in detected. We noticed a sign-in from '
+                                              'a new device.')), None),
+    (_control('Skip'), Setting(prose=words('Update your payment method')), None),
+    (_control('Skip for now'), Setting(prose=words('Update your payment method')), None),
+    (_control('', aria='Dismiss'), Setting(prose=words('Your password was changed')), None),
+    (_control('Dismiss all'), Setting(prose=words('Notifications: your password was changed')),
+     None),
+    (_control('Skip'), Setting(prose=words('Sign up for our newsletter')), 'decline'),
+    (_control('Skip for now'), Setting(prose=words('Get 10% off your first order')), 'decline'),
+    (_control('Dismiss'), Setting(prose=words('Get the Acme app for faster checkout')),
+     'decline'),
+    (_control('', aria='Dismiss'), Setting(prose=words("What's new in Acme 2")), 'decline'),
+    (_control('Dismiss'), Setting(cookies=True), 'decline'),
+    # The other declines, and close buttons, count there as before.
+    (_control('No thanks'), Setting(prose=words('Update your payment method')), 'decline'),
+    (_control('Not now'), Setting(prose=words('Update your payment method')), 'decline'),
+    (_control('Maybe later'), Setting(prose=words('Your password was changed')), 'decline'),
+    (_control('Not interested'), Setting(prose=words('Your password was changed')), 'decline'),
+    (_control('Continue without an account'), Setting(prose=words('Your order is on its way')),
+     'decline'),
+    (_control('Close'), Setting(prose=words('New sign-in detected')), 'close'),
+    (_control('×', aria='Close dialog'), Setting(prose=words('New sign-in detected')), 'close'),
 ])
 def test_what_a_popup_says_changes_what_its_buttons_mean(control, where, kind):
     assert classify(control, where) == kind
+
+
+@pytest.mark.parametrize('prose, promo', [
+    ('Sign up for our newsletter', True), ('Subscribe to weekly deals', True),
+    ('Get 10% off your first order', True), ('Save 20 % off today', True),
+    ('A special offer for you', True), ('Members get a discount', True),
+    ('Summer sale ends Sunday', True), ('Use coupon SPRING at checkout', True),
+    ('Enter a promo code', True), ('Free shipping on orders this week', True),
+    ('Download our app', True), ('Get the Acme app', True), ('Install the free Acme app', True),
+    ('Turn on notifications to hear about restocks', True), ('Take our survey', True),
+    ('Tell us what you think: share your feedback', True), ('Enjoying Acme? Rate us', True),
+    ('Take a quick tour', True), ('Tips for your first week', True),
+    ("What's new in Acme 2", True), ('Welcome to Acme!', True), ('Getting started', True),
+    ('Questions? Chat with us', True), ('We value your consent', True),
+    ('This site uses cookies', True),
+    # Not a promotion: a notice that may matter, and words that only look like one.
+    ('New sign-in detected. We noticed a sign-in from a new device.', False),
+    ('Update your payment method', False), ('Your subscription payment failed', False),
+    ('Welcome back, Ada. A new sign-in from Berlin.', False),
+    ('Notifications: your password was changed', False), ('You were promoted to admin', False),
+    ('Your order is on its way', False), ('The app could not save your changes', False),
+    ('Contact sales for an invoice', False), ('', False),
+])
+def test_what_reads_as_a_promotion(prose, promo):
+    assert Setting(prose=words(prose)).promo is promo
+    assert setting(_popup(prose, prose), []).promo is promo
 
 
 def test_the_setting_is_read_from_the_popup_and_its_buttons():
     banner = _popup('We use cookies. Reject all Accept all', 'We use cookies.')
     where = setting(banner, [_control('Reject all'), _control('Accept all')])
     assert where == Setting(cookies=True, prose='we use cookies', asks=False)
+    assert where.promo is True
+    # The popup's own text decides, not its buttons' labels.
+    notice = _popup('New sign-in detected. Dismiss Review', 'New sign-in detected.')
+    assert pick([_control('Dismiss'), _control('Review')], notice) == {}
+    app = _popup('Get the Acme app. Install Dismiss', 'Get the Acme app.')
+    assert pick([_control('Install'), _control('Dismiss')], app) == {
+        'decline': (1, _control('Dismiss'))}
+    assert pick([_control('Get the app'), _control('Dismiss')],
+                _popup('Shop faster. Get the app Dismiss', 'Shop faster.')) == {}
     box = _popup('Your box ships Monday. Keep it Skip', 'Your box ships Monday.')
     assert setting(box, [_control('Keep it'), _control('Skip')]).asks is True
     assert pick([_control('Keep it'), _control('Skip')], box) == {}
@@ -1248,12 +1310,13 @@ def test_an_alert_dialog_is_left_alone_without_escape_or_a_click(side, tmp_path,
     # A question whose verb is the button's: the button is the answer.
     ('Close your account? This cannot be undone.',
      '<button id="close" type="button" data-closes="cf">Close</button>'),
-    ("Skip next week's delivery?", '<button id="skip" type="button" data-closes="cf">Skip</button>'),
+    ("Skip next week's delivery? Free shipping on every box.",
+     '<button id="skip" type="button" data-closes="cf">Skip</button>'),
     # A Cancel or Keep button: the popup asks, and no other button of it is clicked.
     ('Delete this project? This cannot be undone.',
      '<button id="cancel" type="button" data-closes="cf">Cancel</button>'
      '<button id="x" type="button" aria-label="Close" data-closes="cf">×</button>'),
-    ('Your box ships Monday.',
+    ('Your box ships Monday, with free shipping.',
      '<button id="keep" type="button" data-closes="cf">Keep it</button>'
      '<button id="skip" type="button" data-closes="cf">Skip</button>'),
     # Reject and decline outside a popup about cookies answer a request.
@@ -1276,6 +1339,96 @@ def test_a_dialog_that_asks_is_answered_by_none_of_its_buttons(side, tmp_path, c
     assert page.doc.by_id('cf') is not None and heal.handled_interruptions == []
     [warning] = _warnings(caplog)
     assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go'")
+
+
+def _notice(text, buttons):
+    """A dialog over the form with its own text and the given buttons. Escape does not
+    close it."""
+    return ('<div id="cf" role="dialog" aria-modal="true" data-pos="fixed" data-area="1">'
+            '<div data-over="go email"></div><p>' + text + '</p>' + buttons + '</div>')
+
+
+SIGN_IN = 'New sign-in detected. We noticed a sign-in to your account from a new device.'
+PAYMENT = 'Update your payment method. Your card expires at the end of the month.'
+REVIEW = '<button id="review" type="button">Review</button>'
+UPDATE = '<button id="update" type="button">Update</button>'
+
+
+@pytest.mark.parametrize('text, buttons', [
+    (SIGN_IN, '<button id="dismiss" type="button" data-closes="cf">Dismiss</button>' + REVIEW),
+    (PAYMENT, '<button id="skip" type="button" data-closes="cf">Skip</button>' + UPDATE),
+    (PAYMENT, '<button id="skip" type="button" data-closes="cf">Skip for now</button>' + UPDATE),
+    ('Welcome back, Ada. ' + SIGN_IN,
+     '<button id="x" type="button" aria-label="Dismiss" data-closes="cf">×</button>' + REVIEW),
+    # A notification centre: Dismiss all would clear its alerts.
+    ('Notifications. Your password was changed.',
+     '<button id="all" type="button" data-closes="cf">Dismiss all</button>'),
+], ids=['sign-in', 'payment', 'payment-for-now', 'welcome-back-icon', 'notification-centre'])
+def test_a_bare_skip_or_dismiss_outside_a_promotion_is_never_clicked(side, tmp_path, caplog,
+                                                                     text, buttons):
+    # It may acknowledge something that matters, so the popup gets Escape only.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _page(FORM, _notice(text, buttons))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert page.doc.clicked == [] and page.calls.count('escape') == 1
+    assert page.doc.by_id('cf') is not None and heal.handled_interruptions == []
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go': "
+                              '<div id="cf" role="dialog"> ("' + text[:20])
+    assert ('mendwright pressed Escape, which did not close it, and it has no close or decline '
+            'button that mendwright may click') in warning
+    assert [(e['outcome'], e['tried']) for e in _events(tmp_path)] == [
+        ('failed', [{'how': 'escape'}])]
+
+
+@pytest.mark.parametrize('text, buttons, clicked, label', [
+    ('Sign up for our newsletter and never miss a sale.',
+     '<button id="sub" type="button">Subscribe</button>'
+     '<button id="skip" type="button" data-closes="cf">Skip</button>', 'skip', 'Skip'),
+    ('Get the Acme app for faster checkout.',
+     '<button id="install" type="button">Install the app</button>'
+     '<button id="dismiss" type="button" data-closes="cf">Dismiss</button>', 'dismiss',
+     'Dismiss'),
+    ("Take a quick tour of what's new.",
+     '<button id="skip" type="button" data-closes="cf">Skip for now</button>', 'skip',
+     'Skip for now'),
+    ('Welcome to Acme!',
+     '<button id="x" type="button" aria-label="Dismiss" data-closes="cf">×</button>', 'x',
+     'Dismiss'),
+], ids=['newsletter-skip', 'app-dismiss', 'tour-skip-for-now', 'welcome-icon'])
+def test_a_bare_skip_or_dismiss_in_a_promotion_declines_it(side, tmp_path, text, buttons,
+                                                           clicked, label):
+    page = _page(FORM, _notice(text, buttons))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    side.step('go', '#go', 'click')
+    assert page.doc.clicked == [clicked, 'go'] and page.doc.by_id('cf') is None
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', label)]
+
+
+@pytest.mark.parametrize('button, how, label', [
+    ('<button id="b" type="button" data-closes="cf">No thanks</button>', 'decline', 'No thanks'),
+    ('<button id="b" type="button" data-closes="cf">Not now</button>', 'decline', 'Not now'),
+    ('<button id="b" type="button" data-closes="cf">Maybe later</button>', 'decline',
+     'Maybe later'),
+    ('<button id="b" type="button" data-closes="cf">Not interested</button>', 'decline',
+     'Not interested'),
+    ('<button id="b" type="button" data-closes="cf">Continue without an account</button>',
+     'decline', 'Continue without an account'),
+    ('<button id="b" type="button" data-closes="cf">Close</button>', 'close', 'Close'),
+    ('<button id="b" type="button" aria-label="Close dialog" data-closes="cf">×</button>',
+     'close', 'Close dialog'),
+])
+def test_other_declines_and_named_close_buttons_count_outside_a_promotion(side, tmp_path,
+                                                                          button, how, label):
+    # The same popup as above: only a bare Skip or Dismiss needs a promotion.
+    skip = '<button id="skip" type="button" data-closes="cf">Skip</button>'
+    page = _page(FORM, _notice(PAYMENT, skip + button + UPDATE))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    side.step('go', '#go', 'click')
+    assert page.doc.clicked == ['b', 'go'] and page.doc.by_id('cf') is None
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [(how, label)]
 
 
 def test_a_click_that_raises_after_it_reached_the_page_is_recorded_and_stops(side, tmp_path,
@@ -1730,6 +1883,30 @@ def test_selenium_elements_of_any_by_dismiss_too_and_a_stale_popup_reads_as_gone
     heal.coordinator.log = None
     heal.driver.find_elements('xpath', "//button[@id='go']")[0].click()
     assert web.doc.clicked == ['nl-no', 'go']     # removed: Selenium refuses the stale root
+
+
+def test_selenium_a_bare_skip_or_dismiss_counts_only_in_a_promotion(tmp_path, caplog, chains):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    dismiss = '<button id="dismiss" type="button" data-closes="cf">Dismiss</button>'
+    web = PopupDriver(FORM + _notice(SIGN_IN, dismiss + REVIEW))
+    heal = mendwright.open(web, provider=None, store_path=_store(tmp_path), timeout_ms=0,
+                           dismiss=True)
+    heal.coordinator.log = None
+    with pytest.raises(ElementClickInterceptedException):
+        heal.driver.find_element('id', 'go').click()
+    assert web.doc.clicked == [] and web.doc.by_id('cf') is not None
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'id=go': "
+                              '<div id="cf" role="dialog"> ("New sign-in detected.')
+
+    skip = '<button id="skip" type="button" data-closes="cf">Skip</button>'
+    web = PopupDriver(FORM + _notice('Sign up for our newsletter.', SIGN_UP + skip))
+    heal = mendwright.open(web, provider=None, store_path=_store(tmp_path), timeout_ms=0,
+                           dismiss=True)
+    heal.coordinator.log = None
+    heal.driver.find_element('id', 'go').click()
+    assert web.doc.clicked == ['skip', 'go']
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'Skip')]
 
 
 def test_selenium_with_dismiss_off_makes_no_extra_call(tmp_path, chains):

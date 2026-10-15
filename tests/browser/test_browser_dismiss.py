@@ -15,6 +15,7 @@ import time
 import pytest
 
 import mendwright
+import mendwright.aio
 from mendwright.dismiss import expect_control, expect_of, parse_probe, popup_of
 from mendwright.flow import DISMISS_KEY, InterruptionLoop, is_interception_error
 from mw_engines import FAST_MS, POLL_MS, SITE, page
@@ -577,9 +578,9 @@ def test_an_alert_dialog_gets_no_escape_and_no_click(tab, store_file, stub_provi
 
 @pytest.mark.parametrize('title, buttons', [
     ('Close your account? This cannot be undone.', [('Close', 'closed')]),
-    ("Skip next week's delivery?", [('Skip', 'skipped')]),
+    ("Skip next week's delivery? Free shipping on every box.", [('Skip', 'skipped')]),
     ('Delete this project?', [('Cancel', 'cancel'), ('Close', 'closed')]),
-    ('Your box ships on Monday.', [('Keep it', 'kept'), ('Skip', 'skipped')]),
+    ('Your box ships on Monday, with free shipping.', [('Keep it', 'kept'), ('Skip', 'skipped')]),
     ('Expense report #4471 from Bob is waiting for your approval.',
      [('Approve', 'approved'), ('Reject', 'rejected')]),
     ('Alice invited you to join the Finance workspace.', [('Decline', 'declined')]),
@@ -596,6 +597,124 @@ def test_a_dialog_that_asks_a_question_gets_escape_only(tab, store_file, stub_pr
     heal = _open(tab, stub_provider(None), store_file, dismiss=True)
     _left_alone(tab, heal)
     assert _log(tab) == ['key:Escape'] and not _gone(tab)
+
+
+# --- a bare Skip or Dismiss: only in a promotion --------------------------------------------
+
+def _button(label, tag, closes=True, aria=None):
+    """A button that logs tag, and with closes=True removes the popup."""
+    return ('<button type="button"' + (' aria-label="' + aria + '"' if aria else '')
+            + ' onclick="log(\'' + tag + '\')' + ('; ' + _CLOSE if closes else '') + '">'
+            + label + '</button>')
+
+
+def _notice(text, *buttons):
+    """A dialog over the whole page with its own text and the given buttons. Escape does
+    not close it."""
+    return ('<div id="nl" role="dialog" aria-modal="true" style="position: fixed; inset: 0; '
+            'z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff; '
+            'width: 340px; margin: 120px auto; padding: 16px"><p>' + text + '</p>'
+            + ' '.join(buttons) + '</div></div>')
+
+
+_SIGN_IN = 'New sign-in detected. We noticed a sign-in to your account from a new device.'
+_PAYMENT = 'Update your payment method. Your card expires at the end of the month.'
+# A security notice and a payment prompt: a bare Dismiss or Skip may acknowledge them.
+_NOTICES = {
+    'sign-in': _notice(_SIGN_IN, _button('Dismiss', 'dismissed'),
+                       _button('Review', 'review', closes=False)),
+    'payment': _notice(_PAYMENT, _button('Skip', 'skipped'),
+                       _button('Update', 'update', closes=False)),
+}
+# A newsletter and an app-install prompt: there they decline.
+_PROMOTIONS = {
+    'newsletter-skip': (_notice('Sign up for our newsletter and never miss a sale.', SUBSCRIBE,
+                                _button('Skip', 'skipped')), 'skipped', 'Skip'),
+    'app-dismiss': (_notice('Get the Acme app for faster checkout.',
+                            _button('Install the app', 'install', closes=False),
+                            _button('Dismiss', 'dismissed')), 'dismissed', 'Dismiss'),
+}
+
+
+@pytest.mark.parametrize('name', list(_NOTICES))
+def test_a_bare_skip_or_dismiss_outside_a_promotion_is_never_clicked(tab, store_file,
+                                                                     stub_provider, caplog,
+                                                                     name):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_NOTICES[name]))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go': "
+                              '<div id="nl" role="dialog"> ("'
+                              + (_SIGN_IN if name == 'sign-in' else _PAYMENT)[:30])
+    assert ('mendwright pressed Escape, which did not close it, and it has no close or decline '
+            'button that mendwright may click') in warning
+
+
+@pytest.mark.parametrize('name', list(_PROMOTIONS))
+def test_a_bare_skip_or_dismiss_in_a_promotion_dismisses_it(tab, store_file, stub_provider,
+                                                            name):
+    html, clicked, label = _PROMOTIONS[name]
+    tab.load(_page(html))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', clicked] and _gone(tab)     # never Subscribe, Install
+    assert tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', label)]
+
+
+@pytest.mark.parametrize('button, how, label', [
+    (_button('No thanks', 'clicked'), 'decline', 'No thanks'),
+    (_button('Not now', 'clicked'), 'decline', 'Not now'),
+    (_button('&times;', 'clicked', aria='Close dialog'), 'close', 'Close dialog'),
+], ids=['no-thanks', 'not-now', 'named-close'])
+def test_no_thanks_not_now_and_a_named_close_count_outside_a_promotion(tab, store_file,
+                                                                       stub_provider, button,
+                                                                       how, label):
+    # The payment prompt above, with one more button: only a bare Skip needs a promotion.
+    tab.load(_page(_notice(_PAYMENT, _button('Skip', 'skipped'), button,
+                           _button('Update', 'update', closes=False))))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'clicked'] and _gone(tab)
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [(how, label)]
+
+
+@pytest.mark.engine_family('playwright')
+def test_async_a_bare_skip_or_dismiss_is_dismissed_only_in_a_promotion(engine, tmp_path,
+                                                                       stub_provider):
+    cases = dict(_NOTICES, **{name: html for name, (html, _, _) in _PROMOTIONS.items()})
+
+    async def run(tab):
+        found = {}
+        for name, html in cases.items():
+            await tab.set_content(_page(html))
+            heal = await mendwright.aio.open(tab, provider=stub_provider(None),
+                                             store_path=str(tmp_path / name / 'overrides.json'),
+                                             timeout_ms=FAST_MS, dismiss=True)
+            error = None
+            try:
+                await heal.locator('go', '#go').click(timeout=1500)
+            except Exception as exc:
+                error = exc
+            found[name] = (error, (await tab.text_content('#log')).split(),
+                           await tab.text_content('#done'), await tab.locator('#nl').count(),
+                           [(e.how, e.label) for e in heal.handled_interruptions])
+        return found
+
+    found = engine.with_async_page(run)
+
+    for name in _NOTICES:
+        error, log, done, left, handled = found[name]
+        assert is_interception_error(error), name
+        assert (log, done, left, handled) == (['key:Escape'], '', 1, []), name
+    for name, (_, clicked, label) in _PROMOTIONS.items():
+        error, log, done, left, handled = found[name]
+        assert error is None, name
+        assert (log, done, left, handled) == (['key:Escape', clicked], 'go ', 0,
+                                              [('decline', label)]), name
 
 
 def test_skip_the_line_for_money_is_never_clicked_and_no_thanks_is(tab, store_file,

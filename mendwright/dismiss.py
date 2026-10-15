@@ -2,7 +2,7 @@
 
 With dismiss=True, mendwright dismisses a popup that blocks an action and that no
 interruption registered with heal.interrupt() or cookies= accounts for: a newsletter or
-discount modal, a prompt for an address or a location that can be skipped, an app-install
+discount modal, a prompt for an address or a location that can be put off, an app-install
 banner, a survey, a chat invite, a consent banner when cookies= is not set. It is off by
 default, and then mendwright makes no browser call for it.
 
@@ -29,7 +29,9 @@ It acts only on evidence, and does nothing when unsure:
 - It leaves alone a popup that asks a question: role="alertdialog" (nothing is pressed
   or clicked), and one with a button that says cancel or keep (Escape only). A close or
   decline button whose verb the popup's own text says ("Close your account?" with
-  Close, "Skip next week's delivery?" with Skip) is not one (Setting).
+  Close, "Skip next week's delivery?" with Skip) is not one (Setting). A bare Skip or
+  Dismiss is one only in a popup whose own text reads as a promotion or onboarding
+  (Setting.promo): "New sign-in detected" with Dismiss and Review is left alone.
 
 The drivers report what the page shows (mendwright.drivers.base.POPUP_PROBE_JS and the
 scripts after it); the rules are here, so they are the same on Playwright and Selenium.
@@ -57,11 +59,41 @@ WITHOUT = ('accepting', 'accepting all', 'accepting cookies', 'agreeing', 'an ac
            'account', 'signing in', 'signing up', 'logging in', 'registering', 'subscribing',
            'cookies')
 
-# The phrases a decline button's label says, in any popup. "No thank you" is "no thanks"
-# spelled otherwise. Each only puts something off, it answers nothing.
+# The phrases a decline button's label says, in any popup but those of PROMO_ONLY. "No
+# thank you" is "no thanks" spelled otherwise. Each only puts something off, it answers
+# nothing.
 DECLINE = (('no thanks', 'no thank you', 'not now', 'maybe later', 'later', 'skip',
             'skip for now', 'dismiss', 'not interested')
            + tuple('continue without ' + w for w in WITHOUT))
+
+# The DECLINE phrases that decline only in a popup whose own text reads as a promotion or
+# onboarding (Setting.promo). Elsewhere a bare Skip or Dismiss may acknowledge something
+# that matters: "New sign-in detected. [Dismiss] [Review]", "Update your payment method
+# [Skip] [Update]".
+PROMO_ONLY = ('skip', 'skip for now', 'dismiss')
+
+# What a popup's own text (Setting.prose, as words()) says when it is a promotion or an
+# onboarding step, as whole words and phrases: a newsletter, an offer, a sale, a coupon,
+# an app to get, a prompt to turn on notifications, a survey, a tour, what's new, a
+# welcome, a chat invite. Not stems: "Your subscription payment failed" is not
+# "subscribe". Not "notifications" alone: in a notification centre "Dismiss all" clears
+# its alerts. Not "welcome back", which a sign-in notice says. A part off ("10% off"),
+# getting the app and cookie or consent text count too (_promo_text).
+PROMO = ('newsletter', 'newsletters', 'subscribe', 'subscribing', 'sign up for', 'offer',
+         'offers', 'discount', 'discounts', 'sale', 'deal', 'deals', 'coupon', 'coupons',
+         'promo', 'promos', 'promo code', 'promotion', 'promotions', 'promotional',
+         'free shipping', 'turn on notifications', 'enable notifications',
+         'allow notifications', 'push notifications', 'get notifications', 'survey',
+         'surveys', 'feedback', 'rate us', 'tour', 'tours', 'tips', 'what s new', 'whats new',
+         'welcome', 'getting started', 'chat with us')
+_PROMO_TEXT = re.compile(
+    r'(?<!\S)(?:' + '|'.join(re.escape(p) for p in sorted(set(PROMO) - {'welcome'},
+                                                            key=len, reverse=True))
+    + r'|welcome(?! back(?!\S))'                    # "Welcome back" greets a sign-in
+    # The app: download, install or get the app, our app, the Acme app, our free Acme app.
+    + r'|(?:download|install|get) (?:the|our)(?: \S+){0,2} app)(?!\S)'
+    # A part off, "10% off" (words() keeps the %).
+    + r'|% ?off(?!\S)')
 
 # The phrases that decline only in a popup whose text speaks of cookies (Setting.cookies).
 # Elsewhere they are the answer to a request: reject an expense, decline an invitation or
@@ -273,6 +305,14 @@ def _decline_label(control):
     return _name(control) if _icon(control) else _shown(control)[1]
 
 
+def _promo_text(prose):
+    """Whether a popup's own text (Setting.prose) reads as a promotion or onboarding: it
+    says a PROMO word or phrase, get the app or the like, a part off ("10% off"), or a word
+    that starts with cookie or consent."""
+    return bool(_PROMO_TEXT.search(prose)
+                or any(w.startswith(('cookie', 'consent')) for w in prose.split()))
+
+
 @dataclass(frozen=True)
 class Setting:
     """What a popup says around its controls, which changes what a control means there.
@@ -281,10 +321,16 @@ class Setting:
     prose: its own text outside its controls, and its aria-label, as words(): a close, skip
     or dismiss button whose verb it says (ECHO) may be the answer to it. asks: one of its
     controls says cancel or keep (ASKS), so it asks a question and no close or decline
-    button of it counts."""
+    button of it counts. promo, read from cookies and prose: the popup reads as a
+    promotion or onboarding (_promo_text), so a bare skip or dismiss declines there
+    (PROMO_ONLY)."""
     cookies: bool = False
     prose: str = ''
     asks: bool = False
+
+    @property
+    def promo(self):
+        return self.cookies or _promo_text(self.prose)
 
 
 def _label_words(control):
@@ -324,7 +370,9 @@ def classify(control, where=None):
     icon, its name) says no thanks, not now, maybe later, later, skip, dismiss, not
     interested, continue without and what it leaves out (DECLINE), or in a popup that
     speaks of cookies reject or decline (COOKIE_DECLINE), with no other words than a few
-    harmless ones (FILLER), such as "Remind me later".
+    harmless ones (FILLER), such as "Remind me later". Skip, skip for now and dismiss
+    (PROMO_ONLY) decline only in a popup that reads as a promotion or onboarding
+    (Setting.promo): in "New sign-in detected" a Dismiss button acknowledges the sign-in.
 
     Neither for a control mendwright never clicks (is_control, forbidden), one whose label
     has a digit or a currency sign (priced), any control of a popup that asks (a control
@@ -339,7 +387,7 @@ def classify(control, where=None):
         return None if _echoes(where.prose, 'close') else 'close'
     label = _decline_label(control)
     phrase = _decline_phrase(label, where.cookies) if label else None
-    if phrase is None:
+    if phrase is None or (phrase in PROMO_ONLY and not where.promo):
         return None
     return None if _echoes(where.prose, phrase.split()[0]) else 'decline'
 

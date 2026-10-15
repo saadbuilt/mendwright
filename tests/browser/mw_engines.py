@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -348,6 +349,11 @@ def _run_in_thread(coro_fn, timeout=120):
     return box['value']
 
 
+async def _awaited(value):
+    """value, or what it gives once awaited when it is awaitable."""
+    return await value if inspect.isawaitable(value) else value
+
+
 class PlaywrightEngine(Engine):
     """Playwright or patchright: library module, browser type and how to install it."""
 
@@ -389,7 +395,7 @@ class PlaywrightEngine(Engine):
 
     def with_async_page(self, fn):
         """Call fn(page) with an async_api Page of the same engine, from a worker thread,
-        and return what fn returns."""
+        and return what fn returns (awaited, when fn is a coroutine function)."""
         async_api = importlib.import_module(self.library + '.async_api')
 
         async def main():
@@ -398,7 +404,7 @@ class PlaywrightEngine(Engine):
                 try:
                     page_ = await browser.new_page()
                     await page_.set_content('<button type="button">Go</button>')
-                    return fn(page_)
+                    return await _awaited(fn(page_))
                 finally:
                     await browser.close()
         return _run_in_thread(main)
@@ -491,6 +497,7 @@ class CamoufoxEngine(Engine):
         return PlaywrightTab(self.id, self._browser)
 
     def with_async_page(self, fn):
+        """As PlaywrightEngine.with_async_page, with AsyncCamoufox."""
         from camoufox.async_api import AsyncCamoufox
         options = self._options()
 
@@ -498,7 +505,7 @@ class CamoufoxEngine(Engine):
             async with AsyncCamoufox(**options) as browser:
                 page_ = await browser.new_page()
                 await page_.set_content('<button type="button">Go</button>')
-                return fn(page_)
+                return await _awaited(fn(page_))
         return _run_in_thread(main)
 
 
