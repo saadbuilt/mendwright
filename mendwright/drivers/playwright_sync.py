@@ -17,8 +17,8 @@ from ..flow import click_may_have_run
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
-                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
-                   summary_from_js)
+                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api,
+                   looks_like_locator, summary_from_js, visible_match_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -183,11 +183,12 @@ class PlaywrightSyncDriver:
                            lambda loc: summary_from_js(loc.evaluate_all(DESCRIBE_JS)), None)
 
     def visible_match(self, selector, frame_chain=()):
-        """describe()'s result for the first visible element the selector matches, or None
-        when none is. One round trip. A malformed selector raises InvalidSelector; any other
-        error gives None."""
-        return self._probe(selector, frame_chain, lambda loc: summary_from_js(
-            loc.locator('visible=true').first.evaluate_all(DESCRIBE_JS)), None)
+        """describe()'s result for the first visible element the selector matches, plus
+        'visible': how many of its matches are visible, counted up to 2. None when none is.
+        One round trip. A malformed selector raises InvalidSelector; any other error gives
+        None."""
+        return self._probe(selector, frame_chain, lambda loc: visible_match_from_js(
+            loc.locator('visible=true').evaluate_all(VISIBLE_MATCH_JS)), None)
 
     def fingerprint(self, selector, frame_chain=()):
         """The fingerprint of the one element the selector matches (see

@@ -42,9 +42,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import inspect
 import logging
 import os
+import threading
 import time
 import weakref
 from typing import Any, Callable, Iterable, Sequence
@@ -98,17 +100,54 @@ def _registering(shared):
     return shared.registering
 
 
+class _RunTasks:
+    """The run= functions of heal.interrupt() that one _in_thread() call's worker thread
+    awaits on the event loop (see SyncBridge.wait), as concurrent futures, so that
+    cancelling the caller cancels them too (see _in_thread)."""
+
+    def __init__(self):
+        self._futures = []
+        self._cancelled = False
+        self._lock = threading.Lock()
+
+    def add(self, future):
+        with self._lock:
+            self._futures.append(future)
+            if self._cancelled:
+                future.cancel()     # the caller was cancelled before the function started
+
+    def cancel(self):
+        with self._lock:
+            self._cancelled = True
+            for future in self._futures:
+                future.cancel()
+
+
+# The _RunTasks of the _in_thread() call whose worker thread this is, or None.
+_RUN_TASKS = contextvars.ContextVar('mendwright_run_tasks', default=None)
+
+
 async def _in_thread(fn, *args):
     """fn(*args) in a worker thread (asyncio.to_thread).
 
     A thread cannot be stopped. If the caller is cancelled meanwhile, this still waits for
     the thread to finish before passing the cancellation on, so the healer's lock is held
-    for as long as the thread can touch the store."""
+    for as long as the thread can touch the store. A run= function of heal.interrupt() that
+    the thread waits for (see SyncBridge.wait) is cancelled first: it is the caller's own
+    code, which may wait for the page as long as it likes, and the thread then finishes
+    once it is."""
     __tracebackhide__ = True  # pytest shows the caller
-    worker = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    tasks = _RunTasks()
+
+    def call():
+        _RUN_TASKS.set(tasks)   # in the worker's copy of the context
+        return fn(*args)
+
+    worker = asyncio.ensure_future(asyncio.to_thread(call))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
+        tasks.cancel()
         while not worker.done():
             try:
                 await asyncio.wait([worker])
@@ -174,10 +213,12 @@ class SyncBridge:
     def wait(self, fn: Callable[..., Any], *args: Any) -> Any:
         """run(fn, *args) with no time limit: for a run= function of heal.interrupt(), the
         user's own code, which may wait for the page as long as it needs. It runs in a task
-        that copies this thread's context variables, as asyncio.to_thread() does."""
-        return self._call(fn, args, {}, None)
+        that copies this thread's context variables, as asyncio.to_thread() does, and is
+        cancelled when the step waiting for this thread is (see _in_thread): this then
+        raises concurrent.futures.CancelledError."""
+        return self._call(fn, args, {}, None, _RUN_TASKS.get())
 
-    def _call(self, fn, args, kwargs, timeout):
+    def _call(self, fn, args, kwargs, timeout, tasks=None):
         loop = self._loop
         try:
             running = asyncio.get_running_loop()
@@ -199,6 +240,8 @@ class SyncBridge:
             return await _awaited(fn(*args, **kwargs))
 
         future = asyncio.run_coroutine_threadsafe(call(), loop)
+        if tasks is not None:
+            tasks.add(future)
         try:
             return future.result(timeout)
         except concurrent.futures.TimeoutError:
@@ -702,11 +745,12 @@ class AsyncHealer:
         """_interrupt() for an action, under the lock. Actions of one healer may run at the
         same time (asyncio.gather), and two of them must not handle one interruption at
         once, for example both clicking the same banner: the second one waits, then finds
-        it gone. locator() calls _interrupt() itself, because it already holds the lock."""
+        it gone. locator() calls _interrupt() itself, because it already holds the lock,
+        and so do the actions of a run= function, whose step holds it (see _turn)."""
         __tracebackhide__ = True
         if not self._core._others(before):
             return False
-        async with self._lock:
+        async with self._turn():
             return await self._interrupt(before, budget, timeout_ms, poll_ms)
 
     async def _before_action(self, key, timeout_ms, poll_ms):
@@ -742,12 +786,12 @@ class AsyncHealer:
         through SyncBridge, under the lock, as _interrupt_for_action() handles an
         interruption: two actions awaited together never click the same popup. That code
         looks again first, since another action may have dismissed it meanwhile. Nothing
-        is looked at for the actions of a run= function (see Healer._dismiss)."""
+        is looked at while a run= function runs (see Healer._dismiss)."""
         __tracebackhide__ = True
         core = self._core
         probe = _member(self._driver, 'popup_probe')
         if (not core._dismiss_on or native is None or budget.gave_up or not callable(probe)
-                or core._in_run()):
+                or core._runs):
             return False
         try:
             seen = await _awaited(self._driver.popup_probe(native, None, True))
@@ -1030,7 +1074,7 @@ class AsyncHealer:
         core = self._core
         if all(item.key in failed for item in core._others(_steps.WAITING_STEP)):
             return False
-        async with self._lock:
+        async with self._turn():
             return await _in_thread(_steps.interrupt, core, budget, timeout_ms, poll_ms, failed,
                                     self._sync_driver())
 

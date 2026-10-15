@@ -17,6 +17,7 @@ or not at all run through heal.step() and heal.run_steps() (see mendwright.steps
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import contextvars
 import inspect
@@ -42,8 +43,8 @@ from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
                    journal_event, loop_message, nothing_matched_message, page_path,
-                   rejected_selector_message, run_failed_message, several_message,
-                   skip_message, stuck_message, unhandled_message)
+                   rejected_selector_message, run_cancelled_message, run_failed_message,
+                   several_message, skip_message, stuck_message, unhandled_message)
 from .flow import (DISMISS_KEY, alert_message, consent_message, dismiss_loop_message,
                    dismissed_message, lost_message, step_text, undismissed_message)
 from .gate import live_reason
@@ -68,12 +69,25 @@ logger = logging.getLogger('mendwright')
 # step.
 _RUNNING_STEP = contextvars.ContextVar('mendwright_running_step', default=None)
 
-# The healer whose run= function of heal.interrupt() runs now, in this thread or asyncio task
-# only (see Healer._run_function), or None. The function's own actions look for no
-# interruption and no popup: the one it handles is still on the page while it fills it in.
-# A context variable, so that on the async healer the function's task, which the step that
-# called it waits for, is told apart from a coroutine gathered next to that step.
-_IN_RUN = contextvars.ContextVar('mendwright_in_run', default=None)
+# The run= functions of heal.interrupt() that run now in this thread, asyncio task or
+# greenlet, outermost first, as _Run records (see Healer._run_function). A function's own
+# actions do not handle its own interruption again, nor dismiss any popup: the one it
+# answers is still on the page while it fills it in. A context variable, so that on the
+# async healer the function's task, which the step that called it waits for, is told apart
+# from a coroutine gathered next to that step. Healer._runs has the same records, from
+# every context: Playwright's overlay handler runs in a greenlet of its own (see
+# Healer._await_runs).
+_IN_RUN = contextvars.ContextVar('mendwright_in_run', default=())
+
+
+class _Run:
+    """One call of a run= function of heal.interrupt(), while it runs: the healer and the
+    interruption's key."""
+
+    __slots__ = ('healer', 'key')
+
+    def __init__(self, healer, key):
+        self.healer, self.key = healer, key
 
 
 def _raised_by_run(exc):
@@ -585,9 +599,9 @@ class _PageOverlays:
     there, which acts for the newest of its healers still alive. It keeps the selectors,
     not the Locator, which would keep the page alive.
 
-    busy is above 0 while a healer of the page handles interruptions itself: its own action
-    on the banner runs Playwright's check too, and the page's handlers must stay out of
-    it.
+    busy is above 0 while a healer of the page handles interruptions itself, and while it
+    looks up a key: its own action on the banner, and the lookup's scroll, run Playwright's
+    check too, and the page's handlers must stay out of them.
 
     navigations counts the page's main-frame navigations and loads (goto(), a link,
     set_content(), a history change in a single-page app) since its first handler was
@@ -741,6 +755,8 @@ class Healer:
         # How a run= function of interrupt() is called: None calls it here with heal.page or
         # heal.driver; the async healer sets its own, which awaits it on the event loop.
         self._runner = None
+        # The run= functions of this healer that run now, in any context (see _await_runs).
+        self._runs: list = []
         # (what, name, page) of each interruption and landmark named in the WARNING for a
         # selector that matches several elements (see _several), so it comes once per page.
         self._several_seen: set = set()
@@ -854,16 +870,16 @@ class Healer:
         must have before mendwright acts on it. Use a selector that matches one element:
         an XPath that matches several is narrowed to the first visible match, and any
         other kind that matches several is skipped, with one WARNING per page that names
-        a selector that matches one.
+        a selector that matches one, when exactly one of its matches is visible.
 
         run= is a function that handles the interruption itself, in place of action and
         args, for a popup that needs a form: a session-expired sign-in, an address, two
         fields to confirm. It gets heal.page (heal.driver on Selenium), so its selectors
         heal as usual, and mendwright calls it when selector matches one visible element,
-        then waits for that element to go away as after an action. Its own actions look
-        for no interruption and no popup, so it never runs itself again. What it raises is
-        raised as it is, after one WARNING and a flow.interrupt journal event with outcome
-        'failed'.
+        then waits for that element to go away as after an action. Its own actions never
+        handle this interruption, so it never runs itself, but they handle the others, and
+        no popup is dismissed while it runs. What it raises is raised as it is, after one
+        WARNING and a flow.interrupt journal event with outcome 'failed'.
 
         mendwright looks for it only when a step needs help: when a locator() misses
         (before any heal or model call), before an action while the page shows it, and when
@@ -980,7 +996,11 @@ class Healer:
         store = self.store
 
         def attempt(wait=timeout):
-            return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
+            # Playwright's overlay handlers stay out of the lookup, whose scroll runs their
+            # check: the step handles what the page shows itself, before its action. A run=
+            # function called inside the handler would have only the scroll's timeout.
+            with self._overlays.handling():
+                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
 
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -999,7 +1019,8 @@ class Healer:
                 native = self._follow_into_frame(key, exc, attempt)
                 if native is _NOT_FOLLOWED:
                     native = self._heal(key, exc, attempt)
-            _reraise(budget)
+            # One the overlay handler still runs, for an earlier action that gave up on it
+            self._await_runs(budget, poll_ms)
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
@@ -1213,17 +1234,48 @@ class Healer:
     # --- flow: interruptions, skipped steps and pages ----------------------------------
 
     def _others(self, before):
-        """The registered interruptions other than the step ``before`` itself. None while a
-        run= function of this healer runs (see _in_run)."""
-        if self._in_run():
-            return []
-        return [item for key, item in self._interruptions.items() if key != before]
+        """The registered interruptions other than the step ``before`` itself, and other
+        than those whose run= function is running in this context: the actions of a run=
+        function do not handle its own interruption, which it is filling in, but they do
+        handle another one, such as a cookie banner over its form."""
+        mine = {run.key for run in _IN_RUN.get() if run.healer is self}
+        return [item for key, item in self._interruptions.items()
+                if key != before and key not in mine]
 
     def _in_run(self):
-        """Whether a run= function of this healer runs now, in this thread or asyncio task
-        (see _run_function): its own actions handle no interruption and dismiss no
-        popup."""
-        return _IN_RUN.get() is self
+        """Whether a run= function of this healer runs now, in this thread, asyncio task or
+        greenlet (see _run_function): its own actions dismiss no popup, and on the async
+        healer they skip the lock (see AsyncHealer._turn)."""
+        return any(run.healer is self for run in _IN_RUN.get())
+
+    def _await_runs(self, budget, poll_ms):
+        """Wait for the run= functions of this healer that run in another context, then
+        raise what one of them raised for the step of budget (_reraise).
+
+        On sync Playwright that context is the greenlet in which Playwright's overlay
+        handler called the function. When the function takes longer than the action's
+        timeout, the action gives up and the step goes on while the function is still
+        filling in its form, in the same thread. The step must not act on the page then,
+        nor call the function a second time, so it waits here, through the page
+        (page.wait_for_timeout), which lets the handler's greenlet go on: time.sleep would
+        hold both. It waits with no limit, as a step that calls the function itself does.
+        Elsewhere, such as another thread, it waits with time.sleep."""
+        __tracebackhide__ = True
+        while True:
+            mine = _IN_RUN.get()
+            if not any(run not in mine for run in self._runs):
+                break
+            self._pause(poll_ms)
+        _reraise(budget)
+
+    def _pause(self, poll_ms):
+        """Wait one poll while a run= function runs elsewhere (see _await_runs)."""
+        from .drivers.playwright_sync import PlaywrightSyncDriver
+        wait = getattr(self._page, 'wait_for_timeout', None)
+        if isinstance(self._driver, PlaywrightSyncDriver) and callable(wait):
+            wait(max(poll_ms, 20))
+        else:
+            time.sleep(max(poll_ms, 20) / 1000.0)
 
     def _first_wait(self, key, timeout):
         """How long the first look for key waits: not at all for an interruption that
@@ -1268,7 +1320,8 @@ class Healer:
         nothing covers the element the step acts on, and none is handled (see
         ActionProxy._act)."""
         __tracebackhide__ = True
-        _reraise(budget)    # the function's error from the overlay handler: no second call
+        # A run= function the overlay handler is still running, then its error: no second call
+        self._await_runs(budget, poll_ms)
         others = [item for item in self._others(before) if only is None or item.key == only]
         if not others:
             return False
@@ -1285,7 +1338,9 @@ class Healer:
                         return False    # not in the step's way; it may be part of the step
                     uncovered = None
                 if budget.used >= MAX_INTERRUPTIONS_PER_STEP:
-                    raise InterruptionLoop(loop_message(before, item.key, budget.used))
+                    raise InterruptionLoop(loop_message(
+                        before, item.key, budget.used,
+                        function_name(item.run) if item.run is not None else None))
                 budget.used += 1
                 if self._run_interruption(item, target, before, timeout_ms, poll_ms, driver,
                                           overlay):
@@ -1293,12 +1348,13 @@ class Healer:
                     handled = True
         return handled
 
-    def _interruption_target(self, item, driver):
+    def _interruption_target(self, item, driver, warn=True):
         """A selector that points at one visible element of the interruption right now
-        (and of its role, when it has one), or None. Any error reads as not there. A
-        selector of the user's that matches several elements, so that it is skipped (or,
-        for an XPath, looked at in its first matches only), is named in one WARNING per
-        page (see _several)."""
+        (and of its role, when it has one), or None. Any error reads as not there. When
+        none of its selectors gives one, the first of the user's that matches several
+        elements, so that it was skipped (or, for an XPath, looked at in its first matches
+        only), is named in one WARNING per page (see _several), unless warn is False: not
+        while mendwright waits for one it handled to go away (_settle)."""
         selectors = item.selectors
         if item.probe:
             try:
@@ -1306,6 +1362,7 @@ class Healer:
                     selectors = [s for s in selectors if classify(s) != XPATH]
             except Exception:
                 pass
+        several = None
         for selector in selectors:
             try:
                 count = driver.count(selector)
@@ -1318,18 +1375,23 @@ class Healer:
                         return target
                 except Exception:
                     continue
-            if count > len(targets) and item.preset is None:
-                self._several('interruption', item.key, selector, count, len(targets), driver)
+            if count > len(targets) and several is None:
+                several = (selector, count, len(targets))
+        if several is not None and warn and item.preset is None:
+            self._several('interruption', item.key, *several, driver)
         return None
 
     def _several(self, what, name, selector, count, looked, driver, url=None):
         """The WARNING for an interruption (what='interruption') or a step's landmark
         ('landmark') that mendwright skipped because its selector matches count elements
         and it looked at only the first ``looked`` of them (see flow.several_message),
-        once per name and page. It names selectors that match one visible element on this
-        page, built from the first visible match (see interruptions.precise_selectors) and
-        checked on the page: a few round trips, once. url is the page's address, when the
-        caller has read it."""
+        once per name and page. When exactly one of its matches is visible, it names
+        selectors that match one visible element on this page, built from that match (see
+        interruptions.precise_selectors) and checked on the page: a few round trips, once.
+        When more than one is, or the driver cannot say how many (see
+        drivers.base.driver_visible_match), it names none, since one built from the first
+        could be the wrong element. url is the page's address, when the caller has read
+        it."""
         if url is None:
             try:
                 url = driver.url() or ''
@@ -1340,9 +1402,17 @@ class Healer:
             return
         self._several_seen.add(seen)
         summary = driver_visible_match(driver, selector)
+        if not callable(getattr(driver, 'visible_match', None)):
+            visible = None                  # the driver cannot tell
+        elif summary is None:
+            visible = 0
+        else:
+            visible = summary.get('visible')
+            if not isinstance(visible, int) or isinstance(visible, bool) or visible < 1:
+                visible = None              # a driver that does not count them
         playwright = _steps._playwright(self._driver)
         found, css = [], False
-        for candidate in precise_selectors(summary, playwright) if summary else ():
+        for candidate in precise_selectors(summary, playwright) if visible == 1 else ():
             if css and classify(candidate) == CSS:
                 continue    # one CSS form is enough; the others say the same
             try:
@@ -1353,10 +1423,9 @@ class Healer:
                 continue
             if len(found) == 2:
                 break
-        told = callable(getattr(driver, 'visible_match', None))
         self.coordinator._emit(logging.WARNING, several_message(
-            what, name, selector, count, looked, found,
-            visible=summary is not None if told else None, playwright=playwright))
+            what, name, selector, count, looked, found, visible=visible,
+            playwright=playwright))
 
     def _role_fits(self, item, target, driver):
         if not item.roles:
@@ -1400,14 +1469,19 @@ class Healer:
     def _run_function(self, item, target, before, driver, overlay):
         """Call interruption item's run= function with heal.page (heal.driver on Selenium),
         or, on the async healer, have _runner await it on the event loop. While it runs
-        (_IN_RUN), its own actions handle no interruption and dismiss no popup, so it never
-        calls itself again, and Playwright's overlay handlers stay out of them as they stay
-        out of mendwright's own clicks (the caller holds _PageOverlays.handling()). It is
-        not part of a step run_steps() runs, whose page its keys are not saved for. What it
-        raises gets one WARNING and a flow.interrupt event with outcome 'failed', and is
-        raised as it is, marked (_raised_by_run): the step it was handled for does not take
-        an AttentionRequired from it for a miss of its own."""
-        running, step = _IN_RUN.set(self), _RUNNING_STEP.set(None)
+        (_IN_RUN, _runs), its own actions do not handle item again and dismiss no popup, so
+        it never calls itself, and Playwright's overlay handlers stay out of them as they
+        stay out of mendwright's own clicks (the caller holds _PageOverlays.handling()). The
+        other registered interruptions are still handled before its actions. A step in
+        another context waits for it (see _await_runs). It is not part of a step
+        run_steps() runs, whose page its keys are not saved for. What it raises gets one
+        WARNING and a flow.interrupt event with outcome 'failed', and is raised as it is,
+        marked (_raised_by_run): the step it was handled for does not take an
+        AttentionRequired from it for a miss of its own. On the async healer, a step that
+        is cancelled cancels it (see aio._in_thread)."""
+        record = _Run(self, item.key)
+        running, step = _IN_RUN.set(_IN_RUN.get() + (record,)), _RUNNING_STEP.set(None)
+        self._runs.append(record)
         try:
             if self._runner is not None:
                 self._runner(item, driver)
@@ -1415,8 +1489,10 @@ class Healer:
                 item.run(self._step_page())
         except Exception as exc:
             function = function_name(item.run)
-            self.coordinator._emit(logging.WARNING, run_failed_message(
-                item.key, before, function, exc, overlay))
+            cancelled = isinstance(exc, concurrent.futures.CancelledError)
+            self.coordinator._emit(logging.WARNING, (
+                run_cancelled_message(item.key, before, function) if cancelled
+                else run_failed_message(item.key, before, function, exc, overlay)))
             journal_event(self.coordinator.journal, 'flow.interrupt', item.key, before=before,
                           action=item.action, selector=target, function=function,
                           outcome='failed', error=type(exc).__name__)
@@ -1426,6 +1502,7 @@ class Healer:
                 pass        # an exception class with __slots__: it is raised unmarked
             raise
         finally:
+            self._runs.remove(record)
             _RUNNING_STEP.reset(step)
             _IN_RUN.reset(running)
 
@@ -1437,7 +1514,7 @@ class Healer:
         if limit <= 0:
             return True
         deadline = time.monotonic() + limit
-        while self._interruption_target(item, driver) is not None:
+        while self._interruption_target(item, driver, warn=False) is not None:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(max(poll_ms, 20) / 1000.0)
@@ -1564,10 +1641,11 @@ class Healer:
 
     def _overlay_wanted(self, key):
         """Whether the overlay handler for key should look at the page now. Not while a
-        healer of the page handles interruptions itself (its own action on the banner runs
-        Playwright's check too), and not for an interruption that was still on the page
-        after MAX_INTERRUPTIONS_PER_STEP actions in a row, until mendwright sees it gone or
-        the page navigates (see _stuck_count)."""
+        healer of the page handles interruptions itself or looks up a key (its own action
+        on the banner and the lookup's scroll run Playwright's check too: the step handles
+        what the page shows before its action), and not for an interruption that was still
+        on the page after MAX_INTERRUPTIONS_PER_STEP actions in a row, until mendwright
+        sees it gone or the page navigates (see _stuck_count)."""
         return (not self._overlays.busy and key in self._interruptions
                 and self._stuck_count(key) < MAX_INTERRUPTIONS_PER_STEP)
 
@@ -1613,7 +1691,10 @@ class Healer:
             return
         now = self._stuck_count(key)
         if stuck < MAX_INTERRUPTIONS_PER_STEP <= now:
-            self.coordinator._emit(logging.WARNING, stuck_message(key, now))
+            item = self._interruptions.get(key)
+            run = getattr(item, 'run', None)
+            self.coordinator._emit(logging.WARNING, stuck_message(
+                key, now, function_name(run) if run is not None else None))
 
     # --- popups nobody registered: open(dismiss=True) ---------------------------------
 
@@ -1645,15 +1726,15 @@ class Healer:
         fades out slowly may be the popup over the element), nor a role="alertdialog",
         which asks for an answer (asks_answer), nor, with open(cookies="accept"), a popup
         that looks like a consent banner or has a button that says accept, agree or allow
-        (is_consent, asks_consent), nor by the actions of a run= function of interrupt(),
-        which may fill in the very popup (_in_run). Each popup counts
+        (is_consent, asks_consent), nor while a run= function of interrupt() runs, in this
+        context or another (_runs): it may be filling in the very popup. Each popup counts
         once against the budget, whatever was tried on it, and InterruptionLoop is raised
         when the budget is used up and one is still in the way (one that comes back each
         time, say). A popup that could not be dismissed is named in one WARNING and not
         looked at again in this step (budget.gave_up). driver is the driver to use (the
         async healer passes its SyncBridge, from a worker thread)."""
         __tracebackhide__ = True
-        if not self._dismiss_on or native is None or budget.gave_up or self._in_run():
+        if not self._dismiss_on or native is None or budget.gave_up or self._runs:
             return False
         driver = driver or self._driver
         dismissed = again = False
@@ -2276,7 +2357,9 @@ class ActionProxy:
             except _USAGE_ERRORS:
                 raise
             except Exception as exc:
-                _reraise(budget)    # a run= function failed in the overlay handler meanwhile
+                # A run= function the overlay handler ran meanwhile: wait for it, and raise
+                # what it raised.
+                healer._await_runs(budget, self._poll_ms)
                 intercepted, used = is_interception_error(exc), budget.used
                 if not (intercepted and healer._unblock(self._key, self._native, budget,
                                                         self._timeout_ms, self._poll_ms)):
@@ -2289,10 +2372,10 @@ class ActionProxy:
                 except _USAGE_ERRORS:
                     raise
                 except Exception as again:
-                    _reraise(budget)
+                    healer._await_runs(budget, self._poll_ms)
                     self._failed(again)
                     raise
-            _reraise(budget)
+            healer._await_runs(budget, self._poll_ms)
         if expect is not None:
             try:
                 ok = bool(expect())

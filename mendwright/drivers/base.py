@@ -124,9 +124,10 @@ def driver_fingerprint(driver, selector, frame_chain=()):
 
 def driver_visible_match(driver, selector, frame_chain=()):
     """driver.visible_match(selector, frame_chain) when the driver has it, else None:
-    describe()'s result for the first visible element of those the selector matches, which
-    the WARNING for a selector that matches several builds its advice from. Any error, or
-    a result that is not one, gives None."""
+    describe()'s result for the first visible element of those the selector matches, plus
+    'visible', how many of them are visible (counted up to 2), or None when none is. The
+    WARNING for a selector that matches several builds its advice from it when exactly one
+    is visible. Any error, or a result that is not a dict, gives None."""
     method = getattr(driver, 'visible_match', None)
     if not callable(method):
         return None
@@ -365,6 +366,11 @@ _VALUE_ATTR = re.compile(r"""\svalue=("[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
 # describe(): run against every match of a locator; null unless exactly one matched.
 DESCRIBE_JS = ('els => els.length === 1 ? '
                '{tag: els[0].tagName.toLowerCase(), html: els[0].outerHTML} : null')
+
+# visible_match(): run against the visible matches of a locator; the first of them as
+# DESCRIBE_JS gives it, and how many there are, counted up to 2. null when none is.
+VISIBLE_MATCH_JS = ('els => els.length ? {tag: els[0].tagName.toLowerCase(), '
+                    'html: els[0].outerHTML, visible: Math.min(els.length, 2)} : null')
 
 # inventory(): one pass over the document's interactive elements. Form fields and
 # editable regions report no text, so typed values never leave the page.
@@ -672,6 +678,15 @@ def summary_from_js(data):
     if not isinstance(data, dict) or not isinstance(data.get('html'), str):
         return None
     return element_summary(data.get('tag'), data['html'])
+
+
+def visible_match_from_js(data):
+    """visible_match()'s result for VISIBLE_MATCH_JS's: summary_from_js() plus 'visible',
+    or None when no match was visible."""
+    summary = summary_from_js(data)
+    if summary is not None:
+        summary['visible'] = data.get('visible')
+    return summary
 
 
 def inventory_rows(raw, limit=200):

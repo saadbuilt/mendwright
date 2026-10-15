@@ -304,13 +304,15 @@ def shows(driver, step, url, several=None):
     has one), and one of its landmarks has a visible match (when it has any). Any error but
     InvalidSelector reads as not there; InvalidSelector is raised, naming the step.
 
-    several, when given, is called as several(step name, landmark, count, looked) for a
-    landmark that matches count elements of which only the first ``looked`` were looked
-    at, none visible (Healer._several warns once per page)."""
+    several, when given, is called as several(step name, landmark, count, looked) when the
+    step does not show, for its first landmark that matches count elements of which only
+    the first ``looked`` were looked at, none visible (Healer._several warns once per
+    page). A landmark after it that shows the step leaves it unnamed."""
     if step.url is not None and not url_matches(step.url, url):
         return False
     if not step.when:
         return True
+    ambiguous = None
     for selector in step.when:
         try:
             count = driver.count(selector)
@@ -318,12 +320,17 @@ def shows(driver, step, url, several=None):
             for target in targets:
                 if driver.is_visible(target):
                     return True
-            if several is not None and count > len(targets):
-                several(step.name, selector, count, len(targets))
+            if count > len(targets) and ambiguous is None:
+                ambiguous = (selector, count, len(targets))
         except InvalidSelector as exc:
             raise exc.for_key(step.name) from None
         except Exception:
             continue
+    if several is not None and ambiguous is not None:
+        try:
+            several(step.name, *ambiguous)
+        except Exception:
+            pass
     return False
 
 
@@ -339,6 +346,7 @@ async def ashows(driver, step, url, several=None):
         return False
     if not step.when:
         return True
+    ambiguous = None
     for selector in step.when:
         try:
             count = await _awaited(driver.count(selector))
@@ -346,12 +354,17 @@ async def ashows(driver, step, url, several=None):
             for target in targets:
                 if await _awaited(driver.is_visible(target)):
                     return True
-            if several is not None and count > len(targets):
-                await several(step.name, selector, count, len(targets))
+            if count > len(targets) and ambiguous is None:
+                ambiguous = (selector, count, len(targets))
         except InvalidSelector as exc:
             raise exc.for_key(step.name) from None
         except Exception:
             continue
+    if several is not None and ambiguous is not None:
+        try:
+            await several(step.name, *ambiguous)
+        except Exception:
+            pass
     return False
 
 

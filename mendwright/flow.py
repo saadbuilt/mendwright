@@ -173,6 +173,15 @@ def run_failed_message(key, before, function, error, overlay=False):
             'what ' + function + '() raises.')
 
 
+def run_cancelled_message(key, before, function):
+    """The WARNING for the run= function of interruption key, named function, that was
+    cancelled on mendwright.aio.open()'s healer because the step it ran for was."""
+    return (function + '(), the run= function of interruption ' + repr(key) + ', was '
+            'cancelled while mendwright handled it before ' + repr(before) + ', because that '
+            'step was cancelled. ' + repr(key) + ' may still be on the page, partly filled '
+            'in.')
+
+
 def run_plain_message(key, function, result):
     """The TypeError text for a plain run= function on the async healer that returned no
     awaitable."""
@@ -183,16 +192,18 @@ def run_plain_message(key, function, result):
             'return the awaitable.')
 
 
-def several_message(what, name, selector, count, looked, found, *, visible=True,
+def several_message(what, name, selector, count, looked, found, *, visible=1,
                     playwright=False):
     """The WARNING for an interruption (what='interruption') or a step's landmark
     ('landmark') that mendwright skipped because its selector matches count elements:
     looked is how many of them it looked at (0: a CSS or Playwright selector that matches
     several is not acted on; 1: Selenium asks about the first match of a CSS landmark;
     more: the first ones), none visible. found are selectors that match one visible
-    element on this page (see interruptions.precise_selectors), visible says whether any
-    match was visible (None: the driver cannot tell), and playwright whether the generic
-    advice may name Playwright's own selectors."""
+    element on this page (see interruptions.precise_selectors), visible is how many of the
+    matches are visible (0, 1, or 2 for two or more; None: the driver cannot tell), and
+    playwright whether the generic advice may name Playwright's own selectors. With two or
+    more visible, the caller passes no found: a selector built from one of them could
+    name the wrong one."""
     if what == 'interruption':
         text = ('interruption ' + repr(name) + ' was skipped: its selector ' + repr(selector)
                 + ' matches ' + str(count) + ' elements, and ')
@@ -213,7 +224,7 @@ def several_message(what, name, selector, count, looked, found, *, visible=True,
             text += ('mendwright looks at the first ' + str(looked) + ' of them only, and none '
                      'of those is visible.')
         use = 'Use a landmark that matches one element'
-    if found:
+    if found and visible == 1:
         return (text + ' ' + use + ', such as ' + ' or '.join(repr(s) for s in found)
                 + (', which matches' if len(found) == 1 else ', which each match')
                 + ' one visible element on this page.')
@@ -221,8 +232,12 @@ def several_message(what, name, selector, count, looked, found, *, visible=True,
               + ('its role and name, as in role=button[name="Accept all"], its whole text, as '
                  'in text="Accept all", ' if playwright else '')
               + "or an XPath of its tag and text, as in //button[normalize-space()='Accept all'].")
-    return (text + (' None of them is visible now.' if visible is False else '') + ' ' + use
-            + ': ' + advice)
+    if visible is not None and visible >= 2:
+        text += (' More than one of them is visible, so mendwright cannot tell which one is '
+                 'meant.')
+    elif visible is not None and visible <= 0:
+        text += ' None of them is visible now.'
+    return text + ' ' + use + ': ' + advice
 
 
 def unhandled_message(key, before, error):
@@ -232,22 +247,31 @@ def unhandled_message(key, before, error):
             'passed to heal.interrupt(' + repr(key) + ', ...).')
 
 
-def loop_message(before, key, count):
+def loop_message(before, key, count, function=None):
+    """The InterruptionLoop text. function names the run= function of heal.interrupt()
+    that handled key, if any."""
     return ('mendwright: ' + str(count) + ' interruptions were handled for ' + repr(before)
             + ' and ' + repr(key) + ' is still on the page, so mendwright stopped instead of '
-            'handling it again. Check that the action registered with heal.interrupt('
-            + repr(key) + ', ...) really closes it, for example with action="press", '
-            'args=("Escape",) or a selector for its close button.')
+            'handling it again. ' + _check_closes(key, function))
 
 
-def stuck_message(key, count):
+def stuck_message(key, count, function=None):
     """The WARNING for an interruption that stayed on the page after its action, when
     Playwright's overlay handler stops handling it (see Healer._overlay_wanted)."""
     return (repr(key) + ' was still on the page after mendwright handled it ' + str(count)
             + ' times in a row, so Playwright\'s overlay handler leaves it alone until '
-            'mendwright sees it gone or the page navigates. Check that the action registered '
-            'with heal.interrupt(' + repr(key) + ', ...) really closes it, for example with '
-            'action="press", args=("Escape",) or a selector for its close button.')
+            'mendwright sees it gone or the page navigates. ' + _check_closes(key, function))
+
+
+def _check_closes(key, function):
+    """What loop_message() and stuck_message() tell the user to check: the action of
+    interruption key, or its run= function."""
+    if function:
+        return ('Check that ' + function + '(), the run= function registered with '
+                'heal.interrupt(' + repr(key) + ', ...), really closes it.')
+    return ('Check that the action registered with heal.interrupt(' + repr(key) + ', ...) '
+            'really closes it, for example with action="press", args=("Escape",) or a '
+            'selector for its close button.')
 
 
 def _listed(items):

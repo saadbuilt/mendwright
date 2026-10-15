@@ -34,7 +34,7 @@ from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROL
                    frame_selector, inventory_rows, is_async_api)
 
 # How many matches SeleniumDriver.visible_match() asks is_displayed() of, one round trip
-# each, for the first that is.
+# each, for the first two that are.
 VISIBLE_MATCH_LOOK = 20
 
 # What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
@@ -614,20 +614,27 @@ class SeleniumDriver:
 
     def visible_match(self, selector, frame_chain=()):
         """describe()'s result for the first displayed element of the first
-        VISIBLE_MATCH_LOOK the selector matches, or None when none of them is displayed.
-        Runs inside the frame chain with the implicit wait at 0. A malformed selector
-        raises InvalidSelector; any other error gives None."""
+        VISIBLE_MATCH_LOOK the selector matches, plus 'visible': how many of those are
+        displayed, counted up to 2. None when none of them is displayed. Runs inside the
+        frame chain with the implicit wait at 0. A malformed selector raises
+        InvalidSelector; any other error gives None."""
         def op():
+            shown = []
             for el in self._find_all(selector)[:VISIBLE_MATCH_LOOK]:
-                if not el.is_displayed():
-                    continue
-                data = self._driver.execute_script(
-                    'return {tag: arguments[0].tagName.toLowerCase(), html: arguments[0].outerHTML};',
-                    el)
-                if not isinstance(data, dict) or not isinstance(data.get('html'), str):
-                    return None
-                return element_summary(data.get('tag'), data['html'])
-            return None
+                if el.is_displayed():
+                    shown.append(el)
+                    if len(shown) == 2:
+                        break
+            if not shown:
+                return None
+            data = self._driver.execute_script(
+                'return {tag: arguments[0].tagName.toLowerCase(), html: arguments[0].outerHTML};',
+                shown[0])
+            if not isinstance(data, dict) or not isinstance(data.get('html'), str):
+                return None
+            summary = element_summary(data.get('tag'), data['html'])
+            summary['visible'] = len(shown)
+            return summary
 
         return self._read(selector, frame_chain, op, None)
 

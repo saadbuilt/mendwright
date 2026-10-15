@@ -17,8 +17,8 @@ from ..flow import click_may_have_run
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
                    _member,
-                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
-                   summary_from_js)
+                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api,
+                   looks_like_locator, summary_from_js, visible_match_from_js)
 from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
                               playwright_selector)
 
@@ -118,11 +118,11 @@ class AsyncPlaywrightDriver:
         return await self._probe(selector, frame_chain, op, None)
 
     async def visible_match(self, selector, frame_chain=()):
-        """describe()'s result for the first visible element the selector matches, or None
-        (see PlaywrightSyncDriver.visible_match)."""
+        """describe()'s result for the first visible element the selector matches, plus
+        'visible', or None (see PlaywrightSyncDriver.visible_match)."""
         async def op(loc):
-            return summary_from_js(
-                await loc.locator('visible=true').first.evaluate_all(DESCRIBE_JS))
+            return visible_match_from_js(
+                await loc.locator('visible=true').evaluate_all(VISIBLE_MATCH_JS))
         return await self._probe(selector, frame_chain, op, None)
 
     async def fingerprint(self, selector, frame_chain=()):

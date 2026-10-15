@@ -23,6 +23,7 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired, InvalidSelector
+from mendwright.drivers.base import VISIBLE_MATCH_JS
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
 from mendwright.drivers.selenium import SeleniumDriver
 from mendwright.fingerprint import FINGERPRINT_JS
@@ -64,16 +65,12 @@ class ShopLocator:
 
     def _els(self):
         els = self._page.query(self._selector)
-        return [e for e in els if not _hidden(e)][:1] if self._visible else els
+        return [e for e in els if not _hidden(e)] if self._visible else els
 
     def locator(self, selector):
-        # Only Playwright's filter to the first visible match, as visible_match() uses it.
+        # Only Playwright's filter to the visible matches, as visible_match() uses it.
         assert selector == 'visible=true'
         return ShopLocator(self._page, self._selector, True)
-
-    @property
-    def first(self):
-        return self
 
     def count(self):
         return len(self._els())
@@ -89,6 +86,9 @@ class ShopLocator:
 
     def evaluate_all(self, js):
         els = self._els()
+        if js == VISIBLE_MATCH_JS and els:      # the first visible match, and how many
+            return {'tag': els[0].tag, 'visible': min(len(els), 2),
+                    'html': lxml.html.tostring(els[0], encoding='unicode', with_tail=False)}
         if js == FINGERPRINT_JS or len(els) != 1:
             return None
         return {'tag': els[0].tag, 'html': lxml.html.tostring(els[0], encoding='unicode',
@@ -231,10 +231,6 @@ class AsyncShopLocator:
 
     def locator(self, selector):
         return AsyncShopLocator(self._loc.locator(selector))
-
-    @property
-    def first(self):
-        return AsyncShopLocator(self._loc.first)
 
     def __getattr__(self, verb):
         action = getattr(self._loc, verb)
@@ -976,6 +972,18 @@ def test_a_landmark_that_matches_more_than_mendwright_looks_at_is_named_once_per
     assert side.run() == ['payment']
 
 
+def test_a_landmark_that_matches_several_is_not_named_when_a_later_one_shows_the_step(
+        side, tmp_path, caplog, stub_provider):
+    page = ("<h1 style='display: none'>Payment</h1>" * 5 + "<h1 id='pay-title'>Payment</h1>"
+            "<button id='next' type='button' data-go='done'>Next</button>")
+    side.open(Shop({'a': page, 'done': DONE}, 'a'), provider=stub_provider(None),
+              store_path=_store(tmp_path))
+    side.heal.step('payment', [PAYMENT, '#pay-title'], side.does(('click', '#next')), last=True)
+
+    assert side.run() == ['payment']
+    assert not [line for line in _lines(caplog) if 'did not show' in line]
+
+
 # --- the page guard inside a step -----------------------------------------------------------------
 
 def _first_run(tmp_path, stub_provider):
@@ -987,6 +995,30 @@ def _first_run(tmp_path, stub_provider):
     _checkout(first)
     first.run()
     return load_store(None, _store(tmp_path))
+
+
+def test_the_keys_of_a_run_function_are_not_saved_with_the_step_it_ran_during(
+        side, tmp_path, stub_provider):
+    relogin = ("<div id='relogin' data-overlay='' role='dialog'><p>Your session expired.</p>"
+               "<input id='user' name='user'><button id='signin' type='button' "
+               "data-closes='relogin'>Sign in</button></div>")
+    side.open(Shop({'a': relogin + payment_page('done'), 'done': DONE}, 'a'),
+              provider=stub_provider(None), store_path=_store(tmp_path))
+    calls = []
+    side.heal.interrupt('relogin', '#relogin',
+                        run=side.does(('fill', '#user', 'ada'), ('click', '#signin'),
+                                      record=calls))
+    side.heal.step('payment', PAYMENT, side.does(('fill', '#card-number', '4242'),
+                                                 ('click', '#next')), last=True)
+
+    assert side.run() == ['payment']
+
+    # The popup was handled before the step's first action, and its keys are the
+    # function's, which may run during any step.
+    assert len(calls) == 1
+    store = load_store(None, _store(tmp_path))
+    assert store.meta('#card-number')['steps'] == ['payment']
+    assert not store.meta('#user').get('steps') and not store.meta('#signin').get('steps')
 
 
 def test_a_key_saves_the_steps_it_was_found_during(tmp_path, stub_provider):

@@ -1589,6 +1589,35 @@ def test_a_registered_interruption_is_handled_first(side, tmp_path):
         ('cookies', 'go'), (DISMISS_KEY, 'email')]
 
 
+def test_no_popup_is_dismissed_while_a_run_function_fills_in_its_own(side, tmp_path, caplog):
+    relogin = ('<div id="relogin" role="dialog" aria-label="Session expired"><p>Your session '
+               'expired.</p><input id="user"><button id="signin" type="button" '
+               'data-closes="relogin">Sign in</button></div>')
+    page = _page(FORM, relogin, modal(SIGN_UP + NO_THANKS))
+    page.doc.by_id('nl').find('div').set('data-over', 'signin')    # over its Sign in button
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    calls = []
+    if side.kind == 'sync':
+        def run(p):
+            calls.append(p)
+            p.click('#signin')
+    else:
+        async def run(p):
+            calls.append(p)
+            await p.click('#signin')
+    heal.interrupt('relogin', '#relogin', run=run)
+
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('email', '#email', 'fill', 'x')
+
+    # The function's click failed with the browser's own error: nothing was looked at or
+    # dismissed for it, and the step stopped there.
+    assert len(calls) == 1 and 'probe' not in page.calls
+    assert page.doc.by_id('nl') is not None and page.doc.by_id('relogin') is not None
+    assert page.doc.clicked == [] and heal.handled_interruptions == []
+    assert [e['outcome'] for e in _events(tmp_path)] == ['failed']
+
+
 def test_a_popup_that_opens_during_the_click_is_dismissed_and_the_click_tried_again(
         side, tmp_path):
     page = _page(FORM)

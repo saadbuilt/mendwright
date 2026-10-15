@@ -24,10 +24,11 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired, InvalidSelector
+from mendwright.drivers.base import VISIBLE_MATCH_JS
 from mendwright.drivers.playwright_sync import playwright_selector
 from mendwright.flow import (UNROUTED_STEP, flow_change_message, handled_message,
                              is_interception_error, loop_message, page_path,
-                             rejected_selector_message,
+                             rejected_selector_message, run_cancelled_message,
                              run_failed_message, run_plain_message, several_message,
                              skip_message, stuck_message, unhandled_message)
 from mendwright.interruptions import (COOKIE_BANNER_KEY, InterruptionEvent, cookie_preset,
@@ -209,10 +210,6 @@ class AsyncFlowLocator:
 
     def locator(self, selector):
         return AsyncFlowLocator(self._loc.locator(selector))
-
-    @property
-    def first(self):
-        return AsyncFlowLocator(self._loc.first)
 
     def __getattr__(self, verb):
         action = getattr(self._loc, verb)
@@ -778,7 +775,10 @@ def test_a_popup_its_run_function_leaves_on_the_page_stops_the_step_after_three(
     with pytest.raises(AttentionRequired) as caught:
         side.step('email', '#email', 'fill', 'x', role='input')
 
-    assert str(caught.value) == loop_message('email', 'relogin', 3)
+    assert str(caught.value) == loop_message('email', 'relogin', 3, 'relogin')
+    assert str(caught.value).endswith(
+        "Check that relogin(), the run= function registered with heal.interrupt('relogin', "
+        "...), really closes it.")
     assert len(calls) == 3 and page.clicks('css=#signin') == 3
     assert len(heal.handled_interruptions) == 3
     assert provider.bundles == []
@@ -901,11 +901,110 @@ def test_async_run_takes_a_plain_function_only_when_it_returns_an_awaitable(tmp_
         side.close()
 
 
+def test_a_run_function_s_own_actions_handle_another_interruption(side, tmp_path,
+                                                                   stub_provider):
+    page = _page(RELOGIN + SIGNUP)
+    heal = side.open(page, provider=stub_provider('//never'), store_path=_store(tmp_path))
+    calls = []
+    heal.interrupt('cookies', '#cookie-accept')
+    heal.interrupt('relogin', '#relogin', run=_relogin(side, calls))
+    page.during_action.append(_show(BANNER))    # it opens over the form as it is filled in
+
+    side.step('email', '#email', 'fill', 'ada@example.com')
+
+    # The banner was handled before the function's own field was tried again, and the
+    # function was not called again: on the async side, without the step's lock.
+    assert len(calls) == 1
+    assert page.by_id('banner') is None and page.by_id('relogin') is None
+    assert page.by_id('email').get('value') == 'ada@example.com'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookies', '#user'), ('relogin', 'email')]
+
+
+def test_a_step_waits_for_a_run_function_that_runs_in_another_context(tmp_path):
+    # Playwright's overlay handler runs a run= function in a greenlet of its own, and when
+    # the function takes longer than the action's timeout, the step goes on while it still
+    # runs. Another thread stands in for that greenlet here.
+    page = _page(RELOGIN + SIGNUP)
+    heal = mendwright.open(page, provider=None, store_path=_store(tmp_path))
+    heal.coordinator.log = None
+    started, release, calls = threading.Event(), threading.Event(), []
+
+    def relogin(p):
+        calls.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        p.fill('#user', 'ada')
+        p.click('#signin')
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    other = threading.Thread(
+        target=lambda: heal.locator('next', '#next', timeout_ms=0, poll_ms=0).click())
+    other.start()
+    assert started.wait(10)
+    threading.Timer(0.2, release.set).start()
+
+    heal.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('ada@example.com')
+    other.join(10)
+
+    assert len(calls) == 1          # not called a second time while it ran
+    assert page.by_id('relogin') is None
+    assert page.by_id('email').get('value') == 'ada@example.com'
+    done = [s for s, _, _ in page.actions]
+    assert done[:2] == ['css=#user', 'css=#signin']     # the fill came after the sign-in
+    assert sorted(done[2:]) == ['css=#email', 'css=#next']
+
+
+def test_async_cancelling_a_step_cancels_its_run_function(tmp_path, caplog):
+    sync = _page(RELOGIN + SIGNUP)
+    seen = []
+
+    async def relogin(page):
+        seen.append('started')
+        try:
+            await asyncio.sleep(10)         # waits for a sign-in that never comes
+        except asyncio.CancelledError:
+            seen.append('cancelled')
+            raise
+        seen.append('finished')
+
+    async def main():
+        heal = await mendwright.aio.open(AsyncFlowPage(sync), provider=None,
+                                         store_path=_store(tmp_path))
+        heal.coordinator.log = None
+        heal.interrupt('relogin', '#relogin', run=relogin)
+
+        async def step():
+            email = await heal.locator('email', '#email', timeout_ms=0, poll_ms=0)
+            await email.fill('x')
+
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(step(), 0.5)
+        elapsed = time.monotonic() - started
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return elapsed
+
+    assert asyncio.run(main()) < 5
+    assert seen == ['started', 'cancelled']
+    assert sync.by_id('email').get('value') is None
+    assert [(e['outcome'], e['error']) for e in _events(tmp_path)] == [
+        ('failed', 'CancelledError')]
+    assert run_cancelled_message('relogin', 'email', 'relogin') == (
+        "relogin(), the run= function of interruption 'relogin', was cancelled while "
+        "mendwright handled it before 'email', because that step was cancelled. 'relogin' "
+        "may still be on the page, partly filled in.")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'run= function' in line] == [
+        'mendwright: ' + run_cancelled_message('relogin', 'email', 'relogin')]
+
+
 # --- a selector that matches several elements ---------------------------------------------------
 
 class ManyLocator(FlowLocator):
-    """A FlowLocator that also narrows to the first visible match, as Playwright's
-    locator('visible=true').first does (see PlaywrightSyncDriver.visible_match)."""
+    """A FlowLocator that also narrows to the visible matches, as Playwright's
+    locator('visible=true') does, and runs VISIBLE_MATCH_JS on them (see
+    PlaywrightSyncDriver.visible_match)."""
 
     def __init__(self, page, selector, visible=False):
         super().__init__(page, selector)
@@ -913,15 +1012,20 @@ class ManyLocator(FlowLocator):
 
     def _els(self):
         els = self._page.query(self._selector)
-        return [e for e in els if not _hidden(e)][:1] if self._visible else els
+        return [e for e in els if not _hidden(e)] if self._visible else els
 
     def locator(self, selector):
         assert selector == 'visible=true'
         return ManyLocator(self._page, self._selector, True)
 
-    @property
-    def first(self):
-        return self
+    def evaluate_all(self, js):
+        els = self._els()
+        if js != VISIBLE_MATCH_JS:
+            return super().evaluate_all(js)
+        if not els:
+            return None
+        return {'tag': els[0].tag, 'visible': min(len(els), 2),
+                'html': lxml.html.tostring(els[0], encoding='unicode', with_tail=False)}
 
 
 class ManyPage(FlowPage):
@@ -1007,16 +1111,65 @@ def test_the_cookies_preset_is_never_named_for_matching_several(side, tmp_path, 
     assert not [line for line in _lines(caplog) if 'was skipped' in line]
 
 
+def test_a_selector_that_matches_several_is_not_named_when_a_later_one_matched(side, tmp_path,
+                                                                               caplog):
+    page = ManyPage('<html><body>' + ACCEPT_TWICE + SIGNUP + '</body></html>')
+    heal = side.open(page, provider=None, store_path=_store(tmp_path))
+    heal.interrupt('cookies', ['.accept', '#accept-desktop'])
+
+    side.step('email', '#email', 'fill', 'x')
+
+    assert page.clicks('css=#accept-desktop') == 1 and page.by_id('banner') is None
+    assert page.by_id('email').get('value') == 'x'
+    assert not [line for line in _lines(caplog) if 'was skipped' in line]
+
+
+def test_a_selector_with_several_visible_matches_suggests_none_of_them(side, tmp_path, caplog):
+    # A chat widget's Close button comes first on the page, and the banner's own button
+    # matches too: a selector built from the first would close the chat instead.
+    chat = '<button id="chat-close" class="close" type="button">Close</button>'
+    banner = ('<div id="banner" data-overlay="" role="dialog"><p>We use cookies.</p>'
+              '<button id="accept-all" class="close" type="button">Accept all</button></div>')
+    page = ManyPage('<html><body>' + chat + banner + SIGNUP + '</body></html>')
+    heal = side.open(page, provider=None, store_path=_store(tmp_path))
+    heal.interrupt('cookies', '.close')
+
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('email', '#email', 'fill', 'x')
+
+    message = several_message('interruption', 'cookies', '.close', 2, 0, [], visible=2,
+                              playwright=True)
+    assert message == (
+        "interruption 'cookies' was skipped: its selector '.close' matches 2 elements, and "
+        "mendwright acts on a CSS or Playwright selector only when it matches one (an XPath is "
+        "narrowed to its first visible match). More than one of them is visible, so mendwright "
+        "cannot tell which one is meant. Use a selector that matches only the element to act "
+        "on: its id or test id, its role and name, as in role=button[name=\"Accept all\"], its "
+        "whole text, as in text=\"Accept all\", or an XPath of its tag and text, as in "
+        "//button[normalize-space()='Accept all'].")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'was skipped' in line] == [
+        'mendwright: ' + message]
+    assert page.clicks('css=#chat-close') == 0
+    # Even when found is given, two visible matches name none of them.
+    assert '#chat-close' not in several_message('interruption', 'cookies', '.close', 2, 0,
+                                                ['#chat-close'], visible=2)
+
+
 def test_the_guide_quotes_the_messages_the_code_writes():
     guide = (Path(__file__).resolve().parents[1] / 'docs' / 'guide.md').read_text(encoding='utf-8')
     landmark = several_message('landmark', 'payment', '.step-title', 2, 1, [])
+    two = several_message('interruption', 'cookies', '.close', 2, 0, [], visible=2)
+    loop = loop_message('search', 'session_expired', 3, 'relogin')
     for message in (
             handled_message('session_expired', 'search', 'relogin'),
             run_failed_message('session_expired', 'search', 'relogin',
                                LookupError('no password for ada in the vault')),
+            run_cancelled_message('session_expired', 'search', 'relogin'),
             several_message('interruption', 'cookies', '.cookie-accept', 2, 0,
                             ['#accept-all', 'role=button[name="Accept all"]'], playwright=True),
-            landmark[:landmark.index(' Use a landmark')]):
+            two[two.index('More than one'):two.index(' Use a selector')],
+            landmark[:landmark.index(' Use a landmark')],
+            loop[loop.index('Check that'):]):
         assert message in guide, message
 
 
@@ -1741,7 +1894,8 @@ def test_a_run_function_that_raises_in_the_overlay_handler_is_not_run_before_eve
     assert len(calls) == 2
 
 
-def test_a_step_raises_what_its_run_function_raised_in_the_overlay_handler(tmp_path, caplog):
+def test_the_overlay_handler_stays_out_of_a_lookup_and_the_step_calls_the_function(tmp_path,
+                                                                                  caplog):
     page = _handler_page(RELOGIN + SIGNUP)
     heal = _open_sync(page, tmp_path)
     calls, error = [], ValueError('wrong password')
@@ -1754,16 +1908,15 @@ def test_a_step_raises_what_its_run_function_raised_in_the_overlay_handler(tmp_p
     with pytest.raises(ValueError) as caught:
         heal.page.fill('#email', 'x')       # Playwright's check runs as the lookup scrolls
 
-    # Raised by the step, once Playwright gave it back, with no second call.
+    # The handler stayed out of the lookup, as it stays out of mendwright's own clicks, so
+    # the function did not run inside it, where it would get only the scroll's timeout. The
+    # step called it before the action, once, and raised what it raised.
+    assert page.handler_runs >= 1
     assert caught.value is error and len(calls) == 1
     assert page.by_id('email').get('value') is None
     assert [(e['before'], e['outcome']) for e in _events(tmp_path)] == [('#email', 'failed')]
     assert [line for line in _lines(caplog, logging.WARNING) if 'run= function' in line] == [
-        "mendwright: relogin(), the run= function of interruption 'relogin', raised an error "
-        "while mendwright handled it before '#email' (ValueError: wrong password). "
-        "Playwright's overlay handler cannot raise it into the action, so '#email' raises it "
-        "once Playwright hands back to it, and the handler leaves 'relogin' alone until "
-        "mendwright sees it gone or the page navigates."]
+        'mendwright: ' + run_failed_message('relogin', '#email', 'relogin', error)]
 
 
 def test_async_an_action_raises_what_its_run_function_raised_in_the_overlay_handler(tmp_path):
@@ -1814,6 +1967,79 @@ def test_async_the_overlay_handler_awaits_a_run_function_whose_calls_skip_the_lo
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [
         ('relogin', UNROUTED_STEP), ('relogin', 'next')]
     assert sync.clicks('css=#next') == 1
+
+
+# A session popup over nothing: an action goes through while it shows.
+ASIDE_RELOGIN = RELOGIN.replace(' data-overlay=""', '')
+
+
+def test_an_action_that_went_through_raises_what_its_run_function_raised_meanwhile(tmp_path):
+    page = _handler_page(SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    calls, error = [], ValueError('wrong password')
+
+    def relogin(p):
+        calls.append(p)
+        raise error
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    nxt = heal.locator('next', '#next', timeout_ms=0, poll_ms=0)
+    page.during_action.append(_show(ASIDE_RELOGIN))    # it opens as the click starts
+
+    with pytest.raises(ValueError) as caught:
+        nxt.click()
+
+    assert caught.value is error and len(calls) == 1
+    assert page.clicks('css=#next') == 1               # the click went through all the same
+    assert [(e['before'], e['outcome']) for e in _events(tmp_path)] == [('next', 'failed')]
+
+
+def test_async_an_action_that_went_through_raises_what_its_run_function_raised(tmp_path):
+    sync = _page(SIGNUP)
+    calls, error = [], ValueError('wrong password')
+
+    async def relogin(p):
+        calls.append(p)
+        raise error
+
+    async def main():
+        page = AsyncHandlerPage(sync)
+        heal = await _open_async(page, tmp_path)
+        heal.interrupt('relogin', '#relogin', run=relogin)
+        await _registered(heal)
+        nxt = await heal.locator('next', '#next', poll_ms=0)
+        page.on_action.append(_show_async(sync, ASIDE_RELOGIN))
+        with pytest.raises(ValueError) as caught:
+            await nxt.click()
+        return caught.value
+
+    assert asyncio.run(main()) is error
+    assert len(calls) == 1 and sync.clicks('css=#next') == 1
+
+
+def test_a_popup_its_run_function_leaves_is_left_alone_after_three_times_in_a_row(tmp_path,
+                                                                                  caplog):
+    sticky = RELOGIN.replace('data-overlay=""', 'data-overlay="" data-sticky=""')
+    page = _handler_page(sticky + SIGNUP)
+    heal = _open_sync(page, tmp_path, timeout_ms=20)
+    calls = []
+
+    def relogin(p):
+        calls.append(p)
+        p.click('#signin')          # the password is wrong: the popup stays
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    for _ in range(4):              # Playwright retries an action that stays covered
+        with pytest.raises(RuntimeError, match='intercepts pointer events'):
+            page.locator('#next').click()
+
+    assert len(calls) == 3
+    message = stuck_message('relogin', 3, 'relogin')
+    assert message.endswith(
+        "Check that relogin(), the run= function registered with heal.interrupt('relogin', "
+        "...), really closes it.")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'times in a row' in line] == [
+        'mendwright: ' + message]
 
 
 # --- optional steps ----------------------------------------------------------------------------

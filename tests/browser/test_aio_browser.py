@@ -940,6 +940,38 @@ def test_flow_what_an_async_run_function_raises_stops_the_step(engine, tmp_path)
     assert saved == 'no' and len(calls) == 1 and heal.handled_interruptions == []
 
 
+def test_flow_cancelling_a_step_cancels_its_async_run_function(engine, tmp_path):
+    seen = []
+
+    async def relogin(page):
+        seen.append('started')
+        try:
+            await asyncio.Event().wait()        # an approval on the phone that never comes
+        except asyncio.CancelledError:
+            seen.append('cancelled')
+            raise
+
+    async def main():
+        page = await engine.page(_relogin_page())
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('relogin', '#relogin', run=relogin)
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(heal.locator('save', '#save').click(), 2)
+            elapsed = loop.time() - started
+            await asyncio.sleep(0.1)
+            return elapsed, await page.evaluate("document.getElementById('saved').textContent")
+        finally:
+            await _close(page)
+
+    elapsed, saved = engine.run(main())
+    assert elapsed < 5 and saved == 'no'
+    assert seen == ['started', 'cancelled']
+
+
 def test_flow_a_session_popup_an_async_run_function_cannot_close_stops_after_three(engine,
                                                                                   tmp_path):
     calls = []

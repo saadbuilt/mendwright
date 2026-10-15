@@ -680,8 +680,8 @@ def test_what_a_run_function_raises_stops_the_step(tab, store_file, stub_provide
     with pytest.raises(LookupError, match='no password for ada'):
         _step(heal, 'email', '#email').fill('ada@example.com')
 
-    # Once, also where Playwright's overlay handler called it as the lookup scrolled to the
-    # field: the step raises what it raised there.
+    # Once: Playwright's overlay handler stays out of the lookup's scroll, and the step
+    # called it before its action and raises what it raised.
     assert len(calls) == 1 and tab.value('#email') == ''
     assert heal.handled_interruptions == []
     assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
@@ -725,6 +725,56 @@ def test_the_overlay_handler_runs_the_function_before_an_action_mendwright_does_
     assert len(calls) == 1 and tab.text('#session') == 'ada' and tab.text('#saved') == 'yes'
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [
         ('relogin', '<page action>')]
+
+
+def _slow_sign_in(calls, error=None):
+    """A run= function that takes longer than the page's default timeout, 1 second here,
+    before it signs in, or raises error."""
+    def relogin(page):
+        calls.append(page)
+        page.fill('#user', 'ada')
+        page.fill('#password', 'not-a-real-password')
+        page.wait_for_timeout(2000)
+        if error is not None:
+            raise error
+        page.click('#signin')
+    return relogin
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_run_function_slower_than_the_action_timeout_runs_once(tab, store_file,
+                                                                 stub_provider):
+    tab.load(_relogin_page())
+    tab.page.set_default_timeout(1000)
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin', run=_slow_sign_in(calls))
+
+    _step(heal, 'email', '#email').fill('ada@example.com')
+
+    # Playwright's overlay handler stayed out of the lookup's scroll, so the function did
+    # not run inside it with the scroll's 1 second, after which Playwright would give up on
+    # the scroll (and, on newer releases, make the function's own actions wait for the
+    # handler, itself). The step called it before its action, with no time limit.
+    assert len(calls) == 1 and tab.text('#session') == 'ada'
+    assert tab.value('#email') == 'ada@example.com'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'email')]
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, stub_provider):
+    tab.load(_relogin_page())
+    tab.page.set_default_timeout(1000)
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin',
+                   run=_slow_sign_in(calls, LookupError('no password for ada in the test vault')))
+
+    with pytest.raises(LookupError, match='no password for ada'):
+        _step(heal, 'email', '#email').fill('ada@example.com')
+
+    assert len(calls) == 1 and tab.value('#email') == ''
+    assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
 
 
 # --- a selector that matches several elements ----------------------------------------------------
@@ -772,3 +822,41 @@ def test_an_interruption_that_matches_two_buttons_is_named_once_with_one_that_ma
     heal.interrupt('cookies', '#accept-all')
     _step(heal, 'create', '#create').click()
     assert tab.text('#consent') == 'accepted' and tab.text('#done') == 'created'
+
+
+_TWO_CLOSES = page("""
+<p>Consent: <span id="consent">none</span>. Done: <span id="done"></span></p>
+<button id="create" type="button" onclick="document.getElementById('done').textContent = 'created'">Create account</button>
+<button id="chat-close" class="close" type="button" style="position: fixed; top: 0; right: 0; z-index: 20">Close</button>
+<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <p>We use cookies to keep you signed in.</p>
+    <button id="accept-all" class="close" type="button" onclick="consent('accepted')">Accept all</button>
+  </div>
+</div>
+<script>
+function consent(choice) {
+  document.getElementById('consent').textContent = choice;
+  document.getElementById('cookie-banner').remove();
+}
+</script>""", 'two closes')
+
+
+def test_an_interruption_whose_selector_matches_two_visible_buttons_names_neither(
+        tab, store_file, stub_provider, caplog):
+    tab.load(_TWO_CLOSES)
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.interrupt('cookies', '.close')        # the chat widget's Close button matches too
+
+    with pytest.raises(Exception, match='intercept'):
+        _step(heal, 'create', '#create').click(timeout=1000)
+
+    skipped = [line for line in _mendwright_lines(caplog) if 'was skipped' in line]
+    assert len(skipped) == 1
+    assert ("matches 2 elements, and mendwright acts on a CSS or Playwright selector only when it "
+            "matches one (an XPath is narrowed to its first visible match). More than one of them "
+            "is visible, so mendwright cannot tell which one is meant. Use a selector that "
+            "matches only the element to act on: its id or test id, ") in skipped[0]
+    assert '#chat-close' not in skipped[0] and '#accept-all' not in skipped[0]
+    assert tab.text('#consent') == 'none'
