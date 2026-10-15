@@ -29,19 +29,20 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .client import _stored_status, add_heal
 from .coordinator import HealCoordinator, resolve_with_heal
-from .dismiss import (NOT_LOOKED_AT, control_text, expect_control, expect_of, is_consent,
-                      parse_probe, pick, popup_of)
+from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, expect_control,
+                      expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
-from .drivers.base import (driver_popup_click, driver_popup_controls, driver_popup_probe,
-                           driver_popup_release, driver_popup_root, driver_press_escape)
+from .drivers.base import (UNSURE, driver_popup_click, driver_popup_controls,
+                           driver_popup_probe, driver_popup_release, driver_popup_root,
+                           driver_press_escape)
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
                    journal_event, loop_message, nothing_matched_message, page_path,
                    rejected_selector_message, skip_message, stuck_message, unhandled_message)
-from .flow import (DISMISS_KEY, consent_message, dismiss_loop_message, dismissed_message,
-                   lost_message, step_text, undismissed_message)
+from .flow import (DISMISS_KEY, alert_message, consent_message, dismiss_loop_message,
+                   dismissed_message, lost_message, step_text, undismissed_message)
 from .gate import live_reason
 from .interruptions import (COOKIE_BANNER_KEY, COOKIE_CHOICES, Budget, InterruptionEvent,
                             cookie_choice_error, cookie_preset, make_interruption, nth_targets)
@@ -1481,8 +1482,10 @@ class Healer:
         What counts as covered and as a popup is mendwright.dismiss's to say: it never
         acts on a popup that holds the element or on a small fixed bar. Nothing is
         dismissed while an interruption the step handled is still on the page (one that
-        fades out slowly may be the popup over the element), nor, with
-        open(cookies="accept"), a popup that looks like a consent banner. Each popup counts
+        fades out slowly may be the popup over the element), nor a role="alertdialog",
+        which asks for an answer (asks_answer), nor, with open(cookies="accept"), a popup
+        that looks like a consent banner or has a button that says accept, agree or allow
+        (is_consent, asks_consent). Each popup counts
         once against the budget, whatever was tried on it, and InterruptionLoop is raised
         when the budget is used up and one is still in the way (one that comes back each
         time, say). A popup that could not be dismissed is named in one WARNING and not
@@ -1500,6 +1503,10 @@ class Healer:
             while True:
                 popup = popup_of(probe)
                 if popup is None:
+                    return dismissed
+                if asks_answer(popup):
+                    self.coordinator._emit(logging.WARNING, alert_message(before, popup.summary))
+                    budget.gave_up = popup.summary
                     return dismissed
                 if self._accepts_consent() and is_consent(popup):
                     self.coordinator._emit(logging.WARNING,
@@ -1520,6 +1527,13 @@ class Healer:
                     budget.gave_up = popup.summary
                     return dismissed
                 again = False
+                if self._accepts_consent() and asks_consent(
+                        driver_popup_controls(driver, native, root)):
+                    driver_popup_release(driver, root)
+                    self.coordinator._emit(logging.WARNING,
+                                           consent_message(before, popup.summary))
+                    budget.gave_up = popup.summary
+                    return dismissed
                 budget.used += 1
                 done, probe = self._dismiss_popup(before, native, popup, root, timeout_ms,
                                                   poll_ms, driver)
@@ -1553,34 +1567,45 @@ class Healer:
 
     def _dismiss_popup(self, before, native, popup, root, timeout_ms, poll_ms, driver):
         """Press Escape (when the keyboard focus lets the key reach the popup, see
-        driver_press_escape), then click the popup's close button, then a decline button,
-        and look again after each (_popup_settle). root is the handle on the popup that
-        popup_root() gave, which this lets go of. (True, the last probe) once one worked;
-        else (False, None) after the WARNING that names the popup. When the element can no
-        longer be looked at after a step (it left the page or was hidden, say), mendwright
-        cannot tell what that step did: it stops there and does not count the popup as
-        dismissed."""
+        driver_press_escape, and never with open(cookies="accept"): every key listener of
+        the page gets the key, a consent banner's too), then click the popup's close
+        button, then a decline button, and look again after each (_popup_settle). root is
+        the handle on the popup that popup_root() gave, which this lets go of. (True, the
+        last probe) once one worked; else (False, None) after the WARNING that names the
+        popup. When the element can no longer be looked at after a step (it left the page or
+        was hidden, say), or a click raised an error after it may have reached the page,
+        mendwright cannot tell what that step did: it stops there and does not count the
+        popup as dismissed."""
         limit = min(max(timeout_ms or 0, 0), SETTLE_MS)
         done = []      # (how, label) of each step that did not close it, in order
         escaped = False
+        consent = self._accepts_consent()
         try:
-            if driver_press_escape(driver, native, root):
+            if not consent and driver_press_escape(driver, native, root):
                 escaped = True
                 outcome = self._after_step(before, native, popup, root, limit, poll_ms,
                                            driver, ('escape', None), done)
                 if outcome is not None:
                     return outcome
             for kind in ('close', 'decline'):
-                chosen = pick(driver_popup_controls(driver, native, root)).get(kind)
+                chosen = pick(driver_popup_controls(driver, native, root), popup).get(kind)
                 if chosen is None:
                     continue
                 index, control = chosen
-                if not driver_popup_click(driver, native, root,
-                                          expect_control(index, control),
-                                          max(limit, 1000)):   # 0 is no limit to Playwright
+                clicked = driver_popup_click(driver, native, root,
+                                             expect_control(index, control),
+                                             max(limit, 1000))   # 0 is no limit to Playwright
+                if not clicked:
                     continue     # it changed since it was listed, and was not clicked
+                step = (kind, control_text(control))
+                if clicked == UNSURE:
+                    done.append(step)
+                    self.coordinator._emit(logging.WARNING, lost_message(
+                        before, popup.summary, 'clicked ' + step_text(*step), raised=True))
+                    self._journal_dismiss(before, popup, 'lost', None, None, done)
+                    return False, None
                 outcome = self._after_step(before, native, popup, root, limit, poll_ms,
-                                           driver, (kind, control_text(control)), done)
+                                           driver, step, done)
                 if outcome is not None:
                     return outcome
             if done:
@@ -1593,7 +1618,8 @@ class Healer:
         finally:
             driver_popup_release(driver, root)
         self.coordinator._emit(logging.WARNING, undismissed_message(
-            before, popup.summary, [step_text(*step) for step in done], escaped))
+            before, popup.summary, [step_text(*step) for step in done], escaped,
+            consent=consent))
         if done:
             self._journal_dismiss(before, popup, 'failed', None, None, done)
         return False, None

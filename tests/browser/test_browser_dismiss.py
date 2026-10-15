@@ -17,7 +17,7 @@ import pytest
 import mendwright
 from mendwright.dismiss import expect_control, expect_of, parse_probe, popup_of
 from mendwright.flow import DISMISS_KEY, InterruptionLoop, is_interception_error
-from mw_engines import FAST_MS, POLL_MS, page
+from mw_engines import FAST_MS, POLL_MS, SITE, page
 
 pytestmark = pytest.mark.browser
 
@@ -476,6 +476,29 @@ def test_selenium_inside_a_frame_the_script_switched_into(tab, store_file, stub_
     # What it shows is Thanks, an answer, not a decline: the No is hidden.
     (['<button type="button" onclick="log(\'shown\')"><span style="display: none">No </span>'
       'Thanks</button>'], 'shown'),
+    # A form with method="dialog" sends nothing, but its submit event fires.
+    (['<form method="dialog" onsubmit="log(\'submitted\')"><button>No thanks</button></form>'],
+     'submitted'),
+    # A survey answer, a link by its role, a toggle, a javascript: link whose code runs.
+    (['<button type="button" role="radio" aria-checked="false" onclick="log(\'radio\')">Not '
+      'interested</button>'], 'radio'),
+    (['<button type="button" role="link" onclick="log(\'role-link\')">Maybe later</button>'],
+     'role-link'),
+    (['<button type="button" aria-pressed="false" onclick="log(\'toggle\')">Not now</button>'],
+     'toggle'),
+    (['<a href="javascript:log(\'js-link\')">Not now</a>'], 'js-link'),
+    # A word it must not say, behind a soft hyphen, or in the text aria-labelledby names.
+    (['<button type="button" onclick="log(\'soft\')">No thanks<span style="display: none"> '
+      'and sub\u00adscribe me</span></button>'], 'soft'),
+    (['<h3 id="cta">Subscribe to weekly deals</h3><button type="button" aria-labelledby="cta" '
+      'onclick="log(\'labelledby\')">No thanks</button>'], 'labelledby'),
+    # Outside a popup about cookies, reject and decline answer a request.
+    (['<button type="button" onclick="log(\'reject\')">Reject</button>'], 'reject'),
+    (['<button type="button" onclick="log(\'decline\')">Decline</button>'], 'decline'),
+    # A bare ×, and an icon named for something else it closes.
+    (['<button type="button" onclick="log(\'bare\')">&times;</button>'], 'bare'),
+    (['<button type="button" aria-label="Close position EURUSD" onclick="log(\'position\')">'
+      '&times;</button>'], 'position'),
 ])
 def test_buttons_mendwright_never_clicks(tab, store_file, stub_provider, buttons, clicked):
     tab.load(_page(_modal(buttons)))
@@ -490,15 +513,89 @@ def test_buttons_mendwright_never_clicks(tab, store_file, stub_provider, buttons
         assert tab.checked('#mkt') is False
 
 
-def test_a_no_thanks_in_a_form_with_method_dialog_is_clicked(tab, store_file, stub_provider):
-    # Such a form only closes its dialog: nothing is sent.
-    form = ('<form method="dialog"><button onclick="log(\'no-thanks\'); ' + _CLOSE
-            + '">No thanks</button></form>')
-    tab.load(_page(_modal([form])))
+def _drawer(*items, close=''):
+    """A cart drawer over the right of the window, where #go is, with one × per item."""
+    rows = ''.join('<li id="item' + str(n) + '">' + name + ' <button type="button" '
+                   'onclick="log(\'removed-' + str(n) + '\'); this.closest(\'li\').remove()">'
+                   '&times;</button></li>' for n, name in enumerate(items, 1))
+    return ('<div id="cart" role="dialog" aria-label="Your cart" style="position: fixed; inset: 0; '
+            'z-index: 10; background: #fff">'
+            '<h3>Added to your cart</h3><ul>' + rows + '</ul>' + close + '</div>')
+
+
+def test_a_cart_drawer_is_closed_by_its_named_close_button_never_an_items_x(tab, store_file,
+                                                                            stub_provider):
+    close = ('<button type="button" aria-label="Close cart" onclick="log(\'close\'); '
+             'document.getElementById(\'cart\').remove()">&times;</button>')
+    tab.load(_page(_drawer('Linen shirt', 'Canvas tote', close=close)))
     heal = _open(tab, stub_provider(None), store_file, dismiss=True)
     _step(heal, 'go', '#go').click()
-    assert _log(tab) == ['key:Escape', 'no-thanks'] and _gone(tab)
+    assert _log(tab) == ['key:Escape', 'close'] and _gone(tab, 'cart')
     assert tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('close', 'Close cart')]
+
+
+def test_a_cart_drawer_with_only_items_x_buttons_is_left_alone(tab, store_file, stub_provider):
+    tab.load(_page(_drawer('Linen shirt', 'Canvas tote')))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab, 'item1') and not _gone(tab, 'item2')
+
+
+def test_a_share_sheets_x_is_not_a_close_button(tab, store_file, stub_provider):
+    share = ('<button type="button" onclick="log(\'facebook\')">Facebook</button>',
+             '<button type="button" onclick="log(\'x\')">X</button>')
+    tab.load(_page(_modal(share)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape']
+
+
+_ACCOUNT = """<div id="cf" role="alertdialog" aria-modal="true" aria-labelledby="cf-t"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 340px; margin: 120px auto; padding: 16px">
+  <h2 id="cf-t">Close your account? This cannot be undone.</h2>
+  <button type="button" onclick="log('cancel'); document.getElementById('cf').remove()">Cancel</button>
+  <button type="button" onclick="log('closed'); document.getElementById('cf').remove()">Close</button>
+  </div></div>
+<script>document.addEventListener('keydown', (e) => { if (e.key === 'Escape') {
+  const d = document.getElementById('cf'); if (d) { log('answered'); d.remove(); } } });</script>"""
+
+
+def test_an_alert_dialog_gets_no_escape_and_no_click(tab, store_file, stub_provider, caplog):
+    # It asks for an answer: Close closes the account, and even Escape answers it.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_ACCOUNT))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == [] and not _gone(tab, 'cf')
+    [warning] = [w for w in _warnings(caplog) if 'popup' in w]
+    assert warning.startswith("mendwright: left a popup in the way of 'go' alone: <div "
+                              'id="cf" role="alertdialog">')
+    assert 'role="alertdialog"), which asks for an answer' in warning
+
+
+@pytest.mark.parametrize('title, buttons', [
+    ('Close your account? This cannot be undone.', [('Close', 'closed')]),
+    ("Skip next week's delivery?", [('Skip', 'skipped')]),
+    ('Delete this project?', [('Cancel', 'cancel'), ('Close', 'closed')]),
+    ('Your box ships on Monday.', [('Keep it', 'kept'), ('Skip', 'skipped')]),
+    ('Expense report #4471 from Bob is waiting for your approval.',
+     [('Approve', 'approved'), ('Reject', 'rejected')]),
+    ('Alice invited you to join the Finance workspace.', [('Decline', 'declined')]),
+], ids=['close-verb', 'skip-verb', 'cancel', 'keep', 'reject-expense', 'decline-invite'])
+def test_a_dialog_that_asks_a_question_gets_escape_only(tab, store_file, stub_provider, title,
+                                                        buttons):
+    inner = ''.join('<button type="button" onclick="log(\'' + tag + '\'); ' + _CLOSE + '">'
+                    + label + '</button>' for label, tag in buttons)
+    dialog = ('<div id="nl" role="dialog" aria-modal="true" style="position: fixed; inset: 0; '
+              'z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff; '
+              'width: 340px; margin: 120px auto; padding: 16px"><h2>' + title + '</h2>' + inner
+              + '</div></div>')
+    tab.load(_page(dialog))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
 
 
 def test_skip_the_line_for_money_is_never_clicked_and_no_thanks_is(tab, store_file,
@@ -540,6 +637,56 @@ def test_with_cookies_accept_an_unknown_consent_banner_is_left_alone(tab, store_
     assert _log(tab) == [] and not _gone(tab, 'pop')
     assert [w for w in _warnings(caplog) if "left a popup in the way of 'go' alone: <div "
             'id="pop" role="dialog"> ("We use cookies to improve your experience.' in w]
+
+
+_CONSENT_JS = """<script>window.consent = 'unset';
+function setConsent(v) { window.consent = v; log('consent:' + v);
+  for (const id of ['pn', 'pn-bg']) { const e = document.getElementById(id); if (e) e.remove(); } }
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('pn')) setConsent('rejected-by-escape'); });
+</script>"""
+# A consent banner the preset does not know, which takes Escape as a refusal.
+_UNKNOWN_BANNER = """<div id="pn" class="privacy-notice" role="dialog" aria-label="Your choices"
+  style="position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 16px; z-index: 11">
+  We use cookies to measure and improve our site.
+  <button type="button" onclick="setConsent('accepted')">Accept all</button>
+  <button type="button" onclick="setConsent('rejected')">Reject all</button></div>"""
+
+
+@pytest.mark.parametrize('over', ['backdrop', 'newsletter'])
+def test_with_cookies_accept_escape_never_refuses_a_banner_elsewhere(tab, store_file,
+                                                                    stub_provider, over):
+    # Escape reaches every key listener of the page: under a backdrop of its own, or with a
+    # newsletter modal over the element, the banner would take it as a refusal.
+    if over == 'backdrop':
+        top = ('<div id="pn-bg" class="overlay" style="position: fixed; inset: 0; z-index: 10; '
+               'background: rgba(0, 0, 0, 0.4)"></div>')
+    else:
+        top = _modal([SUBSCRIBE], escape=True)
+    tab.load(_page(top, _UNKNOWN_BANNER, _CONSENT_JS))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
+    _left_alone(tab, heal)
+    assert tab.js('window.consent') == 'unset' and 'key:Escape' not in _log(tab)
+
+
+def test_with_cookies_accept_a_banner_with_an_accept_button_is_left_alone(tab, store_file,
+                                                                         stub_provider, caplog):
+    # Like an IAB TCF first layer, but its name and its text say nothing about cookies:
+    # its accept button says it asks for consent.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    banner = """<div id="msg" class="message-container" style="position: fixed;
+  inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff;
+  width: 420px; margin: 100px auto; padding: 16px"><p>Choose how we and our vendors use information
+  on your device.</p>
+  <button type="button" onclick="log('accept')">Alle akzeptieren</button>
+  <button type="button" aria-label="Close" onclick="log('refused');
+    this.closest('.message-container').remove()">&times;</button></div></div>"""
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
+    _left_alone(tab, heal)
+    assert _log(tab) == []
+    assert [w for w in _warnings(caplog) if w.startswith(
+        "mendwright: left a popup in the way of 'go' alone: <div id=\"msg\"")]
 
 
 # --- what is a popup and what is not ----------------------------------------------------------
@@ -712,6 +859,52 @@ def test_the_scripts_refuse_a_control_or_root_that_is_not_the_one_chosen(tab, st
     assert driver.popup_click(native, root, expect_control(no_thanks, controls[no_thanks]),
                               1000) is True
     assert _log(tab) == ['no-thanks'] and _gone(tab)
+
+
+def test_the_click_script_refuses_an_input_whose_value_changed(tab, store_file, stub_provider):
+    # An input's label is its value, which its text does not show.
+    later = ('<input type="button" id="nl-no" value="No thanks" onclick="log(\'no-thanks\'); '
+             + _CLOSE + '">')
+    tab.load(_page(_modal([later])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    driver = heal._driver
+    native = driver.handle('#go')
+    popup = popup_of(parse_probe(driver.popup_probe(native)))
+    root = driver.popup_root(native, expect_of(popup))
+    controls = driver.popup_controls(native, root)
+    [index] = [i for i, c in enumerate(controls) if c['value'] == 'No thanks']
+    tab.js("document.getElementById('nl-no').value = 'Yes, subscribe me' || true")
+    tab.js("document.getElementById('nl-no').setAttribute('value', 'Yes, subscribe me') || true")
+    assert driver.popup_click(native, root, expect_control(index, controls[index]),
+                              1000) is False
+    assert _log(tab) == [] and not _gone(tab)
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_close_click_whose_navigation_does_not_commit_is_reported(tab, store_file,
+                                                                   stub_provider, caplog):
+    # The click goes through and starts a navigation that never commits, so Playwright's
+    # click raises: mendwright names the click and clicks nothing more.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    away = ('<button type="button" aria-label="Close" onclick="location.href = \'/stuck\'">'
+            '&times;</button>')
+    tab.load_at(_page(_modal([away, NO_THANKS])), '/popup')
+    held = []
+    tab.page.route('**/stuck', lambda route: held.append(route))     # not answered yet
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    try:
+        with pytest.raises(Exception) as caught:
+            _step(heal, 'go', '#go').click(timeout=1500)
+    finally:
+        for route in held:
+            route.abort()
+    assert not isinstance(caught.value, mendwright.AttentionRequired)   # the browser's own
+    assert [route.request.url for route in held] == [SITE + '/stuck']  # the click went through
+    assert heal.handled_interruptions == []
+    [warning] = [w for w in _warnings(caplog) if 'popup' in w]
+    assert warning.startswith("mendwright: Clicked “Close” on a popup in the way of 'go'")
+    assert 'the click raised an error after it may have reached the page' in warning
+    assert '“No thanks”' not in warning
 
 
 # --- timing ------------------------------------------------------------------------------------

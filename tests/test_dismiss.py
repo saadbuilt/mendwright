@@ -18,6 +18,8 @@ from markup the tests write:
 - data-below on the action's element: its middle is below the window until something
   scrolls it into view (the look with scroll=True, or the action).
 - data-events="none": the element takes no pointer events (pointer-events: none).
+- data-click-raises on a button: a click on it goes through, and then raises the error
+  Playwright raises for a click whose navigation did not commit in time.
 
 The keyboard focus is on the body until fill, press or focus puts it on their element;
 Escape reaches the popup only while it is on the body or in the popup (POPUP_FOCUS_JS).
@@ -42,12 +44,13 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired
-from mendwright.dismiss import (MIN_AREA, NEVER, Popup, Probe, classify, control_text,
-                                forbidden, is_consent, is_control, parse_probe, pick, popup_of,
-                                summary)
+from mendwright.dismiss import (MIN_AREA, NEVER, Popup, Probe, Setting, asks_answer,
+                                asks_consent, classify, control_text, expect_control, expect_of,
+                                forbidden, goes_nowhere, is_consent, is_control, parse_probe,
+                                pick, popup_of, setting, summary, words)
 from mendwright.drivers.base import (DESCRIBE_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
                                      POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS)
-from mendwright.flow import (DISMISS_KEY, InterruptionLoop, consent_message,
+from mendwright.flow import (DISMISS_KEY, InterruptionLoop, alert_message, consent_message,
                              dismiss_loop_message, dismissed_message, lost_message,
                              undismissed_message)
 from mendwright.interruptions import InterruptionEvent
@@ -82,25 +85,44 @@ def _rendered(el):
 
 
 def _real_link(el):
-    href = el.get('href')
-    return (el.tag == 'a' and href is not None and href.strip().lower() != '#'
-            and not href.strip().lower().startswith('javascript:'))
+    """POPUP_*_JS's real(): a link with an href that goes somewhere (goes_nowhere)."""
+    return el.tag == 'a' and el.get('href') is not None and not goes_nowhere(el.get('href'))
 
 
 def _submits(el):
-    """Whether a click on el submits or resets the form it is in (POPUP_*_JS's submits)."""
+    """Whether a click on el submits or resets the form it is in (POPUP_*_JS's submits),
+    whatever the form's method."""
     form = next((a for a in el.iterancestors() if a.tag == 'form'), None)
     if form is None or el.tag not in ('button', 'input'):
         return False
     kind = (el.get('type') or '').strip().lower()
     if el.tag == 'button' and kind not in ('button', 'reset'):
         kind = 'submit'           # missing or unknown: a submit button
-    if kind == 'reset':
-        return True
-    if kind not in ('submit', 'image'):
-        return False
-    method = el.get('formmethod') or form.get('method') or ''
-    return method.strip().lower() != 'dialog'
+    return kind in ('reset', 'submit', 'image')
+
+
+_CONTROL_TAGS = ('button', 'a', 'input')
+
+
+def _is_control(el):
+    return el.tag in _CONTROL_TAGS or (el.get('role') or '').strip().lower() == 'button'
+
+
+def _prose(root):
+    """POPUP_*_JS's prose(): root's text outside its controls, without hidden elements."""
+    parts = []
+
+    def walk(el):
+        if el.text:
+            parts.append(el.text)
+        for child in el:
+            if isinstance(child.tag, str) and not _is_control(child) and not _gone_from_view(
+                    child) and child.tag not in ('script', 'style', 'template'):
+                walk(child)
+            if child.tail:
+                parts.append(child.tail)
+    walk(root)
+    return _clean(' '.join(parts), 1500)
 
 
 def _holds(a, b):
@@ -215,7 +237,8 @@ class Doc:
                           'area': float(n.get('data-area') or 0), 'holds': inside,
                           'events': n.get('data-events') != 'none',
                           'aria': _clean(n.get('aria-label'), 200) if named else '',
-                          'text': _clean(' '.join(n.itertext()), 1500) if named else ''})
+                          'text': _clean(' '.join(n.itertext()), 1500) if named else '',
+                          'prose': _prose(n) if named else ''})
             n = n.getparent()
         return {'covered': True, 'gone': gone, 'chain': chain}
 
@@ -231,11 +254,9 @@ class Doc:
 
     def controls(self, root):
         return [el for el in root.iterdescendants()
-                if isinstance(el.tag, str) and self.shown(el)
-                and (el.tag in ('button', 'a', 'input') or el.get('role') == 'button')]
+                if isinstance(el.tag, str) and self.shown(el) and _is_control(el)]
 
-    @staticmethod
-    def facts(el):
+    def facts(self, el):
         kind = (el.get('type') or '').strip().lower()
         fields = ('.//input[not(@type="button" or @type="submit" or @type="reset" or '
                   '@type="hidden" or @type="image")] | .//select | .//textarea')
@@ -250,7 +271,12 @@ class Doc:
                 'link': any(_real_link(a) for a in el.iterancestors())
                 or any(_real_link(a) for a in el.iterdescendants('a')),
                 'label': el.tag == 'label' or any(a.tag == 'label' for a in el.iterancestors()),
-                'field': bool(el.xpath(fields)), 'submits': _submits(el)}
+                'field': bool(el.xpath(fields)), 'submits': _submits(el),
+                'labelledby': _clean(' '.join(
+                    (self.by_id(i).text_content() if self.by_id(i) is not None else '')
+                    for i in (el.get('aria-labelledby') or '').split()), 200),
+                'checked': any(el.get(a) is not None
+                               for a in ('aria-checked', 'aria-pressed', 'aria-selected'))}
 
     def reaches(self, root):
         """POPUP_FOCUS_JS: whether Escape would reach the popup whose root is root."""
@@ -267,9 +293,8 @@ class Doc:
         if expect['index'] >= len(found):
             return None
         el = found[expect['index']]
-        f = self.facts(el)
-        same = (f['tag'], f['text'], f['aria']) == (expect['tag'], expect['text'], expect['aria'])
-        return el if same else None
+        f, want = self.facts(el), expect.get('facts') or {}
+        return el if want and all(f.get(k) == v for k, v in want.items()) else None
 
     def escape(self):
         if self.spy:
@@ -355,6 +380,12 @@ class Handle:
             self._page.doc.spy('click')
         self._page.doc.calls.append('click')
         self._page.doc.click(self.el)
+        if self.el.get('data-click-raises') is not None:
+            # The click went through, and then Playwright timed out waiting for the
+            # navigation it started.
+            raise RuntimeError('ElementHandle.click: Timeout ' + str(timeout) + 'ms exceeded.\n'
+                               'Call log:\n  - performing click action\n  - click action done\n'
+                               '  - waiting for scheduled navigations to finish')
 
     def dispose(self):
         self._page.disposed += 1
@@ -702,13 +733,29 @@ def _control(text='', tag='button', **more):
     (_control('Close dialog'), 'close'),
     (_control('×', aria='Close'), 'close'),
     (_control('', aria='Close newsletter'), 'close'),
-    (_control('✕'), 'close'),
-    (_control('X'), 'close'),
-    (_control('×'), 'close'),
-    (_control('✖'), 'close'),
+    (_control('×', aria='Close this dialog'), 'close'),
+    (_control('×', aria='Close cart'), 'close'),
     (_control('✖', title='Close'), 'close'),
+    (_control('X', aria='Close'), 'close'),
+    (_control('Close the banner'), 'close'),
+    # A bare glyph is not a close button: in a cart, a list of filters or uploads it
+    # removes one row, and X is also a brand.
+    (_control('✕'), None),
+    (_control('X'), None),
+    (_control('×'), None),
+    (_control('✖'), None),
     (_control('X', aria='Twitter'), None),                         # an X that is not close
     (_control('Learn more', aria='Close'), None),                  # it shows something else
+    # An icon named for what it closes, other than the popup: close is the action there.
+    (_control('×', aria='Close position EURUSD'), None),
+    (_control('×', title='Close position'), None),
+    (_control('', title='Close ticket'), None),
+    (_control('', aria='Close account'), None),
+    (_control('', aria='Close my account'), None),
+    (_control('', aria='Close trade'), None),
+    (_control('', aria='Close the deal'), None),
+    (_control('Close my account'), None),
+    (_control('×', aria='Close', title='Remove item'), None),     # it says remove too
     (_control('No thanks'), 'decline'),
     (_control('No, thanks'), 'decline'),
     (_control('No thank you'), 'decline'),
@@ -721,9 +768,12 @@ def _control(text='', tag='button', **more):
     (_control('Skip'), 'decline'),
     (_control('Skip for now'), 'decline'),
     (_control('Dismiss'), 'decline'),
-    (_control('Reject'), 'decline'),
-    (_control('Reject all'), 'decline'),
-    (_control('Decline'), 'decline'),
+    # Outside a popup about cookies, reject and decline answer a request: an expense, an
+    # invitation, new terms (see test_what_a_popup_says_changes_what_its_buttons_mean).
+    (_control('Reject'), None),
+    (_control('Reject all'), None),
+    (_control('Decline'), None),
+    (_control('Decline offer'), None),
     (_control("I'm not interested"), 'decline'),
     (_control('Continue without accepting'), 'decline'),
     (_control('Continue without an account'), 'decline'),
@@ -740,10 +790,14 @@ def _control(text='', tag='button', **more):
     (_control('Continue without delay'), None),
     (_control('Remind me in 7 days'), None),                       # a digit
     (_control('Not now', aria='Not now, 5 € off'), None),          # a currency sign
-    (_control('', aria='Dismiss this offer'), 'decline'),
+    (_control('', aria='Dismiss'), 'decline'),
     (_control('No thanks', tag='a'), 'decline'),                  # a link that goes nowhere
     (_control('No thanks', tag='a', href='#'), 'decline'),
     (_control('No thanks', tag='a', href='javascript:void(0)'), 'decline'),
+    (_control('No thanks', tag='a', href='javascript: void 0;'), 'decline'),
+    (_control('No thanks', tag='a', href='javascript:;'), 'decline'),
+    (_control('Not now', tag='a', href="javascript:location.assign('/checkout?plan=pro')"),
+     None),                                                        # code that loads a page
     (_control('', tag='input', type='button', value='Not now'), 'decline'),
     (_control('Not now', tag='div', role='button'), 'decline'),
     # Never: a label that also says something it must not do.
@@ -781,10 +835,27 @@ def _control(text='', tag='button', **more):
     (_control('No thanks', tag='label', role='button'), None),
     (_control('No thanks', tag='div', role='button', field=True), None),    # holds a checkbox
     (_control('No thanks', submits=True), None),                   # submits its form
+    # A radio, switch, tab, link or toggle: a click on it chooses or follows something.
+    (_control('Not interested', role='radio'), None),
+    (_control('Not now', role='switch'), None),
+    (_control('Maybe later', role='link'), None),
+    (_control('Not now', role='tab'), None),
+    (_control('Not now', role='option'), None),
+    (_control('Not now', tag='div', role='menuitemradio'), None),
+    (_control('Not interested', checked=True), None),             # aria-checked/pressed/selected
     (_control('', tag='input', type='submit', value='No thanks'), 'decline'),   # no form
     # What it shows counts, not text it hides; hidden text still keeps it from a click.
     (_control('Keep me updated', all='No thanksKeep me updated'), None),
     (_control('No thanks', all='Subscribe No thanks'), None),
+    # A word it must not say, written with a soft hyphen, a non-breaking hyphen, a
+    # ligature, a zero-width space or fullwidth letters, or in what aria-labelledby names.
+    (_control('No thanks', all='No thanks and sub\u00adscribe me'), None),
+    (_control('Not now', title='Sign\u2011up for weekly deals'), None),
+    (_control('Not now', title='Con\ufb01rm details'), None),
+    (_control('Not now', aria='Ac\u200bcept terms'), None),
+    (_control('No thanks', aria='\uff33\uff55\uff42\uff53\uff43\uff52\uff49\uff42\uff45'), None),
+    (_control('No thanks', labelledby='Subscribe to weekly deals'), None),
+    (_control('No thanks', labelledby='Weekly deals'), 'decline'),
 ])
 def test_which_buttons_close_or_decline(control, kind):
     assert classify(control) == kind
@@ -818,6 +889,78 @@ def test_the_words_match_as_stems(label, word):
     assert forbidden(_control(label)) == word
 
 
+def _popup(text, prose=None, **more):
+    element = _el(role='dialog', text=text, **more)
+    if prose is not None:
+        element['prose'] = prose
+    return Popup(0, element, summary(element))
+
+
+@pytest.mark.parametrize('control, where, kind', [
+    # In a popup about cookies, reject and decline turn the cookies down.
+    (_control('Reject all'), Setting(cookies=True), 'decline'),
+    (_control('Reject'), Setting(cookies=True), 'decline'),
+    (_control('Decline'), Setting(cookies=True), 'decline'),
+    (_control('Decline offer'), Setting(cookies=True), None),
+    # The popup asks about the verb of the button, so the button is the answer.
+    (_control('Close'), Setting(prose=words('Close your account? This cannot be undone.')),
+     None),
+    (_control('Close'), Setting(prose=words('Close position: 100 AAPL at market?')), None),
+    (_control('×', aria='Close'), Setting(prose=words('Closing this banner means you agree')),
+     None),
+    (_control('Skip'), Setting(prose=words("Skip next week's delivery?")), None),
+    (_control('Dismiss'), Setting(prose=words('Dismiss this security alert for good?')), None),
+    # A popup with a Cancel or Keep button asks a question: none of its buttons counts.
+    (_control('Close'), Setting(asks=True), None),
+    (_control('No thanks'), Setting(asks=True), None),
+    (_control('Skip'), Setting(asks=True), None),
+    # Text that does not say the verb changes nothing.
+    (_control('Close'), Setting(prose=words('Find your closest store')), 'close'),
+    (_control('Skip'), Setting(prose=words('Take a quick tour?')), 'decline'),
+    (_control('No thanks'), Setting(prose=words('Skip the queue with Plus')), 'decline'),
+])
+def test_what_a_popup_says_changes_what_its_buttons_mean(control, where, kind):
+    assert classify(control, where) == kind
+
+
+def test_the_setting_is_read_from_the_popup_and_its_buttons():
+    banner = _popup('We use cookies. Reject all Accept all', 'We use cookies.')
+    where = setting(banner, [_control('Reject all'), _control('Accept all')])
+    assert where == Setting(cookies=True, prose='we use cookies', asks=False)
+    box = _popup('Your box ships Monday. Keep it Skip', 'Your box ships Monday.')
+    assert setting(box, [_control('Keep it'), _control('Skip')]).asks is True
+    assert pick([_control('Keep it'), _control('Skip')], box) == {}
+    plan = _popup('Your Premium plan', 'Your Premium plan')
+    assert pick([_control('Cancel subscription'), _control('No thanks')], plan) == {}
+    # A driver that does not give the popup's own text: its whole text, labels and all.
+    account = _popup('Close your account? Cancel Close')
+    assert 'close' in setting(account, []).prose.split()
+    assert pick([_control('Close')], _popup('Rate us Close')) == {}
+    assert pick([_control('Close')], _popup('Rate us Close', 'Rate us')) == {
+        'close': (0, _control('Close'))}
+    expense = _popup('Expense report from Ada is waiting for you. Approve Reject',
+                     'Expense report from Ada is waiting for you.')
+    assert pick([_control('Approve'), _control('Reject')], expense) == {}
+
+
+def test_a_bare_glyph_is_never_the_close_button_and_a_named_one_is():
+    # A cart drawer: one × per item removes it, the drawer's own close button is named.
+    cart = [_control('×'), _control('×'), _control('×', aria='Close cart')]
+    assert pick(cart, _popup('Linen shirt × Canvas tote × ×', 'Linen shirt Canvas tote')) == {
+        'close': (2, cart[2])}
+    share = [_control('Facebook'), _control('X'), _control('Email')]
+    assert pick(share, _popup('Share this article Facebook X Email', 'Share this article')) == {}
+
+
+def test_a_javascript_link_goes_nowhere_only_when_its_code_does_nothing():
+    for href in (None, '#', ' # ', 'javascript:', 'javascript:void(0)', 'JavaScript:void(0);',
+                 'javascript: void 0', 'javascript:;'):
+        assert goes_nowhere(href) is True, href
+    for href in ('', '/no-thanks', '#/upgrade', 'javascript:location.assign("/checkout")',
+                 'javascript:closeModal()', 'https://shop.example/'):
+        assert goes_nowhere(href) is False, href
+
+
 def test_pick_takes_the_first_close_and_decline_buttons_in_page_order():
     controls = [_control('Subscribe'), _control('No thanks'), _control('×', aria='Close'),
                 _control('Not now'), 'not a dict']
@@ -844,7 +987,7 @@ def _el(tag='div', **more):
     ([_el(), _el(role='dialog', id='nl')], 1),                       # the nearest dialog
     ([_el(modal=True)], 0),
     ([_el(tag='dialog', open=True)], 0),
-    ([_el(role='alertdialog', area=0.01)], 0),                       # any size
+    ([_el(role='alertdialog', area=0.01)], 0),                       # any size, left alone
     ([_el(pos='fixed', area=0.3)], 0),
     ([_el(pos='fixed', area=0.1), _el(pos='fixed', area=0.5)], 1),   # the outermost
     ([_el(pos='sticky', area=1.0)], 0),
@@ -865,6 +1008,17 @@ def test_which_element_is_the_popup(chain, depth):
     assert (popup.depth if popup else None) == depth
 
 
+def test_an_alert_dialog_asks_for_an_answer():
+    alert = popup_of(parse_probe({'covered': True, 'chain': [_el(role='alertdialog')]}))
+    assert alert.alert is True and asks_answer(alert) is True
+    # A dialog inside an alert dialog is the popup, and the alert dialog still asks.
+    inner = popup_of(parse_probe({'covered': True, 'chain': [
+        _el(role='dialog', id='inner'), _el(role='alertdialog', id='outer')]}))
+    assert inner.element['id'] == 'inner' and asks_answer(inner) is True
+    plain = popup_of(parse_probe({'covered': True, 'chain': [_el(role='dialog')]}))
+    assert plain.alert is False and asks_answer(plain) is False
+
+
 def test_only_a_probe_mendwright_knows_counts():
     assert parse_probe(None) is None and parse_probe([]) is None
     assert parse_probe({'tag': 'input', 'html': '<input>'}) is None   # a describe() answer
@@ -883,9 +1037,28 @@ def test_only_a_probe_mendwright_knows_counts():
     (_el(id='cookie-law-info-bar', text='Choose'), True),
     (_el(cls='consent-modal', text='Choose'), True),
     (_el(role='dialog', text='Get 10% off your first order. We respect your privacy.'), False),
+    # IAB TCF first layers and banners in other languages, whose name says nothing.
+    (_el(id='sp_message_container_1234', cls='message-container', text='We value your privacy. '
+         'We and our partners store and/or access information on a device'), True),
+    (_el(id='dsgvo-layer', text='Wir speichern Informationen'), True),
+    (_el(cls='cmp-layer', text='Choose'), True),
+    (_el(id='rgpd-banner', text='Nous utilisons des traceurs'), True),
+    (_el(text='Nous et nos partenaires utilisons des traceurs pour mesurer'), True),
+    (_el(text='Wir und unsere Partner: Datenschutzeinstellungen'), True),
+    (_el(text='We process personal data for personalised ads'), True),
 ])
 def test_what_looks_like_a_consent_banner(element, consent):
     assert is_consent(Popup(0, element, summary(element))) is consent
+
+
+@pytest.mark.parametrize('labels, consent', [
+    (['Accept'], True), (['Alle akzeptieren'], True), (['Accepter et fermer'], True),
+    (['I agree'], True), (['Allow all'], True), (['Aceptar todo'], True),
+    (['Zustimmen'], True), (['Tout accepter'], True), (['Continuer sans accepter'], True),
+    (['No thanks', 'Subscribe'], False), (['Close'], False), ([], False),
+])
+def test_a_popup_with_an_accept_button_asks_for_consent(labels, consent):
+    assert asks_consent([_control(label) for label in labels]) is consent
 
 
 def test_how_a_popup_is_named():
@@ -1046,6 +1219,103 @@ def test_a_modal_with_only_buttons_it_must_not_click_is_left_alone(side, tmp_pat
     assert heal.handled_interruptions == []
     assert [(e['key'], e['before'], e['outcome'], e['tried']) for e in _events(tmp_path)] == [
         (DISMISS_KEY, 'go', 'failed', [{'how': 'escape'}])]
+
+
+ALERT = ('<div id="cf" role="alertdialog" aria-modal="true" data-pos="fixed" data-area="1" '
+         'data-escape=""><div data-over="go email"></div>'
+         '<h2>Close your account? This cannot be undone.</h2>'
+         '<button id="cancel" type="button" data-closes="cf">Cancel</button>'
+         '<button id="close" type="button" data-closes="cf">Close</button>'
+         '<button id="x" type="button" aria-label="Close" data-closes="cf">×</button></div>')
+
+
+def test_an_alert_dialog_is_left_alone_without_escape_or_a_click(side, tmp_path, caplog):
+    # It asks for an answer: its Close button closes the account, and even Escape answers.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _page(FORM, ALERT)
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert page.doc.clicked == [] and 'escape' not in page.calls
+    assert page.doc.by_id('cf') is not None
+    popup = ('<div id="cf" role="alertdialog"> ("Close your account? This cannot be undone. '
+             'Cancel Close ×")')
+    assert _warnings(caplog) == ['mendwright: ' + alert_message('go', popup)]
+    assert heal.handled_interruptions == [] and _events(tmp_path) == []
+
+
+@pytest.mark.parametrize('title, buttons', [
+    # A question whose verb is the button's: the button is the answer.
+    ('Close your account? This cannot be undone.',
+     '<button id="close" type="button" data-closes="cf">Close</button>'),
+    ("Skip next week's delivery?", '<button id="skip" type="button" data-closes="cf">Skip</button>'),
+    # A Cancel or Keep button: the popup asks, and no other button of it is clicked.
+    ('Delete this project? This cannot be undone.',
+     '<button id="cancel" type="button" data-closes="cf">Cancel</button>'
+     '<button id="x" type="button" aria-label="Close" data-closes="cf">×</button>'),
+    ('Your box ships Monday.',
+     '<button id="keep" type="button" data-closes="cf">Keep it</button>'
+     '<button id="skip" type="button" data-closes="cf">Skip</button>'),
+    # Reject and decline outside a popup about cookies answer a request.
+    ('Expense report from Ada is waiting for your approval.',
+     '<button id="approve" type="button">Approve</button>'
+     '<button id="reject" type="button" data-closes="cf">Reject</button>'),
+    ('Ada invited you to join the Acme workspace.',
+     '<button id="decline" type="button" data-closes="cf">Decline</button>'),
+])
+def test_a_dialog_that_asks_is_answered_by_none_of_its_buttons(side, tmp_path, caplog, title,
+                                                               buttons):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    dialog = ('<div id="cf" role="dialog" aria-modal="true" data-pos="fixed" data-area="1">'
+              '<div data-over="go email"></div><h2>' + title + '</h2>' + buttons + '</div>')
+    page = _page(FORM, dialog)
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert page.doc.clicked == [] and page.calls.count('escape') == 1    # Escape only
+    assert page.doc.by_id('cf') is not None and heal.handled_interruptions == []
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go'")
+
+
+def test_a_click_that_raises_after_it_reached_the_page_is_recorded_and_stops(side, tmp_path,
+                                                                           caplog):
+    # The close button starts a navigation that does not commit before the click's
+    # timeout: the click went through, so it is named, and nothing more is clicked.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    away = '<button id="nl-x" type="button" aria-label="Close" data-click-raises="">×</button>'
+    page = _page(FORM, modal(SIGN_UP + away + NO_THANKS))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True)
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert page.doc.clicked == ['nl-x']                         # never No thanks after it
+    text = 'Get 10% off your first order. Sign up × No thanks'
+    assert _warnings(caplog) == ['mendwright: ' + lost_message('go', _nl(text), 'clicked “Close”',
+                                                              raised=True)]
+    assert heal.handled_interruptions == []
+    assert [(e['outcome'], e['tried']) for e in _events(tmp_path)] == [
+        ('lost', [{'how': 'escape'}, {'how': 'close', 'label': 'Close'}])]
+
+
+def test_a_control_that_changed_in_any_fact_since_it_was_listed_is_not_clicked(tmp_path):
+    # An input's label is its value, which innerText does not show.
+    page = _page(FORM, modal('<input id="nl-no" type="button" value="No thanks" '
+                             'data-closes="nl">'))
+    heal = mendwright.open(page, provider=None, store_path=_store(tmp_path), dismiss=True)
+    driver = heal._driver
+    native = driver.handle('#go')
+    popup = popup_of(parse_probe(driver.popup_probe(native)))
+    root = driver.popup_root(native, expect_of(popup))
+    controls = driver.popup_controls(native, root)
+    [index] = [i for i, c in enumerate(controls) if c['value'] == 'No thanks']
+    page.doc.by_id('nl-no').set('value', 'Yes, subscribe me')
+    assert driver.popup_click(native, root, expect_control(index, controls[index]),
+                              1000) is False
+    assert page.doc.clicked == []
+    page.doc.by_id('nl-no').set('value', 'No thanks')
+    assert driver.popup_click(native, root, expect_control(index, controls[index]),
+                              1000) is True
+    assert page.doc.clicked == ['nl-no']
 
 
 def test_a_link_with_a_real_href_is_never_clicked(side, tmp_path, caplog):
@@ -1292,6 +1562,10 @@ class ElementClickInterceptedException(Exception):
     """Named like Selenium's, which mendwright recognises by name."""
 
 
+class TimeoutException(Exception):
+    """Selenium's, for a click whose page load did not finish in time."""
+
+
 class StaleElementReferenceException(Exception):
     """Named like Selenium's."""
 
@@ -1331,6 +1605,8 @@ class SelElement:
                 'Other element would receive the click: <div id="' + (cover.get('id') or '')
                 + '">')
         doc.click(self.el)
+        if self.el.get('data-click-raises') is not None:
+            raise TimeoutException('timeout: Timed out receiving message from renderer')
 
     def send_keys(self, *value):
         self._driver.doc.calls.append('send_keys')
@@ -1424,6 +1700,26 @@ def test_selenium_find_element_and_click_dismisses_the_modal(tmp_path, caplog, c
     assert ("mendwright: " + dismissed_message('id=go', _nl(), '“No thanks”', ['Escape'])
             in _warnings(caplog))
     assert [e.before for e in heal.handled_interruptions] == ['id=go']
+
+
+def test_selenium_a_click_that_raised_after_it_went_through_stops_there(tmp_path, caplog,
+                                                                         chains):
+    # Another error than intercepted, not interactable or stale: mendwright cannot tell
+    # whether the click reached the page, so it records it and clicks nothing more.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    away = '<button id="nl-x" type="button" aria-label="Close" data-click-raises="">×</button>'
+    web = PopupDriver(FORM + modal(SIGN_UP + away + NO_THANKS))
+    heal = mendwright.open(web, provider=None, store_path=_store(tmp_path), timeout_ms=0,
+                           dismiss=True)
+    heal.coordinator.log = None
+    with pytest.raises(ElementClickInterceptedException):
+        heal.driver.find_element('id', 'go').click()
+    assert web.doc.clicked == ['nl-x']
+    [warning] = _warnings(caplog)
+    assert warning.startswith('mendwright: Clicked “Close” on a popup in the way of ')
+    assert 'the click raised an error after it may have reached the page' in warning
+    assert [(e['outcome'], e['tried'][-1]) for e in _events(tmp_path)] == [
+        ('lost', {'how': 'close', 'label': 'Close'})]
 
 
 def test_selenium_elements_of_any_by_dismiss_too_and_a_stale_popup_reads_as_gone(tmp_path,
@@ -1738,6 +2034,52 @@ def test_with_cookies_accept_a_consent_banner_it_does_not_know_is_left_alone(sid
 
     assert page.doc.clicked == [] and 'escape' not in page.calls
     assert _warnings(caplog) == ['mendwright: ' + consent_message('go', CONSENT_POPUP)]
+    assert heal.handled_interruptions == [] and _events(tmp_path) == []
+
+
+def test_with_cookies_accept_escape_is_never_pressed(side, tmp_path, caplog):
+    # Every key listener of the page gets Escape, a consent banner's elsewhere on the page
+    # too, which may take it as a refusal. The newsletter's No thanks is clicked instead.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _page(FORM, modal(SIGN_UP + NO_THANKS, escape=True))
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True, cookies='accept')
+    side.step('go', '#go', 'click')
+    assert 'escape' not in page.calls and page.doc.clicked == ['nl-no', 'go']
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'No thanks')]
+
+
+def test_with_cookies_accept_a_bare_backdrop_gets_no_escape(side, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    backdrop = ('<div id="pn-bg" class="overlay" data-pos="fixed" data-area="1" data-escape="">'
+                '<div data-over="go email"></div></div>')
+    page = _page(FORM, backdrop)
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True, cookies='accept')
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert 'escape' not in page.calls and page.doc.by_id('pn-bg') is not None
+    assert _warnings(caplog) == ['mendwright: ' + undismissed_message(
+        'go', '<div id="pn-bg" class="overlay">', [], False, consent=True)]
+    assert heal.handled_interruptions == []
+
+
+@pytest.mark.parametrize('accept', ['Accept', 'Alle akzeptieren', 'Accepter et fermer'])
+def test_with_cookies_accept_a_popup_with_an_accept_button_is_left_alone(side, tmp_path,
+                                                                        caplog, accept):
+    # Its name and text say nothing about cookies, but it asks for consent: its close
+    # button would turn the consent down.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    banner = ('<div id="msg" class="message-container" data-pos="fixed" data-area="1">'
+              '<div data-over="go email"></div><p>Choose how we use information.</p>'
+              '<button id="ok" type="button">' + accept + '</button>'
+              '<button id="x" type="button" aria-label="Close" data-closes="msg">×</button></div>')
+    page = _page(FORM, banner)
+    heal = side.open(page, store_path=_store(tmp_path), dismiss=True, cookies='accept')
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        side.step('go', '#go', 'click')
+    assert page.doc.clicked == [] and 'escape' not in page.calls
+    popup = ('<div id="msg" class="message-container"> ("Choose how we use information. '
+             + accept + ' ×")')
+    assert _warnings(caplog) == ['mendwright: ' + consent_message('go', popup)]
     assert heal.handled_interruptions == [] and _events(tmp_path) == []
 
 

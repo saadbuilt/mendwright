@@ -211,6 +211,8 @@ GENERIC = [
      '<button>Don’t allow</button><a href="/legal">Disclosure</a></div>', None, 'Accept and close'),
     ('<div class="cookie-banner"><p>Cookies.</p><button>Continue without accepting</button>'
      '<button>Disagree</button></div>', 'Continue without accepting', None),
+    ('<div class="cookie-notice"><p>We use cookies.</p><button title="Close this cookie banner">'
+     '×</button><button>Allow all</button></div>', '×', 'Allow all'),
 ]
 
 
@@ -260,12 +262,18 @@ NOT_BANNERS = [
      '</button><a href="/cookies">Cookie policy</a></div>', 'reject'),
     ('<div class="cookie-notice"><p>We use cookies.</p><button>Close account</button></div>',
      'reject'),
+    # An icon named for something else it closes is no Close button either.
+    ('<div class="cookie-notice"><p>We use cookies.</p><button aria-label="Close account">×'
+     '</button></div>', 'reject'),
+    ('<div class="cookie-notice"><p>We use cookies.</p><button title="Close my position">'
+     '</button></div>', 'reject'),
 ]
 
 
 @pytest.mark.parametrize('body, choice', NOT_BANNERS, ids=[
     'oauth-allow', 'oauth-deny', 'terms-decline', 'terms-agree-and-pay', 'wrapper-close-account',
-    'shell-accept-invitation', 'shell-decline-invitation', 'long-text', 'close-account-in-banner'])
+    'shell-accept-invitation', 'shell-decline-invitation', 'long-text', 'close-account-in-banner',
+    'close-account-icon', 'close-position-icon'])
 def test_the_fallback_clicks_nothing_outside_a_cookie_banner(body, choice, tmp_path):
     page = StandInPage('<html><body>' + body + '</body></html>')
     heal = mendwright.open(page, provider=None, store_path=str(tmp_path / 'o.json'))

@@ -13,9 +13,10 @@ a navigation in progress) fall back to a safe default so the resolver keeps poll
 import re
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
+from ..flow import click_may_have_run
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
-                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS,
+                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
                    frame_selector, inventory_rows, is_async_api, looks_like_locator,
                    summary_from_js)
 
@@ -260,7 +261,8 @@ class PlaywrightSyncDriver:
     def popup_click(self, native, root, expect, timeout_ms):
         """Click control number expect['index'] of the popup, a real click through
         Playwright's checks, when it is still the one mendwright chose. True when it was
-        clicked."""
+        clicked, False when it was not, UNSURE when the click raised after it may have
+        reached the page (it started a navigation that did not commit in time, say)."""
         handle = root.evaluate_handle(POPUP_CONTROL_JS, expect)
         element = handle.as_element()
         if element is None:
@@ -268,8 +270,13 @@ class PlaywrightSyncDriver:
             return False
         try:
             element.click(timeout=timeout_ms)
+        except Exception as exc:
+            return UNSURE if click_may_have_run(exc) else False
         finally:
-            element.dispose()
+            try:
+                element.dispose()
+            except Exception:
+                pass             # the page navigated or closed
         return True
 
     def press_escape(self, native, root):

@@ -191,14 +191,36 @@ def _says_none(words):
 # into spaces and the spaces normalized: "Close!" reads as 'close', "×" as ''.
 _SHOWN = ("normalize-space(translate(concat(normalize-space(.), ' ', self::input/@value), \""
           + _UPPER + _PUNCT + '", "' + _LOWER + ' ' * len(_PUNCT) + '"))')
-_CLOSE_PHRASES = ('close', 'close banner', 'close notice', 'close message', 'close dialog',
-                  'close popup')
-# A Close button: its whole label is a close phrase, or it shows one glyph or none (an
-# icon) and its aria-label or title says close. "Close account" is not a Close button.
-_CLOSE = ('(' + ' or '.join(_SHOWN + " = '" + p + "'" for p in _CLOSE_PHRASES)
-          + " or (" + _SHOWN + " = '' or string-length(normalize-space(.)) <= 1) and "
-          "contains(concat(' ', translate(concat(@aria-label, ' ', @title), \"" + _UPPER + _PUNCT
-          + '", "' + _LOWER + ' ' * len(_PUNCT) + "\"), ' '), ' close '))")
+# What a close button may say it closes, after "close", "close the" or "close this": the
+# popup itself. "Close account", "Close position" and "Close ticket" do something else.
+_CLOSE_WHAT = ('banner', 'notice', 'message', 'dialog', 'popup', 'pop up', 'modal', 'window',
+               'overlay', 'panel', 'drawer', 'sheet', 'chat', 'survey', 'cart', 'menu',
+               'sidebar', 'search', 'lightbox', 'tour', 'video', 'notification', 'tooltip',
+               'ad', 'advertisement', 'promotion', 'promo', 'newsletter', 'announcement',
+               'bar', 'cookie banner', 'cookie notice', 'cookie message', 'cookie bar',
+               'cookies banner', 'cookies notice', 'consent banner', 'privacy notice')
+# The whole label of a Close button, in words (lower case, punctuation as spaces): Close,
+# Close banner, Close this dialog, ... mendwright.dismiss reads close buttons the same way.
+CLOSE_NAMES = ('close',) + tuple('close ' + a + w for w in _CLOSE_WHAT
+                                 for a in ('', 'the ', 'this '))
+_CLOSE_LIST = "'|" + '|'.join(CLOSE_NAMES) + "|'"
+
+
+def _named(expr):
+    """XPath: expr, in words as _SHOWN reads a label (with | as a space too), is one of
+    CLOSE_NAMES."""
+    norm = ('normalize-space(translate(' + expr + ', "' + _UPPER + _PUNCT + '|", "' + _LOWER
+            + ' ' * (len(_PUNCT) + 1) + '"))')
+    return '(' + norm + " != '' and contains(" + _CLOSE_LIST + ", concat('|', " + norm + ", '|')))"
+
+
+# A Close button: its whole label is a close name, or it shows one glyph or none (an icon)
+# and its aria-label (or, without one, its title) is one. "Close account" is not a Close
+# button, as text or as an icon's name.
+_CLOSE = ('(' + _named("concat(normalize-space(.), ' ', self::input/@value)") + ' or ('
+          + _SHOWN + " = '' or string-length(normalize-space(.)) <= 1) and ("
+          "(normalize-space(@aria-label) != '' and " + _named('@aria-label') + ') or '
+          "(normalize-space(@aria-label) = '' and " + _named('@title') + ')))')
 
 
 _REJECT_WORDS = ('reject', 'decline', 'deny', 'disagree', 'necessary only', 'only necessary',

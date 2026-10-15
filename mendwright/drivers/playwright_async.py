@@ -13,8 +13,10 @@ queries and actions are awaited.
 import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
+from ..flow import click_may_have_run
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
-                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, _member,
+                   POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
+                   _member,
                    frame_selector, inventory_rows, is_async_api, looks_like_locator,
                    summary_from_js)
 from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
@@ -194,8 +196,13 @@ class AsyncPlaywrightDriver:
             return False
         try:
             await element.click(timeout=timeout_ms)
+        except Exception as exc:
+            return UNSURE if click_may_have_run(exc) else False   # see the sync driver
         finally:
-            await element.dispose()
+            try:
+                await element.dispose()
+            except Exception:
+                pass
         return True
 
     async def press_escape(self, native, root):

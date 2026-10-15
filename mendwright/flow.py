@@ -109,6 +109,20 @@ def is_interception_error(exc):
 
 # Playwright's call-log lines once a pointer action was performed (see is_interception_error).
 _ACTION_RAN = re.compile(r'\baction done\b|waiting for scheduled navigations')
+# What a browser library says when the page went away under a call: a click that started
+# a navigation, say.
+_PAGE_WENT = re.compile(r'navigat|context was destroyed|target closed|has been closed|'
+                        r'detached', re.I)
+
+
+def click_may_have_run(exc):
+    """Whether a click that raised exc may have reached the page all the same: Playwright's
+    call log says the click action was done (it then waited for a navigation, say, and
+    timed out), or the page navigated or closed under the call. False for an error that
+    came before the click, such as a timeout waiting for the element to be visible or
+    another element that intercepted it."""
+    text = str(exc)
+    return bool(_ACTION_RAN.search(text.lower()) or _PAGE_WENT.search(text))
 
 
 def is_stale_error(exc):
@@ -195,11 +209,12 @@ _REGISTER = ('Register the button that closes it with heal.interrupt("<name>", "
              'args=("<value>",)).')
 
 
-def undismissed_message(before, popup, tried, escaped=True, changed=False):
+def undismissed_message(before, popup, tried, escaped=True, changed=False, consent=False):
     """The WARNING for a popup in the way of a step that open(dismiss=True) found and could
     not dismiss. tried lists the steps it took, in order (step_text()). escaped=False says
     it did not press Escape, because the keyboard focus was outside the popup or the popup
-    is in an iframe. changed=True says the popup changed before mendwright could act."""
+    is in an iframe, or with consent=True because cookies="accept" is set. changed=True
+    says the popup changed before mendwright could act."""
     if changed:
         did = 'It changed before mendwright could act on it, so mendwright left it alone'
     elif tried:
@@ -209,7 +224,11 @@ def undismissed_message(before, popup, tried, escaped=True, changed=False):
     else:
         did = ('It has no close or decline button that mendwright may click, so mendwright '
                'left it alone')
-    if not escaped and not changed:
+    if not escaped and not changed and consent:
+        did += ('. mendwright did not press Escape: with cookies="accept" it never does, '
+                'because every key listener of the page gets the key, a consent banner\'s '
+                'too, which may take it as a refusal')
+    elif not escaped and not changed:
         did += ('. mendwright did not press Escape, which goes to the element that has the '
                 'keyboard focus: that was outside the popup, or the popup is in an iframe')
     return ('could not dismiss a popup in the way of ' + repr(before) + ': ' + popup + '. '
@@ -217,15 +236,22 @@ def undismissed_message(before, popup, tried, escaped=True, changed=False):
             'popup blocks it. ' + _REGISTER)
 
 
-def lost_message(before, popup, did):
+def lost_message(before, popup, did, raised=False):
     """The WARNING for an element that could not be looked at any more once mendwright did
-    ``did`` ('pressed Escape', 'clicked “No thanks”') on a popup in its way."""
+    ``did`` ('pressed Escape', 'clicked “No thanks”') on a popup in its way, or, with
+    raised=True, for a click that raised an error after it may have reached the page."""
+    if raised:
+        what = (', and the click raised an error after it may have reached the page (a '
+                'navigation it started did not finish in time, say), so mendwright cannot '
+                'tell what it did. mendwright')
+    else:
+        what = (', and then could not look at the element of ' + repr(before) + ' as '
+                'before (it matches no element or several now, it is hidden or outside the '
+                'window, or it left the page). That step may have changed the page, so '
+                'mendwright')
     return (did[0].upper() + did[1:] + ' on a popup in the way of ' + repr(before) + ': '
-            + popup + ', and then could not look at the element of ' + repr(before) + ' as '
-            'before (it matches no element or several now, it is hidden or outside the '
-            'window, or it left the page). That step may have changed the page, so '
-            'mendwright does not count the popup as dismissed and does not try a failed '
-            'action again.')
+            + popup + what + ' does not count the popup as dismissed and does not try a '
+            'failed action again.')
 
 
 def consent_message(before, popup):
@@ -237,6 +263,18 @@ def consent_message(before, popup):
             'dismiss it. The action goes ahead, and fails with the browser\'s own error if the '
             'banner blocks it. Register its accept button with heal.interrupt("<name>", '
             '"<selector of the button>").')
+
+
+def alert_message(before, popup):
+    """The WARNING for a popup that is a role="alertdialog": it asks for an answer, and
+    Escape or any of its buttons would give one."""
+    return ('left a popup in the way of ' + repr(before) + ' alone: ' + popup + '. It is an '
+            'alert dialog (role="alertdialog"), which asks for an answer, such as "Delete '
+            'this project?", and Escape or any of its buttons would give one, so mendwright '
+            'does not press or click anything on it. The action goes ahead, and fails with '
+            'the browser\'s own error if the dialog blocks it. If your script should answer '
+            'it, register the button with heal.interrupt("<name>", "<selector of the '
+            'button>").')
 
 
 def dismiss_loop_message(before, popup, count, again=True):

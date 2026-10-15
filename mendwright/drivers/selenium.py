@@ -30,7 +30,7 @@ import inspect
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
-                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, element_summary,
+                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
                    frame_selector, inventory_rows, is_async_api)
 
 # What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
@@ -742,14 +742,21 @@ class SeleniumDriver:
 
     def popup_click(self, native, root, expect, timeout_ms):
         """Click control number expect['index'] of the popup with WebElement.click(), when
-        it is still the one mendwright chose. True when it was clicked."""
+        it is still the one mendwright chose. True when it was clicked; False when it was
+        not, or the click was refused before it reached the page (intercepted, not
+        interactable, stale); UNSURE when it raised another error, after which mendwright
+        cannot tell whether it reached the page."""
         script = 'return (' + POPUP_CONTROL_JS + ')(arguments[0], arguments[1]);'
 
         def op():
             el = self._driver.execute_script(script, root, expect)
             if el is None:
                 return False
-            el.click()
+            try:
+                el.click()
+            except Exception as exc:
+                names = {cls.__name__ for cls in type(exc).__mro__}
+                return False if names & _NOT_CLICKED else UNSURE
             return True
         return self._where(native, op, probe=False)
 
@@ -766,6 +773,11 @@ class SeleniumDriver:
             _action_chains(self._driver).send_keys(_key_value('ESCAPE')).perform()
             return True
         return self._where(native, op, probe=False)
+
+
+# The errors of a click that never reached the page.
+_NOT_CLICKED = {'ElementClickInterceptedException', 'ElementNotInteractableException',
+                'StaleElementReferenceException'}
 
 
 def _is_stale(exc):
