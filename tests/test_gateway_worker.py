@@ -96,6 +96,20 @@ BUNDLES = [
     {'key': 'terms', 'expectedRole': 'checkbox', 'intent': ''},
     {'key': 'terms', 'expectedRole': 'checkbox', 'intent': None, 'expectedText': ['I agree']},
     {'key': 'terms', 'expectedRole': 'checkbox', 'intent': 7},
+    # List heals (mendwright.lists): the model picks one of the groups.
+    {'list': True, 'key': 'cards', 'expectedRole': 'div', 'count': 12,
+     'candidates': ['.product-card'], 'intent': 'the products ü', 'page': '/shop',
+     'lastPage': '/shop',
+     'groups': [{'xpath': "//div[contains(concat(' ', normalize-space(@class), ' '), ' t ')]",
+                 'count': 12, 'container': '<div id="grid">',
+                 'items': ['<div class="t">Blue mug ü "q" \U0001F600</div>', '<div>Red</div>']},
+                'not a group', {'xpath': '//li', 'count': 2, 'container': '<ul>', 'items': []}]},
+    {'list': True, 'key': 'k', 'expectedRole': 'li', 'groups': [], 'rejectedXpath': '//a',
+     'rejectReason': 'it is not the xpath of one of the groups listed'},
+    {'list': True, 'key': 'long', 'expectedRole': 'div',
+     'groups': [{'xpath': '//x', 'count': 2, 'container': 'c', 'items': ['\U0001F600' * 10 + 'x' * 70000]}]},
+    {'list': 1, 'key': 'n', 'expectedRole': 'div', 'groups': None, 'count': 0},
+    {'list': True, 'key': 'odd', 'expectedRole': 'div', 'groups': [{'xpath': None, 'items': 'ab'}]},
 ]
 
 TEXTS = [

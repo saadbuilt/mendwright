@@ -28,10 +28,12 @@ import contextlib
 import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
+from ..lists import ITEMS_JS, LIST_JS
+from ..lists import from_raw as list_from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
                    POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
-                   frame_selector, inventory_rows, is_async_api)
+                   frame_selector, inventory_rows, is_async_api, item_rows)
 
 # How many matches SeleniumDriver.visible_match() asks is_displayed() of, one round trip
 # each, for the first two that are.
@@ -426,8 +428,8 @@ class SeleniumDriver:
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
     through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
-    fingerprint, visible_match. The interruption checks also use covered and inside_frame, which only
-    this driver has."""
+    fingerprint, visible_match, and for lists handles, list_fingerprint and list_items. The
+    interruption checks also use covered and inside_frame, which only this driver has."""
 
     def __init__(self, driver):
         self._driver = driver
@@ -649,6 +651,37 @@ class SeleniumDriver:
                 return None
             return from_raw(self._driver.execute_script(
                 'return (' + FINGERPRINT_JS + ')([arguments[0]]);', els[0]))
+
+        return self._read(selector, frame_chain, op, None)
+
+    def handles(self, selector, frame_chain=()):
+        """The WebElements the selector matches, as find_elements() gives them. Inside a
+        frame chain they work only while the driver is switched into it. A malformed
+        selector raises InvalidSelector."""
+        self._precheck(selector, frame_chain)
+        return self._run(frame_chain, lambda: self._find_all(selector))
+
+    def list_fingerprint(self, selector, frame_chain=()):
+        """The list fingerprint of the elements the selector matches (see mendwright.lists),
+        or None when it matches fewer than two. One round trip (execute_script), inside the
+        frame chain with the implicit wait at 0. Reads no input value. A malformed selector
+        raises InvalidSelector; any other error gives None."""
+        def op():
+            els = self._find_all(selector)
+            if len(els) < 2:
+                return None
+            return list_from_raw(self._driver.execute_script(
+                'return (' + LIST_JS + ')(arguments[0]);', els))
+
+        return self._read(selector, frame_chain, op, None)
+
+    def list_items(self, selector, frame_chain=()):
+        """[{'tag', 'role', 'visible'}] for the elements the selector matches (at most 200),
+        in one round trip, or None when that read failed. A malformed selector raises
+        InvalidSelector."""
+        def op():
+            return item_rows(self._driver.execute_script(
+                'return (' + ITEMS_JS + ')(arguments[0]);', self._find_all(selector)))
 
         return self._read(selector, frame_chain, op, None)
 

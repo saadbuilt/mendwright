@@ -1030,3 +1030,63 @@ def test_flow_an_interruption_that_matches_two_buttons_is_named_once(engine, tmp
         "one (an XPath is narrowed to its first visible match). Use a selector that matches "
         "only the element to act on, such as '#accept-all' or 'role=button[name=\"Accept all\"]', "
         "which each match one visible element on this page."]
+
+
+# --- lists and expect_value= (see mendwright.lists and mendwright.values) -------------------
+
+def _shop(cls):
+    cards = ''.join("<div class='" + cls + "'><h3>" + name + "</h3><span class='price'>" + price
+                    + "</span><button type='button'>Add</button></div>"
+                    for name, price in (('Blue mug', '$12.00'), ('Red mug', '$13.00'),
+                                        ('Tea pot', '$29.00')))
+    return "<main id='content'><div id='grid'>" + cards + "</div></main>"
+
+
+def test_a_list_heals(engine, tmp_path):
+    tile = "//div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')]"
+
+    async def main():
+        page = await engine.page(_shop('product-card'))
+        try:
+            heal = await mendwright.aio.open(page, store_path=_store(tmp_path), timeout_ms=300)
+            first = len(await heal.page.locator('.product-card').all())
+            await heal.locator_all('cards', '.product-card')
+            await page.set_content(_shop('product-tile'))
+            items = await heal.page.locator('.product-card').all()
+            cards = await heal.locator_all('cards', '.product-card')
+            names = [await c.native.locator('h3').inner_text() for c in cards]
+            return heal, first, len(items), names
+        finally:
+            await page.context.close()
+
+    heal, first, found, names = engine.run(main())
+    assert first == 3 and found == 3 and names == ['Blue mug', 'Red mug', 'Tea pot']
+    assert [(h.key, h.new, h.source) for h in heal.heals] == [
+        ('.product-card', tile, 'fingerprint'), ('cards', tile, 'fingerprint')]
+
+
+def test_a_read_that_heals_onto_the_wrong_number_is_refused(engine, tmp_path):
+    html = "<main><span id='price'>$12.00</span><span class='rating'>4.5</span></main>"
+    provider = Stub("//span[@class='rating']")
+
+    async def main():
+        page = await engine.page(html)
+        try:
+            heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                             timeout_ms=300, fingerprint=False)
+            before = await heal.locator('price', '#price', role='span',
+                                        expect_value='money').inner_text()
+            await page.set_content(html.replace("id='price'", "class='amount'"))
+            try:
+                await heal.locator('price', '#price', role='span', expect_value='money').inner_text()
+            except AttentionRequired as exc:
+                return heal, before, str(exc)
+            return heal, before, ''
+        finally:
+            await page.context.close()
+
+    heal, before, error = engine.run(main())
+    assert before == '$12.00'
+    assert "there is '4.5', which is not money (expect_value='money')" in error
+    assert heal.store.status('price', "//span[@class='rating']") == 'quarantined'
+    assert provider.outcomes == [('price', "//span[@class='rating']", False)]

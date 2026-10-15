@@ -453,6 +453,7 @@ def test_a_key_or_a_role_value_equal_to_the_selector_is_not_rewritten(root, caps
         heal.locator("#login", "#login").click()
         heal.locator("#login", selector="#login", text="#login")
         heal.interrupt("#login", "#login", action="click")
+        heal.locator_all("#login", "#login")
         page.locator("#login").click()
     '''))
     assert run(capsys, "--apply")[0] == 0
@@ -460,6 +461,7 @@ def test_a_key_or_a_role_value_equal_to_the_selector_is_not_rewritten(root, caps
         heal.locator("#login", "{0}").click()
         heal.locator("#login", selector="{0}", text="#login")
         heal.interrupt("#login", "{0}", action="click")
+        heal.locator_all("#login", "{0}")
         page.locator("{0}").click()
     ''').format(new)
 

@@ -14,7 +14,7 @@ import lxml.html
 
 from .css import css_selectors
 from .fit import has_position
-from .gate import live_reason
+from .gate import list_live_reason, live_reason
 from .selectors import CSS, XPATH, classify, frame_spelling, normalize
 from .validation import validate
 
@@ -217,21 +217,24 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
     return ''
 
 
-def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
+def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, list_heal=False):
     """store.add_candidate(key, xpath, source='heal'), with css= and frame_xpath= when they
-    are given. A store whose add_candidate is older still gets the heal: without css= (new
-    in 0.6), and without frame_xpath= when it takes neither and the heal is on the page.
-    Returns False, and saves nothing, when it would have to keep a heal that belongs inside
-    an iframe and cannot."""
+    are given, and list_heal=True for a heal of a list. A store whose add_candidate is
+    older still gets the heal: without css= (new in 0.6), and without frame_xpath= when it
+    takes neither and the heal is on the page. Returns False, and saves nothing, when it
+    would have to keep a heal that belongs inside an iframe, or a list heal (which the
+    list lookups find by its mark), and cannot."""
     extra = {}
     if css is not None:
         extra['css'] = css
     if frame_xpath is not None:
         extra['frame_xpath'] = frame_xpath
+    if list_heal:
+        extra['list_heal'] = True
     tries = [extra]
     if 'css' in extra:
         tries.append({k: v for k, v in extra.items() if k != 'css'})
-    if not frame_xpath:
+    if not frame_xpath and not list_heal:
         tries.append({})
     for kwargs in tries:
         try:
@@ -321,6 +324,84 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason
+
+
+# apply_list()'s reason for a list heal that takes an element of a quarantined heal of the key.
+_SAME_ELEMENTS = ('previously quarantined (it takes elements of a quarantined heal; choose '
+                  'another group)')
+
+
+def _code_back(store, selector_key, driver):
+    """For a list heal: why not to save one when a selector of the key's code matches on the
+    live page now, as a list that was still loading does once it came while mendwright
+    looked for it, else ''. Without a driver, or on a driver error, ''."""
+    if driver is None:
+        return ''
+    try:
+        code = [c['xpath'] for c in store.candidates(selector_key)
+                if c.get('source') == 'code' and not c.get('frameXPath')]
+    except Exception:
+        return ''
+    for selector in code:
+        try:
+            count = driver.count(selector)
+        except Exception:
+            continue
+        if count:
+            return ('the selector in your code, ' + selector + ', matches ' + str(count)
+                    + (' element' if count == 1 else ' elements') + ' on the live page '
+                    'now, so the list needs no heal')
+    return ''
+
+
+def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None):
+    """The gate for a list heal (see mendwright.lists): (applied_xpath, reason, count), with
+    applied_xpath None and the reason when it is refused, else the xpath saved, 'ok' and how
+    many elements it matches on the captured page.
+
+    The XPath must have no position, match two or more elements of the key's role in the
+    captured HTML, none of them inside another (lists.validate), not be quarantined or
+    superseded for the key, take no element a quarantined selector of the key matches, and
+    pass list_live_reason() on the live page, while no selector of the key's code matches
+    there (the list may have come while mendwright looked for it). It is saved marked as a
+    list heal ("list":
+    true): of the key's heals, its list lookups try only those, so a heal of one element
+    saved under the same key (by heal.driver.find_element(), or a heal.page shortcut) never
+    answers for the list. When one of the key's selectors in code is CSS, css, the same
+    selector in CSS, is saved with it as its ``css`` once it matches as many elements on the
+    live page as the XPath does."""
+    from .lists import validate as validate_list
+    if not isinstance(proposed, str) or not proposed.strip():
+        return None, 'no candidates in proposal', 0
+    body, xpath = _xpath_forms(proposed)
+    if classify(xpath) != XPATH:
+        return None, 'not an XPath expression', 0
+    retired = _RETIRED.get(_stored_status(store, selector_key, xpath))
+    if retired:
+        return None, retired, 0
+    result = validate_list(body, html, meta.get('expectedRole'))
+    if not result.ok:
+        return None, result.reason, result.count
+    doc, bad = _quarantined_paths(store, selector_key, html)
+    if bad:
+        tree = doc.getroottree()
+        if any(tree.getpath(n) in bad for n in doc.xpath(body) if hasattr(n, 'tag')):
+            return None, _SAME_ELEMENTS, result.count
+    live = list_live_reason(driver, xpath, meta) or _code_back(store, selector_key, driver)
+    if live:
+        return None, live, result.count
+    twin = None
+    if _code_uses_css(store, selector_key):
+        twin = ''
+        try:
+            if css and driver is not None and driver.count(css) == driver.count(xpath):
+                twin = css
+        except Exception:
+            twin = ''
+    if not add_heal(store, selector_key, xpath, css=twin, frame_xpath='', list_heal=True):
+        return None, ('the store cannot mark a list heal (its add_candidate() takes no '
+                      'list_heal=)'), result.count
+    return xpath, 'ok', result.count
 
 
 def report_outcome(gateway, selector_key, xpath, success, *, download_key, http=None,

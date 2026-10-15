@@ -9,6 +9,8 @@ Contents:
 - [Heals without a model](#heals-without-a-model)
 - [No changes per step](#no-changes-per-step)
 - [Describing an element with intent=](#describing-an-element-with-intent)
+- [Checking what a read returns](#checking-what-a-read-returns)
+- [Lists](#lists)
 - [Providers](#providers)
 - [pytest plugin](#pytest-plugin)
 - [Async Playwright](#async-playwright)
@@ -51,6 +53,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 | `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
+| `expect_values` | none | `{key: check}`: what a read of each key must return when it goes through a heal, as `expect_value=` of `heal.locator()` says, also for the lookups of `heal.page` and `heal.driver`, whose key is the selector (`by=value` on `heal.driver`). See [Checking what a read returns](#checking-what-a-read-returns). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -59,7 +62,7 @@ The two rates are shared by every Healer in one process that uses the same store
 
 ```python
 heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
-             timeout_ms=None, poll_ms=200, optional=False, intent=None)
+             timeout_ms=None, poll_ms=200, optional=False, intent=None, expect_value=None)
 ```
 
 | Argument | Meaning |
@@ -73,15 +76,17 @@ heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
 | `poll_ms` | How often to poll while waiting |
 | `optional` | `True` means the step may not be there. If the element doesn't appear, it isn't healed, and the proxy's `.present` is False. See [Optional steps](#optional-steps). |
 | `intent` | What the element is for, in words, such as `"the terms checkbox in the signup form"`. It is saved with the key, and the model gets it when it heals the key. With `role=` and no selector, a model looks for the element on first use. See [Describing an element with intent=](#describing-an-element-with-intent). |
+| `expect_value` | What a read of the element must return when it was found through a heal: `"money"`, `"number"`, `"integer"`, `"percent"`, `"date"`, `"email"` or `"url"`, a compiled regular expression, or a callable. A value that fails quarantines the heal, and the read raises `AttentionRequired`. See [Checking what a read returns](#checking-what-a-read-returns). |
 
 It returns an `ActionProxy` once the element is found, healed or not, or a proxy with `.present` False for a step that was skipped.
-It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work (or an `intent=` that is not a non-empty string), and `ValueError` for an unknown role or for `intent=` with no selector and no role.
+It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work (or an `intent=` that is not a non-empty string), and `ValueError` for an unknown role or for `intent=` with no selector and no role. An `expect_value=` that is none of those raises `TypeError` or `ValueError` before anything touches the page.
 
 Other `Healer` members:
 
 - `heal.interrupt(key, selector, *, action=None, args=(), role=None, run=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions), and [Interruptions that need a form](#interruptions-that-need-a-form) for `run=`.
 - `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`. With `dismiss=True`, the popups it dismissed are listed too, under the key `<popup>`, with `popup` (how the log line names it), `how` (`"escape"`, `"close"` or `"decline"`) and `label` (the button's) set (see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about)).
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
+- `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, expect_value=None)`: the elements of a list, such as the cards of a product grid, with the list selector healed when it matches nothing any more. See [Lists](#lists).
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
@@ -91,7 +96,7 @@ Other `Healer` members:
 
 The proxy runs these actions through the driver: `click`, `dblclick`, `fill`, `type`, `press`, `press_sequentially`, `check`, `uncheck`, `set_checked`, `select_option`, `hover`, `tap`, `clear`, `focus`, `set_input_files`, `drag_to`, `send_keys` and `submit`.
 Keyword arguments pass through, and the return value is what the native call returned.
-Anything else, such as `inner_text()`, `get_attribute()` or `is_checked()`, goes to the native object unchanged.
+Anything else, such as `inner_text()`, `get_attribute()` or `is_checked()`, goes to the native object unchanged. With `expect_value=`, a read of an element found through a heal is checked first (see [Checking what a read returns](#checking-what-a-read-returns)).
 `proxy.native` is the Playwright `Locator` or Selenium `WebElement` itself, for APIs that check the type.
 `proxy.present` is False for a skipped step; its actions then do nothing and return `None`:
 
@@ -106,10 +111,11 @@ expect(terms.native).to_be_checked()
 A new heal starts unconfirmed. It is confirmed when:
 
 - the `expect=` callable on an action returns something truthy
+- a read returns a value that passes `expect_value=`
 - you call `proxy.confirm(True)` or `heal.confirm_all(True)`
 - the pytest plugin sees the test pass
 
-It is quarantined when the action raises in the browser, when `expect=` returns something falsy or raises, or when you call `confirm(False)`.
+It is quarantined when the action raises in the browser, when `expect=` returns something falsy or raises, when a read returns a value that fails `expect_value=`, or when you call `confirm(False)`.
 A quarantined selector stays in the file with status `quarantined`. It isn't tried again, and a later proposal for that key is rejected if it reaches the same element, even through a different XPath. That counts only in the same place: a selector quarantined inside an iframe doesn't block an element that looks the same on the page, and the other way round. (The exact same selector text stays refused in any iframe, because the store keeps one row per text.)
 `AttributeError`, `TypeError` and `ValueError` from a wrong verb or argument quarantine nothing.
 
@@ -184,6 +190,7 @@ A key that never matched has no fingerprint, so a selector that is already broke
 
 `fingerprint=False` in `mendwright.open()` or `MENDWRIGHT_FINGERPRINT=0` turns the tier off, and `MENDWRIGHT_DISABLE=1` turns it off with every other heal.
 `HealCoordinator` in the low-level API leaves it off unless you pass `fingerprint=True`.
+A list of elements, such as the cards of a product grid, has a list fingerprint of its own, recorded and searched for in the same way: see [Lists](#lists).
 
 ### What you see
 
@@ -233,7 +240,8 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 `page.locator(selector)` and the page methods that take a selector go through `heal.locator(selector, selector)`, so the selector is also the key its heals are saved under.
 
 - The locator actions heal: `click`, `fill`, `check`, `select_option`, `press`, `hover` and the rest of the list in [Actions and confirmation](#actions-and-confirmation). So do the page shortcuts `click`, `dblclick`, `fill`, `check`, `uncheck`, `select_option`, `press`, `type` and `hover`.
-- The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text` and `get_attribute` on the page.
+- The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text`, `get_attribute` and `input_value` on the page. With `mendwright.open(expect_values={selector: check})`, what `inner_text`, `text_content`, `input_value` and `get_attribute` return through a heal is checked (see [Checking what a read returns](#checking-what-a-read-returns)).
+- `locator(selector).all()` gives what Playwright gives, and heals a list that matches nothing after it matched two or more elements before (see [Lists](#lists)). With `expect_values=`, the reads of the elements of a list found through a heal are checked too.
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
 - These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
@@ -252,11 +260,13 @@ On a Playwright healer, `heal.driver` is still mendwright's own driver object.
 
 - A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
 - When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
-- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, and `find_element()` or `find_elements()` on a returned element. Their elements come back as `HealingElement`s too. Every other driver method is the real driver's.
+- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), and `find_element()` or `find_elements()` on a returned element. Their elements come back as `HealingElement`s too. Every other driver method is the real driver's.
+- `find_elements()` with those four `By` values gives what Selenium gives, and heals a list that matches nothing after it matched two or more elements before (see [Lists](#lists)). Such a list waits up to `timeout_ms` on each call, and when it can't be found or healed, it raises the same `AttentionRequired` that is also a `NoSuchElementException`, so `WebDriverWait(driver, 30).until(lambda d: d.find_elements(...))` goes on polling a list that loads late, as it did when `find_elements()` gave `[]`.
+- With `mendwright.open(expect_values={"by=value": check})`, a `HealingElement`'s `text`, `get_attribute()` and `get_dom_attribute()` are checked when `find_element()` or `find_elements()` found it through a heal (see [Checking what a read returns](#checking-what-a-read-returns)).
 - A `HealingElement`'s `click()`, `send_keys()`, `clear()` and `submit()` handle a registered [interruption](#interruptions) that covers the element first, as a proxy action does, and try a click that something covered once more after handling one. Otherwise they raise Selenium's own error. With no interruption registered and `dismiss` off, they make no browser call besides the element's own; with `dismiss=True`, one more, to look for a popup. `ActionChains` actions, and the elements that `execute_script()` or `switch_to.active_element` return, are Selenium's own and get no such check.
 - A `HealingElement` passes `isinstance(el, WebElement)`, is equal to the element it wraps (and hashes the same), and works with `driver.execute_script(..., el)`, `ActionChains` and `expected_conditions`. One around a `FramedElement` needs `in_frame()` for those, as before (see [Selenium](#selenium-1)). Everything else is the element's own, and `el.native` is the element.
-- A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)` or `driver.native`.
-- When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The elements of the other `By` values and of `find_elements()` were never healed, so their actions confirm and quarantine nothing. A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
+- A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)`, or `driver.native` for a selector that matched two or more elements before, which `find_elements()` treats as a list.
+- When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The actions of the elements of the other `By` values and of `find_elements()`, a healed list's included, confirm and quarantine nothing. A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
 
 On a Selenium healer, `heal.page` is still the WebDriver.
 
@@ -286,6 +296,114 @@ The log line is `found 'newsletter' from its intent: //input[@name='news'] (Anth
 - Without `role=`, it raises `ValueError` before it looks at the page, because mendwright checks what the model finds against the role. In `mendwright.aio`, `locator()` raises it before anything is awaited.
 - An `intent=` that is empty or not a string raises `TypeError`.
 - The fingerprint tier is skipped for such a key, since nothing was recorded for it yet.
+
+## Checking what a read returns
+
+A heal passes the checks when the new element has the step's role and is the one visible match. For a read, that can still be the wrong element: after a redesign, a price selector can heal onto the rating next to the price, and a scraper saves 4.5 as the price. `expect_value=` says what a read must return:
+
+```python
+price = heal.locator("price", "#price", expect_value="money").inner_text()
+```
+
+When the element was found through a selector a heal saved, in this run or an earlier one, mendwright checks the value the read returns:
+
+- A value that passes is returned. It confirms a heal made in this run, as `expect=` on an action does.
+- A value that fails quarantines the heal, and the read raises `AttentionRequired` instead of returning it. The same text is logged as a WARNING:
+
+  ```text
+  mendwright: 'price' was healed to //span[@class='rating'], and its inner_text() there is '4.5', which is not money (expect_value='money'). The heal probably found another element, so mendwright quarantined it and did not return the value. The next lookup of 'price' heals it again, and cannot pick that element. If the value is right, change expect_value=.
+  ```
+
+  The quarantine blocks the element, not only the selector, so neither the fingerprint tier nor the model can pick the rating again (see [Actions and confirmation](#actions-and-confirmation)).
+
+A read through any other selector, such as the one in your code, is never checked: `expect_value=` only ever refuses a heal. A price your own selector reads as "Call for price" comes back as it is.
+
+The reads it checks are `inner_text()`, `text_content()`, `input_value()` and `get_attribute()` on Playwright, sync and async, and `text`, `get_attribute()` and `get_dom_attribute()` on Selenium. Other reads and the actions are as before. The elements of a list found through a heal are checked too, and there a value that passes confirms nothing (see [Lists](#lists)).
+
+| `expect_value=` | Passes for |
+|---|---|
+| `"money"` | an amount with a currency sign or code before or after it, and nothing else: `$1,299.00`, `1.299,00 €`, `129 kr`, `CHF 12.50`, `USD 1299`, `$12.00 USD`, `R1,299.00`, `₹1,29,999.00`, `129,-`, `-$12`. The signs are the Unicode currency signs and `US$`, `C$` and the like; the codes are the common ISO 4217 codes and abbreviations such as `kr`, `zł`, `Kč`, `Ft`, `lei`, `Rs`, `R`, `RM` and `CHF`. A number without one, such as `1,299.00`, is not money: use `"number"` |
+| `"number"` | a number and nothing else, with an optional sign: `1,299.00`, `1.299,00`, `1 299,00`, `1'299.00`, `4.5`, `-3` |
+| `"integer"` | a number with no decimal part written: `1,299`, `12`, but not `12.00` |
+| `"percent"` | a number with `%` before or after it: `12%`, `12.5 %`, `%20` |
+| `"date"` | a calendar date (31/02/2026 is not one): `2026-10-15`, with or without a time, `15/10/2026`, `10/15/2026`, `15.10.2026`, `2026年10月15日`, or with the month's name in English, German, French, Spanish, Italian, Dutch or Portuguese, such as `Oct 15, 2026`, `15. Oktober 2026` or `15 de octubre de 2026`, also after a weekday or before a time |
+| `"email"` | an email address, also as a `mailto:` link |
+| `"url"` | an `http` or `https` URL with a host, one that starts with `//`, or a path that starts with `/`, `./` or `../`, as `get_attribute("href")` gives for a relative link |
+| `re.compile(...)` | a value the pattern finds a match in, as `re.search()` does. Anchor it with `^` and `$` to match the whole value |
+| a callable | a value it returns something truthy for. It gets the value as a `str`, and one that raises refuses it |
+
+Numbers are read the way most locales write them. Commas, dots, spaces (non-breaking and narrow ones too) and apostrophes group the digits, in threes, or in India in twos before a last group of three (`1,29,999`). When a number has both `.` and `,`, the one that comes last is the decimal point, and a mark that comes more than once groups. A single `.` or `,` followed by exactly three digits, as in `1.299` or `1,299`, is read as a thousands separator, as in a price; `0,299`, `1234.567` and `1 299,500` have a decimal part. In an amount of a currency with three decimals (`KWD`, `BHD`, `OMR`, `JOD`, `TND`), that `.` is the decimal point, as those amounts are written: `KWD 1.250` is 1.250. That `,` could be either (`1,250 TND` is 1.250 in Tunisia and 1250 in English), so `parse_money()` gives `None` for it, though it passes `"money"`. The value is read in its compatibility form, so fullwidth digits and the digits of other scripts count, and spaces around it don't. A value of `None`, such as `get_attribute()` of an attribute the element doesn't have, passes no check, and a callable isn't called for it.
+
+`mendwright.values.parse_money()` and `parse_number()` read the value you got the same way, and give the amount as a `Decimal`, or `None`:
+
+```python
+from mendwright.values import parse_money
+
+parse_money("1.299,00 €")   # Decimal('1299.00')
+parse_money("129 kr")       # Decimal('129')
+parse_money("4.5")          # None: no currency
+```
+
+`heal.page` and `heal.driver` take no `expect_value=`, so give the checks for their keys to `mendwright.open()`. The key is the selector on `heal.page`, and `by=value` on `heal.driver`:
+
+```python
+heal = mendwright.open(page, expect_values={"#price": "money", "#delivery": "date"})
+page = heal.page
+page.inner_text("#price")       # checked when "#price" was found through a heal
+```
+
+The same dict covers keys of `heal.locator()` and `heal.locator_all()`, and an `expect_value=` passed to either wins over it. Neither is saved, so pass them on each run.
+
+In the journal, a refused read writes a `heal.canary` with `success` false (for a heal made in this run) and a `heal.quarantine`, each with a `reason` such as `expect_value: inner_text() is not money`. The value itself is never written.
+
+## Lists
+
+A list selector, such as `.product-card` for the cards of a product grid, matches many elements, and after a redesign it can match none. These heal it:
+
+```python
+cards = heal.locator_all("cards", ".product-card")    # an ActionProxy for each card
+names = [card.native.locator("h3").inner_text() for card in cards]
+
+page.locator(".product-card").all()                     # on heal.page
+driver.find_elements(By.CSS_SELECTOR, ".product-card")  # on heal.driver
+```
+
+`heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, expect_value=None)` gives an `ActionProxy` for each element the list matches, in page order. `selector`, `role` (the items' role), `timeout_ms`, `poll_ms` and `expect_value` mean what they mean for `heal.locator()`. In `mendwright.aio`, `await heal.locator_all(...)` gives `AsyncActionProxy`s, and `await page.locator(...).all()` works on `heal.page`.
+
+How a list is looked up:
+
+1. The key's selectors are tried in order, the one in your code first, then saved list heals. The first that matches one element or more gives the list, as written. A list is looked for on the page, not inside an iframe. A heal of one element saved under the same key is skipped: on `heal.driver`, `find_element()` and `find_elements()` of one `By` value share a key, as a `heal.page` shortcut and `locator(selector).all()` share theirs, and a heal of the first card is not a heal of the cards.
+2. Each time one matches two or more elements, mendwright records a list fingerprint, in one round trip, once per Healer and selector: the [fingerprints](#what-a-fingerprint-holds) of three of the items (the first, the middle and the last), the tags inside each of them and of their children (their shape), how many items there were, and their nearest common container (its tag, id, test id, aria-label, classes and role). Without `role=`, the items' role is saved from the first item. A list of one element is not recorded: nothing repeats in it.
+3. When none matches and the key has a list fingerprint, mendwright waits up to `timeout_ms`, handles the registered [interruptions](#interruptions) the page shows, and heals the list. A heal gives the new elements, and is saved and used from then on like any heal. Without one, `AttentionRequired` says why.
+4. When none matches and the key has no list fingerprint, the list is empty at once, as `Locator.all()` and `find_elements()` give it. So is a list passed `optional=True`, which is never healed.
+
+List heals need the fingerprint tier. With `fingerprint=False`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1`, no list fingerprint is recorded and no list is healed: a list lookup that matches nothing is empty at once, as `Locator.all()` and `find_elements()` give it, even for a list recorded in an earlier run. A saved list heal is still tried.
+
+On `heal.page` and `heal.driver`, a lookup that matches one element or none, of a key with no list fingerprint, is the real page's and saves nothing. Only one that matches two or more is recorded, so a `find_elements()` that checks that an element is absent works as before. One that matches two or more gives the elements the real call found. On Playwright it makes no other browser call; on Selenium it makes one more, for the page's address. The first time per Healer and selector, it also reads the list fingerprint.
+
+What stops a heal of one element stops a list heal too: a key marked destructive, the [page guard](#steps-that-moved-to-another-page), an unknown role, a `guard=` that returns False, and dry run. Then the list fingerprint is tried, with no model call:
+
+- mendwright lists the repeated groups of the captured page: two or more elements of the items' role that sit the same number of levels (one to three) below one container, with the same tags on the way down, and, for each class name two of them share, those that have it. A group of placeholders is left out: one whose elements have no text where the recorded items had text, such as the skeleton cards of a list that is still loading, or that is marked `aria-busy="true"`. When only placeholders are left, the error says the list may still be loading.
+- It scores each group from 0 to 1 against the list fingerprint: how much each member looks like a recorded item (half the score), how alike the members' shapes are to the recorded ones (a quarter, left out when neither has anything inside it), how alike the group's container is to the recorded one, and how close its size is to the recorded count.
+- It heals when the best group scores at least 0.65, no group that shares fewer than half of its elements comes within 0.10 of it, each member it looked at is shaped at least half like a recorded item, two of the recorded items are among its elements (both, for a list recorded with two), the group is inside the recorded container and the recorded items' ancestors with an id when those are still on the page, and an XPath without positions matches its elements and nothing else. A group with no element visible on the live page is neither the answer nor a rival.
+- A recorded item is among the elements when one of them shares an id, test id, name, link, label or text with it that not every recorded item has. A test id that every card has, or a link path that only a query told apart, says what kind of list it is, not which items it holds. Where a group sits doesn't say so either. So an emptied list is not healed onto another list in its place, such as the hints of a form whose errors went away, or the recommendations a search with no results shows where its results were. New items in the same container are left to the model.
+
+When the list fingerprint is not confident, a model is asked, if one is configured. It gets the page's best repeated groups, each with its XPath, its container's opening tag and its first two items, redacted like page HTML, with the broken selectors, the items' role, `intent=` and how many items the list had; it gets neither the page's HTML nor the list fingerprint. It may only answer with the XPath of one of the groups, or say that none is the list. Any other XPath is rejected, and it gets one more try. `LocalModelProvider` picks one element and declines list heals.
+
+What either picks goes through the list's own checks: an XPath without positions, not quarantined or superseded for the key, that reaches no element a quarantined selector of the key matches, and that matches two or more elements of the items' role on the captured page, none inside another, and two or more of the role on the live page, at least one of them visible. Nothing is saved when the selector in your code matches on the live page by then: a list that came while mendwright looked for it is used as it is. A list is never healed onto one element, and the error says so when one element is the only one like the items:
+
+```text
+No matching element for: cards (tried 1 candidate(s)).
+  -> the list fingerprint match for 'cards' was not confident: the elements of the best group are not all shaped like the recorded items (the least alike is 0.00, and 0.50 is needed). The only element like the recorded items is one <div> ('Blue mug $12.00 Add to cart'); mendwright never heals a list onto one element, and no model provider is configured to try instead. ...
+```
+
+A list heal logs one line, such as `healed the list 'cards' (12 elements): .product-card -> //div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')] (fingerprint, 0.0s)`, and its journal events have `"list": true`, with the number of elements as `items` on `heal.applied`. When your code's selector is CSS, the heal also gets a CSS form, such as `div.product-tile` or `div#grid > div.product-tile`, that `mendwright fix` writes back.
+
+The elements' actions handle interruptions and popups as `heal.locator()`'s do, and confirm or quarantine nothing. A list heal is confirmed by the pytest plugin when the test passes, or with `heal.confirm_all(True)`, and `--mendwright-strict` fails a test that needed one. With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s.
+
+For a list found through a heal, the elements' reads are checked against `expect_value=`, or the key's check in `mendwright.open(expect_values=...)`, as `heal.locator()`'s are (see [Checking what a read returns](#checking-what-a-read-returns)). A value that fails quarantines the list heal, and the read raises `AttentionRequired`. One that passes confirms nothing, as an element's action doesn't. On `heal.page`, such a list's elements come back as `GuardedLocator`s, so their reads can be checked. Reads of locators chained from an element, such as `card.native.locator("h3").inner_text()`, aren't checked.
+
+A list that is empty now but had items before, such as a cart after an order, looks the same as one whose selector broke: it waits `timeout_ms` and raises `AttentionRequired`, unless a heal finds it. The list fingerprint heals only onto a group that holds two of the recorded items, so not onto another list in the same place. A model, when one is configured, is still shown the page's repeated groups and may pick one, such as recommendations where the results were. For a list that may be empty, pass `optional=True` to `heal.locator_all()`, or use `heal.page.native` or `heal.driver.native`. List fingerprints are saved in `overrides.json` as `listFingerprint` (see [SECURITY.md](../SECURITY.md) for what they hold), and a list heal's selector is saved with `"list": true`.
 
 ## Providers
 
@@ -815,9 +933,9 @@ What it can't do:
 - A popup of the page over an iframe that holds the element. mendwright looks in the element's own document, so a popup inside the iframe is handled, and one outside it isn't. Inside an iframe Escape is never pressed, so a popup there that only Escape closes stays.
 - A popup that opens while Playwright waits on an action is found only when the action fails, after its timeout.
 - A popup that hides the element instead of covering it, such as a wall that replaces the page until you answer. The lookup then misses, and mendwright looks for popups only over an element it found. Register it with `heal.interrupt()`, which is also handled when a lookup misses.
-- Actions that don't go through `heal.locator()`, `heal.page` or `heal.driver`. The page or driver you passed to `open()`, and the locators you build from it, get no popup check, and neither do `page.mouse`, `page.keyboard`, `dispatch_event()`, `ElementHandle`s from `query_selector()` or `wait_for_selector()`, `Frame`s from `page.frame()` or `page.frames`, the locators `Locator.all()` returns, page methods that aren't `heal.page` shortcuts (such as `tap()`, `set_checked()` or `drag_and_drop()`), and a shortcut whose selector mendwright can't store. On Selenium, `ActionChains`, and the elements that `execute_script()` or `switch_to.active_element` return, get none. Playwright's overlay handler, which also handles [interruptions](#interruptions) before such actions, isn't used for popups.
+- Actions that don't go through `heal.locator()`, `heal.page` or `heal.driver`. The page or driver you passed to `open()`, and the locators you build from it, get no popup check, and neither do `page.mouse`, `page.keyboard`, `dispatch_event()`, `ElementHandle`s from `query_selector()` or `wait_for_selector()`, `Frame`s from `page.frame()` or `page.frames`, the locators `Locator.all()` returns (but for `heal.page.locator(selector).all()`'s), page methods that aren't `heal.page` shortcuts (such as `tap()`, `set_checked()` or `drag_and_drop()`), and a shortcut whose selector mendwright can't store. On Selenium, `ActionChains`, and the elements that `execute_script()` or `switch_to.active_element` return, get none. Playwright's overlay handler, which also handles [interruptions](#interruptions) before such actions, isn't used for popups.
 
-On Playwright, with `dismiss=True`, the locators `heal.page` doesn't heal are guarded too: `get_by_role()` and the other `get_by_*` locators, a locator built with options, chained locators, `frame_locator()`, `and_()`, `or_()`, `.first`, `.last`, `.nth()` and `.filter()`.
+On Playwright, with `dismiss=True`, the locators `heal.page` doesn't heal are guarded too: `get_by_role()` and the other `get_by_*` locators, a locator built with options, chained locators, `frame_locator()`, `and_()`, `or_()`, `.first`, `.last`, `.nth()` and `.filter()`, and the locators `heal.page.locator(selector).all()` gives.
 They come back as `GuardedLocator`s, the real locators with the checks above and the interruption checks before their actions. They aren't healed and nothing about them is saved. They pass `isinstance()` checks, so `expect()` takes them, and `.native` is the real locator. Log lines name their step after the calls that built it, such as `"page.get_by_role('button', name='Continue')"`. With `dismiss=False` they are the real locators, as before.
 On Selenium, the elements `heal.driver` finds are covered whatever `By` found them (see [No changes per step](#no-changes-per-step)), inside iframes too.
 
@@ -1082,7 +1200,7 @@ The real file is a single line; it is wrapped here.
 
 - `source` is `code` (passed to `locator()`), `heal` or `seed`.
 - `status` is `active`, `quarantined` or `superseded`. Only active candidates are tried.
-- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), and `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)).
+- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)).
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
 
@@ -1123,6 +1241,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
+The events of a [list](#lists) heal have `"list": true`, and its `heal.applied` the number of elements as `items`. A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1327,7 +1446,7 @@ Which keys it changes:
 Which strings it changes:
 
 - In Python files, only plain string literals whose whole value is the old selector, as the store keeps it (`"xpath=//a"` and `" //a "` both match a stored `//a`). Not an f-string or bytes, not part of an implicit concatenation such as `"a" "b"`, not a comment, not a substring.
-- Not the key in `heal.locator(key, selector)` or `heal.interrupt(key, selector)`, and not a `role=`, `text=`, `intent=`, `action=` or `by=` value, even when it equals the selector.
+- Not the key in `heal.locator(key, selector)`, `heal.locator_all(key, selector)` or `heal.interrupt(key, selector)`, and not a `role=`, `text=`, `intent=`, `action=` or `by=` value, even when it equals the selector.
 - A CSS selector in your code gets the heal's CSS form when it has one (see [Selectors](#selectors)), also where only CSS runs, such as `By.CSS_SELECTOR` or `querySelector()`. Without a CSS form, a value passed with a Selenium `By` other than `By.XPATH` (in a call, or a `(By.CSS_SELECTOR, "#x")` pair), or to a function with `css` in its name, is listed with the healed selector to put in by hand.
 - In other files (`--glob`), quoted strings on one line. Comments are skipped in C-like languages, and template strings with `${` and strings that span lines are left alone. A string right after `By.cssSelector(`, `querySelector(`, `css:` and the like gets the heal's CSS form when it has one, and is otherwise listed, not changed. In languages where only double quotes make a string (Java, Kotlin, C#, Scala, Swift, Go, Rust, JSON), a selector with a double quote in it is escaped, or listed for a hand edit where the escapes aren't known.
 - A file in which the same string belongs to more than one key is left alone whole, and listed, because mendwright can't tell which healed selector goes where.
@@ -1390,6 +1509,10 @@ The first line names the key. The line after `->` says why there was no heal:
 | That looks like a change in the flow, not a renamed element | The key was found on another page before. Update your script if the step moved, or pass `heal_across_pages=True` if only the URL changed. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 | interruptions were handled for '<key>' and '<interruption>' is still on the page | The interruption came back each time it was handled. Check the selector and `action=` you passed to `heal.interrupt()`, or, when the message names its `run=` function (`Check that relogin(), the run= function registered with heal.interrupt('session_expired', ...), really closes it.`), that the function closes it. |
 | does not know what kind of element | Pass `role=` |
+| was healed to ..., and its inner_text() there is ..., which is not money | A read through a heal returned a value that fails `expect_value=`, so the heal was quarantined. The next lookup heals again without that element. If the value is right, change `expect_value=`. See [Checking what a read returns](#checking-what-a-read-returns). |
+| the list fingerprint match for '<key>' was not confident | The reason after it says why (no repeated group, two groups alike, a score too low, no shared text or container, items shaped differently). With a provider the model is asked to pick a group next; without one, fix the selector or set one up. See [Lists](#lists). |
+| mendwright never heals a list onto one element | Only one element on the page looks like the list's items. If the list really has one item now, fix the selector by hand. |
+| no group the model picked for '<key>' passed mendwright's list gate | Read the last reason: the model answered with an XPath that is not one of the groups, or the group failed the list's checks. Try another model, or fix the selector by hand. |
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |
 | is inside an iframe ... mendwright did not look for it there | The reason says why (a destructive key, several iframes or elements, an iframe inside an iframe, or one nothing tells apart). Open mendwright on the frame (see [Iframes](#iframes)) |
