@@ -777,6 +777,52 @@ def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, st
     assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
 
 
+# A popup that asks which saved address to deliver to, over the page: it closes once one of
+# the addresses in its list is picked.
+ADDRESS_PAGE = page("""
+<p>Deliver to: <span id="address">none</span>. Saved: <span id="saved">no</span></p>
+<button id="save" type="button" onclick="document.getElementById('saved').textContent = 'yes'">Save</button>
+<div id="pick-address" role="dialog" aria-label="Choose an address"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; top: 0; padding: 16px; background: #fff">
+    <p>Which address should we deliver to?</p>
+    <ul><li><button class="address" type="button" onclick="pick(this)">1 Main Street</button></li>
+      <li><button class="address" type="button" onclick="pick(this)">2 High Street</button></li>
+      <li><button class="address" type="button" onclick="pick(this)">3 Mill Lane</button></li></ul>
+  </div>
+</div>
+<script>
+function pick(button) {
+  document.getElementById('address').textContent = button.textContent;
+  document.getElementById('pick-address').remove();
+}
+</script>""", 'address')
+
+
+def test_a_run_function_picks_from_a_list_in_its_popup(tab, store_file, stub_provider):
+    tab.load(ADDRESS_PAGE)
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+
+    def pick_address(target):
+        calls.append(target)
+        if tab.family == 'playwright':
+            options = target.locator('.address').all()
+        else:
+            options = target.find_elements('css selector', '.address')
+        options[1].click()
+
+    heal.interrupt('address', '#pick-address', run=pick_address)
+    _step(heal, 'save', '#save').click()
+
+    # The function's list lookup was recorded as any other, from inside the step.
+    assert len(calls) == 1 and tab.text('#address') == '2 High Street'
+    assert tab.text('#saved') == 'yes'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('address', 'save')]
+    key = '.address' if tab.family == 'playwright' else 'css selector=.address'
+    assert heal.store.meta(key)['listFingerprint']['count'] == 3
+
+
 # --- a selector that matches several elements ----------------------------------------------------
 
 _TWO_ACCEPTS = page("""

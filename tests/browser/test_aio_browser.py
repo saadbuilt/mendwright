@@ -994,6 +994,60 @@ def test_flow_a_session_popup_an_async_run_function_cannot_close_stops_after_thr
     assert len(calls) == 3 and provider.bundles == []
 
 
+_ADDRESS_PAGE = """<p>Deliver to: <span id="address">none</span>. Saved: <span id="saved">no</span></p>
+<button id="save" type="button" onclick="document.getElementById('saved').textContent = 'yes'">Save</button>
+<div id="pick-address" role="dialog" aria-label="Choose an address"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; top: 0; padding: 16px; background: #fff">
+    <p>Which address should we deliver to?</p>
+    <ul><li><button class="address" type="button" onclick="pick(this)">1 Main Street</button></li>
+      <li><button class="address" type="button" onclick="pick(this)">2 High Street</button></li>
+      <li><button class="address" type="button" onclick="pick(this)">3 Mill Lane</button></li></ul>
+  </div>
+</div>
+<script>
+function pick(button) {
+  document.getElementById('address').textContent = button.textContent;
+  document.getElementById('pick-address').remove();
+}
+</script>"""
+
+
+@pytest.mark.parametrize('routed', [True, False])
+def test_flow_an_async_run_function_picks_from_a_list_in_its_popup(engine, tmp_path, routed):
+    # The function's list lookup goes ahead without the healer's lock, which the step that
+    # awaits the function holds, or Playwright's overlay handler: taking it would wait for
+    # them forever.
+    calls = []
+
+    async def pick_address(page):
+        calls.append(page)
+        options = await page.locator('.address').all()
+        await options[1].click()
+
+    async def main():
+        page = await engine.page(_ADDRESS_PAGE)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('address', '#pick-address', run=pick_address)
+            if routed:
+                save = heal.locator('save', '#save').click()
+            else:
+                save = heal.page.get_by_role('button', name='Save').click(timeout=5000)
+            await asyncio.wait_for(save, 20)
+            return heal, (await page.text_content('#address'), await page.text_content('#saved'))
+        finally:
+            await _close(page)
+
+    heal, texts = engine.run(main())
+    assert texts == ('2 High Street', 'yes')
+    assert len(calls) == 1 and calls[0] is heal.page
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('address', 'save' if routed else '<page action>')]
+    assert heal.store.meta('.address')['listFingerprint']['count'] == 3
+
+
 _TWO_ACCEPTS = _SIGNUP + """<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
   style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
   <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">

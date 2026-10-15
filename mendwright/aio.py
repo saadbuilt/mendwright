@@ -655,7 +655,7 @@ class AsyncHealer:
 
     async def _locate_all(self, key, roles, code, timeout, poll_ms, optional, expect=None):
         __tracebackhide__ = True  # pytest shows the caller
-        async with self._lock:
+        async with self._turn():
             self._core._prime(key, roles, code, None, None)
             natives = await self._list(key, roles, timeout, poll_ms, optional)
             healed = self._core._healed(key) if natives else None
@@ -673,7 +673,7 @@ class AsyncHealer:
         from .facade import _code_selectors
         core, code = self._core, _code_selectors(key, selector)
         expect = core._expect_values.get(key)
-        async with self._lock:
+        async with self._turn():
             core._prime(key, (), code, None, None)
             if len(natives) < 2:
                 found = await self._list(key, (), self.timeout_ms, 200)
@@ -711,8 +711,8 @@ class AsyncHealer:
             await self._sleep(poll_ms / 1000.0)
 
     async def _list(self, key, roles, timeout, poll_ms, optional=False):
-        """Healer._list(), awaited, under the lock: the heal runs the sync Healer's code in
-        a worker thread through SyncBridge, as a heal of one element does."""
+        """Healer._list(), awaited, under the lock (see _turn): the heal runs the sync
+        Healer's code in a worker thread through SyncBridge, as a heal of one element does."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
         found = await self._list_look(key, core._list_runnable(key))
@@ -726,6 +726,8 @@ class AsyncHealer:
             except InterruptionLoop:
                 raise
             except AttentionRequired as exc:
+                if _raised_by_run(exc):
+                    raise   # a run= function's own, not a miss of this list
                 try:
                     await _in_thread(core._heal_list, key, exc, await _url(self._driver))
                 except AttentionRequired:
@@ -1186,16 +1188,16 @@ class AsyncHealer:
 
     async def _check_value(self, key, healed, verb, args, value, expect, confirms=True):
         """Healer._check_value(), with the canary report in a worker thread and under the
-        lock: value when it passes expect or key was not found through a heal, else the heal
-        is quarantined and AttentionRequired raised. confirms False (the elements of a list)
-        leaves a heal that passes unconfirmed."""
+        lock (see _turn): value when it passes expect or key was not found through a heal,
+        else the heal is quarantined and AttentionRequired raised. confirms False (the
+        elements of a list) leaves a heal that passes unconfirmed."""
         __tracebackhide__ = True  # pytest shows the caller
         if healed is None or expect is None:
             return value
         coordinator = self.coordinator
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
-        async with self._lock:
+        async with self._turn():
             if coordinator.pending.get(key) == healed:
                 if confirms or not ok:
                     await _in_thread(coordinator.confirm_pending, key, ok, reason)

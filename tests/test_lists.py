@@ -968,3 +968,109 @@ def test_async_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp
         return heal, await heal.locator_all('cards', CARDS)
     heal, cards = asyncio.run(main())
     assert len(cards) == 4 and heal.heals == []
+
+
+# --- lists and the run= functions of heal.interrupt() -----------------------------------------
+
+RELOGIN = ("<div id='relogin' role='dialog' aria-label='Session expired'><p>Your session expired. "
+           "Sign in again.</p><input id='user'><button id='signin' type='button'>Sign in</button>"
+           "</div>")
+BEHIND_RELOGIN = shop(grid('product-tile'), RELOGIN)    # the card class changed, under a popup
+
+
+def test_an_attention_required_from_a_run_function_is_not_taken_for_a_list_miss(
+        tmp_path, make_page, stub_provider):
+    page = make_page(V1, fingerprints=True, css=True)
+    provider = stub_provider(TILE)
+    heal = _open(page, tmp_path, provider)
+    heal.locator_all('cards', CARDS)
+    heal.page.locator('.product-card').all()
+    error, calls = AttentionRequired('mendwright: the sign-in form changed'), []
+
+    def relogin(p):
+        calls.append(p)
+        raise error
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    page.set_html(BEHIND_RELOGIN)
+    for look in (lambda: heal.locator_all('cards', CARDS),
+                 lambda: heal.page.locator('.product-card').all()):
+        with pytest.raises(AttentionRequired) as caught:
+            look()
+        assert caught.value is error
+    assert calls == [heal.page, heal.page]
+    assert heal.heals == [] and provider.bundles == []      # neither list was healed
+
+
+def test_heal_driver_find_elements_raises_what_a_run_function_raised_as_it_is(tmp_path):
+    web = ListDriver(V1)
+    heal = _open(web, tmp_path)
+    assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
+    error, calls = AttentionRequired('mendwright: the sign-in form changed'), []
+
+    def relogin(driver):
+        calls.append(driver)
+        raise error
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    web.set_html(BEHIND_RELOGIN)
+    # Not turned into a NoSuchElementException, which WebDriverWait would take for a list
+    # still loading and poll again.
+    with pytest.raises(AttentionRequired) as caught:
+        heal.driver.find_elements('css selector', '.product-card')
+    assert caught.value is error and calls == [heal.driver] and heal.heals == []
+
+
+def test_async_an_attention_required_from_a_run_function_is_not_taken_for_a_list_miss(
+        tmp_path, make_page):
+    error = AttentionRequired('mendwright: the sign-in form changed')
+
+    async def relogin(page):
+        raise error
+
+    async def main():
+        sync = make_page(V1, fingerprints=True, css=True)
+        heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0)
+        await heal.locator_all('cards', CARDS)
+        await heal.page.locator('.product-card').all()
+        heal.interrupt('relogin', '#relogin', run=relogin)
+        sync.set_html(BEHIND_RELOGIN)
+        caught = []
+        for look in (lambda: heal.locator_all('cards', CARDS),
+                     lambda: heal.page.locator('.product-card').all()):
+            with pytest.raises(AttentionRequired) as info:
+                await look()
+            caught.append(info.value)
+        return heal, caught
+    heal, caught = asyncio.run(main())
+    assert caught == [error, error] and all(e is error for e in caught)
+    assert heal.heals == []
+
+
+def test_async_a_run_function_s_list_lookups_and_checked_reads_skip_the_lock(tmp_path, make_page):
+    # The step that runs the function holds the healer's lock while it waits for it, so the
+    # function's list lookups, and the checked reads of a list found through a heal, go ahead
+    # without the lock, as its other calls do. Taking it would wait for that step forever.
+    async def main():
+        sync = make_page(V1, fingerprints=True, css=True)
+        heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0)
+        await heal.locator_all('cards', CARDS)
+        seen = []
+
+        async def relogin(page):
+            cards = await heal.locator_all('cards', CARDS, expect_value=re.compile('mug|pot'))
+            seen.append([await card.inner_text() for card in cards])   # through the heal
+            seen.append(len(await page.locator('.product-tile').all()))
+            sync.set_html(V2)                             # signed in again: the popup is gone
+
+        heal.interrupt('relogin', '#relogin', run=relogin)
+        sync.set_html(BEHIND_RELOGIN)
+        await asyncio.wait_for(heal.locator('heading', 'xpath=//h1').click(), 5)
+        return heal, seen, sync.actions
+    heal, seen, actions = asyncio.run(main())
+    assert seen == [[n + p + 'Add to cart' for n, p in PRODUCTS], 4]
+    assert actions[-1][1] == 'click'
+    assert [(h.key, h.new) for h in heal.heals] == [('cards', TILE)]
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'heading')]

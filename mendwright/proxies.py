@@ -645,6 +645,8 @@ class HealingDriver(_Proxy):
         try:
             elements, healed, expect = healer._find_all(key, selector, elements)
         except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # from a run= function of heal.interrupt(): raised as it is
             raise not_found_error(exc) from exc
         return [_found(healer, el, key, healed, expect) for el in elements]
 

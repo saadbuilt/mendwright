@@ -1201,6 +1201,8 @@ class Healer:
                 except InterruptionLoop:
                     raise   # the page is blocked: a heal would not help
                 except AttentionRequired as exc:
+                    if _raised_by_run(exc):
+                        raise   # a run= function's own, not a miss of this list
                     try:
                         self._heal_list(key, exc, self._url())
                     except AttentionRequired:
