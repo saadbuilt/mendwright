@@ -10,6 +10,7 @@ size. Only stills are rendered here: never a video.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -17,7 +18,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 W, H, LABEL, COLS, GAP = 640, 360, 44, 3, 12
-# (real time, region (x, y, w, h) at 1920x1080, label): 1:1 crops added under the beats
+# The cut's PACE, from compose.js: the crop times below are story times, shown at t / PACE.
+PACE = float(re.search(r'const PACE = ([0-9.]+);', open(os.path.join(HERE, 'compose.js'), encoding='utf-8').read()).group(1))
+# (story time, region (x, y, w, h) at 1920x1080, label): 1:1 crops added under the beats
 CODE = (40, 56, 640, 400)
 CROPS = {
     'main': [(15.6, CODE, 'code: three selectors broken (red wavy)'), (30.5, CODE, 'code: #accept-terms from the model (purple)'),
@@ -67,7 +70,8 @@ def sheet(cut):
     if crops:
         dr.text((GAP, y0 + 10), 'code panel, 1:1', fill=(238, 242, 247), font=font(26, True))
         y0 += 56
-    for i, (t, (cx, cy, cw, ch), label) in enumerate(crops):
+    for i, (st, (cx, cy, cw, ch), label) in enumerate(crops):
+        t = float('%.2f' % (st / PACE))      # the still's time in the video, as render.py named it
         x = GAP + (i % COLS) * (W + GAP)
         y = y0 + (i // COLS) * (CH + LABEL + GAP)
         im = Image.open(os.path.join(d, 't%06.2f.png' % t)).convert('RGB').crop((cx, cy, cx + cw, cy + ch))
@@ -89,7 +93,7 @@ def main():
             for f in os.listdir(d):
                 if f.endswith('.png'):
                     os.remove(os.path.join(d, f))
-        extra = ['--stills'] + ['%.2f' % t for t, _, _ in CROPS.get(cut, [])] if CROPS.get(cut) else []
+        extra = ['--stills'] + ['%.2f' % (t / PACE) for t, _, _ in CROPS.get(cut, [])] if CROPS.get(cut) else []
         r = subprocess.run([sys.executable, os.path.join(HERE, 'render.py'), '--cut', cut, '--beats'] + extra,
                            capture_output=True, text=True, encoding='utf-8')
         print(r.stdout.strip())

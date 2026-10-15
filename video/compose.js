@@ -124,7 +124,10 @@ function clickRows(sel, kwargs, n, id = 'c') {
     { id: id + '2', n: '', html: IND('heal.page.click('.length) + kws.map(([k, v]) => O_(k) + P_('=') + KW(pyv(v))).join(P_(', ')) + P_(')') }];
 }
 
-// ---------- the timeline: every cut declares its items here, in real seconds ----------
+// ---------- the timeline: every cut declares its items here, in story seconds ----------
+// The cut plays at PACE: story time t is shown at t / PACE seconds of the video, and every
+// frame is drawn fresh at that moment, so the motion stays as smooth as at full speed.
+const PACE = 0.7;
 const TL = {
   dur: 0, beats: [], code: [], frames: [], runs: [], caps: [], callouts: [], tags: [], boxes: [], clicks: [],
   cur: [], curOn: [], halo: [], focus: [], fills: [], checks: [], press: [], urls: [], badges: [], reloads: [],
@@ -167,9 +170,9 @@ function elide(line, a, b) {
   return a + ' … ' + b;
 }
 const msgOf = l => l.replace(/^(INFO|WARNING|ERROR) /, '');
-// The speed of a run's clock between story times a and b: round(real / shown).
+// The speed of a run's clock between story times a and b, as the video plays them: round(real / shown).
 function speedOf(keys, a, b) {
-  const r = (pw(keys, b) - pw(keys, a)) / (b - a);
+  const r = (pw(keys, b) - pw(keys, a)) / ((b - a) / PACE);
   if (r <= 1.5) throw new Error('not sped up between ' + a + ' and ' + b);
   return Math.round(r);
 }
@@ -690,7 +693,7 @@ function buildRuns() {
       r.segs = [];
       for (let i = 1; i < r.keys.length; i++) {
         const [a, x] = r.keys[i - 1], [b, y] = r.keys[i];
-        const rate = (y - x) / (b - a);
+        const rate = (y - x) / ((b - a) / PACE);     // the run's seconds per second of video
         if (rate > 1.5) r.segs.push({ a, b, n: Math.round(rate) });
       }
     }
@@ -1131,8 +1134,9 @@ window.audit = function audit() {
 };
 
 // ---------- per-frame drawing ----------
-function render(rt) {
+function render(vt) {
   if (!window.ready && !window.__building) return;
+  const rt = vt * PACE;           // vt: seconds of the video; rt: seconds of the story
   g1.style.transform = `translate(${Math.sin(rt * .21) * 60}px,${Math.cos(rt * .17) * 40}px)`;
   g2.style.transform = `translate(${Math.cos(rt * .19) * 70}px,${Math.sin(rt * .23) * 50}px)`;
   // story time: in a clip, the title holds TL.lead s before the story starts
@@ -1182,10 +1186,11 @@ function defineCut() {
   const f = window.CUTS[CUT];
   if (!f) throw new Error('unknown cut ' + CUT);
   f();
-  // DURATION and BEATS are in real seconds of the cut (a clip's story starts TL.lead late)
-  window.DURATION = TL.dur + TL.lead;
-  window.LEAD = TL.lead;
-  window.BEATS = TL.beats.map(b => ({ t: +(b.t + (b.real ? 0 : TL.lead)).toFixed(3), name: b.name })).sort((a, b) => a.t - b.t);
+  // DURATION and BEATS are in seconds of the video, at PACE (a clip's story starts TL.lead late)
+  window.PACE = PACE;
+  window.DURATION = (TL.dur + TL.lead) / PACE;
+  window.LEAD = TL.lead / PACE;
+  window.BEATS = TL.beats.map(b => ({ t: +((b.t + (b.real ? 0 : TL.lead)) / PACE).toFixed(3), name: b.name })).sort((a, b) => a.t - b.t);
   makeFrames();
 }
 window.defineCut = defineCut;
