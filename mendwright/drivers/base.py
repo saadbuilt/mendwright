@@ -122,6 +122,21 @@ def driver_fingerprint(driver, selector, frame_chain=()):
     return out if valid(out) else None
 
 
+def driver_visible_match(driver, selector, frame_chain=()):
+    """driver.visible_match(selector, frame_chain) when the driver has it, else None:
+    describe()'s result for the first visible element of those the selector matches, which
+    the WARNING for a selector that matches several builds its advice from. Any error, or
+    a result that is not one, gives None."""
+    method = getattr(driver, 'visible_match', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, frame_chain)
+    except Exception:
+        return None
+    return out if isinstance(out, dict) else None
+
+
 def driver_framed(driver, frame_selector):
     """driver.framed(frame_selector) when the driver has it, else None: a driver for the
     document inside the one iframe that frame_selector matches. None on any error."""

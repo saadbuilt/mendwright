@@ -108,7 +108,8 @@ class PlaywrightSyncDriver:
     Required Driver methods: count, is_visible, scroll_into_view, handle, act, url,
     outer_html. All take a selector of any kind plus an optional frame chain (frame
     selectors, outermost first). Optional extras, which callers reach through the
-    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint."""
+    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint,
+    visible_match."""
 
     def __init__(self, page):
         self._page = page
@@ -180,6 +181,13 @@ class PlaywrightSyncDriver:
         A malformed selector raises InvalidSelector; any other error gives None."""
         return self._probe(selector, frame_chain,
                            lambda loc: summary_from_js(loc.evaluate_all(DESCRIBE_JS)), None)
+
+    def visible_match(self, selector, frame_chain=()):
+        """describe()'s result for the first visible element the selector matches, or None
+        when none is. One round trip. A malformed selector raises InvalidSelector; any other
+        error gives None."""
+        return self._probe(selector, frame_chain, lambda loc: summary_from_js(
+            loc.locator('visible=true').first.evaluate_all(DESCRIBE_JS)), None)
 
     def fingerprint(self, selector, frame_chain=()):
         """The fingerprint of the one element the selector matches (see

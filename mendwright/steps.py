@@ -35,7 +35,9 @@ What mendwright does not guess:
 - A landmark is looked up with the driver's count() and is_visible() only. It is never
   healed and nothing is saved for it: a landmark that is missing is how a step that is not
   on the page looks. So a landmark must be stable, such as a heading's text or a field's
-  name.
+  name. One that matches more elements than mendwright looks at (the first 5, or on
+  Selenium the first match of a CSS selector), none of them visible, is named in one
+  WARNING per page, with selectors that match one visible element when there is one.
 - A step that ran and is on the page again, with no new step for the whole timeout (the
   card was declined, a field was rejected, or the site added a step that shows part of
   it, such as its heading), stops the flow with AttentionRequired: it is never run twice.
@@ -297,10 +299,14 @@ def landmark_targets(driver, selector, count):
     return [selector]
 
 
-def shows(driver, step, url):
+def shows(driver, step, url, several=None):
     """Whether step shows on the page now: its url pattern matches the page's path (when it
     has one), and one of its landmarks has a visible match (when it has any). Any error but
-    InvalidSelector reads as not there; InvalidSelector is raised, naming the step."""
+    InvalidSelector reads as not there; InvalidSelector is raised, naming the step.
+
+    several, when given, is called as several(step name, landmark, count, looked) for a
+    landmark that matches count elements of which only the first ``looked`` were looked
+    at, none visible (Healer._several warns once per page)."""
     if step.url is not None and not url_matches(step.url, url):
         return False
     if not step.when:
@@ -308,9 +314,12 @@ def shows(driver, step, url):
     for selector in step.when:
         try:
             count = driver.count(selector)
-            for target in landmark_targets(driver, selector, count):
+            targets = landmark_targets(driver, selector, count)
+            for target in targets:
                 if driver.is_visible(target):
                     return True
+            if several is not None and count > len(targets):
+                several(step.name, selector, count, len(targets))
         except InvalidSelector as exc:
             raise exc.for_key(step.name) from None
         except Exception:
@@ -324,8 +333,8 @@ async def _awaited(value):
     return value
 
 
-async def ashows(driver, step, url):
-    """shows(), with the driver's calls awaited (an async driver)."""
+async def ashows(driver, step, url, several=None):
+    """shows(), with the driver's calls awaited (an async driver), and several awaited."""
     if step.url is not None and not url_matches(step.url, url):
         return False
     if not step.when:
@@ -333,9 +342,12 @@ async def ashows(driver, step, url):
     for selector in step.when:
         try:
             count = await _awaited(driver.count(selector))
-            for target in landmark_targets(driver, selector, count):
+            targets = landmark_targets(driver, selector, count)
+            for target in targets:
                 if await _awaited(driver.is_visible(target)):
                     return True
+            if several is not None and count > len(targets):
+                await several(step.name, selector, count, len(targets))
         except InvalidSelector as exc:
             raise exc.for_key(step.name) from None
         except Exception:
@@ -634,12 +646,18 @@ def _next_step(healer, flow, timeout_ms, poll_ms):
     """Wait, up to timeout_ms, for a step that has not run to show, handling the
     registered interruptions the page shows meanwhile. Returns (step, page path): the
     page's path is read again after its landmarks, and they are looked at again when it
-    changed meanwhile, so the step is not given the page it came from."""
+    changed meanwhile, so the step is not given the page it came from. A landmark that
+    matches more elements than mendwright looks at is named in one WARNING per page
+    (Healer._several)."""
     __tracebackhide__ = True
     driver, wait = healer._driver, _Wait(time.monotonic(), timeout_ms)
     while True:
         url = healer._url()
-        shown = [s for s in flow.waiting() if shows(driver, s, url)]
+
+        def several(*landmark, url=url):
+            healer._several('landmark', *landmark, driver, url)
+
+        shown = [s for s in flow.waiting() if shows(driver, s, url, several)]
         if shown:
             if (page_path(healer._url()) == page_path(url)
                     or time.monotonic() >= wait.deadline):
@@ -696,7 +714,11 @@ async def _anext_step(healer, flow, timeout_ms, poll_ms):
     driver, wait = healer._driver, _Wait(healer._clock(), timeout_ms)
     while True:
         url = await _url(driver)
-        shown = [s for s in flow.waiting() if await ashows(driver, s, url)]
+
+        async def several(*landmark, url=url):
+            await healer._several_landmark(*landmark, url)
+
+        shown = [s for s in flow.waiting() if await ashows(driver, s, url, several)]
         if shown:
             if (page_path(await _url(driver)) == page_path(url)
                     or healer._clock() >= wait.deadline):

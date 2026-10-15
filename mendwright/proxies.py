@@ -44,7 +44,7 @@ from typing import Any
 
 from .drivers.base import looks_like_locator
 from .exceptions import AttentionRequired
-from .facade import ACTIONS, ActionProxy
+from .facade import ACTIONS, ActionProxy, _raised_by_run
 from .selectors import InvalidSelector, check_syntax
 
 # Locator methods that resolve the key (and heal it when it broke) before they run: the
@@ -526,6 +526,8 @@ class HealingDriver(_Proxy):
         try:
             action = self._mw_healer.locator(key, selector)
         except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # from a run= function of heal.interrupt(): raised as it is
             raise not_found_error(exc) from exc
         if not action.present:
             return None     # a key registered with heal.interrupt(), and not on the page

@@ -852,3 +852,149 @@ def test_a_lookup_after_a_step_went_on_to_the_next_page_is_declined(engine, tmp_
     assert error is not None and 'was last found on /checkout/step-a' in str(error)
     assert provider.bundles == []
     assert card == ''
+
+
+# --- an interruption that needs a form: heal.interrupt(run=...) ------------------------------
+
+def _relogin_page(wall=False):
+    """A session-expired popup over the page, which closes once the user and a password are
+    filled in and Sign in is clicked. With wall=True the form stays hidden until then."""
+    return ("""<p>Signed in as <span id="session">nobody</span>. Saved: <span id="saved">no</span></p>
+<form id="account" STYLE><input id="email" type="email">
+  <button id="save" type="button" onclick="document.getElementById('saved').textContent = 'yes'">Save</button></form>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; top: 0; padding: 16px; background: #fff">
+    <p>Your session expired. Sign in again.</p>
+    <input id="user" aria-label="User"><input id="password" type="password" aria-label="Password">
+    <button id="signin" type="button" onclick="signIn()">Sign in</button>
+  </div>
+</div>
+<script>
+function signIn() {
+  if (document.getElementById('password').value === '') return;     // it stays open
+  document.getElementById('session').textContent = document.getElementById('user').value;
+  document.getElementById('relogin').remove();
+  document.getElementById('account').style.display = 'block';
+}
+</script>""").replace('STYLE', 'style="display: none"' if wall else '')
+
+
+def _sign_in(calls, password='not-a-real-password'):
+    async def relogin(page):
+        calls.append(page)
+        await page.fill('#user', 'ada')
+        await page.fill('#password', password)
+        await page.click('#signin')
+    return relogin
+
+
+@pytest.mark.parametrize('routed', [True, False])
+def test_flow_a_session_popup_is_signed_in_by_an_async_run_function(engine, tmp_path, routed):
+    # Routed, the step handles the popup under the healer's lock, and the function's own
+    # calls go ahead without it. Not routed, Playwright's overlay handler awaits the function,
+    # whose actions run inside the handler.
+    calls = []
+
+    async def main():
+        page = await engine.page(_relogin_page())
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('relogin', '#relogin', run=_sign_in(calls))
+            if routed:
+                await heal.locator('save', '#save').click()
+            else:
+                await heal.page.get_by_role('button', name='Save').click(timeout=5000)
+            return heal, (await page.text_content('#session'), await page.text_content('#saved'))
+        finally:
+            await _close(page)
+
+    heal, texts = engine.run(main())
+    assert texts == ('ada', 'yes')
+    assert len(calls) == 1 and calls[0] is heal.page
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('relogin', 'save' if routed else '<page action>')]
+
+
+def test_flow_what_an_async_run_function_raises_stops_the_step(engine, tmp_path):
+    calls = []
+
+    async def relogin(page):
+        calls.append(page)
+        raise LookupError('no password for ada in the test vault')
+
+    async def main():
+        page = await engine.page(_relogin_page())
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('relogin', '#relogin', run=relogin)
+            with pytest.raises(LookupError, match='no password for ada'):
+                await heal.locator('save', '#save').click()
+            return heal, await page.text_content('#saved')
+        finally:
+            await _close(page)
+
+    heal, saved = engine.run(main())
+    assert saved == 'no' and len(calls) == 1 and heal.handled_interruptions == []
+
+
+def test_flow_a_session_popup_an_async_run_function_cannot_close_stops_after_three(engine,
+                                                                                  tmp_path):
+    calls = []
+    provider = Stub("//input[@id='email']")
+
+    async def main():
+        page = await engine.page(_relogin_page(wall=True))
+        try:
+            heal = await mendwright.aio.open(page, provider=provider,
+                                             store_path=_store(tmp_path), timeout_ms=300)
+            heal.interrupt('relogin', '#relogin', run=_sign_in(calls, password=''))
+            with pytest.raises(AttentionRequired) as caught:
+                await heal.locator('email', '#email', role='input').fill('ada@example.com')
+            return str(caught.value)
+        finally:
+            await _close(page)
+
+    message = engine.run(main())
+    assert "3 interruptions were handled for 'email' and 'relogin' is still on the page" in message
+    assert len(calls) == 3 and provider.bundles == []
+
+
+_TWO_ACCEPTS = _SIGNUP + """<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <button class="cookie-accept" type="button" style="display: none">Accept all</button>
+    <button id="accept-all" class="cookie-accept" type="button"
+      onclick="document.getElementById('consent').textContent = 'accepted';
+               document.getElementById('cookie-banner').remove()">Accept all</button>
+  </div></div>"""
+
+
+def test_flow_an_interruption_that_matches_two_buttons_is_named_once(engine, tmp_path, caplog):
+    async def main():
+        page = await engine.page(_TWO_ACCEPTS)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('cookies', '.cookie-accept')
+            for _ in range(2):
+                with pytest.raises(Exception, match='intercept'):
+                    await heal.locator('create', '#create').click(timeout=1000)
+            heal.interrupt('cookies', '#accept-all')
+            await heal.locator('create', '#create').click()
+            return await _texts(page)
+        finally:
+            await _close(page)
+
+    texts = engine.run(main())
+    assert texts[1:] == ('accepted', 'created')
+    skipped = [r.getMessage() for r in caplog.records
+               if r.name == 'mendwright' and 'was skipped' in r.getMessage()]
+    assert skipped == [
+        "mendwright: interruption 'cookies' was skipped: its selector '.cookie-accept' matches "
+        "2 elements, and mendwright acts on a CSS or Playwright selector only when it matches "
+        "one (an XPath is narrowed to its first visible match). Use a selector that matches "
+        "only the element to act on, such as '#accept-all' or 'role=button[name=\"Accept all\"]', "
+        "which each match one visible element on this page."]

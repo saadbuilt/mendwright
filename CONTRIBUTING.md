@@ -165,6 +165,7 @@ A driver wraps one live page or session.
 | `framed(frame_selector)` | optional | A driver for the document inside the one iframe `frame_selector` matches, or `None`. Without it, a key found inside an iframe heals on the page. |
 | `fingerprint(selector, frame_chain=())` | optional | The fingerprint (see `mendwright/fingerprint.py`) of the one element the selector matches, else `None`. Run `FINGERPRINT_JS` on the match and pass the result through `from_raw()`. Without it, `driver_fingerprint()` returns `None` and the fingerprint tier never has anything to look for. |
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
+| `visible_match(selector, frame_chain=())` | optional | `describe()`'s result for the first visible element of those the selector matches, else `None`. The WARNING for an interruption or a landmark whose selector matches several elements builds the selectors it suggests from it. Without it, `driver_visible_match()` returns `None` and the WARNING suggests none. |
 
 Rules:
 

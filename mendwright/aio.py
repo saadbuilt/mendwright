@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import inspect
 import logging
 import os
@@ -60,11 +61,11 @@ from .facade import _dismiss_choice
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, Role, Selector, _NOT_FOLLOWED, _cookie_preset,
                      _healed_target_error, _join_overlay, _leave_overlay, _locator_args,
-                     _overlay_locator, _overlay_options, _overlay_owner, _removable, _setup,
-                     latest_success)
+                     _overlay_locator, _overlay_options, _overlay_owner, _raised_by_run,
+                     _removable, _reraise, _setup, latest_success)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
-                   rejected_selector_message)
-from .interruptions import Budget
+                   page_path, rejected_selector_message, run_plain_message)
+from .interruptions import Budget, function_name
 from .limits import Guardrails
 from .resolver import _frame_chain, _no_match_message, _require_visible, _split_runnable
 from .selectors import XPATH, InvalidSelector, classify
@@ -138,9 +139,11 @@ class SyncBridge:
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
     handle, url, outer_html, describe, inventory, fingerprint), act_on for an
-    interruption's action, the popup methods of open(dismiss=True) (popup_probe and the
-    others), and run() for any other callable. describe, fingerprint and the popup methods
-    are None when the async driver has none."""
+    interruption's action, visible_match for the WARNING about a selector that matches
+    several elements, the popup methods of open(dismiss=True) (popup_probe and the
+    others), run() for any other callable, and wait() for a run= function of
+    heal.interrupt(). describe, fingerprint, visible_match and the popup methods are None
+    when the async driver has none."""
 
     timeout = 30.0
 
@@ -157,6 +160,8 @@ class SyncBridge:
             self.describe = None
         if not callable(_member(driver, 'fingerprint')):
             self.fingerprint = None
+        if not callable(_member(driver, 'visible_match')):
+            self.visible_match = None
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
@@ -164,6 +169,15 @@ class SyncBridge:
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
         awaitable, and its result returned here. Errors from fn propagate."""
+        return self._call(fn, args, kwargs, self.timeout)
+
+    def wait(self, fn: Callable[..., Any], *args: Any) -> Any:
+        """run(fn, *args) with no time limit: for a run= function of heal.interrupt(), the
+        user's own code, which may wait for the page as long as it needs. It runs in a task
+        that copies this thread's context variables, as asyncio.to_thread() does."""
+        return self._call(fn, args, {}, None)
+
+    def _call(self, fn, args, kwargs, timeout):
         loop = self._loop
         try:
             running = asyncio.get_running_loop()
@@ -186,7 +200,7 @@ class SyncBridge:
 
         future = asyncio.run_coroutine_threadsafe(call(), loop)
         try:
-            return future.result(self.timeout)
+            return future.result(timeout)
         except concurrent.futures.TimeoutError:
             if future.done():
                 raise  # fn itself raised a TimeoutError
@@ -222,6 +236,9 @@ class SyncBridge:
 
     def fingerprint(self, selector, frame_chain=()):
         return self.run(self._driver.fingerprint, selector, frame_chain)
+
+    def visible_match(self, selector, frame_chain=()):
+        return self.run(self._driver.visible_match, selector, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
@@ -393,6 +410,7 @@ class AsyncHealer:
         # the same store; only page work is async here. This healer stands in for it in
         # live_healers().
         self._core = Healer(page, driver, store, coordinator, timeout_ms=timeout_ms)
+        self._core._runner = self._run_function
         _unregister(self._core)
         _register(self)
         self._sleep = sleep
@@ -448,7 +466,7 @@ class AsyncHealer:
     async def _peek_visible(self, key):
         """Healer._peek_visible(), awaited: no wait, no heal, no scrolling, and nothing
         recorded in the store."""
-        async with self._lock:
+        async with self._turn():
             require_visible = _require_visible(self.store, key)
             runnable, _errors = _split_runnable(key, self.store.candidates(key))
             for candidate in runnable:
@@ -472,11 +490,15 @@ class AsyncHealer:
     def timeout_ms(self, value: int) -> None:
         self._core.timeout_ms = value
 
-    def interrupt(self, key: str, selector: Selector | None, *, action: str = 'click',
-                  args: Sequence[Any] = (), role: Role | None = None) -> None:
+    def interrupt(self, key: str, selector: Selector | None, *, action: str | None = None,
+                  args: Sequence[Any] = (), role: Role | None = None,
+                  run: Callable[[Any], Any] | None = None) -> None:
         """Register a step that may appear at any point of the flow, as
         Healer.interrupt() does, or remove one with interrupt(key, None). Sync: it only
-        registers. The action is awaited when the interruption is handled.
+        registers. The action is awaited when the interruption is handled. run= takes an
+        async function, which gets heal.page and is awaited on the event loop, or a plain
+        one that returns an awaitable; one that returns anything else raises TypeError
+        when the interruption is handled.
 
         On an async Playwright Page (Playwright 1.42 and later) Playwright's overlay
         handler is registered too, as on the sync Healer. That call is a coroutine, so it
@@ -484,7 +506,7 @@ class AsyncHealer:
         checks the page again while an action waits. Removing it works the same way, and
         the changes to one page's handlers run one at a time, in the order of the calls."""
         core = self._core
-        core.interrupt(key, selector, action=action, args=args, role=role)
+        core.interrupt(key, selector, action=action, args=args, role=role, run=run)
         if not isinstance(self._driver, AsyncPlaywrightDriver):
             return
         if selector is None:
@@ -511,6 +533,28 @@ class AsyncHealer:
         except Exception:
             logger.debug('mendwright: could not change an overlay handler for %r',
                          getattr(arg, 'key', arg), exc_info=True)
+
+    def _run_function(self, item, bridge):
+        """Healer._runner for this healer: await interruption item's run= function on the
+        event loop, from the worker thread the sync Healer's code handles interruptions
+        in, and wait for it there. The task it runs in copies that thread's context, so it
+        is inside the run (facade._IN_RUN) and its own calls skip the lock (_turn), which
+        the step that handles the interruption holds while it waits."""
+        bridge.wait(self._await_run, item)
+
+    async def _await_run(self, item):
+        """item.run(heal.page), awaited: TypeError for a plain function that returned no
+        awaitable, since heal.page's calls are coroutines here."""
+        result = item.run(self.page)
+        if not inspect.isawaitable(result):
+            raise TypeError(run_plain_message(item.key, function_name(item.run), result))
+        await result
+
+    def _turn(self):
+        """The healer's lock, so that its calls take turns (see the module docs), or none
+        inside a run= function of interrupt(): the step that runs it holds the lock and
+        waits for it, and its calls would otherwise wait for that step forever."""
+        return contextlib.nullcontext() if self._core._in_run() else self._lock
 
     @property
     def handled_interruptions(self) -> list:
@@ -541,7 +585,7 @@ class AsyncHealer:
     async def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
         No waiting and no healing."""
-        async with self._lock:
+        async with self._turn():
             store = self.store
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)
@@ -577,7 +621,7 @@ class AsyncHealer:
 
     async def _resolve_proxy(self, proxy):
         __tracebackhide__ = True  # pytest shows the caller
-        async with self._lock:
+        async with self._turn():
             if proxy._native is _UNRESOLVED:
                 native = await self._locate(proxy._key, *proxy._plan)
                 if native is _ABSENT:
@@ -589,7 +633,8 @@ class AsyncHealer:
     async def _locate(self, key, roles, code, text, destructive, timeout, poll_ms,
                       optional=False, intent=None):
         """Healer.locator() after its argument checks, with the page work awaited.
-        Runs under self._lock. Returns _ABSENT for a step that was skipped."""
+        Runs under self._lock (or, inside a run= function, under the lock of the step that
+        runs it: see _turn). Returns _ABSENT for a step that was skipped."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
         core._prime(key, roles, code, text, destructive, intent)
@@ -604,6 +649,8 @@ class AsyncHealer:
         except InterruptionLoop:
             raise   # the page is blocked: a heal would not help
         except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # a run= function's own, not a miss of this step
             skip = core._skip_reason(key, optional)
             if skip:
                 core._record_skip(key, skip)
@@ -694,11 +741,13 @@ class AsyncHealer:
         and no thread. A popup is dismissed by the sync Healer's code in a worker thread
         through SyncBridge, under the lock, as _interrupt_for_action() handles an
         interruption: two actions awaited together never click the same popup. That code
-        looks again first, since another action may have dismissed it meanwhile."""
+        looks again first, since another action may have dismissed it meanwhile. Nothing
+        is looked at for the actions of a run= function (see Healer._dismiss)."""
         __tracebackhide__ = True
         core = self._core
         probe = _member(self._driver, 'popup_probe')
-        if not core._dismiss_on or native is None or budget.gave_up or not callable(probe):
+        if (not core._dismiss_on or native is None or budget.gave_up or not callable(probe)
+                or core._in_run()):
             return False
         try:
             seen = await _awaited(self._driver.popup_probe(native, None, True))
@@ -956,7 +1005,7 @@ class AsyncHealer:
     async def _confirm(self, key, success):
         """coordinator.confirm_pending(), in a worker thread (a gateway provider reports
         the outcome over HTTP) and under the lock."""
-        async with self._lock:
+        async with self._turn():
             if key in self.coordinator.pending:
                 await _in_thread(self.coordinator.confirm_pending, key, bool(success))
 
@@ -984,6 +1033,15 @@ class AsyncHealer:
         async with self._lock:
             return await _in_thread(_steps.interrupt, core, budget, timeout_ms, poll_ms, failed,
                                     self._sync_driver())
+
+    async def _several_landmark(self, name, selector, count, looked, url):
+        """Healer._several() for a landmark of step name, in a worker thread through
+        SyncBridge, once per page: no thread once it was named for this page."""
+        core = self._core
+        if ('landmark', name, page_path(url)) in core._several_seen:
+            return
+        await _in_thread(core._several, 'landmark', name, selector, count, looked,
+                         self._sync_driver(), url)
 
     async def run_steps(self, *, timeout_ms: int | None = None, poll_ms: int = 200) -> list:
         """Healer.run_steps(), with the page work awaited: the landmarks are looked at on
@@ -1102,6 +1160,7 @@ class AsyncActionProxy:
             except _USAGE_ERRORS:
                 raise
             except Exception as exc:
+                _reraise(budget)    # a run= function failed in the overlay handler meanwhile
                 intercepted, used = is_interception_error(exc), budget.used
                 if not (intercepted and await healer._unblock_for_action(
                         self._key, native, budget, timeout, poll_ms)):
@@ -1115,9 +1174,11 @@ class AsyncActionProxy:
                 except _USAGE_ERRORS:
                     raise
                 except Exception as again:
+                    _reraise(budget)
                     if not is_stale_error(again):
                         await healer._confirm(self._key, False)
                     raise
+            _reraise(budget)
         if expect is not None:
             try:
                 ok = bool(await _awaited(expect()))

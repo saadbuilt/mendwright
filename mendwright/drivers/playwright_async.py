@@ -34,8 +34,9 @@ class AsyncPlaywrightDriver:
     """Wraps an async Playwright Page or Frame (or a patchright / camoufox one).
 
     Every method is a coroutine: count, is_visible, scroll_into_view, handle, act, act_on,
-    url, outer_html, describe, fingerprint and inventory, with the same arguments and results as
-    PlaywrightSyncDriver. handle() returns the native async Locator."""
+    url, outer_html, describe, fingerprint, visible_match and inventory, with the same
+    arguments and results as PlaywrightSyncDriver. handle() returns the native async
+    Locator."""
 
     def __init__(self, page):
         self._page = page
@@ -114,6 +115,14 @@ class AsyncPlaywrightDriver:
         or None when it matches none or several (see PlaywrightSyncDriver.describe)."""
         async def op(loc):
             return summary_from_js(await loc.evaluate_all(DESCRIBE_JS))
+        return await self._probe(selector, frame_chain, op, None)
+
+    async def visible_match(self, selector, frame_chain=()):
+        """describe()'s result for the first visible element the selector matches, or None
+        (see PlaywrightSyncDriver.visible_match)."""
+        async def op(loc):
+            return summary_from_js(
+                await loc.locator('visible=true').first.evaluate_all(DESCRIBE_JS))
         return await self._probe(selector, frame_chain, op, None)
 
     async def fingerprint(self, selector, frame_chain=()):
