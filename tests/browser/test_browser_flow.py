@@ -941,12 +941,12 @@ def test_a_run_function_picks_from_a_list_in_its_popup(tab, store_file, stub_pro
     heal.interrupt('address', '#pick-address', run=pick_address)
     _step(heal, 'save', '#save').click()
 
-    # The function's list lookup was recorded as any other, from inside the step.
+    # The function's list lookup went to the real page or driver, and saved nothing.
     assert len(calls) == 1 and tab.text('#address') == '2 High Street'
     assert tab.text('#saved') == 'yes'
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [('address', 'save')]
     key = '.address' if tab.family == 'playwright' else 'css selector=.address'
-    assert heal.store.meta(key)['listFingerprint']['count'] == 3
+    assert heal.store.candidates(key) == []
 
 
 # --- a selector that matches several elements ----------------------------------------------------

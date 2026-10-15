@@ -1146,14 +1146,14 @@ function pick(button) {
 
 @pytest.mark.parametrize('routed', [True, False])
 def test_flow_an_async_run_function_picks_from_a_list_in_its_popup(engine, tmp_path, routed):
-    # The function's list lookup goes ahead without the healer's lock, which the step that
-    # awaits the function holds, or Playwright's overlay handler: taking it would wait for
-    # them forever.
-    calls = []
+    # The function's heal.locator_all() goes ahead without the healer's lock, which the step
+    # that awaits the function holds, or Playwright's overlay handler: taking it would wait
+    # for them forever.
+    calls, healer = [], {}
 
     async def pick_address(page):
         calls.append(page)
-        options = await page.locator('.address').all()
+        options = await healer['heal'].locator_all('addresses', '.address')
         await options[1].click()
 
     async def main():
@@ -1161,6 +1161,7 @@ def test_flow_an_async_run_function_picks_from_a_list_in_its_popup(engine, tmp_p
         try:
             heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
                                              timeout_ms=300)
+            healer['heal'] = heal
             heal.interrupt('address', '#pick-address', run=pick_address)
             if routed:
                 save = heal.locator('save', '#save').click()
@@ -1176,7 +1177,7 @@ def test_flow_an_async_run_function_picks_from_a_list_in_its_popup(engine, tmp_p
     assert len(calls) == 1 and calls[0] is heal.page
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [
         ('address', 'save' if routed else '<page action>')]
-    assert heal.store.meta('.address')['listFingerprint']['count'] == 3
+    assert heal.store.meta('addresses')['listFingerprint']['count'] == 3
 
 
 _TWO_ACCEPTS = _SIGNUP + """<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
@@ -1237,7 +1238,7 @@ def test_a_list_heals(engine, tmp_path):
             first = len(await heal.page.locator('.product-card').all())
             await heal.locator_all('cards', '.product-card')
             await page.set_content(_shop('product-tile'))
-            items = await heal.page.locator('.product-card').all()
+            items = await heal.page.locator('.product-card').all()   # never healed
             cards = await heal.locator_all('cards', '.product-card')
             names = [await c.native.locator('h3').inner_text() for c in cards]
             return heal, first, len(items), names
@@ -1245,9 +1246,8 @@ def test_a_list_heals(engine, tmp_path):
             await page.context.close()
 
     heal, first, found, names = engine.run(main())
-    assert first == 3 and found == 3 and names == ['Blue mug', 'Red mug', 'Tea pot']
-    assert [(h.key, h.new, h.source) for h in heal.heals] == [
-        ('.product-card', tile, 'fingerprint'), ('cards', tile, 'fingerprint')]
+    assert first == 3 and found == 0 and names == ['Blue mug', 'Red mug', 'Tea pot']
+    assert [(h.key, h.new, h.source) for h in heal.heals] == [('cards', tile, 'fingerprint')]
 
 
 def test_a_read_that_heals_onto_the_wrong_number_is_refused(engine, tmp_path):

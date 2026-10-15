@@ -1,13 +1,13 @@
 """Lists: heal a selector that matched the items of a list, such as the cards of a product
 grid, onto the new items after a redesign.
 
-Each time a list lookup (Healer.locator_all(), heal.page.locator(selector).all(),
-heal.driver.find_elements()) matches two or more elements, mendwright records a list
-fingerprint in one round trip (LIST_JS): the fingerprints of up to three of the items (the
-first, the middle and the last, see mendwright.fingerprint), the tags inside each one and of
-its children (its shape), how many items there were, their nearest common container (its tag, id, test id,
-aria-label, classes and role) and how many levels below it they sit. A list that matched
-fewer than two elements is not recorded: nothing repeats in it.
+Each time a list lookup (Healer.locator_all()) matches two or more elements, mendwright
+records a list fingerprint in one round trip (LIST_JS): the fingerprints of up to three of
+the items (the first, the middle and the last, see mendwright.fingerprint), the tags inside
+each one and of its children (its shape), how many items there were, their nearest common
+container (its tag, id, test id, aria-label, classes and role) and how many levels below it
+they sit. A list that matched fewer than two elements is not recorded: nothing repeats in
+it.
 
 When every selector of a recorded list matches nothing, groups() lists the repeated groups
 of the captured page: two or more elements of the items' role that sit the same number of

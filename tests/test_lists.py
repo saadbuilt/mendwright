@@ -1,11 +1,13 @@
-"""Lists (mendwright.lists): heal.locator_all(), heal.page.locator(selector).all() and
-heal.driver.find_elements() heal a list selector that matches nothing any more. Offline: the
-lxml-backed FakePage from conftest (fingerprints=True answers the list fingerprint read), a
-stub provider, and the fake Selenium driver of test_proxies.py."""
+"""Lists (mendwright.lists): heal.locator_all() heals a list selector that matches nothing
+any more, and heal.page.locator(selector).all() and heal.driver.find_elements() give what
+the real call gives, as in 0.7.0. Offline: the lxml-backed FakePage from conftest
+(fingerprints=True answers the list fingerprint read), a stub provider, and the fake
+Selenium driver of test_proxies.py."""
 
 import asyncio
 import json
 import re
+import time
 
 import lxml.html
 import pytest
@@ -503,26 +505,55 @@ def test_the_list_prompt():
         '\n    item: <div>Blue mug [URL]</div>')
 
 
-# --- heal.page and heal.driver ----------------------------------------------------------------
+# --- heal.page and heal.driver: as in 0.7.0 ---------------------------------------------------
 
-def test_heal_page_locator_all_heals(tmp_path, make_page):
+def _writes(monkeypatch):
+    """The writes of the override file, by any store, from now on."""
+    from mendwright.store import SelectorStore
+    writes, real = [], SelectorStore._write
+
+    def write(self, payload):
+        writes.append(1)
+        return real(self, payload)
+    monkeypatch.setattr(SelectorStore, '_write', write)
+    return writes
+
+
+def test_heal_page_locator_all_is_the_real_one_and_saves_nothing(
+        tmp_path, make_page, stub_provider, monkeypatch):
+    # A script that waits for toasts to go away, or checks that a cart is empty, gets []
+    # at once, as it did in 0.7.0, even for a selector that matched two or more before.
+    writes = _writes(monkeypatch)
     page = make_page(V1, fingerprints=True, css=True)
-    heal = _open(page, tmp_path)
+    provider = stub_provider(TILE)
+    heal = _open(page, tmp_path, provider, timeout_ms=60000)   # it would wait a minute
     assert len(heal.page.locator('.product-card').all()) == 4
-    page.set_html(V2)
-    items = heal.page.locator('.product-card').all()
-    assert [i.inner_text() for i in items][:1] == ['Blue mug$12.00Add to cart']
-    assert heal.heals[0].key == '.product-card' and heal.heals[0].new == TILE
-    heal_row = [c for c in heal.store.candidates('.product-card') if c['source'] == 'heal'][0]
-    assert 'css' in heal_row                            # the code's selector is CSS
+    assert len(heal.page.locator('h1').all()) == 1 and heal.page.locator('.nothing').all() == []
+    polls = 0
+    started = time.monotonic()
+    while heal.page.locator('.product-card').all() and polls < 10:   # until the cards go
+        polls += 1
+        if polls == 3:
+            page.set_html(V2)
+    assert polls == 3 and time.monotonic() - started < 5
+    assert heal.heals == [] and provider.bundles == [] and page.fingerprint_reads == 0
+    assert writes == [] and not (tmp_path / 'o.json').exists()
+    again = _open(page, tmp_path, provider, timeout_ms=60000)
+    assert again.page.locator('.product-card').all() == []
 
 
-def test_heal_page_all_with_one_or_no_match_stays_as_it_was(tmp_path, make_page):
+def test_heal_page_locator_all_never_heals_a_list_heal_locator_all_recorded(
+        tmp_path, make_page, stub_provider):
     page = make_page(V1, fingerprints=True, css=True)
-    heal = _open(page, tmp_path, timeout_ms=60000)
-    assert len(heal.page.locator('h1').all()) == 1
-    assert heal.page.locator('.nothing').all() == []
-    assert heal.store.candidates('h1') == [] and heal.store.candidates('.nothing') == []
+    provider = stub_provider(TILE)
+    heal = _open(page, tmp_path, provider, timeout_ms=60000)
+    assert len(heal.locator_all('.product-card', '.product-card')) == 4
+    page.set_html(V2)
+    assert heal.page.locator('.product-card').all() == []    # no wait, no heal, no model
+    assert heal.heals == [] and provider.bundles == []
+    assert len(heal.locator_all('.product-card', '.product-card', timeout_ms=0)) == 4
+    assert heal.page.locator('.product-card').all() == []    # not through the list heal
+    assert len(heal.page.locator('.product-tile').all()) == 4
 
 
 def _chaining(fake_page):
@@ -578,16 +609,81 @@ class ListDriver(WebDriver):
         return super().execute_script(script, *args)
 
 
-def test_heal_driver_find_elements_heals(tmp_path):
-    web = ListDriver(V1)
-    heal = _open(web, tmp_path)
-    assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
-    web.set_html(V2)
+def test_heal_driver_find_elements_is_the_real_one_and_saves_nothing(
+        tmp_path, stub_provider, monkeypatch):
+    writes = _writes(monkeypatch)
+    web = CountingDriver(V1)
+    provider = stub_provider(TILE)
+    heal = _open(web, tmp_path, provider, timeout_ms=60000)    # it would wait a minute
+    real = web.find_elements('css selector', '.product-card')
+    web.calls.clear()
     found = heal.driver.find_elements('css selector', '.product-card')
-    assert [e.text for e in found][:1] == ['Blue mug$12.00Add to cart']
-    assert heal.heals[0].key == 'css selector=.product-card' and heal.heals[0].new == TILE
-    assert heal.driver.find_elements('css selector', '.nothing') == []
-    assert heal.store.candidates('css selector=.nothing') == []
+    assert web.calls == ['findElements']                    # the real call and nothing else
+    assert [e.native.el for e in found] == [e.el for e in real]
+    assert [e.text[:7] for e in found] == ['Blue mu', 'Red mug', 'Green m', 'Tea pot']
+    assert len(heal.driver.find_elements('xpath', '//h1')) == 1
+    web.set_html(V2)
+    started = time.monotonic()
+    assert heal.driver.find_elements('css selector', '.product-card') == []
+    assert time.monotonic() - started < 5
+    assert heal.heals == [] and provider.bundles == []
+    assert writes == [] and not (tmp_path / 'o.json').exists()
+
+
+def test_webdriverwait_on_heal_driver_find_elements_works_as_before(tmp_path):
+    ui = pytest.importorskip('selenium.webdriver.support.ui')
+    web = ListDriver(V1)
+    heal = _open(web, tmp_path, timeout_ms=60000)
+    polls = []
+
+    def gone(driver):
+        polls.append(1)
+        if len(polls) == 3:
+            web.set_html(shop(''))                        # the cards go away
+        return len(driver.find_elements('css selector', '.product-card')) == 0
+    started = time.monotonic()
+    assert ui.WebDriverWait(heal.driver, 5, poll_frequency=0.01).until(gone) is True
+    assert ui.WebDriverWait(heal.driver, 5, poll_frequency=0.01).until_not(
+        lambda d: d.find_elements('css selector', '.product-card')) == []
+    polls.clear()
+
+    def cards(driver):
+        polls.append(1)
+        if len(polls) == 3:
+            web.set_html(V1)                              # the cards arrive
+        return driver.find_elements('css selector', '.product-card')
+    found = ui.WebDriverWait(heal.driver, 5, poll_frequency=0.01).until(cards)
+    assert len(found) == 4 and len(polls) == 3 and heal.heals == []
+    assert time.monotonic() - started < 5
+
+
+def test_one_off_list_selectors_through_heal_page_and_heal_driver_write_nothing(
+        tmp_path, make_page, monkeypatch):
+    # A scraper that reads a table row by row, with a new selector for each row.
+    writes = _writes(monkeypatch)
+    rows = ''.join('<tr>' + ''.join('<td>r%dc%d</td>' % (i, j) for j in range(5)) + '</tr>'
+                   for i in range(1, 21))
+    table = '<html><body><table><tbody>' + rows + '</tbody></table></body></html>'
+    page = _open(make_page(table, fingerprints=True), tmp_path).page
+    driver = _open(ListDriver(table), tmp_path).driver
+    for i in range(1, 21):
+        assert len(page.locator('xpath=//table/tbody/tr[%d]/td' % i).all()) == 5
+        assert len(driver.find_elements('xpath', '//table/tbody/tr[%d]/td' % i)) == 5
+    assert writes == [] and not (tmp_path / 'o.json').exists()
+
+
+def test_heal_locator_all_saves_a_new_list_in_one_write(tmp_path, make_page, monkeypatch):
+    page = make_page(V1, fingerprints=True, url='https://shop.example/shop')
+    heal = _open(page, tmp_path)
+    writes = _writes(monkeypatch)
+    assert len(heal.locator_all('cards', CARDS)) == 4
+    # Its selector, its first success, the page and the list fingerprint with the role.
+    assert len(writes) == 1
+    saved = load_store(None, str(tmp_path / 'o.json'))
+    meta = saved.meta('cards')
+    assert meta['listFingerprint'] == _lfp() and meta['expectedRole'] == 'div'
+    assert meta['lastPage'] == '/shop' and saved.candidates('cards')[0]['lastSucceededAt']
+    assert len(heal.locator_all('cards', CARDS)) == 4 and len(writes) == 1   # nothing new
 
 
 # --- async ----------------------------------------------------------------------------------
@@ -619,19 +715,12 @@ def test_async_lists_heal(tmp_path, make_page):
         sync.set_html(V2)
         cards = await heal.locator_all('cards', CARDS)
         items = await heal.page.locator('.product-card').all()
-        return heal, [await c.inner_text() for c in cards], len(items)
-    heal, texts, count = asyncio.run(main())
-    assert texts[0] == 'Blue mug$12.00Add to cart' and count == 4
-    assert [h.new for h in heal.heals] == [TILE, TILE]
-    assert heal.pending() == {'cards': TILE, '.product-card': TILE}
-
-
-def test_heal_driver_find_elements_with_one_match_saves_nothing(tmp_path):
-    web = ListDriver(V1)
-    heal = _open(web, tmp_path, timeout_ms=60000)
-    assert len(heal.driver.find_elements('xpath', '//h1')) == 1
-    assert heal.driver.find_elements('xpath', '//h2') == []
-    assert heal.store.candidates('xpath=//h1') == [] and heal.store.candidates('xpath=//h2') == []
+        return heal, [await c.inner_text() for c in cards], items
+    heal, texts, items = asyncio.run(main())
+    assert texts[0] == 'Blue mug$12.00Add to cart' and items == []
+    assert [h.new for h in heal.heals] == [TILE]
+    assert heal.pending() == {'cards': TILE}
+    assert heal.store.candidates('.product-card') == []      # heal.page saved nothing
 
 
 def test_a_list_of_links_with_role_heals(tmp_path, make_page):
@@ -677,18 +766,20 @@ def test_a_list_heal_is_saved_marked_and_needs_a_store_that_marks_it(tmp_path):
 
 @pytest.mark.parametrize('order', ['find_element first', 'find_elements first'])
 def test_a_heal_of_one_card_never_answers_for_the_list(tmp_path, stub_provider, order):
-    # find_element() and find_elements() of one By value share a key.
+    # heal.locator_all() under the key and selector of driver.find_element().
+    from mendwright.proxies import selenium_selector
+    key, selector = 'css selector=.product-card', selenium_selector('css selector', '.product-card')
     web = ListDriver(V1)
     provider = stub_provider(None)
     heal = _open(web, tmp_path, provider)
-    assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
+    assert len(heal.locator_all(key, selector)) == 4
     web.set_html(V2)
     provider.xpath = "//div[@class='product-tile'][h3='Blue mug']"
     if order == 'find_elements first':
-        assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
+        assert len(heal.locator_all(key, selector)) == 4
     assert heal.driver.find_element('css selector', '.product-card').text.startswith('Blue mug')
-    found = heal.driver.find_elements('css selector', '.product-card')
-    assert [e.text[:7] for e in found] == ['Blue mu', 'Red mug', 'Green m', 'Tea pot']
+    found = heal.locator_all(key, selector)
+    assert [e.native.text[:7] for e in found] == ['Blue mu', 'Red mug', 'Green m', 'Tea pot']
     assert sorted(h.source for h in heal.heals) == ['fingerprint', 'model']
 
 
@@ -696,51 +787,28 @@ def test_a_heal_page_shortcut_s_heal_never_answers_for_the_list(tmp_path, make_p
     page = make_page(V1, fingerprints=True, css=True)
     provider = stub_provider(None)
     heal = _open(page, tmp_path, provider)
-    assert len(heal.page.locator('.product-card').all()) == 4
+    assert len(heal.locator_all('.product-card', '.product-card')) == 4
     page.set_html(V2)
     provider.xpath = "//div[@class='product-tile'][h3='Red mug']"
     heal.page.click('.product-card')                      # a heal of one card
-    assert len(heal.page.locator('.product-card').all()) == 4
-
-
-def test_heal_driver_find_elements_keeps_webdriverwait_polling(tmp_path):
-    exceptions = pytest.importorskip('selenium.common.exceptions')
-    ui = pytest.importorskip('selenium.webdriver.support.ui')
-    web = ListDriver(V1)
-    heal = _open(web, tmp_path)
-    assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
-    web.set_html(shop(''))                                # the grid is loading
-    with pytest.raises(exceptions.NoSuchElementException) as info:
-        heal.driver.find_elements('css selector', '.product-card')
-    assert isinstance(info.value, AttentionRequired)
-    assert 'No matching element for: css selector=.product-card' in str(info.value)
-    polls = []
-
-    def cards(driver):
-        polls.append(1)
-        if len(polls) == 3:
-            web.set_html(V1)                              # the cards arrive
-        return driver.find_elements('css selector', '.product-card')
-    found = ui.WebDriverWait(heal.driver, 5, poll_frequency=0.01).until(cards)
-    assert len(found) == 4 and len(polls) == 3 and heal.heals == []
+    assert len(heal.locator_all('.product-card', '.product-card')) == 4
 
 
 def test_a_list_that_is_still_loading_is_not_healed_onto_its_placeholders(tmp_path):
     web = ListDriver(V1)
     heal = _open(web, tmp_path)
-    heal.driver.find_elements('css selector', '.product-card')
+    heal.locator_all('cards', '.product-card')
     web.set_html(shop(_skeleton() * 4))
     with pytest.raises(AttentionRequired, match='so the list may still be loading'):
-        heal.driver.find_elements('css selector', '.product-card')
+        heal.locator_all('cards', '.product-card')
     assert heal.heals == []
-    assert [c for c in heal.store.candidates('css selector=.product-card')
-            if c['source'] == 'heal'] == []
+    assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
 
 
 def test_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
     page = make_page(V1, fingerprints=True, css=True)
     heal = _open(page, tmp_path)
-    assert len(heal.page.locator('.product-card').all()) == 4
+    assert len(heal.locator_all('cards', '.product-card')) == 4
     page.set_html(shop(''))                               # the grid is loading
     capture = heal.coordinator.html_provider
 
@@ -748,9 +816,9 @@ def test_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path,
         page.set_html(V1)                                 # as the page is captured
         return capture()
     heal.coordinator.html_provider = cards_arrive
-    assert len(heal.page.locator('.product-card').all()) == 4
+    assert len(heal.locator_all('cards', '.product-card')) == 4
     assert heal.heals == []
-    assert [c for c in heal.store.candidates('.product-card') if c['source'] == 'heal'] == []
+    assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
     store = _store(tmp_path / 'b', code=CARDS)
     applied, reason, _count = apply_list(store, 'cards', TILE, V2, store.meta('cards'),
                                          driver=LiveDriver(shop(grid('product-tile') + grid('product-card'))))
@@ -784,27 +852,12 @@ class CountingDriver(ListDriver):
         return super().execute_script(script, *args)
 
 
-def test_a_list_lookup_that_matches_costs_the_page_s_address(tmp_path):
-    web = CountingDriver(V1)
-    heal = _open(web, tmp_path)
-    real = web.find_elements('css selector', '.product-card')
-    web.calls.clear()
-    found = heal.driver.find_elements('css selector', '.product-card')
-    first = list(web.calls)
-    web.calls.clear()
-    again = heal.driver.find_elements('css selector', '.product-card')
-    assert first.count('script') == 1                     # the list fingerprint, once
-    assert web.calls == ['findElements', 'url']           # then the real call and the address
-    assert [e.native.el for e in found] == [e.el for e in real] == [e.native.el for e in again]
-
-
 @pytest.mark.parametrize('off', ['fingerprint=False', 'MENDWRIGHT_DISABLE=1'])
 def test_with_list_heals_off_a_list_that_matches_nothing_is_empty_at_once(
         tmp_path, make_page, monkeypatch, off):
     page = make_page(V1, fingerprints=True, css=True)
     first = _open(page, tmp_path)
     first.locator_all('cards', CARDS)
-    first.page.locator('.product-card').all()
     page.set_html(V2)
     assert len(first.locator_all('cards', CARDS)) == 4    # healed and saved
     kwargs = {'fingerprint': False}
@@ -815,15 +868,13 @@ def test_with_list_heals_off_a_list_that_matches_nothing_is_empty_at_once(
     assert len(heal.locator_all('cards', CARDS)) == 4     # the saved list heal still answers
     page.set_html(shop(grid('product-row')))
     assert heal.locator_all('cards', CARDS) == []
-    assert heal.page.locator('.product-card').all() == []
-    assert len(heal.page.locator('.product-row').all()) == 4
-    assert heal.heals == [] and heal.store.candidates('.product-row') == []
+    assert heal.heals == []
 
     web = ListDriver(V1)
-    _open(web, tmp_path / 'driver').driver.find_elements('css selector', '.product-card')
+    _open(web, tmp_path / 'driver').locator_all('cards', '.product-card')
     web.set_html(shop(''))
-    driver = _open(web, tmp_path / 'driver', timeout_ms=60000, **kwargs).driver
-    assert driver.find_elements('css selector', '.product-card') == []
+    driver = _open(web, tmp_path / 'driver', timeout_ms=60000, **kwargs)
+    assert driver.locator_all('cards', '.product-card') == []
 
 
 def test_async_list_heals_are_off_with_the_fingerprint_tier(tmp_path, make_page):
@@ -887,28 +938,18 @@ def test_the_reads_of_a_list_found_through_a_heal_are_checked(tmp_path, make_pag
         (False, 'expect_value: inner_text() is not money')]
 
 
-def test_open_expect_values_check_the_reads_of_heal_page_and_heal_driver_lists(
-        tmp_path, make_page):
-    from mendwright.proxies import GuardedLocator
+def test_open_expect_values_check_the_reads_of_heal_locator_all_lists(tmp_path, make_page):
     page = make_page(V1, fingerprints=True, css=True)
     heal = _open(page, tmp_path, expect_values={'.product-card': 'money'})
-    items = heal.page.locator('.product-card').all()
-    assert type(items[0]) is not GuardedLocator          # not found through a heal
+    assert heal.locator_all('.product-card', '.product-card')[0].inner_text().startswith('Blue')
     page.set_html(V2)
-    items = heal.page.locator('.product-card').all()
-    assert type(items[0]) is GuardedLocator
+    items = heal.locator_all('.product-card', '.product-card')
     with pytest.raises(AttentionRequired, match="'.product-card' was healed to"):
         items[1].inner_text()
     assert heal.store.status('.product-card', TILE) == 'quarantined'
-
-    web = ListDriver(V1)
-    heal = _open(web, tmp_path / 'driver', expect_values={'css selector=.product-card': 'money'})
-    assert heal.driver.find_elements('css selector', '.product-card')[0].text.startswith('Blue')
-    web.set_html(V2)
-    found = heal.driver.find_elements('css selector', '.product-card')
-    with pytest.raises(AttentionRequired, match="'css selector=.product-card' was healed to"):
-        _ = found[0].text
-    assert heal.store.status('css selector=.product-card', TILE) == 'quarantined'
+    # heal.page's Locator.all() is never healed, so its reads are never checked.
+    page.set_html(V1)
+    assert heal.page.locator('.product-card').all()[0].inner_text().startswith('Blue')
 
 
 def test_async_lists_optional_reads_and_item_actions(tmp_path, make_page):
@@ -933,23 +974,23 @@ def test_async_lists_optional_reads_and_item_actions(tmp_path, make_page):
     assert heal.store.status('cards', TILE) == 'quarantined' and heal.pending() == {}
 
 
-def test_async_heal_page_list_reads_are_checked(tmp_path, make_page):
-    from mendwright.proxies import AsyncGuardedLocator
+def test_async_heal_page_locator_all_is_the_real_one_and_saves_nothing(
+        tmp_path, make_page, stub_provider):
+    provider = stub_provider(TILE)
 
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
-                                         timeout_ms=0, expect_values={'.product-card': 'money'})
-        items = await heal.page.locator('.product-card').all()
-        assert type(items[0]) is not AsyncGuardedLocator     # not found through a heal
+                                         provider=provider, timeout_ms=60000)
+        assert len(await heal.locator_all('.product-card', '.product-card')) == 4
+        assert len(await heal.page.locator('.product-card').all()) == 4
         sync.set_html(V2)
+        started = time.monotonic()
         items = await heal.page.locator('.product-card').all()
-        assert type(items[0]) is AsyncGuardedLocator
-        with pytest.raises(AttentionRequired, match="'.product-card' was healed to"):
-            await items[0].inner_text()
-        return heal
-    heal = asyncio.run(main())
-    assert heal.store.status('.product-card', TILE) == 'quarantined'
+        return heal, items, time.monotonic() - started
+    heal, items, seconds = asyncio.run(main())
+    assert items == [] and seconds < 5                      # no wait, no heal, no model
+    assert heal.heals == [] and provider.bundles == []
 
 
 def test_async_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
@@ -984,7 +1025,6 @@ def test_an_attention_required_from_a_run_function_is_not_taken_for_a_list_miss(
     provider = stub_provider(TILE)
     heal = _open(page, tmp_path, provider)
     heal.locator_all('cards', CARDS)
-    heal.page.locator('.product-card').all()
     error, calls = AttentionRequired('mendwright: the sign-in form changed'), []
 
     def relogin(p):
@@ -993,19 +1033,16 @@ def test_an_attention_required_from_a_run_function_is_not_taken_for_a_list_miss(
 
     heal.interrupt('relogin', '#relogin', run=relogin)
     page.set_html(BEHIND_RELOGIN)
-    for look in (lambda: heal.locator_all('cards', CARDS),
-                 lambda: heal.page.locator('.product-card').all()):
-        with pytest.raises(AttentionRequired) as caught:
-            look()
-        assert caught.value is error
-    assert calls == [heal.page, heal.page]
-    assert heal.heals == [] and provider.bundles == []      # neither list was healed
+    with pytest.raises(AttentionRequired) as caught:
+        heal.locator_all('cards', CARDS)
+    assert caught.value is error and calls == [heal.page]
+    assert heal.heals == [] and provider.bundles == []      # the list was not healed
 
 
-def test_heal_driver_find_elements_raises_what_a_run_function_raised_as_it_is(tmp_path):
+def test_a_selenium_list_lookup_raises_what_a_run_function_raised_as_it_is(tmp_path):
     web = ListDriver(V1)
     heal = _open(web, tmp_path)
-    assert len(heal.driver.find_elements('css selector', '.product-card')) == 4
+    assert len(heal.locator_all('cards', '.product-card')) == 4
     error, calls = AttentionRequired('mendwright: the sign-in form changed'), []
 
     def relogin(driver):
@@ -1014,10 +1051,8 @@ def test_heal_driver_find_elements_raises_what_a_run_function_raised_as_it_is(tm
 
     heal.interrupt('relogin', '#relogin', run=relogin)
     web.set_html(BEHIND_RELOGIN)
-    # Not turned into a NoSuchElementException, which WebDriverWait would take for a list
-    # still loading and poll again.
     with pytest.raises(AttentionRequired) as caught:
-        heal.driver.find_elements('css selector', '.product-card')
+        heal.locator_all('cards', '.product-card')
     assert caught.value is error and calls == [heal.driver] and heal.heals == []
 
 
@@ -1033,18 +1068,13 @@ def test_async_an_attention_required_from_a_run_function_is_not_taken_for_a_list
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
                                          timeout_ms=0)
         await heal.locator_all('cards', CARDS)
-        await heal.page.locator('.product-card').all()
         heal.interrupt('relogin', '#relogin', run=relogin)
         sync.set_html(BEHIND_RELOGIN)
-        caught = []
-        for look in (lambda: heal.locator_all('cards', CARDS),
-                     lambda: heal.page.locator('.product-card').all()):
-            with pytest.raises(AttentionRequired) as info:
-                await look()
-            caught.append(info.value)
-        return heal, caught
+        with pytest.raises(AttentionRequired) as info:
+            await heal.locator_all('cards', CARDS)
+        return heal, info.value
     heal, caught = asyncio.run(main())
-    assert caught == [error, error] and all(e is error for e in caught)
+    assert caught is error
     assert heal.heals == []
 
 

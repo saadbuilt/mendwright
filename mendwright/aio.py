@@ -29,9 +29,9 @@ Every safety decision is made by the sync core, unchanged:
   the event loop; dismissing a popup runs the sync Healer's code in a worker thread, as
   handling an interruption does. heal.step() and run_steps() (see mendwright.steps) look
   at the landmarks on the event loop and await each step's function.
-- Lists (locator_all(), heal.page.locator(...).all(), see mendwright.lists) and
-  expect_value= (see mendwright.values) work as on the sync Healer. A list is looked up on
-  the event loop and healed in a worker thread, as one element is.
+- Lists (locator_all(), see mendwright.lists) and expect_value= (see mendwright.values)
+  work as on the sync Healer. A list is looked up on the event loop and healed in a worker
+  thread, as one element is.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -65,7 +65,7 @@ from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import _dismiss_choice
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
-                     HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED,
+                     HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
                      _locator_args, _overlay_locator, _overlay_options, _overlay_owner,
                      _raised_by_run, _removable, _reraise, _setup, latest_success)
@@ -656,34 +656,10 @@ class AsyncHealer:
     async def _locate_all(self, key, roles, code, timeout, poll_ms, optional, expect=None):
         __tracebackhide__ = True  # pytest shows the caller
         async with self._turn():
-            self._core._prime(key, roles, code, None, None)
-            natives = await self._list(key, roles, timeout, poll_ms, optional)
+            natives = await self._list(key, roles, code, timeout, poll_ms, optional)
             healed = self._core._healed(key) if natives else None
         due = [True]    # one check of the interruptions for the reads of the whole list
         return [_guarded(self, key, native, timeout, healed, expect, due) for native in natives]
-
-    def _list_known(self, key):
-        return self._core._list_known(key)
-
-    def _list_routed(self, key, count):
-        return self._core._list_routed(key, count)
-
-    async def _find_all(self, key, selector, natives=()):
-        """Healer._find_all(), awaited: (handles, healed, expect)."""
-        __tracebackhide__ = True  # pytest shows the caller
-        from .facade import _code_selectors
-        core, code = self._core, _code_selectors(key, selector)
-        expect = core._expect_values.get(key)
-        async with self._turn():
-            core._prime(key, (), code, None, None)
-            if len(natives) < 2:
-                found = await self._list(key, (), self.timeout_ms, 200)
-                return found, (core._healed(key) if found else None), expect
-            self.store.record_success(key, code[0])
-            core._remember_page(key, await _url(self._driver))
-            if core._list_target(key, code[0], len(natives)):
-                await self._keep_list(key, code[0], ())
-            return list(natives), None, expect
 
     async def _list_look(self, key, runnable):
         """Healer._list_look(), awaited."""
@@ -711,33 +687,43 @@ class AsyncHealer:
                 raise AttentionRequired(_no_match_message(key, runnable, []))
             await self._sleep(poll_ms / 1000.0)
 
-    async def _list(self, key, roles, timeout, poll_ms, optional=False):
+    async def _list(self, key, roles, code, timeout, poll_ms, optional=False):
         """Healer._list(), awaited, under the lock (see _turn): the heal runs the sync
-        Healer's code in a worker thread through SyncBridge, as a heal of one element does."""
+        Healer's code in a worker thread through SyncBridge, as a heal of one element does.
+        What a lookup that matches at once saves costs one write of the store, as there."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        found = await self._list_look(key, core._list_runnable(key))
-        if found is None:
-            if optional or not core._list_heals(key):
-                return []
+        with _batched(self.store):
+            core._prime(key, roles, code, None, None)
+            found = await self._list_look(key, core._list_runnable(key))
+            if found is not None:
+                return await self._list_found(key, roles, found)
+        if optional or not core._list_heals(key):
+            return []
+        try:
+            found = await self._resolve_step(
+                key, lambda: self._list_attempt(key, timeout, poll_ms), Budget(), timeout,
+                poll_ms)
+        except InterruptionLoop:
+            raise
+        except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # a run= function's own, not a miss of this list
             try:
-                found = await self._resolve_step(
-                    key, lambda: self._list_attempt(key, timeout, poll_ms), Budget(), timeout,
-                    poll_ms)
-            except InterruptionLoop:
-                raise
-            except AttentionRequired as exc:
-                if _raised_by_run(exc):
-                    raise   # a run= function's own, not a miss of this list
-                try:
-                    await _in_thread(core._heal_list, key, exc, await _url(self._driver))
-                except AttentionRequired:
-                    # The list may have come while mendwright looked for it.
-                    found = await self._list_look(key, core._list_runnable(key))
-                    if found is None:
-                        raise
-                else:
-                    found = await self._list_attempt(key, 0, poll_ms)
+                await _in_thread(core._heal_list, key, exc, await _url(self._driver))
+            except AttentionRequired:
+                # The list may have come while mendwright looked for it.
+                found = await self._list_look(key, core._list_runnable(key))
+                if found is None:
+                    raise
+            else:
+                found = await self._list_attempt(key, 0, poll_ms)
+        with _batched(self.store):
+            return await self._list_found(key, roles, found)
+
+    async def _list_found(self, key, roles, found):
+        """Healer._list_found(), awaited."""
+        core = self._core
         selector, count = found
         core._remember_page(key, await _url(self._driver))
         if core._list_target(key, selector, count):

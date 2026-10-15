@@ -2,17 +2,19 @@
 
 The list fingerprint a browser records (LIST_JS, one round trip) must be the one lxml
 computes from the captured HTML, or a heal would score the page differently from how the
-list was recorded. Then a product grid whose card class changed heals as a list, with no
-provider, through heal.page.locator(selector).all() on Playwright and
-heal.driver.find_elements() on Selenium, and through heal.locator_all() on both; and a list
-that would heal onto one element is refused. So is another list in an emptied list's place
-(recommendations where search results were, a form's hints where its errors were), and the
-skeleton cards of a list that is still loading. A heal of one card never answers for the
-list, and the reads of a healed list are checked.
+list was recorded. Then a product grid whose card class changed heals as a list through
+heal.locator_all(), with no provider, and a list that would heal onto one element is
+refused. So is another list in an emptied list's place (recommendations where search
+results were, a form's hints where its errors were), and the skeleton cards of a list that
+is still loading. A heal of one card never answers for the list, and the reads of a healed
+list are checked. heal.page.locator(selector).all() and heal.driver.find_elements() give
+what the real call gives, as in 0.7.0, and never heal.
 """
 
 import json
 import re
+import time
+from pathlib import Path
 
 import lxml.html
 import pytest
@@ -20,6 +22,7 @@ import pytest
 import mendwright
 from mendwright import AttentionRequired, lists
 from mendwright.drivers import wrap
+from mendwright.proxies import selenium_selector
 from mw_engines import FAST_MS, POLL_MS, SELENIUM, journal_events, page, saved_candidates
 
 pytestmark = pytest.mark.browser
@@ -63,16 +66,23 @@ def _texts(tab, items):
     return [item.locator('h3').inner_text() for item in items]
 
 
+def _key(tab, css):
+    """The key heal.page or heal.driver saves css under."""
+    return 'css selector=' + css if tab.family == SELENIUM else css
+
+
 def _all(tab, heal, css):
-    """The zero-change list lookup: heal.page.locator(css).all() or
-    heal.driver.find_elements(By.CSS_SELECTOR, css)."""
+    """heal.locator_all() under the key and selector of heal.page.locator(css), or of
+    heal.driver.find_element(By.CSS_SELECTOR, css)."""
+    selector = selenium_selector('css selector', css) if tab.family == SELENIUM else css
+    return heal.locator_all(_key(tab, css), selector, poll_ms=POLL_MS)
+
+
+def _real(tab, heal, css):
+    """heal.page.locator(css).all() or heal.driver.find_elements(By.CSS_SELECTOR, css)."""
     if tab.family == SELENIUM:
         return heal.driver.find_elements('css selector', css)
     return heal.page.locator(css).all()
-
-
-def _key(tab, css):
-    return 'css selector=' + css if tab.family == SELENIUM else css
 
 
 def test_the_browser_records_what_lxml_computes_for_a_list(tab):
@@ -147,8 +157,31 @@ def test_a_list_selector_that_would_heal_to_one_element_is_refused(tab, store_fi
 def test_a_list_never_seen_with_items_is_empty_at_once(tab, store_file):
     tab.load(SHOP_V2)
     heal = mendwright.open(tab.target, provider=None, store_path=store_file, timeout_ms=60000)
-    assert _all(tab, heal, '.product-card') == []
+    assert _real(tab, heal, '.product-card') == []
     assert heal.locator_all('cards', '.product-card') == []
+
+
+def test_heal_page_and_heal_driver_list_calls_are_the_real_ones(tab, store_file, stub_provider):
+    # As in 0.7.0: no wait, no heal, no model and nothing saved, so a script that waits for
+    # the cards to go away, or checks that a cart is empty, works as before.
+    tab.load(SHOP_V1)
+    provider = stub_provider(TILE)
+    heal = mendwright.open(tab.target, provider=provider, store_path=store_file,
+                           timeout_ms=60000)
+    assert _texts(tab, _real(tab, heal, '.product-card')) == NAMES
+    tab.load(SHOP_V2)
+    started = time.monotonic()
+    assert _real(tab, heal, '.product-card') == []
+    assert time.monotonic() - started < 5
+    assert heal.heals == [] and provider.bundles == []
+    assert not Path(store_file).exists()                  # nothing saved
+    # Not even for a key heal.locator_all() recorded as a list.
+    tab.load(SHOP_V1)
+    assert len(_all(tab, heal, '.product-card')) == 4
+    tab.load(SHOP_V2)
+    started = time.monotonic()
+    assert _real(tab, heal, '.product-card') == []
+    assert time.monotonic() - started < 5 and heal.heals == []
 
 
 # --- what is not the list ------------------------------------------------------------------
@@ -214,17 +247,16 @@ def test_a_list_that_is_still_loading_is_not_healed_onto_its_skeletons(tab, stor
     heal = _open(tab, store_file)
     assert len(_all(tab, heal, '.product-card')) == 4
     tab.load(LOADING)
+    with pytest.raises(AttentionRequired, match='so the list may still be loading'):
+        _all(tab, heal, '.product-card')
     if tab.family == SELENIUM:
-        # find_elements() raises a NoSuchElementException while it cannot find the list,
-        # so WebDriverWait goes on polling until the cards are there.
+        # find_elements() gives [] until the cards are there, so WebDriverWait polls.
         from selenium.webdriver.support.ui import WebDriverWait
-        cards = WebDriverWait(heal.driver, 10, poll_frequency=0.1).until(
+        WebDriverWait(heal.driver, 10, poll_frequency=0.1).until(
             lambda d: d.find_elements('css selector', '.product-card'))
     else:
-        with pytest.raises(AttentionRequired, match='so the list may still be loading'):
-            heal.page.locator('.product-card').all()
         tab.target.wait_for_selector('.product-card')
-        cards = heal.page.locator('.product-card').all()
+    cards = _all(tab, heal, '.product-card')
     assert _texts(tab, cards) == NAMES
     assert heal.heals == []
     key = _key(tab, '.product-card')
@@ -263,6 +295,7 @@ def test_the_reads_of_a_healed_list_are_checked(tab, store_file):
     key = _key(tab, '.product-card')
     heal = _open(tab, store_file, expect_values={key: 'money'})
     assert 'Blue mug' in _read(tab, _all(tab, heal, '.product-card')[0])   # no heal: unchecked
+    assert 'Blue mug' in _read(tab, _real(tab, heal, '.product-card')[0])  # never checked
     assert len(heal.locator_all('cards', '.product-card', poll_ms=POLL_MS)) == 4
     tab.load(SHOP_V2)
     cards = heal.locator_all('cards', '.product-card', poll_ms=POLL_MS,

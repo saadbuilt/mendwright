@@ -14,9 +14,9 @@ registered (open(dismiss=True), see mendwright.dismiss), optional steps
 found on (open(heal_across_pages=...)). Steps the site shows in another order, on one page
 or not at all run through heal.step() and heal.run_steps() (see mendwright.steps).
 
-Lists of elements, such as the cards of a product grid, heal through heal.locator_all(),
-heal.page.locator(selector).all() and heal.driver.find_elements() (see mendwright.lists),
-and expect_value= checks what a read through a heal returns (see mendwright.values).
+Lists of elements, such as the cards of a product grid, heal through heal.locator_all()
+(see mendwright.lists), and expect_value= checks what a read through a heal returns (see
+mendwright.values).
 """
 
 from __future__ import annotations
@@ -101,6 +101,13 @@ def _raised_by_run(exc):
     it is, and an AttentionRequired is never taken for a miss of the step the interruption
     was handled for."""
     return getattr(exc, '_mendwright_run', False) is True
+
+
+def _batched(store):
+    """store.batch() (see SelectorStore.batch), or a block that holds nothing back for a
+    store without it."""
+    batch = getattr(store, 'batch', None)
+    return batch() if callable(batch) else contextlib.nullcontext()
 
 
 def _reraise(budget):
@@ -1104,9 +1111,8 @@ class Healer:
         __tracebackhide__ = True  # pytest shows the caller
         roles, code = _locator_args(key, selector, role, None)
         expect = expectation(expect_value, key) or self._expect_values.get(key)
-        self._prime(key, roles, code, None, None)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        natives = self._list(key, roles, timeout, poll_ms, optional)
+        natives = self._list(key, roles, code, timeout, poll_ms, optional)
         healed = self._healed(key) if natives else None
         due = [True]    # one check of the interruptions for the reads of the whole list
         return [self._item(key, native, timeout, poll_ms, healed, expect, due)
@@ -1139,22 +1145,12 @@ class Healer:
         lookup gives [] at once, as the real page or driver does."""
         return bool(getattr(self.coordinator, 'fingerprint', False)) and self._list_known(key)
 
-    def _list_routed(self, key, count):
-        """For heal.page's Locator.all() and heal.driver's find_elements(): True when a
-        lookup the real page or driver answered with count elements goes through
-        _find_all(). That is two or more while the fingerprint tier is on, to record the
-        list, or none for a key with a list fingerprint, to try its saved list heals and
-        heal it."""
-        if count >= 2:
-            return bool(getattr(self.coordinator, 'fingerprint', False))
-        return not count and self._list_known(key)
-
     def _list_runnable(self, key):
         """key's candidates a list lookup tries: those on the page (lists are not looked for
-        inside an iframe) that can run, without the heals of one element. A key of heal.page
-        or heal.driver is also the key of the page's shortcuts and of find_element(), and a
-        heal of the first card is no heal of the cards. Raises the first InvalidSelector
-        when none can."""
+        inside an iframe) that can run, without the heals of one element. A list key can
+        also be the key of locator(), of a heal.page shortcut or of heal.driver's
+        find_element(), and a heal of the first card is no heal of the cards. Raises the
+        first InvalidSelector when none can."""
         candidates = [c for c in self.store.candidates(key) if not c.get('frameXPath')
                       and not (c.get('source') == 'heal' and c.get('list') is not True)]
         if not candidates:
@@ -1191,33 +1187,46 @@ class Healer:
                 raise AttentionRequired(_no_match_message(key, runnable, []))
             time.sleep(poll_ms / 1000.0)
 
-    def _list(self, key, roles, timeout, poll_ms, optional=False):
-        """The native handles of list key (see locator_all), healed when it needs to be."""
+    def _list(self, key, roles, code, timeout, poll_ms, optional=False):
+        """The native handles of list key (see locator_all), with code primed first (see
+        _prime), healed when it needs to be. What a lookup that matches at once saves (the
+        code's selectors, the first success, the page, the list fingerprint) costs one
+        write of the store; a heal's own writes are not held back."""
         __tracebackhide__ = True  # pytest shows the caller
-        found = self._list_look(key, self._list_runnable(key))
-        if found is None:
-            if optional or not self._list_heals(key):
-                return []
-            budget = Budget()
-            with self._running(key, budget, timeout, poll_ms):
+        with _batched(self.store):
+            self._prime(key, roles, code, None, None)
+            found = self._list_look(key, self._list_runnable(key))
+            if found is not None:
+                return self._list_found(key, roles, found)
+        if optional or not self._list_heals(key):
+            return []
+        budget = Budget()
+        with self._running(key, budget, timeout, poll_ms):
+            try:
+                found = self._resolve_step(
+                    key, lambda: self._list_attempt(key, timeout, poll_ms), budget, timeout,
+                    poll_ms)
+            except InterruptionLoop:
+                raise   # the page is blocked: a heal would not help
+            except AttentionRequired as exc:
+                if _raised_by_run(exc):
+                    raise   # a run= function's own, not a miss of this list
                 try:
-                    found = self._resolve_step(
-                        key, lambda: self._list_attempt(key, timeout, poll_ms), budget, timeout,
-                        poll_ms)
-                except InterruptionLoop:
-                    raise   # the page is blocked: a heal would not help
-                except AttentionRequired as exc:
-                    if _raised_by_run(exc):
-                        raise   # a run= function's own, not a miss of this list
-                    try:
-                        self._heal_list(key, exc, self._url())
-                    except AttentionRequired:
-                        # The list may have come while mendwright looked for it.
-                        found = self._list_look(key, self._list_runnable(key))
-                        if found is None:
-                            raise
-                    else:
-                        found = self._list_attempt(key, 0, poll_ms)
+                    self._heal_list(key, exc, self._url())
+                except AttentionRequired:
+                    # The list may have come while mendwright looked for it.
+                    found = self._list_look(key, self._list_runnable(key))
+                    if found is None:
+                        raise
+                else:
+                    found = self._list_attempt(key, 0, poll_ms)
+        with _batched(self.store):
+            return self._list_found(key, roles, found)
+
+    def _list_found(self, key, roles, found):
+        """The native handles of what found, (selector, count), matched for list key, with
+        the page saved and, when it should be read (see _list_target), the list
+        fingerprint."""
         selector, count = found
         self._remember_page(key)
         if self._list_target(key, selector, count):
@@ -1268,27 +1277,6 @@ class Healer:
         except Exception:
             logger.debug('mendwright: could not save the list fingerprint of %r', key,
                          exc_info=True)
-
-    def _find_all(self, key, selector, natives=()):
-        """For heal.page's Locator.all() and heal.driver's find_elements() (see
-        _list_routed): (handles, healed, expect), the native handles locator_all(key,
-        selector) would give, the selector as the code's, the heal they were found through
-        (or None) and the check their reads must pass (see _item). natives are what the real
-        call gave: when they are two or more, they are the list, and come back as they are,
-        with no browser call but the page's address and, once per Healer, the list
-        fingerprint."""
-        __tracebackhide__ = True  # pytest shows the caller
-        code = _code_selectors(key, selector)
-        self._prime(key, (), code, None, None)
-        expect = self._expect_values.get(key)
-        if len(natives) < 2:
-            found = self._list(key, (), self.timeout_ms, 200)
-            return found, (self._healed(key) if found else None), expect
-        self.store.record_success(key, code[0])
-        self._remember_page(key)
-        if self._list_target(key, code[0], len(natives)):
-            self._keep_list(key, code[0], (), driver_list_fingerprint(self._driver, code[0]))
-        return list(natives), None, expect
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 

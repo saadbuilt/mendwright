@@ -25,15 +25,10 @@ whose click, send_keys, clear and submit handle interruptions as heal.locator()'
 do. Only the elements heal.locator() found carry the heal canary. Everything else is the
 real driver's.
 
-Lists: Locator.all() on heal.page.locator(selector), and driver.find_elements(by, value)
-for those four By values, give what the real call gives, but a list that matches nothing,
-after it matched two or more elements before, is healed as heal.locator_all() heals one
-(see mendwright.lists), and one that matches two or more is recorded for that, while the
-fingerprint tier is on. On Selenium, a list that cannot be found or healed raises an
-AttentionRequired that is also a NoSuchElementException, so WebDriverWait goes on polling.
-The elements of a list found through a heal have their reads checked when
-open(expect_values=...) has a check for the key: on Playwright they come back as
-GuardedLocators for that.
+Lists: Locator.all() on heal.page.locator(selector) and driver.find_elements() give what
+the real call gives. They never wait, heal or save anything, so a list that matches nothing
+is [] at once. heal.locator_all() is what heals a list (see mendwright.lists). With
+open(dismiss=True), the Locators all() gives are GuardedLocators.
 
 The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
 and focus work on a hidden element in Playwright, and Selenium's find_element returns a
@@ -56,7 +51,6 @@ from .drivers.base import looks_like_locator
 from .exceptions import AttentionRequired
 from .facade import ACTIONS, ActionProxy, _raised_by_run
 from .selectors import InvalidSelector, check_syntax
-from .values import READS as VALUE_READS
 
 # Locator methods that resolve the key (and heal it when it broke) before they run: the
 # actions, and the reads that wait for the element in Playwright.
@@ -163,17 +157,9 @@ class HealingLocator(_Proxy):
 
     def all(self):
         """Locator.all(): a Locator for each element the selector matches, as Playwright
-        gives them, with the list healed (see Healer.locator_all) when it matches nothing
-        after it matched two or more elements before. With open(dismiss=True), or for a
-        list found through a heal of a key open(expect_values=...) has a check for, each
-        one is a GuardedLocator."""
-        __tracebackhide__ = True  # pytest shows the caller
-        healer, selector = self._mw_healer, self._mw_selector
-        items, check = self._mw_target.all(), None
-        if healer._list_routed(selector, len(items)):
-            items, healed, expect = healer._find_all(selector, selector, items)
-            check = (selector, healed, expect) if healed and expect else None
-        return _items(self, items, check)
+        gives them, never healed and with nothing saved (heal.locator_all() heals a list).
+        With open(dismiss=True), each one is a GuardedLocator."""
+        return _items(self, self._mw_target.all())
 
     def _mw_is_visible(self, **kwargs):
         if not self._mw_healer._knows(self._mw_selector):
@@ -224,15 +210,10 @@ class HealingPage(_Proxy):
         return '<HealingPage ' + repr(self._mw_target) + '>'
 
 
-def _items(proxy, items, check=None):
-    """The Locators of proxy's all(), each guarded with open(dismiss=True) (see _guard), and
-    with check, (key, healed, expect) for a list found through a heal, guarded whether or
-    not dismiss is on, with its reads checked (see GuardedLocator)."""
+def _items(proxy, items):
+    """The Locators of proxy's all(), each guarded with open(dismiss=True) (see _guard)."""
     step = proxy._mw_step() + '.all()'
-    if check is None:
-        return [_guard(proxy, item, step + '[' + str(i) + ']') for i, item in enumerate(items)]
-    return [proxy._mw_guard_type(proxy._mw_healer, item, step + '[' + str(i) + ']', check)
-            for i, item in enumerate(items)]
+    return [_guard(proxy, item, step + '[' + str(i) + ']') for i, item in enumerate(items)]
 
 
 def _page_shortcut(name):
@@ -304,45 +285,27 @@ def _chained(proxy, name, value):
 class GuardedLocator(_Proxy):
     """With open(dismiss=True), what heal.page hands back for the locators it does not
     heal: get_by_role() and the other get_by_* locators, a locator built with options, a
-    chained locator, .first, .last, .nth() and .filter(), on a sync Playwright page or
-    frame. It is the real Locator (or FrameLocator), not healed, and nothing about it is
-    saved. Its actions run through the same guard as heal.locator()'s (ActionProxy),
-    without the heal canary: registered interruptions are handled first, a popup that
-    covers the element is dismissed (see mendwright.dismiss), and an action that failed
-    because something covered the element is tried once more after one was. Locators built
-    from it are guarded the same way.
+    chained locator, .first, .last, .nth(), .filter() and the elements of
+    locator(selector).all(), on a sync Playwright page or frame. It is the real Locator (or
+    FrameLocator), not healed, and nothing about it is saved. Its actions run through the
+    same guard as heal.locator()'s (ActionProxy), without the heal canary: registered
+    interruptions are handled first, a popup that covers the element is dismissed (see
+    mendwright.dismiss), and an action that failed because something covered the element is
+    tried once more after one was. Locators built from it are guarded the same way.
 
     It passes isinstance() checks for the Locator, so Playwright's expect() takes it, and
     .native is the Locator. Log lines and handled_interruptions name its step after the
-    calls that built it, such as "page.get_by_role('button', name='Continue')".
+    calls that built it, such as "page.get_by_role('button', name='Continue')"."""
 
-    The elements Locator.all() gives for a list found through a heal are GuardedLocators
-    too when open(expect_values=...) has a check for the key, dismiss= or not: check is
-    (key, healed, expect), and their reads (inner_text(), text_content(), input_value(),
-    get_attribute()) are checked as heal.locator_all()'s are: a value that fails
-    quarantines the heal and raises AttentionRequired (see Healer._check_value)."""
-
-    def __init__(self, healer, target, name, check=None):
+    def __init__(self, healer, target, name):
         super().__init__(healer, target)
         object.__setattr__(self, '_mw_name', name)
-        object.__setattr__(self, '_mw_check', check)
 
     def __getattr__(self, name):
         value = getattr(self._mw_target, name)
         if name in ACTIONS and callable(value):
             return self._mw_guarded(name)
-        if name in VALUE_READS and self._mw_check is not None and callable(value):
-            return self._mw_read(name, value)
         return _chained(self, name, value)
-
-    def _mw_read(self, verb, read):
-        def call(*args, **kwargs):
-            __tracebackhide__ = True  # pytest shows the caller
-            key, healed, expect = self._mw_check
-            return self._mw_healer._check_value(key, healed, verb, args,
-                                                read(*args, **kwargs), expect, False)
-        call.__name__ = verb
-        return call
 
     def _mw_step(self):
         return self._mw_name
@@ -382,13 +345,7 @@ class AsyncHealingLocator(HealingLocator):
 
     async def all(self):
         """HealingLocator.all(), awaited."""
-        __tracebackhide__ = True  # pytest shows the caller
-        healer, selector = self._mw_healer, self._mw_selector
-        items, check = await self._mw_target.all(), None
-        if healer._list_routed(selector, len(items)):
-            items, healed, expect = await healer._find_all(selector, selector, items)
-            check = (selector, healed, expect) if healed and expect else None
-        return _items(self, items, check)
+        return _items(self, await self._mw_target.all())
 
 
 class AsyncHealingPage(HealingPage):
@@ -421,17 +378,7 @@ class AsyncHealingPage(HealingPage):
 
 
 class AsyncGuardedLocator(GuardedLocator):
-    """GuardedLocator on an AsyncHealer: its actions, and its checked reads, are
-    coroutines."""
-
-    def _mw_read(self, verb, read):
-        async def call(*args, **kwargs):
-            __tracebackhide__ = True  # pytest shows the caller
-            key, healed, expect = self._mw_check
-            return await self._mw_healer._check_value(key, healed, verb, args,
-                                                      await read(*args, **kwargs), expect, False)
-        call.__name__ = verb
-        return call
+    """GuardedLocator on an AsyncHealer: its actions are coroutines."""
 
     def _mw_guarded(self, verb):
         async def call(*args, **kwargs):
@@ -517,12 +464,10 @@ def _by_key(by, value):
     return str(by) + '=' + str(value)
 
 
-def _found(healer, element, key, healed=None, expect=None):
-    """element, found by the real driver or as one of a list, as a HealingElement whose
-    actions handle interruptions without the heal canary. healed and expect are the heal a
-    list was found through and the check its elements' reads must pass, which can only
-    refuse the heal (see Healer._check_value)."""
-    action = ActionProxy(healer, key, element, healed=healed, expect=expect)
+def _found(healer, element, key):
+    """element, found by the real driver, as a HealingElement whose actions handle
+    interruptions without the heal canary: no heal found it."""
+    action = ActionProxy(healer, key, element)
     action._canary = False
     return HealingElement(healer, element, action)
 
@@ -561,9 +506,8 @@ class HealingElement(_Proxy):
     def submit(self):
         return self._mw_action._act('submit', (), {}, None)
 
-    # The reads expect_value= checks for an element heal.locator() found through a heal, or
-    # one of a list found through a heal (see ActionProxy.__getattr__). Any other element's
-    # are its own.
+    # The reads expect_value= checks for an element heal.locator() found through a heal
+    # (see ActionProxy.__getattr__). Any other element's are its own.
 
     @property
     def text(self):
@@ -625,30 +569,10 @@ class HealingDriver(_Proxy):
         return HealingElement(self._mw_healer, action.native, action)
 
     def find_elements(self, by=BY_ID, value=None):
-        """The real driver's find_elements(by, value), with each element wrapped as a
-        HealingElement. For By.XPATH, By.CSS_SELECTOR, By.ID and By.NAME, a list that
-        matches nothing, after it matched two or more elements before, is healed as
-        heal.locator_all() heals one (see mendwright.lists): mendwright waits up to the
-        Healer's timeout_ms, and heals it or raises AttentionRequired, which is also a
-        selenium NoSuchElementException, so WebDriverWait goes on polling. One that matches
-        two or more is recorded for that while the fingerprint tier is on, and its elements
-        are the ones the real call found. One that matches nothing and never matched two
-        comes back empty at once, as before, and so does any list while the fingerprint tier
-        is off and no saved list heal matches."""
+        """The real driver's find_elements(by, value), not healed and with nothing saved,
+        with each element wrapped as a HealingElement. heal.locator_all() heals a list."""
         healer, key = self._mw_healer, _by_key(by, value)
-        elements = self._mw_target.find_elements(by, value)
-        selector = selenium_selector(by, value)
-        if (selector is None or not _healable(selector)
-                or not healer._list_routed(key, len(elements))):
-            return [_found(healer, el, key) for el in elements]
-        __tracebackhide__ = True
-        try:
-            elements, healed, expect = healer._find_all(key, selector, elements)
-        except AttentionRequired as exc:
-            if _raised_by_run(exc):
-                raise   # from a run= function of heal.interrupt(): raised as it is
-            raise not_found_error(exc) from exc
-        return [_found(healer, el, key, healed, expect) for el in elements]
+        return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
 
     def __repr__(self):
         return '<HealingDriver ' + repr(self._mw_target) + '>'

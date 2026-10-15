@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -285,6 +286,8 @@ class SelectorStore:
         self._sleep = time.sleep
         self._wallclock = time.time
         self._warned = False
+        # Per thread: how many batch() blocks are open, and whether a write waits for them.
+        self._batch = threading.local()
         # Keys whose expectedRole is a guess made with guess_role(): used, never saved.
         self._guessed = set()
         # key -> the candidate record_success() last marked in this process.
@@ -655,7 +658,27 @@ class SelectorStore:
     # replaces the file. What this store changed itself wins. If the file cannot be
     # written, the store logs one warning and keeps working in memory.
 
+    @contextlib.contextmanager
+    def batch(self):
+        """Write the override file once, when the outermost batch of this thread ends, for
+        every change made in it, instead of once per change: a lookup that saves its
+        selector, its first success, its page and its list fingerprint costs one write.
+        Changes made in other threads are written as they come."""
+        state = self._batch
+        state.depth = getattr(state, 'depth', 0) + 1
+        try:
+            yield self
+        finally:
+            state.depth -= 1
+            if not state.depth and getattr(state, 'wanted', False):
+                state.wanted = False
+                self._persist_override()
+
     def _persist_override(self):
+        state = self._batch
+        if getattr(state, 'depth', 0):
+            state.wanted = True     # written when the batch ends (see batch)
+            return
         try:
             with self._locked_file():
                 # A file that became unreadable raises here, so it is never replaced.
