@@ -1260,7 +1260,10 @@ def test_order_message_names_every_step_that_ran_first():
 
 
 def test_the_guide_quotes_the_messages_the_code_writes():
-    guide = (Path(__file__).resolve().parents[1] / 'docs' / 'guide.md').read_text(encoding='utf-8')
+    path = Path(__file__).resolve().parents[1] / 'docs' / 'guide.md'
+    if not path.is_file():
+        pytest.skip('docs/ is not in this copy of the project (the sdist leaves it out)')
+    guide = path.read_text(encoding='utf-8')
     waiting = [Step('payment', _noop, ('#card-number',)),
                Step('review', _noop, ('text=Place order',), last=True)]
     for message in (
