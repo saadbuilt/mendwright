@@ -4,6 +4,8 @@
 //
 //   POST /heal          {key, expectedRole, expectedText?, destructive?, page?, lastPage?,
 //                        candidates?, inventory?, html?, rejectedXpath?, rejectReason?}
+//                        or, for a list heal, {list: true, key, expectedRole, count?,
+//                        candidates?, groups: [{xpath, count, container, items}], ...}
 //                        -> {status:'ok', xpath, fallbacks, reasoning} | {status:'needs_human', reason}
 //                        When the model says no element on the page fits the step, the
 //                        reason is 'the model says no element on this page fits: <its reason>'.
@@ -123,7 +125,16 @@ function pySlice(s, n) {
   return s.slice(0, units);
 }
 
+// What a Python for loop goes over: a list as it is, a string's characters, a dict's keys.
+function pyIter(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') return Array.from(v);
+  if (v !== null && typeof v === 'object') return Object.keys(v);
+  return [];
+}
+
 export function buildPrompt(b) {
+  if (pyTruthy(b.list)) return buildListPrompt(b);
   const destructive = pyTruthy(b.destructive);
   const expectedRole = b.expectedRole;
   const expectedText = pyTruthy(b.expectedText) ? b.expectedText : [];
@@ -157,6 +168,47 @@ export function buildPrompt(b) {
       + pySlice(pyJson(pyTruthy(b.inventory) ? b.inventory : []), MAX_PROMPT_PART) +
     '\nHTML snapshot (redacted):\n'
       + pySlice(pyStr(pyTruthy(b.html) ? b.html : ''), MAX_PROMPT_PART);
+  return { system, user };
+}
+
+// The prompt for a list heal (a bundle with list: true): the model picks one of the
+// repeated groups by its xpath. Mirrors build_list_prompt() in mendwright/prompt.py.
+export function buildListPrompt(b) {
+  const role = b.expectedRole;
+  const system =
+    'You repair ONE broken web-automation selector for a LIST of elements. On an earlier ' +
+    'run it matched every item of a list, such as the cards of a product grid, and now it ' +
+    'matches nothing. Below are the groups of elements that repeat on the page now, each ' +
+    'with its xpath. Reply with ONLY a JSON object: {"xpath":"...","reasoning":"..."}, ' +
+    'where xpath is the xpath of the group whose items are the items of that list, copied ' +
+    "exactly. Each item's role must be '" + pyStr(role) + "'. If no group is that list, for " +
+    'example because the list is empty now or moved to another page, reply ' +
+    '{"xpath":null,"reason":"..."} instead. Do not pick a group that is only similar, ' +
+    'such as another list elsewhere on the page.';
+  const lines = [];
+  let number = 0;
+  for (const group of pyIter(pyTruthy(b.groups) ? b.groups : [])) {
+    number += 1;
+    if (group === null || typeof group !== 'object' || Array.isArray(group)) continue;
+    lines.push('[' + number + '] ' + pyStr(group.xpath));
+    lines.push('    ' + pyStr(group.count) + ' items in ' + pyStr(group.container));
+    for (const item of pyIter(pyTruthy(group.items) ? group.items : [])) {
+      lines.push('    item: ' + pyStr(item));
+    }
+  }
+  const user =
+    'key: ' + pyStr(b.key) +
+    '\nitemRole: ' + pyStr(role) +
+    (pyTruthy(b.intent) ? '\nintent: ' + pyStr(b.intent) : '') +
+    (pyTruthy(b.page) ? '\npage: ' + pyStr(b.page) : '') +
+    (pyTruthy(b.lastPage) ? '\nlast found on page: ' + pyStr(b.lastPage) : '') +
+    (pyTruthy(b.count) ? '\nitems when it last matched: ' + pyStr(b.count) : '') +
+    '\nbroken candidates:\n' + (pyTruthy(b.candidates) ? b.candidates : []).join('\n') +
+    (pyTruthy(b.rejectReason)
+      ? '\nYour previous proposal ' + pyStr(b.rejectedXpath) + ' was rejected: '
+        + pyStr(b.rejectReason) + '. Pick a DIFFERENT group.'
+      : '') +
+    '\nrepeated groups (redacted):\n' + pySlice(lines.join('\n'), MAX_PROMPT_PART);
   return { system, user };
 }
 

@@ -14,7 +14,7 @@ import lxml.html
 
 from .css import css_selectors
 from .fit import has_position
-from .gate import live_reason
+from .gate import list_live_reason, live_reason
 from .selectors import CSS, XPATH, classify, frame_spelling, normalize
 from .validation import validate
 
@@ -321,6 +321,54 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason
+
+
+# apply_list()'s reason for a list heal that takes an element of a quarantined heal of the key.
+_SAME_ELEMENTS = ('previously quarantined (it takes elements of a quarantined heal; choose '
+                  'another group)')
+
+
+def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None):
+    """The gate for a list heal (see mendwright.lists): (applied_xpath, reason, count), with
+    applied_xpath None and the reason when it is refused, else the xpath saved, 'ok' and how
+    many elements it matches on the captured page.
+
+    The XPath must have no position, match two or more elements of the key's role in the
+    captured HTML, none of them inside another (lists.validate), not be quarantined or
+    superseded for the key, take no element a quarantined selector of the key matches, and
+    pass list_live_reason() on the live page. When one of the key's selectors in code is
+    CSS, css, the same selector in CSS, is saved with it as its ``css`` once it matches as
+    many elements on the live page as the XPath does."""
+    from .lists import validate as validate_list
+    if not isinstance(proposed, str) or not proposed.strip():
+        return None, 'no candidates in proposal', 0
+    body, xpath = _xpath_forms(proposed)
+    if classify(xpath) != XPATH:
+        return None, 'not an XPath expression', 0
+    retired = _RETIRED.get(_stored_status(store, selector_key, xpath))
+    if retired:
+        return None, retired, 0
+    result = validate_list(body, html, meta.get('expectedRole'))
+    if not result.ok:
+        return None, result.reason, result.count
+    doc, bad = _quarantined_paths(store, selector_key, html)
+    if bad:
+        tree = doc.getroottree()
+        if any(tree.getpath(n) in bad for n in doc.xpath(body) if hasattr(n, 'tag')):
+            return None, _SAME_ELEMENTS, result.count
+    live = list_live_reason(driver, xpath, meta)
+    if live:
+        return None, live, result.count
+    twin = None
+    if _code_uses_css(store, selector_key):
+        twin = ''
+        try:
+            if css and driver is not None and driver.count(css) == driver.count(xpath):
+                twin = css
+        except Exception:
+            twin = ''
+    add_heal(store, selector_key, xpath, css=twin, frame_xpath='')
+    return xpath, 'ok', result.count
 
 
 def report_outcome(gateway, selector_key, xpath, success, *, download_key, http=None,

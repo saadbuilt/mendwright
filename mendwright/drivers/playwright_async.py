@@ -14,11 +14,13 @@ import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..flow import click_may_have_run
+from ..lists import ITEMS_JS, LIST_JS
+from ..lists import from_raw as list_from_raw
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
                    _member,
-                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
-                   summary_from_js)
+                   frame_selector, inventory_rows, is_async_api, item_rows,
+                   looks_like_locator, summary_from_js)
 from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
                               playwright_selector)
 
@@ -34,8 +36,9 @@ class AsyncPlaywrightDriver:
     """Wraps an async Playwright Page or Frame (or a patchright / camoufox one).
 
     Every method is a coroutine: count, is_visible, scroll_into_view, handle, act, act_on,
-    url, outer_html, describe, fingerprint and inventory, with the same arguments and results as
-    PlaywrightSyncDriver. handle() returns the native async Locator."""
+    url, outer_html, describe, fingerprint, inventory, handles, list_fingerprint and
+    list_items, with the same arguments and results as PlaywrightSyncDriver. handle()
+    returns the native async Locator."""
 
     def __init__(self, page):
         self._page = page
@@ -121,6 +124,31 @@ class AsyncPlaywrightDriver:
         PlaywrightSyncDriver.fingerprint)."""
         async def op(loc):
             return from_raw(await loc.evaluate_all(FINGERPRINT_JS))
+        return await self._probe(selector, frame_chain, op, None)
+
+    async def handles(self, selector, frame_chain=()):
+        """A Locator for each element the selector matches now (see
+        PlaywrightSyncDriver.handles)."""
+        loc = self._build(*self._targets(selector, frame_chain))
+        try:
+            count = await loc.count()
+        except Exception as exc:
+            _raise_if_invalid(exc, selector, frame_chain)
+            raise
+        return [loc.nth(i) for i in range(count)]
+
+    async def list_fingerprint(self, selector, frame_chain=()):
+        """The list fingerprint of the elements the selector matches, or None (see
+        PlaywrightSyncDriver.list_fingerprint)."""
+        async def op(loc):
+            return list_from_raw(await loc.evaluate_all(LIST_JS))
+        return await self._probe(selector, frame_chain, op, None)
+
+    async def list_items(self, selector, frame_chain=()):
+        """[{'tag', 'role', 'visible'}] for the elements the selector matches, or None (see
+        PlaywrightSyncDriver.list_items)."""
+        async def op(loc):
+            return item_rows(await loc.evaluate_all(ITEMS_JS))
         return await self._probe(selector, frame_chain, op, None)
 
     async def frame_matches(self, selector):

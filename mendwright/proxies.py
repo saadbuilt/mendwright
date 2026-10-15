@@ -25,6 +25,11 @@ whose click, send_keys, clear and submit handle interruptions as heal.locator()'
 do. Only the elements heal.locator() found carry the heal canary. Everything else is the
 real driver's.
 
+Lists: Locator.all() on heal.page.locator(selector), and driver.find_elements(by, value)
+for those four By values, give what the real call gives, but a list that matches nothing,
+after it matched two or more elements before, is healed as heal.locator_all() heals one
+(see mendwright.lists), and one that matches two or more is recorded for that.
+
 The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
 and focus work on a hidden element in Playwright, and Selenium's find_element returns a
 hidden element or the first of several. For these, a selector that matches something
@@ -58,7 +63,8 @@ ANY_STATE = frozenset(READS) | frozenset({'set_input_files', 'focus'})
 
 # Page methods that take a selector first and act on one element.
 PAGE_SHORTCUTS = ('click', 'dblclick', 'fill', 'check', 'uncheck', 'select_option', 'press',
-                  'type', 'hover', 'is_checked', 'text_content', 'inner_text', 'get_attribute')
+                  'type', 'hover', 'is_checked', 'text_content', 'inner_text', 'get_attribute',
+                  'input_value')
 
 # Selenium's By values that heal, and how each becomes a selector mendwright stores.
 BY_XPATH, BY_CSS, BY_ID, BY_NAME = 'xpath', 'css selector', 'id', 'name'
@@ -149,6 +155,18 @@ class HealingLocator(_Proxy):
     def _mw_step(self):
         return 'page.locator(' + repr(self._mw_selector) + ')'
 
+    def all(self):
+        """Locator.all(): a Locator for each element the selector matches, as Playwright
+        gives them, with the list healed (see Healer.locator_all) when it matches nothing
+        after it matched two or more elements before. With open(dismiss=True) each one is
+        a GuardedLocator."""
+        __tracebackhide__ = True  # pytest shows the caller
+        healer, selector = self._mw_healer, self._mw_selector
+        items = self._mw_target.all()
+        if len(items) >= 2 or (not items and healer._list_known(selector)):
+            items = healer._find_all(selector, selector)
+        return _items(self, items)
+
     def _mw_is_visible(self, **kwargs):
         if not self._mw_healer._knows(self._mw_selector):
             return self._mw_target.is_visible(**kwargs)
@@ -196,6 +214,12 @@ class HealingPage(_Proxy):
 
     def __repr__(self):
         return '<HealingPage ' + repr(self._mw_target) + '>'
+
+
+def _items(proxy, items):
+    """The Locators of proxy's all(), each guarded with open(dismiss=True) (see _guard)."""
+    step = proxy._mw_step() + '.all()'
+    return [_guard(proxy, item, step + '[' + str(i) + ']') for i, item in enumerate(items)]
 
 
 def _page_shortcut(name):
@@ -324,6 +348,15 @@ class AsyncHealingLocator(HealingLocator):
         if not self._mw_healer._knows(self._mw_selector):
             return await self._mw_target.is_visible(**kwargs)
         return await self._mw_healer._peek_visible(self._mw_selector)
+
+    async def all(self):
+        """HealingLocator.all(), awaited."""
+        __tracebackhide__ = True  # pytest shows the caller
+        healer, selector = self._mw_healer, self._mw_selector
+        items = await self._mw_target.all()
+        if len(items) >= 2 or (not items and healer._list_known(selector)):
+            items = await healer._find_all(selector, selector)
+        return _items(self, items)
 
 
 class AsyncHealingPage(HealingPage):
@@ -484,6 +517,19 @@ class HealingElement(_Proxy):
     def submit(self):
         return self._mw_action._act('submit', (), {}, None)
 
+    # The reads expect_value= checks for an element heal.locator() found through a heal (see
+    # ActionProxy.__getattr__). Any other element's are its own.
+
+    @property
+    def text(self):
+        return self._mw_action.text
+
+    def get_attribute(self, name):
+        return self._mw_action.get_attribute(name)
+
+    def get_dom_attribute(self, name):
+        return self._mw_action.get_dom_attribute(name)
+
     def find_element(self, by=BY_ID, value=None):
         return _found(self._mw_healer, self._mw_target.find_element(by, value),
                       _by_key(by, value))
@@ -532,10 +578,21 @@ class HealingDriver(_Proxy):
         return HealingElement(self._mw_healer, action.native, action)
 
     def find_elements(self, by=BY_ID, value=None):
-        """The real driver's find_elements(by, value), not healed, with each element
-        wrapped as a HealingElement."""
+        """The real driver's find_elements(by, value), with each element wrapped as a
+        HealingElement. For By.XPATH, By.CSS_SELECTOR, By.ID and By.NAME, a list that
+        matches nothing, after it matched two or more elements before, is healed as
+        heal.locator_all() heals one (see mendwright.lists): mendwright waits up to the
+        Healer's timeout_ms, heals it or raises AttentionRequired, and one that matches two
+        or more is recorded for that. One that matches nothing and never matched two comes
+        back empty at once, as before."""
         healer, key = self._mw_healer, _by_key(by, value)
-        return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
+        elements = self._mw_target.find_elements(by, value)
+        selector = selenium_selector(by, value)
+        if (selector is not None and _healable(selector)
+                and (len(elements) >= 2 or (not elements and healer._list_known(key)))):
+            __tracebackhide__ = True
+            elements = healer._find_all(key, selector)
+        return [_found(healer, el, key) for el in elements]
 
     def __repr__(self):
         return '<HealingDriver ' + repr(self._mw_target) + '>'

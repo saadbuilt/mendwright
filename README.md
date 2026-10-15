@@ -79,7 +79,7 @@ driver = mendwright.open(driver).driver    # Selenium (By from selenium.webdrive
 driver.find_element(By.ID, "terms").click()
 ```
 
-Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. Interruptions such as a cookie banner (below) are still handled before their actions: on a Playwright `Page` from Playwright 1.42, and before `click()`, `send_keys()`, `clear()` and `submit()` of the elements `heal.driver` returns (not through `.native`). The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
+Each selector is also the key its heals are saved under. `page.locator(selector).all()` and `driver.find_elements()` heal a list selector too, once it matched two or more elements ([lists](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#lists)). Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. Interruptions such as a cookie banner (below) are still handled before their actions: on a Playwright `Page` from Playwright 1.42, and before `click()`, `send_keys()`, `clear()` and `submit()` of the elements `heal.driver` returns (not through `.native`). The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
 
 ## Selenium
 
@@ -184,6 +184,9 @@ mendwright repairs a selector on the page your script is on. It handles layout c
 - elements wrapped in a new container or component
 - elements moved to another part of the page, or form fields put in a different order
 - lookalike elements where the surrounding text decides which one is meant
+- lists, such as the cards of a product grid whose card class changed: `heal.locator_all(key, selector)`, `heal.page.locator(selector).all()` and `heal.driver.find_elements()` heal a list selector that matches nothing any more from what its items looked like, and never onto a single element ([guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#lists))
+
+A heal that passes every check can still be the wrong element for a read: a price selector healed onto the rating next to the price reads 4.5. With `heal.locator("price", "#price", expect_value="money")`, a read through a heal must return money, here written as most locales write it (`$1,299.00`, `1.299,00 €`, `129 kr`). If it doesn't, the read raises `AttentionRequired` instead of returning the value, and the heal is quarantined. `"number"`, `"integer"`, `"percent"`, `"date"`, `"email"`, `"url"`, a regular expression or a function work too, and a read through the selector in your code is never checked ([guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#checking-what-a-read-returns)).
 
 It also handles some changes in your script's flow:
 
@@ -250,6 +253,7 @@ Where another tool fits better: Healenium covers Java, and any Selenium client t
 - With a hosted provider, page HTML is sent to it whenever a fingerprint match isn't confident. Redaction removes quoted `value` attributes, absolute http(s) URLs and runs of 12 to 19 digits, but visible text and other attributes stay. See [SECURITY.md](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md). A local model through Ollama keeps the page on your machine.
 - If a page's cleaned HTML is longer than 60,000 characters, a hosted model gets a shortened copy. Parts that share no word with the step and aren't of its role are left out first, so the element can still be left out on a page with more related elements than fit. While parts are left out, a healed XPath can't use a position such as `[2]`.
 - Accuracy has been measured without a hosted model only. On the [47-case benchmark](https://github.com/saadbuilt/mendwright/blob/main/docs/benchmark.md), the fingerprint tier alone healed 20 of 35 broken selectors and none onto a wrong element, but its thresholds were tuned on those same cases, so expect it to be wrong now and then on yours. With a model-free similarity baseline behind it, 28 of 35 healed, and 3 of the 47 cases went to the wrong element. With mendwright's own [local model](#local-model) behind it, 30 of 35 healed in headless Chromium (31 on the stand-in page) and 1 of the 47 went to the wrong element ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md)). No hosted model numbers are published yet.
+- A list that is empty now but had items before, such as a cart after an order, can't be told from a list whose selector broke, so its lookup waits and raises. Pass `optional=True` to `heal.locator_all()` for a list that may be empty.
 - `--mendwright-strict` only fails the run that made the heal. Later runs pick up the saved heal and pass, which is why strict CI runs need a fresh store.
 
 ## Links

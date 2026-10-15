@@ -421,7 +421,7 @@ def generic_literals(text, ext):
 # intent=, interrupt()'s action=, Selenium's by=, get_attribute()'s name=.
 NOT_SELECTOR_KEYWORDS = frozenset({'role', 'text', 'intent', 'key', 'action', 'by', 'name'})
 # Calls whose first argument is a key, not a selector, when a selector comes after it.
-KEYED_CALLS = frozenset({'locator', 'interrupt'})
+KEYED_CALLS = frozenset({'locator', 'locator_all', 'interrupt'})
 # Selenium's By names and the strings they stand for.
 _BY_NAMES = {'XPATH': 'xpath', 'CSS_SELECTOR': 'css selector', 'ID': 'id', 'NAME': 'name',
              'CLASS_NAME': 'class name', 'TAG_NAME': 'tag name', 'LINK_TEXT': 'link text',
