@@ -221,10 +221,11 @@ def register(book, step):
             if other.last and other.name != step.name:
                 raise ValueError('mendwright: heal.step(' + repr(step.name) + ', ..., last=True): '
                                  + repr(other.name) + ' is the last step already, and a flow '
-                                 'has at most one. Register ' + repr(other.name) + ' again '
-                                 'without last=True first, or drop last=True here. Steps stay '
-                                 'on the healer for every later run_steps(): for another '
-                                 'flow, open a new healer.')
+                                 'has at most one. Steps stay on the healer for every later '
+                                 'run_steps(), so for another flow, open a new healer. To '
+                                 'change the last step of this flow, register '
+                                 + repr(other.name) + ' again without last=True first, or '
+                                 'drop last=True here.')
     book[step.name] = step
 
 
@@ -631,14 +632,19 @@ def run(healer, timeout_ms, poll_ms):
 
 def _next_step(healer, flow, timeout_ms, poll_ms):
     """Wait, up to timeout_ms, for a step that has not run to show, handling the
-    registered interruptions the page shows meanwhile. Returns (step, page path)."""
+    registered interruptions the page shows meanwhile. Returns (step, page path): the
+    page's path is read again after its landmarks, and they are looked at again when it
+    changed meanwhile, so the step is not given the page it came from."""
     __tracebackhide__ = True
     driver, wait = healer._driver, _Wait(time.monotonic(), timeout_ms)
     while True:
         url = healer._url()
         shown = [s for s in flow.waiting() if shows(driver, s, url)]
         if shown:
-            return flow.pick(shown), page_path(url)
+            if (page_path(healer._url()) == page_path(url)
+                    or time.monotonic() >= wait.deadline):
+                return flow.pick(shown), page_path(url)
+            continue    # the page changed while its landmarks were looked at: look again
         if interrupt(healer, wait.budget, timeout_ms, poll_ms, wait.failed):
             continue
         if time.monotonic() >= wait.deadline:
@@ -692,7 +698,10 @@ async def _anext_step(healer, flow, timeout_ms, poll_ms):
         url = await _url(driver)
         shown = [s for s in flow.waiting() if await ashows(driver, s, url)]
         if shown:
-            return flow.pick(shown), page_path(url)
+            if (page_path(await _url(driver)) == page_path(url)
+                    or healer._clock() >= wait.deadline):
+                return flow.pick(shown), page_path(url)
+            continue    # the page changed while its landmarks were looked at: look again
         if await healer._interrupt_waiting(wait.budget, timeout_ms, poll_ms, wait.failed):
             continue
         if healer._clock() >= wait.deadline:

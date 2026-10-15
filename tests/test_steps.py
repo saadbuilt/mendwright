@@ -516,6 +516,34 @@ def test_a_step_that_shows_a_moment_later_is_waited_for(side, tmp_path, stub_pro
     assert side.run(timeout_ms=2000) == ['shipping', 'payment', 'review']
     assert [v for _, v, _ in shop.actions] == ['fill', 'click', 'fill', 'click', 'click']
     assert shop.filled == {'ship-name': 'Ada', 'card-number': '4242 4242 4242 4242'}
+    assert [e['page'] for e in _steps_journal(tmp_path)] == ['/checkout/a', '/checkout/b',
+                                                              '/checkout/c']
+
+
+class LateAddress(SlowShop):
+    """A SlowShop whose next page loads only when its landmarks are looked at, not when
+    its address is read: the page changes between the two, as when a navigation commits
+    right after run_steps() read the address."""
+
+    @property
+    def url(self):
+        return self._url
+
+    @url.setter
+    def url(self, value):
+        self._url = value
+
+
+def test_a_page_that_loads_between_its_address_and_its_landmarks_is_looked_at_again(
+        side, tmp_path, stub_provider):
+    shop = LateAddress(in_order('shipping', 'payment', 'review').pages, 'a')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    _checkout(side)
+
+    assert side.run(timeout_ms=2000) == ['shipping', 'payment', 'review']
+    # Each step is given the page it showed on, not the one before it.
+    assert [e['page'] for e in _steps_journal(tmp_path)] == ['/checkout/a', '/checkout/b',
+                                                              '/checkout/c']
 
 
 def test_run_steps_waits_as_long_as_the_healer_by_default(side, tmp_path, stub_provider):
