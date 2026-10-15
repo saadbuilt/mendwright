@@ -263,5 +263,5 @@ python docs/charts/build_charts.py --check   # exit 1 if an SVG is out of date, 
 ```
 
 The script uses only the standard library and gives the same bytes on every run.
-`docs/assets/demo.svg`, the terminal recording in the README, is built from the real output of `mendwright demo` with `python docs/charts/build_demo_svg.py` (also `--check`). Run it again after any change to the demo's output.
+`docs/assets/demo.svg`, a terminal recording of `mendwright demo` (no longer in the README), is built from the real output of `mendwright demo` with `python docs/charts/build_demo_svg.py` (also `--check`). Run it again after any change to the demo's output.
 CI doesn't run either one, so run `--check` before a pull request that touches `data.json` or the demo.

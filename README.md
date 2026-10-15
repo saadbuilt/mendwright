@@ -14,9 +14,9 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-https://github.com/user-attachments/assets/865797e6-5642-4f81-9b8d-e6f5d97d9200
+https://github.com/user-attachments/assets/2b9b7438-e369-415f-8a5c-4b28dcc58e11
 
-<p align="center"><sub>A real run on a made-up shop: the site redeploys and a cookie banner now pops up first. mendwright rejects the banner, repairs two selectors from memory and one with its 1 GB local model, and the next run uses the saved fixes.</sub></p>
+<p align="center"><sub>Real runs on a made-up shop, with the waits sped up. Plain Playwright dies on a cookie banner, and one line of mendwright gets past it. After a redesign, two selectors are repaired from memory and one by the 1 GB local model. Then <code>dismiss=True</code> declines popups nobody registered, without ever clicking “Sign up”, a paid upsell or a “Dismiss” that would cancel the order; the checkout runs its steps in whatever order the site shows them; and Selenium gets past the banner too.</sub></p>
 
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
@@ -26,39 +26,7 @@ For the model it supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock
 
 ```bash
 pip install mendwright
-mendwright demo
 ```
-
-If the `mendwright` command isn't on your PATH (common on Windows), run `python -m mendwright demo`.
-
-The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors, and a cookie banner that used to come later now opens first and covers the form. mendwright clicks the banner away because the demo registered it with `heal.interrupt()`, heals the checkbox, and refuses to heal the pay button because the demo marks it `destructive=True`.
-
-<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page a cookie banner covers the form and is clicked away as a registered interruption. The accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector, marked destructive=True, also misses and is refused without a model call.">
-
-<details>
-<summary>The same output as text</summary>
-
-```text
-mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie banner.
-Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).
-
-  v1  accept_terms  #accept-terms   ok     matched, box checked
-  v1  pay           #pay            ok     matched (not clicked)
-      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --
-  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it (heal.interrupt)
-  v2  accept_terms  #accept-terms   MISS   no element matches
-      model    proposed //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (scripted reply, no API call)
-      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
-      retry    ok: box checked with the healed selector, heal confirmed
-  v2  pay           #pay            MISS   no element matches
-      refused  'pay' is marked destructive=True. Not healed, no model call.
-
-Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in total.
-```
-
-</details>
-
-`mendwright demo --browser chromium` runs the same demo in a real headless browser. It needs `pip install "mendwright[playwright]"` and `python -m playwright install chromium`. `mendwright demo --live` asks the model from your environment (set it up as shown below) instead of the canned reply. Only the demo page is sent.
 
 ## Quickstart
 
