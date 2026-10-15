@@ -2544,7 +2544,8 @@ class Healer:
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs
 # plus Selenium's send_keys and submit. Everything else (inner_text, get_attribute, text,
-# is_checked, ...) is a read and falls through to the native object unchanged.
+# is_checked, ...) is a read and falls through to the native object, on Playwright once
+# the registered interruptions the page shows are handled (see LOCATOR_READS).
 ACTIONS = ('click', 'dblclick', 'fill', 'type', 'press', 'press_sequentially', 'check',
            'uncheck', 'set_checked', 'select_option', 'hover', 'tap', 'clear', 'focus',
            'set_input_files', 'drag_to', 'send_keys', 'submit')
@@ -2579,7 +2580,8 @@ class ActionProxy:
 
     A successful action does not confirm a heal on its own. Pass expect=<callable
     returning bool> to check the result, or call confirm(). Reads such as inner_text()
-    or get_attribute() fall through to the native object. Use .native where a library
+    or get_attribute() fall through to the native object, on Playwright once the
+    registered interruptions the page shows are handled. Use .native where a library
     wants the real object, for example Playwright's expect(proxy.native).
 
     Before an action, registered interruptions the page shows are handled (see
