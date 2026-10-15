@@ -326,7 +326,7 @@ The reads it checks are `inner_text()`, `text_content()`, `input_value()` and `g
 | `"number"` | a number and nothing else, with an optional sign: `1,299.00`, `1.299,00`, `1 299,00`, `1'299.00`, `4.5`, `-3` |
 | `"integer"` | a number with no decimal part written: `1,299`, `12`, but not `12.00` |
 | `"percent"` | a number with `%` before or after it: `12%`, `12.5 %`, `%20` |
-| `"date"` | a calendar date (31/02/2026 is not one): `2026-10-15`, with or without a time, `15/10/2026`, `10/15/2026`, `15.10.2026`, `2026年10月15日`, or with the month's name in English, German, French, Spanish, Italian, Dutch or Portuguese, such as `Oct 15, 2026`, `15. Oktober 2026` or `15 de octubre de 2026`, also after a weekday or before a time |
+| `"date"` | a calendar date (31/02/2026 is not one): `2026-10-15`, with or without a time (`2026-10-15T10:00`, `2026-10-15T10:00:00+02:00`, `2026-10-15 10:00`), `15/10/2026`, `10/15/2026`, `15.10.2026`, `2026年10月15日`, or with the month's name in English, German, French, Spanish, Italian, Dutch or Portuguese, such as `Oct 15, 2026`, `15. Oktober 2026` or `15 de octubre de 2026`, also after a weekday or before a time |
 | `"email"` | an email address, also as a `mailto:` link |
 | `"url"` | an `http` or `https` URL with a host, one that starts with `//`, or a path that starts with `/`, `./` or `../`, as `get_attribute("href")` gives for a relative link |
 | `re.compile(...)` | a value the pattern finds a match in, as `re.search()` does. Anchor it with `^` and `$` to match the whole value |

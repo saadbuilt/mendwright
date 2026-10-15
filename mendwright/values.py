@@ -290,8 +290,8 @@ _ISO = re.compile(r'(\d{4})-(\d{1,2})-(\d{1,2})(?:[t ]\d{1,2}:\d{2}(?::\d{2}(?:\
                   r' ?(?:z|[+-]\d{2}:?\d{2})?)?')
 _NUMERIC = re.compile(r'(\d{1,4})([./-])(\d{1,2})\2(\d{1,4})\.?')
 _CJK = re.compile(r'(\d{4}) ?[年년] ?(\d{1,2}) ?[月월] ?(\d{1,2}) ?[日일]')
-_TIME = re.compile(r',? ?(?:(?:at|um|à|a|às|as|alle|om) )?\d{1,2}(?::\d{2}){1,2}(?: ?[ap]\.?m\.?)?'
-                   r'(?: uhr)?$|,? ?\d{1,2}h\d{2}$')
+_TIME = re.compile(r',? ?(?:(?:at|um|à|a|às|as|alle|om) )?(?:\d{1,2}(?::\d{2}){1,2}'
+                   r'(?: ?[ap]\.?m\.?)?(?: uhr)?|\d{1,2}h\d{2})$')
 _PIECES = re.compile(r'\d+|[^\W\d_]+')
 
 
@@ -347,7 +347,12 @@ def _worded_date(pieces):
 
 
 def _is_date(text):
-    text = _TIME.sub('', _clean(text).casefold()).strip()
+    text = _clean(text).casefold()
+    # An ISO 8601 date-time first: cutting its time off would leave 2026-10-15t.
+    match = _ISO.fullmatch(text)
+    if match:
+        return _real(*(int(g) for g in match.groups()))
+    text = _TIME.sub('', text).strip()
     if not text:
         return False
     match = _ISO.fullmatch(text)

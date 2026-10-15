@@ -117,6 +117,33 @@ def test_the_named_checks(name, good, bad):
     assert check.passes(None) is False
 
 
+def test_iso_8601_date_times_are_dates():
+    # <time datetime=...>, <input type="datetime-local"> and Python's isoformat() put the
+    # time after a T, with a zone or none.
+    check = expectation('date')
+    good = ['2026-10-15T10:00', '2026-10-15T10:00:00', '2026-10-15T10:00:00+02:00',
+            '2026-10-15T10:00:00.000+02:00', '2026-10-15T10:00:00Z', '2026-10-15T10:00:00+0200',
+            '2026-10-15T10:00:00-05:00', '2026-10-15 10:00:00+02:00', '2026-10-15t10:00',
+            '15 octobre 2026 à 10h30', '15 octobre 2026 10h30', 'le 15 octobre 2026 à 10:30']
+    assert [v for v in good if not check.passes(v)] == []
+    bad = ['2026-02-30T10:00', '2026-10-15T', '2026-10-15T10', 'T10:00', '2026-10-15T25:00x']
+    assert [v for v in bad if check.passes(v)] == []
+
+
+def test_a_heal_onto_an_iso_date_time_passes_date(tmp_path, make_page, stub_provider):
+    eta = "//time[@id='delivery-eta']"
+    page = make_page("<html><body><p>Arrives <time id='eta' datetime='2026-10-15T10:00'>"
+                     'Thursday 10am</time></p></body></html>')
+    provider = stub_provider(eta)
+    heal = _open(page, tmp_path, provider)
+    assert heal.locator('eta', '#eta').get_attribute('datetime') == '2026-10-15T10:00'
+    page.set_html(page.content().replace("id='eta'", "id='delivery-eta'").replace(
+        'id="eta"', 'id="delivery-eta"'))
+    eta_read = heal.locator('eta', '#eta', expect_value='date').get_attribute('datetime')
+    assert eta_read == '2026-10-15T10:00'
+    assert heal.store.status('eta', eta) == 'active' and heal.heals[-1].confirmed is True
+
+
 def test_a_regex_searches_and_a_callable_decides():
     sku = expectation(re.compile(r'^SKU-\d+$'))
     assert sku.passes('SKU-123') and not sku.passes('Item SKU-123')
