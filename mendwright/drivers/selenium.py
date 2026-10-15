@@ -33,6 +33,10 @@ from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROL
                    POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
                    frame_selector, inventory_rows, is_async_api)
 
+# How many matches SeleniumDriver.visible_match() asks is_displayed() of, one round trip
+# each, for the first two that are.
+VISIBLE_MATCH_LOOK = 20
+
 # What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
 # its in-view centre, where WebDriver's click lands (the middle of its first box, clipped
 # to the viewport), or null when no part of that box is in the viewport. elementFromPoint
@@ -422,7 +426,7 @@ class SeleniumDriver:
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
     through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
-    fingerprint. The interruption checks also use covered and inside_frame, which only
+    fingerprint, visible_match. The interruption checks also use covered and inside_frame, which only
     this driver has."""
 
     def __init__(self, driver):
@@ -605,6 +609,32 @@ class SeleniumDriver:
             if not isinstance(data, dict) or not isinstance(data.get('html'), str):
                 return None
             return element_summary(data.get('tag'), data['html'])
+
+        return self._read(selector, frame_chain, op, None)
+
+    def visible_match(self, selector, frame_chain=()):
+        """describe()'s result for the first displayed element of the first
+        VISIBLE_MATCH_LOOK the selector matches, plus 'visible': how many of those are
+        displayed, counted up to 2. None when none of them is displayed. Runs inside the
+        frame chain with the implicit wait at 0. A malformed selector raises
+        InvalidSelector; any other error gives None."""
+        def op():
+            shown = []
+            for el in self._find_all(selector)[:VISIBLE_MATCH_LOOK]:
+                if el.is_displayed():
+                    shown.append(el)
+                    if len(shown) == 2:
+                        break
+            if not shown:
+                return None
+            data = self._driver.execute_script(
+                'return {tag: arguments[0].tagName.toLowerCase(), html: arguments[0].outerHTML};',
+                shown[0])
+            if not isinstance(data, dict) or not isinstance(data.get('html'), str):
+                return None
+            summary = element_summary(data.get('tag'), data['html'])
+            summary['visible'] = len(shown)
+            return summary
 
         return self._read(selector, frame_chain, op, None)
 
@@ -823,6 +853,9 @@ class SeleniumFrameDriver:
 
     def fingerprint(self, selector, frame_chain=()):
         return self._base.fingerprint(selector, self._in(frame_chain))
+
+    def visible_match(self, selector, frame_chain=()):
+        return self._base.visible_match(selector, self._in(frame_chain))
 
     def outer_html(self, scope=None):
         try:

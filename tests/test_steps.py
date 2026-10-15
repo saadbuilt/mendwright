@@ -23,10 +23,11 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired, InvalidSelector
+from mendwright.drivers.base import VISIBLE_MATCH_JS
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
 from mendwright.drivers.selenium import SeleniumDriver
 from mendwright.fingerprint import FINGERPRINT_JS
-from mendwright.flow import InterruptionLoop
+from mendwright.flow import InterruptionLoop, several_message
 from mendwright.steps import (WAITING_STEP, Step, again_message, cap_message, changed_message,
                               dropped_message, landmark_targets, order_message, plain_message,
                               ran_message, scope_message, unknown_message, url_matches,
@@ -57,12 +58,19 @@ def _overlay_of(el):
 
 
 class ShopLocator:
-    def __init__(self, page, selector):
+    def __init__(self, page, selector, visible=False):
         self._page = page
         self._selector = selector
+        self._visible = visible
 
     def _els(self):
-        return self._page.query(self._selector)
+        els = self._page.query(self._selector)
+        return [e for e in els if not _hidden(e)] if self._visible else els
+
+    def locator(self, selector):
+        # Only Playwright's filter to the visible matches, as visible_match() uses it.
+        assert selector == 'visible=true'
+        return ShopLocator(self._page, self._selector, True)
 
     def count(self):
         return len(self._els())
@@ -78,6 +86,9 @@ class ShopLocator:
 
     def evaluate_all(self, js):
         els = self._els()
+        if js == VISIBLE_MATCH_JS and els:      # the first visible match, and how many
+            return {'tag': els[0].tag, 'visible': min(len(els), 2),
+                    'html': lxml.html.tostring(els[0], encoding='unicode', with_tail=False)}
         if js == FINGERPRINT_JS or len(els) != 1:
             return None
         return {'tag': els[0].tag, 'html': lxml.html.tostring(els[0], encoding='unicode',
@@ -217,6 +228,9 @@ class AsyncShopLocator:
 
     async def get_attribute(self, name, **kwargs):
         return self._loc.get_attribute(name)
+
+    def locator(self, selector):
+        return AsyncShopLocator(self._loc.locator(selector))
 
     def __getattr__(self, verb):
         action = getattr(self._loc, verb)
@@ -934,6 +948,42 @@ def test_any_visible_match_of_a_landmark_shows_the_step(side, tmp_path, stub_pro
     assert side.run() == ['payment']
 
 
+def test_a_landmark_that_matches_more_than_mendwright_looks_at_is_named_once_per_page(
+        side, tmp_path, caplog, stub_provider):
+    page = ("<h1 style='display: none'>Payment</h1>" * 5 + "<h1 id='pay-title'>Payment</h1>"
+            "<button id='next' type='button' data-go='done'>Next</button>")
+    shop = Shop({'a': page, 'done': DONE}, 'a')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    side.heal.step('payment', PAYMENT, side.does(('click', '#next')), last=True)
+
+    with pytest.raises(AttentionRequired, match='no step showed on /checkout/a'):
+        side.run()          # it looks at the page every 5 ms for 60 ms
+
+    message = several_message('landmark', 'payment', PAYMENT, 6, 5, ['#pay-title'],
+                              playwright=True)
+    assert message == (
+        "step 'payment' did not show: its landmark \"//h1[.='Payment']\" matches 6 elements, "
+        "and mendwright looks at the first 5 of them only, and none of those is visible. Use a "
+        "landmark that matches one element, such as '#pay-title', which matches one visible "
+        "element on this page.")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'did not show' in line] == [
+        'mendwright: ' + message]
+    side.heal.step('payment', '#pay-title', side.does(('click', '#next')), last=True)
+    assert side.run() == ['payment']
+
+
+def test_a_landmark_that_matches_several_is_not_named_when_a_later_one_shows_the_step(
+        side, tmp_path, caplog, stub_provider):
+    page = ("<h1 style='display: none'>Payment</h1>" * 5 + "<h1 id='pay-title'>Payment</h1>"
+            "<button id='next' type='button' data-go='done'>Next</button>")
+    side.open(Shop({'a': page, 'done': DONE}, 'a'), provider=stub_provider(None),
+              store_path=_store(tmp_path))
+    side.heal.step('payment', [PAYMENT, '#pay-title'], side.does(('click', '#next')), last=True)
+
+    assert side.run() == ['payment']
+    assert not [line for line in _lines(caplog) if 'did not show' in line]
+
+
 # --- the page guard inside a step -----------------------------------------------------------------
 
 def _first_run(tmp_path, stub_provider):
@@ -945,6 +995,30 @@ def _first_run(tmp_path, stub_provider):
     _checkout(first)
     first.run()
     return load_store(None, _store(tmp_path))
+
+
+def test_the_keys_of_a_run_function_are_not_saved_with_the_step_it_ran_during(
+        side, tmp_path, stub_provider):
+    relogin = ("<div id='relogin' data-overlay='' role='dialog'><p>Your session expired.</p>"
+               "<input id='user' name='user'><button id='signin' type='button' "
+               "data-closes='relogin'>Sign in</button></div>")
+    side.open(Shop({'a': relogin + payment_page('done'), 'done': DONE}, 'a'),
+              provider=stub_provider(None), store_path=_store(tmp_path))
+    calls = []
+    side.heal.interrupt('relogin', '#relogin',
+                        run=side.does(('fill', '#user', 'ada'), ('click', '#signin'),
+                                      record=calls))
+    side.heal.step('payment', PAYMENT, side.does(('fill', '#card-number', '4242'),
+                                                 ('click', '#next')), last=True)
+
+    assert side.run() == ['payment']
+
+    # The popup was handled before the step's first action, and its keys are the
+    # function's, which may run during any step.
+    assert len(calls) == 1
+    store = load_store(None, _store(tmp_path))
+    assert store.meta('#card-number')['steps'] == ['payment']
+    assert not store.meta('#user').get('steps') and not store.meta('#signin').get('steps')
 
 
 def test_a_key_saves_the_steps_it_was_found_during(tmp_path, stub_provider):
@@ -1366,6 +1440,56 @@ class WebDriver:
 
     def execute_script(self, script, *args):
         return None
+
+
+class ManyWebDriver(WebDriver):
+    """A WebDriver that also finds elements by a class ('.step-title'), and answers the
+    script that reads an element's outerHTML (SeleniumDriver.visible_match)."""
+
+    def find_elements(self, by, value):
+        if by == 'css selector' and value.startswith('.'):
+            found = self.shop.doc.xpath(
+                "//*[contains(concat(' ', normalize-space(@class), ' '), $c)]",
+                c=' ' + value[1:] + ' ')
+            return [Element(self, e) for e in found]
+        return super().find_elements(by, value)
+
+    def execute_script(self, script, *args):
+        if 'outerHTML' in script and args:
+            el = args[0].el
+            return {'tag': el.tag, 'html': lxml.html.tostring(el, encoding='unicode',
+                                                              with_tail=False)}
+        return None
+
+
+def test_a_selenium_css_landmark_whose_first_match_is_hidden_is_named_once_per_page(
+        tmp_path, caplog, stub_provider):
+    titles = ("<h2 class='step-title' style='display: none'>Shipping</h2>"
+              "<h2 class='step-title'>Payment</h2>"
+              "<button id='next' type='button' data-go='done'>Next</button>")
+    driver = ManyWebDriver(Shop({'a': titles, 'done': DONE}, 'a'))
+    heal = mendwright.open(driver, provider=stub_provider(None), store_path=_store(tmp_path),
+                           timeout_ms=60, fingerprint=False)
+    heal.coordinator.log = None
+    heal.step('payment', '.step-title', lambda drv: drv.find_element('css selector', '#next').click(),
+              last=True)
+
+    with pytest.raises(AttentionRequired, match='no step showed on /checkout/a'):
+        heal.run_steps(poll_ms=5)
+
+    message = several_message('landmark', 'payment', '.step-title', 2, 1,
+                              ["//h2[normalize-space()='Payment']"])
+    assert message == (
+        "step 'payment' did not show: its landmark '.step-title' matches 2 elements, and on "
+        "Selenium mendwright asks only whether the first of them is visible, for a CSS "
+        "selector, and it is not. Use a landmark that matches one element, such as "
+        "\"//h2[normalize-space()='Payment']\", which matches one visible element on this "
+        "page.")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'did not show' in line] == [
+        'mendwright: ' + message]
+    heal.step('payment', "//h2[normalize-space()='Payment']",
+              lambda drv: drv.find_element('css selector', '#next').click(), last=True)
+    assert heal.run_steps(poll_ms=5) == ['payment']
 
 
 def test_selenium_rejects_a_playwright_landmark_when_the_step_is_registered(tmp_path,

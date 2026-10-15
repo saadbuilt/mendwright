@@ -578,3 +578,285 @@ def test_a_banner_in_a_shadow_root_is_handled_before_an_action_mendwright_does_n
 
     assert tab.text('#done') == 'continued '
     assert _rejected_once(tab, heal)
+
+
+# --- an interruption that needs a form: heal.interrupt(run=...) ------------------------------
+#
+# A session-expired popup over the page: it closes once the user name and a password are
+# filled in and Sign in is clicked. With wall=True the page hides its form until then, as a
+# sign-in wall does, so a lookup misses instead of an action being covered.
+
+def _relogin_page(wall=False):
+    body = """<p>Signed in as <span id="session">nobody</span>. Saved: <span id="saved">no</span></p>
+<form id="account" STYLE><label for="email">Email</label><input id="email" type="email">
+  <button id="save" type="button" onclick="document.getElementById('saved').textContent = 'yes'">Save</button></form>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; top: 0; padding: 16px; background: #fff">
+    <p>Your session expired. Sign in again.</p>
+    <label for="user">User</label><input id="user">
+    <label for="password">Password</label><input id="password" type="password">
+    <button id="signin" type="button" onclick="signIn()">Sign in</button>
+  </div>
+</div>
+<script>
+function signIn() {
+  if (document.getElementById('password').value === '') return;     // it stays open
+  document.getElementById('session').textContent = document.getElementById('user').value;
+  document.getElementById('relogin').remove();
+  document.getElementById('account').style.display = 'block';
+}
+</script>"""
+    return page(body.replace('STYLE', 'style="display: none"' if wall else ''), 'relogin')
+
+
+def _fill(tab, target, css, value):
+    if tab.family == 'playwright':
+        target.fill(css, value)
+    else:
+        element = target.find_element('css selector', css)
+        element.clear()
+        element.send_keys(value)
+
+
+def _click(tab, target, css):
+    if tab.family == 'playwright':
+        target.click(css)
+    else:
+        target.find_element('css selector', css).click()
+
+
+def _sign_in(tab, calls, password='not-a-real-password'):
+    """The user's run= function for the popup, written once: it gets heal.page on
+    Playwright and heal.driver on Selenium."""
+    def relogin(target):
+        calls.append(target)
+        _fill(tab, target, '#user', 'ada')
+        _fill(tab, target, '#password', password)
+        _click(tab, target, '#signin')
+    return relogin
+
+
+def _interrupt_events(store_file):
+    return [(e['key'], e['before'], e['action'], e.get('function'), e.get('outcome'))
+            for e in journal_events(store_file) if e['event'] == 'flow.interrupt']
+
+
+def _mendwright_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == 'mendwright']
+
+
+def test_a_session_expired_popup_is_signed_in_by_its_run_function(tab, store_file,
+                                                                  stub_provider):
+    tab.load(_relogin_page())
+    provider = stub_provider(None)
+    heal = _open(tab, provider, store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin', run=_sign_in(tab, calls))
+
+    _step(heal, 'email', '#email').fill('ada@example.com')
+    _step(heal, 'save', '#save').click()
+
+    assert len(calls) == 1
+    assert calls[0] is (heal.page if tab.family == 'playwright' else heal.driver)
+    assert tab.text('#session') == 'ada'
+    assert tab.value('#email') == 'ada@example.com' and tab.text('#saved') == 'yes'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'email')]
+    assert _interrupt_events(store_file) == [('relogin', 'email', 'run', 'relogin', None)]
+    assert provider.bundles == []
+
+
+def test_what_a_run_function_raises_stops_the_step(tab, store_file, stub_provider, caplog):
+    tab.load(_relogin_page())
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+
+    def relogin(target):
+        calls.append(target)
+        raise LookupError('no password for ada in the test vault')
+
+    heal.interrupt('relogin', '#relogin', run=relogin)
+
+    with pytest.raises(LookupError, match='no password for ada'):
+        _step(heal, 'email', '#email').fill('ada@example.com')
+
+    # Once: Playwright's overlay handler stays out of the lookup's scroll, and the step
+    # called it before its action and raises what it raised.
+    assert len(calls) == 1 and tab.value('#email') == ''
+    assert heal.handled_interruptions == []
+    assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
+    assert len([line for line in _mendwright_lines(caplog) if line.startswith(
+        "mendwright: relogin(), the run= function of interruption 'relogin', raised an error "
+        "while mendwright handled it before 'email' (LookupError: no password for ada in the "
+        "test vault).")]) == 1
+
+
+def test_a_session_popup_its_run_function_cannot_close_stops_after_three(tab, store_file,
+                                                                         stub_provider):
+    tab.load(_relogin_page(wall=True))
+    provider = stub_provider("//input[@id='email']")
+    heal = _open(tab, provider, store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin', run=_sign_in(tab, calls, password=''))
+
+    with pytest.raises(AttentionRequired) as caught:
+        _step(heal, 'email', '#email', role='input')
+
+    assert ("3 interruptions were handled for 'email' and 'relogin' is still on the page"
+            in str(caught.value))
+    assert len(calls) == 3 and tab.text('#session') == 'nobody'
+    assert provider.bundles == []
+
+
+@pytest.mark.engine_family('playwright')
+def test_the_overlay_handler_runs_the_function_before_an_action_mendwright_does_not_route(
+        tab, store_file, stub_provider):
+    tab.load(_relogin_page())
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin', run=_sign_in(tab, calls))
+
+    started = time.monotonic()
+    heal.page.get_by_role('button', name='Save').click()
+
+    # The function's own fill and click run inside Playwright's handler, which runs no
+    # handler again: they do not wait for the popup they are closing to go away.
+    assert time.monotonic() - started < 6
+    assert len(calls) == 1 and tab.text('#session') == 'ada' and tab.text('#saved') == 'yes'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('relogin', '<page action>')]
+
+
+def _slow_sign_in(calls, error=None):
+    """A run= function that takes longer than the page's default timeout, 1 second here,
+    before it signs in, or raises error."""
+    def relogin(page):
+        calls.append(page)
+        page.fill('#user', 'ada')
+        page.fill('#password', 'not-a-real-password')
+        page.wait_for_timeout(2000)
+        if error is not None:
+            raise error
+        page.click('#signin')
+    return relogin
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_run_function_slower_than_the_action_timeout_runs_once(tab, store_file,
+                                                                 stub_provider):
+    tab.load(_relogin_page())
+    tab.page.set_default_timeout(1000)
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin', run=_slow_sign_in(calls))
+
+    _step(heal, 'email', '#email').fill('ada@example.com')
+
+    # Playwright's overlay handler stayed out of the lookup's scroll, so the function did
+    # not run inside it with the scroll's 1 second, after which Playwright would give up on
+    # the scroll (and, on newer releases, make the function's own actions wait for the
+    # handler, itself). The step called it before its action, with no time limit.
+    assert len(calls) == 1 and tab.text('#session') == 'ada'
+    assert tab.value('#email') == 'ada@example.com'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'email')]
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, stub_provider):
+    tab.load(_relogin_page())
+    tab.page.set_default_timeout(1000)
+    heal = _open(tab, stub_provider(None), store_file)
+    calls = []
+    heal.interrupt('relogin', '#relogin',
+                   run=_slow_sign_in(calls, LookupError('no password for ada in the test vault')))
+
+    with pytest.raises(LookupError, match='no password for ada'):
+        _step(heal, 'email', '#email').fill('ada@example.com')
+
+    assert len(calls) == 1 and tab.value('#email') == ''
+    assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
+
+
+# --- a selector that matches several elements ----------------------------------------------------
+
+_TWO_ACCEPTS = page("""
+<p>Consent: <span id="consent">none</span>. Done: <span id="done"></span></p>
+<button id="create" type="button" onclick="document.getElementById('done').textContent = 'created'">Create account</button>
+<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <p>We use cookies to keep you signed in.</p>
+    <button class="cookie-accept" type="button" style="display: none" onclick="consent('mobile')">Accept all</button>
+    <button id="accept-all" class="cookie-accept" type="button" onclick="consent('accepted')">Accept all</button>
+  </div>
+</div>
+<script>
+function consent(choice) {
+  document.getElementById('consent').textContent = choice;
+  document.getElementById('cookie-banner').remove();
+}
+</script>""", 'two accepts')
+
+
+def test_an_interruption_that_matches_two_buttons_is_named_once_with_one_that_matches_one(
+        tab, store_file, stub_provider, caplog):
+    tab.load(_TWO_ACCEPTS)
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.interrupt('cookies', '.cookie-accept')        # the hidden copy for phones matches too
+
+    for _ in range(2):
+        with pytest.raises(Exception, match='intercept'):
+            _step(heal, 'create', '#create').click(timeout=1000)
+
+    skipped = [line for line in _mendwright_lines(caplog) if 'was skipped' in line]
+    assert len(skipped) == 1
+    assert skipped[0].startswith(
+        "mendwright: interruption 'cookies' was skipped: its selector '.cookie-accept' matches 2 elements, "
+        "and mendwright acts on a CSS or Playwright selector only when it matches one (an "
+        "XPath is narrowed to its first visible match). Use a selector that matches only the "
+        "element to act on, such as '#accept-all'")
+    if tab.family == 'playwright':      # Playwright's role engine leaves the hidden copy out
+        assert " or 'role=button[name=\"Accept all\"]', which each match " in skipped[0]
+    assert tab.text('#consent') == 'none'
+
+    heal.interrupt('cookies', '#accept-all')
+    _step(heal, 'create', '#create').click()
+    assert tab.text('#consent') == 'accepted' and tab.text('#done') == 'created'
+
+
+_TWO_CLOSES = page("""
+<p>Consent: <span id="consent">none</span>. Done: <span id="done"></span></p>
+<button id="create" type="button" onclick="document.getElementById('done').textContent = 'created'">Create account</button>
+<button id="chat-close" class="close" type="button" style="position: fixed; top: 0; right: 0; z-index: 20">Close</button>
+<div id="cookie-banner" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <p>We use cookies to keep you signed in.</p>
+    <button id="accept-all" class="close" type="button" onclick="consent('accepted')">Accept all</button>
+  </div>
+</div>
+<script>
+function consent(choice) {
+  document.getElementById('consent').textContent = choice;
+  document.getElementById('cookie-banner').remove();
+}
+</script>""", 'two closes')
+
+
+def test_an_interruption_whose_selector_matches_two_visible_buttons_names_neither(
+        tab, store_file, stub_provider, caplog):
+    tab.load(_TWO_CLOSES)
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.interrupt('cookies', '.close')        # the chat widget's Close button matches too
+
+    with pytest.raises(Exception, match='intercept'):
+        _step(heal, 'create', '#create').click(timeout=1000)
+
+    skipped = [line for line in _mendwright_lines(caplog) if 'was skipped' in line]
+    assert len(skipped) == 1
+    assert ("matches 2 elements, and mendwright acts on a CSS or Playwright selector only when it "
+            "matches one (an XPath is narrowed to its first visible match). More than one of them "
+            "is visible, so mendwright cannot tell which one is meant. Use a selector that "
+            "matches only the element to act on: its id or test id, ") in skipped[0]
+    assert '#chat-close' not in skipped[0] and '#accept-all' not in skipped[0]
+    assert tab.text('#consent') == 'none'

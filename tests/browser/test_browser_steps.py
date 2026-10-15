@@ -429,3 +429,25 @@ def test_a_consent_wall_and_a_popup_nobody_registered_during_the_flow(tab, store
     assert len(popups) == 1 and popups[0].label == 'No thanks'
     assert tab.js('document.title') != 'subscribed'
     assert heal.heals == []
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_css_landmark_whose_first_match_is_hidden_is_named_once_on_selenium(
+        tab, store_file, stub_provider, caplog):
+    # Selenium asks whether the first match of a CSS landmark is visible, and here it is the
+    # hidden heading of another step.
+    tab.load(page('<h2 class="step-title" hidden>Shipping address</h2>'
+                  '<h2 class="step-title">Payment</h2>', 'titles'))
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.step('payment', '.step-title', lambda driver: None, last=True)
+
+    with pytest.raises(AttentionRequired, match='no step showed'):
+        _run(heal, timeout_ms=STOP_MS)
+
+    assert [w for w in _warnings(caplog) if 'did not show' in w] == [
+        "mendwright: step 'payment' did not show: its landmark '.step-title' matches 2 "
+        "elements, and on Selenium mendwright asks only whether the first of them is visible, "
+        "for a CSS selector, and it is not. Use a landmark that matches one element, such as "
+        "\"//h2[normalize-space()='Payment']\", which matches one visible element on this page."]
+    heal.step('payment', "//h2[normalize-space()='Payment']", lambda driver: None, last=True)
+    assert _run(heal) == ['payment']

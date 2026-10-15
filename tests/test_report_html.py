@@ -270,6 +270,26 @@ def test_a_dismissed_popup_is_a_flow_event_and_a_card(capsys, tmp_path):
             "2 popups dismissed.") in parsed.text
 
 
+def test_a_run_function_is_named_and_one_that_raised_is_not_counted_as_handled(capsys,
+                                                                                tmp_path):
+    store = write_sample(tmp_path / "s", extra_events=[
+        {"ts": "2026-10-04T11:00:04+00:00", "event": "flow.interrupt", "key": "relogin",
+         "before": "email", "action": "run", "selector": "#relogin", "function": "relogin"},
+        {"ts": "2026-10-04T11:00:05+00:00", "event": "flow.interrupt", "key": "relogin",
+         "before": "save", "action": "run", "selector": "#relogin", "function": "relogin",
+         "outcome": "failed", "error": "LookupError"}])
+    out = page(capsys, "--store", str(store))
+    parsed = Page(out)
+    rows = parsed.tables["Flow events"]
+    assert rows[0][0] == "interruption failed"
+    assert rows[0][3] == ("Not handled before save: run relogin() raised LookupError, found via "
+                          "selector #relogin.")
+    assert rows[1][0] == "interruption"
+    assert rows[1][3] == "Handled before email: run relogin() via selector #relogin."
+    assert cards(out)["interruptions handled"] == "3"
+    assert "3 interruptions handled, 1 step skipped" in parsed.text
+
+
 def test_quarantines_come_from_the_store_and_the_journal(capsys, tmp_path):
     store = write_sample(tmp_path / "s", extra_events=[
         {"ts": "2026-10-05T00:00:00+00:00", "event": "heal.quarantine", "key": "gone",
