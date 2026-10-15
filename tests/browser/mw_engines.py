@@ -10,7 +10,9 @@ on this machine skips its tests with the reason and the command that fixes it. P
 loaded with page.set_content() on Playwright and from a file:// page written to tmp_path
 on Selenium, so nothing touches the network. tab.load() keeps one address for the whole
 test (as a redesign of one page would); tab.load_at(html, path) gives a page its own
-path, served from a route on Playwright and from its own file on Selenium.
+path, served from a route on Playwright and from its own file on Selenium. For a site of
+several pages that link to each other, tab.serve(pages) serves them all without opening
+one, tab.address(path) is where a page links to another, and tab.visit(path) opens one.
 """
 
 import asyncio
@@ -209,6 +211,22 @@ class PlaywrightTab(Tab):
         self._ctx = self.page
         self.page.goto(SITE + path)
 
+    def serve(self, pages):
+        """Serve each of pages ({path: html}) at SITE + path, from the route, without
+        opening one. A path served again gets its new html."""
+        if not self._served:
+            self.page.route(SITE + '/**', self._serve)
+        self._served.update(pages)
+
+    def address(self, path):
+        """Where a served page is, for a link from another one."""
+        return SITE + path
+
+    def visit(self, path):
+        """Open a page that serve() serves."""
+        self._ctx = self.page
+        self.page.goto(SITE + path)
+
     def _serve(self, route):
         html = self._served.get(urlsplit(route.request.url).path)
         if html is None:
@@ -273,6 +291,28 @@ class SeleniumTab(Tab):
         target.write_text(html, encoding='utf-8')
         self.driver.switch_to.default_content()
         self.driver.get(target.as_uri() + '?load=' + str(self._loads))
+
+    def _site_file(self, path):
+        target = self._workdir.joinpath('site', *path.strip('/').split('/'))
+        return target.with_name(target.name + '.html')
+
+    def serve(self, pages):
+        """Write each of pages ({path: html}) to its own file, site/<path>.html, without
+        opening one. A path served again gets its new html."""
+        for path, html in pages.items():
+            target = self._site_file(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(html, encoding='utf-8')
+
+    def address(self, path):
+        """Where a served page is, for a link from another one: its file:// URL."""
+        return self._site_file(path).as_uri()
+
+    def visit(self, path):
+        """Open a page that serve() wrote."""
+        self._loads += 1
+        self.driver.switch_to.default_content()
+        self.driver.get(self.address(path) + '?load=' + str(self._loads))
 
     def js(self, expression):
         return self.driver.execute_script('return (' + expression + ');')

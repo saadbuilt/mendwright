@@ -488,7 +488,7 @@ Update the selector in your code to the new one, or run without --mendwright-str
 ```
 
 Strict mode only fires on the run that makes the heal.
-It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`) or a dismissed popup (`flow.dismiss`) doesn't fail a test.
+It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`), a dismissed popup (`flow.dismiss`) or steps that came in another order (`flow.step`, see [Steps in any order](#steps-in-any-order)) don't fail a test.
 On the next run with the same store, the saved heal resolves as a fallback, no heal happens, and the test passes.
 For a strict CI job, give each run a fresh store (see [CI](#ci)).
 Strict mode also covers reruns from pytest-rerunfailures: a rerun that passes only because of a heal fails too.
@@ -523,6 +523,7 @@ print(await heal.present("newsletter"))
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
 - `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
 - Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
+- `heal.step()` is a plain call, and `await heal.run_steps()` runs the steps (see [Steps in any order](#steps-in-any-order)). A step's function is an async function, which is awaited, or a plain one that returns an awaitable, such as `lambda page: page.click("#place")`. `heal.page`'s calls are coroutines here, so a plain function that makes them without `await` would do nothing on the page: `run_steps()` raises `TypeError` for a function that returns anything else, and the journal records the step as failed.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
@@ -633,8 +634,14 @@ What mendwright does with each kind:
 | A step that may not be there | Skips it, if you pass `optional=True` |
 | A step that moved to another page | Declines to heal the key on a page where it was never found, before any model call |
 | A step that moved away while the address stayed the same | Leaves it to the model, which is told it may answer that no element fits. The error then gives the model's reason. |
+| Steps in another order, put on one page, or left out, such as a checkout that now asks for the card before the address | Runs whichever step the site shows, each once, if you register the steps with `heal.step()` and run them with `heal.run_steps()`. A step left out is named in a WARNING when a step has `last=True`; with none, `run_steps()` waits for it and stops with an error |
 
-Steps in a new order across pages, and a new required step such as a field you must fill before you can continue, still need a change to your script.
+With `heal.run_steps()`, steps in a new order or on one page need no change to your script, and nor does a step the site leaves out, when the step that ends the flow has `last=True`. These still need one:
+
+- a new required step, such as a field you must fill before you can continue: `run_steps()` stops on its page with an error that names the page
+- an action that moved from one step to another, since each step's function does only its own actions
+- a step whose landmark changed, since landmarks are never healed
+- a flow where your script picks the way, such as delivery or pickup
 
 ### Interruptions
 
@@ -806,9 +813,87 @@ When a key's selector misses on a page that isn't one of its saved pages, mendwr
 'continue' was last found on /signup, and this page is /signup/details. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open().
 ```
 
-If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. Pass it too when the same steps run under several language paths, such as `/en/checkout` and `/de/checkout`, because those are different pages to the guard. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on. When two processes share a store, as with pytest-xdist, the pages both of them found a key on are kept.
+If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. Pass it too when the same steps run under several language paths, such as `/en/checkout` and `/de/checkout`, because those are different pages to the guard. Inside [`heal.run_steps()`](#steps-in-any-order), a key found during the step that runs heals on the page that step showed on, whatever its address. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on. When two processes share a store, as with pytest-xdist, the pages both of them found a key on are kept.
 
 The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the path stays the same. That last case covers apps that route with the URL fragment (`/#/signup`) or the query string (`?page=signup`), and apps that never change the URL. A single-page app that changes the path with the History API is covered. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
+
+### Steps in any order
+
+```python
+heal = mendwright.open(page)
+
+@heal.step("shipping", when="#ship-name")      # what shows this step is on the page
+def shipping(page): page.fill("#ship-name", "Ada"); page.click("#next")
+
+@heal.step("payment", when="#card-number")
+def payment(page): page.fill("#card-number", "4242 4242 4242 4242"); page.click("#next")
+
+@heal.step("review", when="text=Place order", last=True)
+def review(page): page.click("text=Place order")
+
+heal.run_steps()   # runs whichever step the site shows, each once, in any order, until the last one
+```
+
+The ids keep the example short. In a real flow, use something such as a heading as `when`, so that a renamed field still heals inside its step: a landmark is never healed.
+
+`heal.step(name, when=None, fn=None, *, url=None, last=False, optional=False)` registers one step of a flow, such as a checkout, a signup or a booking, whose steps the site may show in another order, put on one page, or leave out. Use it as a decorator, or pass the function: `heal.step("payment", "#card-number", payment)`. It returns the function.
+
+- `when` is what shows the step is on the page, its landmark: one selector, or a list of them, and any visible match counts. A landmark that matches several elements counts when one of the first 5 is visible. On Selenium a CSS selector that matches several counts when the first is visible, and an XPath is looked at match by match.
+- `url` is a pattern for the page's path, such as `"/checkout/payment"` or `"*/payment*"`, instead of a landmark or as one more condition with it. It and the page's path are normalized as for the [page guard](#steps-that-moved-to-another-page): lower case, without empty parts, and parts that look like record ids read as `*`, so `"/orders/123/pay"` matches `/orders/987/pay`. `*` matches any characters, `/` included. A pattern that starts with `/` starts at the root of the path, and one that starts with `*` is kept as written, so `"*/payment*"` matches `/payment` and `/checkout/payment`. A page with no path, such as `about:blank` or the site root, matches no pattern.
+- `last=True` marks the step that ends the flow, such as placing the order. A flow has at most one, and it can't be optional. Give it to the final step of any flow that ends in a submit: then a step the site left out is named in a WARNING once the flow ends. With no last step, `run_steps()` waits for every step that isn't optional, so a step the site left out stops it with an error, after the steps that did show ran.
+- `optional=True` marks a step that may not show at all, such as an upsell.
+- The function gets `heal.page` on Playwright and `heal.driver` on Selenium, so its selectors heal as usual.
+- Registering a name again replaces its step, which keeps its place in the order.
+- Steps stay on the healer for every later `run_steps()` call, so the same flow can run again. For another flow, open a new healer with `mendwright.open()`.
+- Arguments that can never work raise `TypeError`, `ValueError` or `InvalidSelector` at once, before anything touches the page. On Selenium that includes a Playwright selector in `when`, such as `text=Place order`.
+
+`heal.run_steps(*, timeout_ms=None, poll_ms=200)` runs the steps and returns their names in the order they ran:
+
+1. It waits, up to `timeout_ms` (by default the healer's), until a step that hasn't run yet shows: its landmark is visible, its URL pattern matches, or both when it has both.
+2. It runs that step's function.
+3. It looks again. It stops after the last step ran. With no last step, it stops once every step that isn't optional ran, so an optional step that comes after them isn't waited for.
+
+Each step runs at most once. When several steps that haven't run show at the same time, as on a one-page checkout, they run in the order they were registered, and `run_steps()` looks again after each. The last step runs only when no other step that hasn't run shows, wherever it was registered.
+
+Landmarks are never healed, and nothing is saved for them: a missing landmark is what a step that isn't on the page looks like. Pick ones that stay, such as a heading's text or a field's name, and that only that step's page shows. A landmark that every page shows, such as a Place order button in a sidebar, makes its step run as soon as no other step shows.
+
+While it waits, `run_steps()` handles the [interruptions](#interruptions) you registered, and `cookies=`, when the page shows them, as when a `locator()` misses. So a consent wall that hides the page until you answer doesn't stop the flow. The log line and the `flow.interrupt` event name the step as `'<next step>'`. It handles up to 3 interruptions in each wait, as for one action. An interruption whose action fails is named in one WARNING and not tried again in that wait, and the others still are, so a consent wall that loads late is still answered. With `dismiss=True`, a [popup](#popups-mendwright-wasnt-told-about) is dismissed by the step's own actions, as everywhere else: a popup over a landmark doesn't hide it, so the step runs, and its first action finds the popup in its way.
+
+When it can't tell what to do, `run_steps()` stops:
+
+- A step that ran and is on the page again, with no step that hasn't run for the whole `timeout_ms`, raises `AttentionRequired`. That is most often a submit that failed, such as a declined card, and running the step again could pay twice:
+
+  ```text
+  mendwright: 'payment' is on the page again after it ran, and no step that has not run showed on /checkout/payment within 10000 ms: its submit probably failed, for example because the card was declined or the site rejected a field. mendwright runs each step once, so it stopped instead of running 'payment' again. Look at the page for the site's message. Steps that ran: 'shipping', 'payment'.
+  ```
+
+- A step that ran and shows again on another page, with no step that hasn't run for the whole `timeout_ms`, raises `AttentionRequired` with other advice. The page changed, so its submit most likely worked, and this is most often a step the site added that shows part of it, such as gift options under the Shipping heading:
+
+  ```text
+  mendwright: 'shipping' shows on /checkout/gift, and it ran on /checkout/shipping, so the page changed after it ran, and no step that has not run showed within 10000 ms. This is probably a step the site added that shows part of 'shipping', such as its heading. If it is, add it with heal.step(): @heal.step("<name>", "<selector of something only that step shows>"), or give 'shipping' a landmark only its own page shows. If its submit failed instead, look at the page for the site's message. mendwright runs each step once, so it stopped instead of running 'shipping' again. Steps that ran: 'shipping'.
+  ```
+
+- A page where no step shows within `timeout_ms` raises `AttentionRequired` with the page and every landmark it looked for. A step the site added, such as gift options, needs a `heal.step()` of its own:
+
+  ```text
+  mendwright: no step showed on /checkout/gift within 10000 ms. mendwright looked for 'payment' (#card-number) and 'review' (text=Place order). Steps that ran: 'shipping'. If the site added a step here, add it with heal.step(): @heal.step("<name>", "<selector of something only that step shows>"). If a step's landmark changed, update its when=: landmarks are never healed.
+  ```
+
+  When steps ran and none has `last=True`, the message also says that the site may have dropped a step, and to mark the step that ends the flow with `last=True`.
+
+- An error in a step's function is raised as it is, after the journal records which step failed.
+- It runs at most 3 times as many steps as were registered when it started. A step function that keeps registering new steps could otherwise keep the flow going.
+
+Inside a step, a key's page is the step, not its URL. mendwright saves with each key the steps it was found during, as `steps` in the store next to `pages`. While a step runs, a key found during that step before heals on the page the step showed on when it started, whatever its address, because the step's landmark, or its `url`, showed there that this is that step's page. So a field renamed in a step that also moved to another page heals there, where the [page guard](#steps-that-moved-to-another-page) would decline it, and one INFO line says so. Once the step's function goes to another page, such as with its own Continue, that page may be the next step's, and the guard is as before there: a lookup that misses after the step's submit is not healed onto the next step's controls. For the same reason, a key is saved with a step only when it was found on the page the step showed on. A key never found during the step that runs is guarded as before, and so is every key outside `run_steps()`.
+
+What it reports:
+
+- one INFO line for each step it ran, with the page and the time it took
+- one WARNING when a step runs after steps registered behind it: `ran 'payment' before 'shipping': the site changed the order of the steps`
+- once the last step ran, one WARNING for each step that isn't optional and never showed, since the site may have dropped it, and one INFO line for each optional step that didn't show
+- a `flow.step` journal event for each step that ran, failed or never showed (see [Log lines and journal events](#log-lines-and-journal-events))
+
+None of this is a heal, so `--mendwright-strict` doesn't fail a test because the steps came in another order, as it doesn't for a handled interruption. A heal inside a step still fails it.
 
 ### When the model finds no element
 
@@ -831,14 +916,19 @@ WARNING mendwright: could not dismiss a popup in the way of 'create': <div id="p
 WARNING mendwright: the action on 'email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (heal.interrupt(): 'cookies') matched a visible element, so it did not try the action again. If the element in the way is one of those registered with heal.interrupt(), its selector no longer matches: update it. Otherwise register the button that closes the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
+INFO mendwright: ran step 'payment' on /checkout/step-a (0.4s)
+WARNING mendwright: ran 'payment' before 'shipping': the site changed the order of the steps
+WARNING mendwright: 'gift' never showed before the flow ended with 'review': the site may have dropped it. If it did, delete its heal.step(). If it shows only sometimes, pass optional=True to heal.step('gift', ...).
+INFO mendwright: the page guard lets '#ship-name' heal on /checkout/step-b: it was found during step 'shipping' before (last on /checkout/step-a), and this is the page 'shipping' showed on
 ```
 
 | Event | Fields |
 |---|---|
-| `flow.interrupt` | `key`, `before` (the step it was handled for, or `<page action>`), `action`, and `selector` or `preset` |
+| `flow.interrupt` | `key`, `before` (the step it was handled for, `<page action>`, or `<next step>` while `run_steps()` waits), `action`, and `selector` or `preset` |
 | `flow.dismiss` | `key` (`<popup>`), `before` (the step the popup was in the way of), `popup` (as the WARNING names it), `outcome` (`dismissed`, `failed` when mendwright pressed or clicked something and the popup stayed, or `lost` when the element could not be looked at after a step, or a click raised an error after it may have reached the page), `how` (`escape`, `close` or `decline`, for `dismissed`), `label` (the button's, for `close` and `decline`), `tried` (the steps that did not close it, in order, such as `[{"how": "escape"}, {"how": "close", "label": "Close"}]`: for `dismissed`, those before the one that did) |
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
+| `flow.step` | `key` (the step's name), `outcome` (`ran`, `failed` when its function raised, or `missing` for a step that isn't optional and never showed), `error` (the error's type, for `failed`), `position` (1 for the first step that ran), `registered` (its place in the order the steps were registered), `page`, `seconds` |
 
 ## Selectors
 
@@ -992,7 +1082,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 {"ts":"2026-10-10T19:07:53+00:00","event":"heal.canary","key":"accept_terms","xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","success":true}
 ```
 
-The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip` and `flow.page_guard` (see [Log lines and journal events](#log-lines-and-journal-events)).
+The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
@@ -1142,7 +1232,7 @@ Last applied heals, newest first:
 mendwright report --format html --out mendwright-report.html
 ```
 
-- It has a summary (keys, selectors, quarantined selectors, heals asked for, applied and confirmed, proposals rejected, interruptions, skipped steps and page guard stops), each key with its selectors, the last 25 heals with their old and new selector, state, provider and latency, the last 50 flow events, and the quarantined selectors.
+- It has a summary (keys, selectors, quarantined selectors, heals asked for, applied and confirmed, proposals rejected, interruptions, skipped steps and page guard stops), each key with its selectors, the last 25 heals with their old and new selector, state, provider and latency, the last 50 flow events, and the quarantined selectors. Its flow events don't include `flow.step` yet.
 - A heal shows as confirmed when the test that made it passed (the pytest plugin reports that), or when an `expect=` check or `confirm(True)` said so. A fingerprint heal shows `fingerprint` as its provider.
 - The page is self-contained: inline CSS only, no scripts, no fonts, no images, and nothing loaded from the network. It follows the system's light or dark theme and stacks its tables on a narrow screen.
 - Every value from the store and journal is escaped, and the output is ASCII, so any console encoding can print it.
