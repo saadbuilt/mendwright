@@ -217,21 +217,24 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
     return ''
 
 
-def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
+def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, list_heal=False):
     """store.add_candidate(key, xpath, source='heal'), with css= and frame_xpath= when they
-    are given. A store whose add_candidate is older still gets the heal: without css= (new
-    in 0.6), and without frame_xpath= when it takes neither and the heal is on the page.
-    Returns False, and saves nothing, when it would have to keep a heal that belongs inside
-    an iframe and cannot."""
+    are given, and list_heal=True for a heal of a list. A store whose add_candidate is
+    older still gets the heal: without css= (new in 0.6), and without frame_xpath= when it
+    takes neither and the heal is on the page. Returns False, and saves nothing, when it
+    would have to keep a heal that belongs inside an iframe, or a list heal (which the
+    list lookups find by its mark), and cannot."""
     extra = {}
     if css is not None:
         extra['css'] = css
     if frame_xpath is not None:
         extra['frame_xpath'] = frame_xpath
+    if list_heal:
+        extra['list_heal'] = True
     tries = [extra]
     if 'css' in extra:
         tries.append({k: v for k, v in extra.items() if k != 'css'})
-    if not frame_xpath:
+    if not frame_xpath and not list_heal:
         tries.append({})
     for kwargs in tries:
         try:
@@ -336,9 +339,12 @@ def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None)
     The XPath must have no position, match two or more elements of the key's role in the
     captured HTML, none of them inside another (lists.validate), not be quarantined or
     superseded for the key, take no element a quarantined selector of the key matches, and
-    pass list_live_reason() on the live page. When one of the key's selectors in code is
-    CSS, css, the same selector in CSS, is saved with it as its ``css`` once it matches as
-    many elements on the live page as the XPath does."""
+    pass list_live_reason() on the live page. It is saved marked as a list heal ("list":
+    true): of the key's heals, its list lookups try only those, so a heal of one element
+    saved under the same key (by heal.driver.find_element(), or a heal.page shortcut) never
+    answers for the list. When one of the key's selectors in code is CSS, css, the same
+    selector in CSS, is saved with it as its ``css`` once it matches as many elements on the
+    live page as the XPath does."""
     from .lists import validate as validate_list
     if not isinstance(proposed, str) or not proposed.strip():
         return None, 'no candidates in proposal', 0
@@ -367,7 +373,9 @@ def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None)
                 twin = css
         except Exception:
             twin = ''
-    add_heal(store, selector_key, xpath, css=twin, frame_xpath='')
+    if not add_heal(store, selector_key, xpath, css=twin, frame_xpath='', list_heal=True):
+        return None, ('the store cannot mark a list heal (its add_candidate() takes no '
+                      'list_heal=)'), result.count
     return xpath, 'ok', result.count
 
 

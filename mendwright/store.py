@@ -588,13 +588,17 @@ class SelectorStore:
             self._persist_override()
         return not was_top
 
-    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None, now=None):
+    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
+                      list_heal=None, now=None):
         """Add a candidate selector for key, or update the one with the same text.
 
         frame_xpath is the selector of the iframe the candidate runs in: '' moves an
         existing candidate to the page, None leaves it where it is. css is a CSS selector
         checked to match the same element as a healed XPath (see mendwright.css), saved for
-        mendwright fix and never run: '' drops one saved before, None leaves it."""
+        mendwright fix and never run: '' drops one saved before, None leaves it. list_heal
+        True marks a heal of a list (see mendwright.lists), saved as "list": true: the list
+        lookups of the key try only the heals marked so, and skip the heals of one element.
+        False clears the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         if not found:
@@ -604,6 +608,8 @@ class SelectorStore:
                 cand['frameXPath'] = frame_xpath
             if css:
                 cand['css'] = css
+            if list_heal:
+                cand['list'] = True
             entry['candidates'].append(cand)
         else:
             # An empty value stays as a key, so _absorb() does not take an old one back
@@ -612,6 +618,10 @@ class SelectorStore:
                 found['frameXPath'] = frame_xpath
             if css is not None and (found.get('css') or '') != css:
                 found['css'] = css
+            if list_heal:
+                found['list'] = True
+            elif list_heal is not None:
+                found.pop('list', None)
         self._dirty.add((key, xpath))
         self._persist_override()
 
@@ -778,6 +788,8 @@ class SelectorStore:
                 newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
                 local['lastSucceededAt'] = newest or None
                 _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
+                if c.get('list') is True:
+                    local['list'] = True     # another process healed a list with it
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):
@@ -811,6 +823,8 @@ class SelectorStore:
                     item['frameXPath'] = c['frameXPath']
                 if isinstance(c.get('css'), str) and c['css']:
                     item['css'] = c['css']
+                if c.get('list') is True:
+                    item['list'] = True
                 overlay.append(item)
             saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
             if overlay or saved:

@@ -17,20 +17,33 @@ the list fingerprint, from 0 to 1:
 
 - how much each member looks like one of the recorded items (fingerprint.score), on
   average (a half of the score)
-- how alike the members' shapes are to the recorded ones (a quarter)
+- how alike the members' shapes are to the recorded ones (a quarter), left out when the
+  members and the recorded items have nothing inside them, which says nothing
 - how alike the group's container is to the recorded one (0.15)
 - how close the number of members is to the recorded count (0.10)
 
 and heals only when all of these hold: the best group scores at least THRESHOLD, no group
-that shares less than half of its members with it comes within MARGIN, a member shares an
-id, test id, name, link, label or text with a recorded item, or the group sits in the
-element that has the recorded container's id or test id, every member it looked at has a
-shape at least SHAPE_MIN alike, it is inside the recorded container and the recorded
-items' ancestors with an id when those are still on the page, and an XPath without
-positions matches its members and nothing else. That XPath then goes through the list
-gate (client.apply_list): two or more elements of the role on the captured page, none
-inside another, not quarantined for the key, and, on the live page, two or more elements of
-the role with at least one visible. One element is never taken for a list.
+that shares less than half of its members with it comes within MARGIN, two of the
+recorded items (both, for a list recorded with two) are among its members, every member it
+looked at has a shape at least SHAPE_MIN alike, it is inside the recorded container and the
+recorded items' ancestors with an id when those are still on the page, and an XPath
+without positions matches its members and nothing else.
+
+A recorded item is among the members when one of them shares an id, test id, name, link,
+label or text with it (fingerprint.score's strong) that not every recorded item has, and
+does not share one with every recorded item: what all the items have, such as a test id
+each card has, says what kind of list it is, not which items it holds, and where a group
+sits says nothing about that either. So an emptied list is not healed onto another list in
+its place, such as the hints of a form whose errors went away, or the recommendations a
+search with no results shows where its results were.
+A group of placeholders is neither the answer nor a rival, and is not shown to the model:
+one whose members have no text where the recorded items had text, such as the skeleton
+cards of a list that is still loading, or that is marked aria-busy="true".
+
+The XPath then goes through the list gate (client.apply_list): two or more elements of the
+role on the captured page, none inside another, not quarantined for the key, and, on the
+live page, two or more elements of the role with at least one visible. One element is never
+taken for a list.
 
 When find() is not confident, the coordinator asks the model, if there is one, with the
 groups listed (prompt.build_list_prompt); the model may only pick one of them.
@@ -57,10 +70,12 @@ MARGIN = 0.10
 SHAPE_MIN = 0.5
 
 SAMPLES = 3          # items recorded per list
+NEEDED = 2           # recorded items that must be among a group's members to heal onto it
 MAX_DEPTH = 3        # levels between a group's container and its members
 SHAPE_TAGS = 40      # tags kept in a shape
 SHAPE_LIMIT = 500    # descendants counted for a shape
 SCORED = 25          # members of a group compared with the recorded items
+IDENTIFIED = 200     # members of the best group looked through for the recorded items
 RANKED = 30          # groups scored in full, of those that score best in a quick look
 PROMPT_GROUPS = 12   # groups listed for the model
 ITEM_TEXT = 100      # how much of an item's text a group's description shows
@@ -268,13 +283,13 @@ def item_role(lfp):
 @dataclass
 class Group:
     """Elements that repeat: members (in document order) sit len(steps) levels below
-    container, with the tags ``steps`` on the way down. score and the rest are find()'s."""
+    container, with the tags ``steps`` on the way down. score and the rest are find()'s:
+    shape is None when no member's shape said anything."""
     members: list
     container: Any
     steps: tuple
     score: float = 0.0
-    strong: bool = False
-    shape: float = 0.0
+    shape: float | None = 0.0
     xpath: str | None = None
     css: str | None = None
     built: bool = False
@@ -386,10 +401,11 @@ def _built(group, root):
 
 def shape_similarity(old, new):
     """How alike two shapes are, from 0 to 1: the tags they share, weighted by how many of
-    each they have (a weighted Jaccard). Two empty shapes are alike."""
+    each they have (a weighted Jaccard). None for two empty shapes: two elements with
+    nothing inside them, such as two <span>s of text, say nothing about each other."""
     tags = set(old) | set(new)
     if not tags:
-        return 1.0
+        return None
     return (sum(min(old.get(t, 0), new.get(t, 0)) for t in tags)
             / sum(max(old.get(t, 0), new.get(t, 0)) for t in tags))
 
@@ -424,6 +440,31 @@ def _sample(members, limit):
     return [members[round(i * step)] for i in range(limit)]
 
 
+# The identity signals of a fingerprint (see fingerprint.score), as attributes and as fields.
+IDENTITY_ATTRS = ('id', 'name', 'autocomplete', 'aria-label', 'href') + _fp.TEST_ATTRS
+IDENTITY_FIELDS = ('text', 'label')
+
+
+def _distinct(items):
+    """The recorded items as _Scorer.identified() compares them: each without the identity
+    values every one of them has (a test id, link, name or text all the items share).
+    Unchanged for a single item."""
+    if len(items) < 2:
+        return items
+    out = [dict(item, attrs=dict(item.get('attrs') or {})) for item in items]
+    for name in IDENTITY_ATTRS:
+        values = {(item.get('attrs') or {}).get(name) for item in items}
+        if len(values) == 1 and None not in values:
+            for item in out:
+                item['attrs'].pop(name, None)
+    for name in IDENTITY_FIELDS:
+        values = {item.get(name) for item in items}
+        if len(values) == 1 and None not in values:
+            for item in out:
+                item.pop(name, None)
+    return out
+
+
 class _Scorer:
     """Scores the groups of one page against one list fingerprint, with each element's
     fingerprint and shape read once."""
@@ -433,14 +474,25 @@ class _Scorer:
         self.root = root
         self.items = lfp['items']
         self.shapes = [item.get('shape') or {} for item in self.items]
+        self.distinct = _distinct(self.items)
         self.labels = _fp.label_index(root)
         self._fps = {}
         self._shapes = {}
+        self._scores = {}
 
     def fp(self, el):
         if el not in self._fps:
             self._fps[el] = _fp.of_element(el, self.labels)
         return self._fps[el]
+
+    def scores(self, el):
+        """fingerprint.score() of el against each recorded item, or None when el has no
+        fingerprint."""
+        if el not in self._scores:
+            new = self.fp(el)
+            self._scores[el] = (None if new is None
+                                else [_fp.score(old, new) for old in self.items])
+        return self._scores[el]
 
     def shape(self, el):
         if el not in self._shapes:
@@ -452,54 +504,72 @@ class _Scorer:
         return min(n, recorded) / max(n, recorded)
 
     def _total(self, item, shape, container, count):
-        parts = [(0.5, item), (0.25, shape), (0.10, count)]
+        parts = [(0.5, item), (0.10, count)]
+        if shape is not None:
+            parts.append((0.25, shape))
         if container is not None:
             parts.append((0.15, container))
         return sum(w * s for w, s in parts) / sum(w for w, _ in parts)
+
+    def shaped(self, el):
+        """How alike el's shape is to the most alike recorded item's, from 0 to 1, or None
+        when el and a recorded item both have nothing inside them, which says nothing."""
+        values = [shape_similarity(s, self.shape(el)) for s in self.shapes]
+        if None in values:
+            return None
+        return max(values)
 
     def quick(self, group):
         """A score from the first member alone, without text: to pick the groups worth
         scoring in full."""
         first = group.members[0]
         tag = 1.0 if first.tag.lower() == self.items[0]['tag'] else 0.0
-        shape = max(shape_similarity(s, self.shape(first)) for s in self.shapes)
         container = _container_similarity(self.lfp.get('container'), group.container)
-        return self._total(tag, shape, container, self._count(len(group.members)))
+        return self._total(tag, self.shaped(first), container, self._count(len(group.members)))
 
     def full(self, group):
-        """Score the group (its score, strong and shape, the least alike shape of the
-        members it looked at)."""
+        """Score the group (its score and shape, the least alike shape of the members it
+        looked at, None when no shape said anything)."""
         sample = _sample(group.members, SCORED)
-        scores, strong, shapes = [], False, []
+        scores, shapes = [], []
         for el in sample:
-            new = self.fp(el)
-            if new is None:
+            results = self.scores(el)
+            if results is None:
                 scores.append(0.0)
                 continue
-            results = [_fp.score(old, new) for old in self.items]
             scores.append(max(r.value for r in results))
-            strong = strong or any(r.strong for r in results)
-            shapes.append(max(shape_similarity(s, self.shape(el)) for s in self.shapes))
+            shape = self.shaped(el)
+            if shape is not None:
+                shapes.append(shape)
         container = _container_similarity(self.lfp.get('container'), group.container)
-        mean_shape = sum(shapes) / len(shapes) if shapes else 0.0
+        mean_shape = sum(shapes) / len(shapes) if shapes else None
         group.score = self._total(sum(scores) / len(scores), mean_shape, container,
                                   self._count(len(group.members)))
-        group.strong = strong or self._same_container(group)
-        group.shape = min(shapes) if shapes else 0.0
+        group.shape = min(shapes) if shapes else None
         return group
 
-    def _same_container(self, group):
-        """True when the group sits in the element that has the recorded container's id (not
-        a generated one) or test id."""
-        old = self.lfp.get('container') or {}
-        holders = [group.container] + list(group.container.iterancestors())
-        for name, attrs in (('id', ('id',)), ('test', ('data-testid', 'data-test', 'data-qa'))):
-            value = old.get(name)
-            if not value or (name == 'id' and _fp.generated_id(value)):
+    def identified(self, group):
+        """(found, shared): how many of the recorded items are among the group's members
+        (its first IDENTIFIED), and whether a member shares an identity signal with every
+        recorded item. A recorded item is among them when a member shares an id, test id,
+        name, link, label or text with it (fingerprint.score's strong) that not every
+        recorded item has, and does not share one with every recorded item: what all the
+        items have, such as a test id each card has, or a link path that only a query told
+        apart, says what kind of list it is, not which items it holds. With one recorded
+        item, any such member counts."""
+        found, shared = set(), False
+        for el in group.members[:IDENTIFIED]:
+            new = self.fp(el)
+            if new is None:
                 continue
-            if any(_fp._norm(h.get(a))[:_fp.VALUE_LIMIT] == value for h in holders for a in attrs):
-                return True
-        return False
+            if len(self.items) > 1 and all(r.strong for r in self.scores(el)):
+                shared = True
+            hits = [i for i, old in enumerate(self.distinct) if _fp.score(old, new).strong]
+            if hits and (len(hits) < len(self.items) or len(self.items) == 1):
+                found.update(hits)
+                if len(found) == len(self.items):
+                    break
+        return len(found), shared
 
 
 def _holders(lfp, root):
@@ -523,6 +593,20 @@ def _inside(group, holders):
     """True when the group's container is each holder or inside it."""
     chain = {group.container} | set(group.container.iterancestors())
     return all(holder in chain for holder in holders.values())
+
+
+def _busy(el):
+    return (el.get('aria-busy') or '').strip().lower() == 'true'
+
+
+def _placeholder(group, texts):
+    """True when the group looks like the placeholders of a list that is still loading: no
+    member has text while the recorded items had (texts), as skeleton cards have none, or
+    aria-busy="true" is on a member, the container or above it."""
+    if texts and not any(text_of(el) for el in group.members):
+        return True
+    return any(_busy(el) for el in group.members + [group.container]
+               + list(group.container.iterancestors()))
 
 
 def _overlap(a, b):
@@ -592,6 +676,14 @@ def find(lfp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
     holders = _holders(lfp, root)
     if holders:
         found = [g for g in found if _inside(g, holders)]
+    texts = any(item.get('text') for item in lfp['items'])
+    kept = [g for g in found if not _placeholder(g, texts)]
+    if found and not kept:
+        return ListMatch(None, None, 0, 0.0, 0.0,
+                         'the only groups of ' + str(role) + ' elements look like placeholders '
+                         '(no text where the recorded items had text, or marked '
+                         'aria-busy="true"), so the list may still be loading')
+    found = kept
     if not found:
         return ListMatch(None, None, 0, 0.0, 0.0,
                          'the page has no group of 2 or more ' + str(role) + ' elements that '
@@ -626,14 +718,25 @@ def find(lfp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
     if best.score - runner < margin:
         return refuse('two groups score alike (' + _fmt(best.score) + ' and ' + _fmt(runner)
                       + '), so the list fingerprint does not tell them apart')
-    if not best.strong:
-        return refuse('the best group (score ' + _fmt(best.score) + ') shares no id, test id, '
-                      'name, link, label or text with the items that were recorded, and is not '
-                      'in their container')
-    if best.shape < SHAPE_MIN:
+    if best.shape is not None and best.shape < SHAPE_MIN:
         return refuse('the elements of the best group are not all shaped like the recorded '
                       'items (the least alike is ' + _fmt(best.shape) + ', and '
                       + _fmt(SHAPE_MIN) + ' is needed)')
+    need = min(NEEDED, len(scorer.items))
+    held, shared = scorer.identified(best)
+    if held < need:
+        head = 'the best group (score ' + _fmt(best.score) + ') '
+        if held:
+            return refuse(head + 'has only ' + str(held) + ' of the ' + str(len(scorer.items))
+                          + ' recorded items among its elements (an element that shares an id, '
+                          'test id, name, link, label or text with one), and ' + str(need)
+                          + ' are needed, so it may be another list in the same place')
+        if shared:
+            return refuse(head + 'shares an id, test id, name, link, label or text only with '
+                          'every recorded item at once, which says what kind of list it is, '
+                          'not which items it holds')
+        return refuse(head + 'shares no id, test id, name, link, label or text with the items '
+                      'that were recorded')
     if _built(best, root) is None:
         return refuse('no selector without positions matches the best group and nothing else')
     return ListMatch(best.xpath, best.css, len(best.members), best.score, runner, '', prompt)

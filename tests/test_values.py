@@ -77,6 +77,25 @@ def test_what_is_not_money(text):
     assert parse_money(text) is None
 
 
+@pytest.mark.parametrize('text, amount', [
+    ('KWD 1.250', '1.250'), ('1.250 KWD', '1.250'), ('BHD 12.500', '12.500'),
+    ('BHD 0.500', '0.500'), ('OMR 0,750', '0.750'), ('KWD 1,250.000', '1250.000'),
+    ('JOD 1 250,500', '1250.500'), ('TND 12', '12'), ('OMR 1.250.000', '1250000'),
+    ('EUR 1.250', '1250'),
+])
+def test_three_decimal_currencies(text, amount):
+    # A single . before three digits is the decimal point of a dinar, not a thousands
+    # separator as in a euro price.
+    assert parse_money(text) == Decimal(amount)
+
+
+@pytest.mark.parametrize('text', ['KWD 1,250', 'TND 12,500', '1,250 BHD'])
+def test_a_three_decimal_amount_that_reads_two_ways_is_none_but_money(text):
+    # 1,250 TND is 1.250 in Tunisia and 1250 in English: no amount, but money.
+    assert parse_money(text) is None
+    assert expectation('money').passes(text)
+
+
 @pytest.mark.parametrize('name, good, bad', [
     ('money', ['$1,299.00', '1.299,00 €', '129 kr'], ['4.5', '1,299.00', 'Free']),
     ('number', ['1,299.00', '4.5', '-3'], ['$5', '12 kg', '(128 reviews)']),
@@ -247,6 +266,9 @@ class _Element(WebElement):
     def text(self):
         return ' '.join(self.el.text_content().split())
 
+    def get_dom_attribute(self, name):
+        return self.el.get(name)
+
 
 class _Driver(WebDriver):
     def find_elements(self, by, value):
@@ -267,6 +289,20 @@ def test_selenium_text_and_get_attribute_through_a_heal(tmp_path, stub_provider)
                                                 r"and its text there is 'Go'"):
         _ = healed.text
     assert heal.store.status('id=go', "//button[@value='9']") == 'quarantined'
+
+
+def test_selenium_get_dom_attribute_through_a_heal(tmp_path, stub_provider):
+    web = _Driver("<form><a id='more' href='/p/1'>More</a></form>")
+    heal = _open(web, tmp_path, stub_provider("//a[@href='/p/1']"),
+                 expect_values={'id=more': 'url'})
+    heal.driver.find_element('id', 'more')
+    web.set_html("<form><a href='/p/1'>More</a></form>")
+    healed = heal.driver.find_element('id', 'more')
+    assert healed.get_dom_attribute('href') == '/p/1'
+    with pytest.raises(AttentionRequired, match=r"its get_dom_attribute\('id'\) there is None, "
+                                                r"which is not a URL"):
+        healed.get_dom_attribute('id')
+    assert heal.store.status('id=more', "//a[@href='/p/1']") == 'quarantined'
 
 
 # --- async ----------------------------------------------------------------------------------
@@ -303,3 +339,26 @@ def test_async_reads_are_checked(tmp_path, make_page, stub_provider):
     heal = asyncio.run(main())
     assert heal.store.status('price', RATING) == 'quarantined'
     assert heal.heals[0].confirmed is False
+
+
+def test_async_reads_through_an_earlier_run_s_heal_are_checked(tmp_path, make_page,
+                                                                stub_provider):
+    sync = make_page(V1)
+    heal = _open(sync, tmp_path, stub_provider(RATING))
+    heal.locator('price', '#price', role='span')
+    sync.set_html(V2)
+    heal.locator('price', '#price', role='span').inner_text()    # healed, never checked
+
+    async def main():
+        later = await mendwright.aio.open(_Page(sync), provider=stub_provider(None),
+                                          store_path=str(tmp_path / 'o.json'),
+                                          fingerprint=False, timeout_ms=0)
+        with pytest.raises(AttentionRequired, match="'price' was healed to " + re.escape(RATING)):
+            await later.locator('price', '#price', role='span',
+                                expect_value='money').inner_text()
+        return later
+    later = asyncio.run(main())
+    assert later.pending() == {}                       # not a heal of this run
+    assert later.store.status('price', RATING) == 'quarantined'
+    quarantine = [e for e in _journal(tmp_path) if e['event'] == 'heal.quarantine']
+    assert quarantine[-1]['reason'] == 'expect_value: inner_text() is not money'

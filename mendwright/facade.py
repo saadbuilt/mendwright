@@ -999,7 +999,7 @@ class Healer:
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
                     role: Role | None = None, timeout_ms: int | None = None, poll_ms: int = 200,
-                    optional: bool = False) -> list:
+                    optional: bool = False, expect_value: Any = None) -> list:
         """The elements of a list, such as the cards of a product grid: an ActionProxy for
         each element key's selector matches, in page order, with the selector healed when it
         matches nothing any more.
@@ -1007,12 +1007,15 @@ class Healer:
         selector, role (the items' role, read from the first item when it is left out),
         timeout_ms and poll_ms mean what they mean for locator(). The first of key's
         selectors that matches one element or more gives the list, as written: the selector
-        in your code first, then saved heals. Each time one matches two or more, mendwright
-        records what the items look like (a list fingerprint, once per Healer and selector).
-        When none matches:
+        in your code first, then saved list heals (a heal of one element saved under the
+        same key, such as by heal.driver.find_element(), is skipped). Each time one matches
+        two or more, mendwright records what the items look like (a list fingerprint, once
+        per Healer and selector). When none matches:
 
         - a list mendwright has not seen with two or more items, or one with optional=True,
-          gives [] at once, as Locator.all() and find_elements() do;
+          gives [] at once, as Locator.all() and find_elements() do, and so does any list
+          while the fingerprint tier is off (fingerprint=False, MENDWRIGHT_FINGERPRINT=0 or
+          MENDWRIGHT_DISABLE=1), which turns list heals off;
         - any other waits up to timeout_ms, handling registered interruptions, and then
           heals: from the list fingerprint with no model call when it finds the items
           confidently, else a model, when one is configured, picks one of the page's
@@ -1021,20 +1024,29 @@ class Healer:
           never healed onto one element. A heal gives the new elements, saved like any heal;
           otherwise AttentionRequired says why.
 
-        The proxies' actions handle interruptions and popups as locator()'s do, and confirm
-        or quarantine nothing: a list heal is confirmed by the pytest plugin when the test
-        passes, or with confirm_all(). Raises InvalidSelector, TypeError or ValueError for
-        arguments that can never work, before anything touches the page."""
+        expect_value (or the check open(expect_values=...) has for key) is what each
+        element's reads must return when the list was found through a heal, as for
+        locator(): a value that fails quarantines the list heal and the read raises
+        AttentionRequired. One that passes confirms nothing. The proxies' actions handle
+        interruptions and popups as locator()'s do, and confirm or quarantine nothing: a
+        list heal is confirmed by the pytest plugin when the test passes, or with
+        confirm_all(). Raises InvalidSelector, TypeError or ValueError for arguments that
+        can never work, before anything touches the page."""
         __tracebackhide__ = True  # pytest shows the caller
         roles, code = _locator_args(key, selector, role, None)
+        expect = expectation(expect_value, key) or self._expect_values.get(key)
         self._prime(key, roles, code, None, None)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         natives = self._list(key, roles, timeout, poll_ms, optional)
-        return [self._item(key, native, timeout, poll_ms) for native in natives]
+        healed = self._healed(key) if natives else None
+        return [self._item(key, native, timeout, poll_ms, healed, expect) for native in natives]
 
-    def _item(self, key, native, timeout_ms, poll_ms):
-        """An ActionProxy for one element of list key, with the heal canary off."""
-        proxy = ActionProxy(self, key, native, timeout_ms=timeout_ms, poll_ms=poll_ms)
+    def _item(self, key, native, timeout_ms, poll_ms, healed=None, expect=None):
+        """An ActionProxy for one element of list key, with the heal canary off: its actions
+        confirm nothing, and its reads, checked against expect when the list was found
+        through the heal healed, can only refuse it (see _check_value)."""
+        proxy = ActionProxy(self, key, native, timeout_ms=timeout_ms, poll_ms=poll_ms,
+                            healed=healed, expect=expect)
         proxy._canary = False
         return proxy
 
@@ -1046,10 +1058,31 @@ class Healer:
         except Exception:
             return False
 
+    def _list_heals(self, key):
+        """True when a list lookup of key that matches nothing waits and heals: key has a
+        list fingerprint and the fingerprint tier is on. fingerprint=False,
+        MENDWRIGHT_FINGERPRINT=0 and MENDWRIGHT_DISABLE=1 turn list heals off, so such a
+        lookup gives [] at once, as the real page or driver does."""
+        return bool(getattr(self.coordinator, 'fingerprint', False)) and self._list_known(key)
+
+    def _list_routed(self, key, count):
+        """For heal.page's Locator.all() and heal.driver's find_elements(): True when a
+        lookup the real page or driver answered with count elements goes through
+        _find_all(). That is two or more while the fingerprint tier is on, to record the
+        list, or none for a key with a list fingerprint, to try its saved list heals and
+        heal it."""
+        if count >= 2:
+            return bool(getattr(self.coordinator, 'fingerprint', False))
+        return not count and self._list_known(key)
+
     def _list_runnable(self, key):
         """key's candidates a list lookup tries: those on the page (lists are not looked for
-        inside an iframe) that can run. Raises the first InvalidSelector when none can."""
-        candidates = [c for c in self.store.candidates(key) if not c.get('frameXPath')]
+        inside an iframe) that can run, without the heals of one element. A key of heal.page
+        or heal.driver is also the key of the page's shortcuts and of find_element(), and a
+        heal of the first card is no heal of the cards. Raises the first InvalidSelector
+        when none can."""
+        candidates = [c for c in self.store.candidates(key) if not c.get('frameXPath')
+                      and not (c.get('source') == 'heal' and c.get('list') is not True)]
         if not candidates:
             raise AttentionRequired('No selector candidates for: ' + key)
         runnable, errors = _split_runnable(key, candidates)
@@ -1089,7 +1122,7 @@ class Healer:
         __tracebackhide__ = True  # pytest shows the caller
         found = self._list_look(key, self._list_runnable(key))
         if found is None:
-            if optional or not self._list_known(key):
+            if optional or not self._list_heals(key):
                 return []
             budget = Budget()
             with self._running(key, budget, timeout, poll_ms):
@@ -1153,13 +1186,26 @@ class Healer:
             logger.debug('mendwright: could not save the list fingerprint of %r', key,
                          exc_info=True)
 
-    def _find_all(self, key, selector):
-        """For heal.page's Locator.all() and heal.driver's find_elements(), once the real
-        lookup matched two or more elements, or none for a key with a list fingerprint: the
-        native handles locator_all(key, selector) would give, the selector as the code's."""
+    def _find_all(self, key, selector, natives=()):
+        """For heal.page's Locator.all() and heal.driver's find_elements() (see
+        _list_routed): (handles, healed, expect), the native handles locator_all(key,
+        selector) would give, the selector as the code's, the heal they were found through
+        (or None) and the check their reads must pass (see _item). natives are what the real
+        call gave: when they are two or more, they are the list, and come back as they are,
+        with no browser call but the page's address and, once per Healer, the list
+        fingerprint."""
         __tracebackhide__ = True  # pytest shows the caller
-        self._prime(key, (), _code_selectors(key, selector), None, None)
-        return self._list(key, (), self.timeout_ms, 200)
+        code = _code_selectors(key, selector)
+        self._prime(key, (), code, None, None)
+        expect = self._expect_values.get(key)
+        if len(natives) < 2:
+            found = self._list(key, (), self.timeout_ms, 200)
+            return found, (self._healed(key) if found else None), expect
+        self.store.record_success(key, code[0])
+        self._remember_page(key)
+        if self._list_target(key, code[0], len(natives)):
+            self._keep_list(key, code[0], (), driver_list_fingerprint(self._driver, code[0]))
+        return list(natives), None, expect
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 
@@ -1280,11 +1326,12 @@ class Healer:
             return None
         return winner['xpath'] if isinstance(winner.get('xpath'), str) else None
 
-    def _check_value(self, key, healed, verb, args, value, expect):
+    def _check_value(self, key, healed, verb, args, value, expect, confirms=True):
         """value, which the read verb(*args) returned for key, when it passes expect (see
         mendwright.values) or key was not found through a heal (healed is None). A value
-        that passes confirms a heal of key made in this process. One that fails quarantines
-        the heal, and AttentionRequired is raised with the key, the heal and the value."""
+        that passes confirms a heal of key made in this process, unless confirms is False,
+        as for the elements of a list. One that fails quarantines the heal, and
+        AttentionRequired is raised with the key, the heal and the value."""
         __tracebackhide__ = True  # pytest shows the caller
         if healed is None or expect is None:
             return value
@@ -1292,7 +1339,8 @@ class Healer:
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
         if coordinator.pending.get(key) == healed:
-            coordinator.confirm_pending(key, ok, reason=reason)
+            if confirms or not ok:
+                coordinator.confirm_pending(key, ok, reason=reason)
         elif not ok:
             self.store.quarantine(key, healed)
             coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -2474,12 +2522,15 @@ class ActionProxy:
                 or self.__dict__.get('_healed') is None):
             return value
         healer, key, healed, expect = self._healer, self._key, self._healed, self._expect
+        confirms = self._canary          # off for the elements of a list: reads only refuse
         if not callable(value):
-            return healer._check_value(key, healed, name, (), value, expect)   # Selenium's text
+            return healer._check_value(key, healed, name, (), value, expect,  # Selenium's text
+                                       confirms)
 
         def read(*args, **kwargs):
             __tracebackhide__ = True  # pytest shows the caller
-            return healer._check_value(key, healed, name, args, value(*args, **kwargs), expect)
+            return healer._check_value(key, healed, name, args, value(*args, **kwargs), expect,
+                                       confirms)
         read.__name__ = name
         return read
 

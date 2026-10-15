@@ -16,9 +16,12 @@ callable that takes the value as a str and returns something truthy when it is r
 parse_number() and parse_money() read numbers as most locales write them: 1,299.00,
 1.299,00, 1 299,00 and 1'299.00, with an Indian 1,29,999.00 too. A single . or , followed by
 exactly three digits, as in 1.299 or 1,299, is read as a thousands separator, as a price
-usually is; 0,299 and 1234.567 have a decimal part. The text is read in its compatibility
-form first, so a non-breaking space is a space and a fullwidth digit a digit, and digits of
-other scripts count as digits.
+usually is; 0,299 and 1234.567 have a decimal part. In an amount of a currency with three
+decimals (KWD, BHD, OMR, JOD, TND), that . is the decimal point, as those amounts are
+written (KWD 1.250 is 1.250), and that , could be either (1,250 TND is 1.250 in Tunisia and
+1250 in English), so parse_money() gives None for it, though it is money. The text is read
+in its compatibility form first, so a non-breaking space is a space and a fullwidth digit a
+digit, and digits of other scripts count as digits.
 """
 
 from __future__ import annotations
@@ -91,13 +94,16 @@ def _grouped(groups):
             and all(len(g) == 2 for g in groups[1:-1]))
 
 
-def _number(text):
+def _number(text, thousandths=False):
     """(Decimal, has a decimal part) for a cleaned text that is a number and nothing else,
-    such as -1.299,50, else None."""
+    such as -1.299,50, else None. thousandths is for an amount of a currency with three
+    decimals: a single . before exactly three digits is its decimal point, and a single ,
+    there could be the point or a thousands separator, which gives (None, True)."""
     match = _BODY.fullmatch(text)
     if not match:
         return None
     sign, body = match.groups()
+    unsure = False
     spaced = any(ch in _GROUPERS for ch in body)
     dots, commas = body.count('.'), body.count(',')
     if dots and commas:
@@ -113,6 +119,10 @@ def _number(text):
             point = mark         # 1 299,50: the spaces group, so the mark is the point
         elif len(tail) == 3 and 1 <= len(whole) <= 3 and not whole.startswith('0'):
             point = None         # 1,299 and 1.299 read as thousands, as prices do
+            if thousandths and mark == '.':
+                point = mark     # KWD 1.250: one dinar and 250 fils
+            elif thousandths:
+                unsure = True    # 1,250 TND: 1.250 in Tunisia, 1250 in English
         else:
             point = mark
     else:
@@ -126,6 +136,8 @@ def _number(text):
     if len(groups) > 1 and not _grouped(groups):
         return None
     digits = ''.join(groups)
+    if unsure:
+        return None, True
     return Decimal(sign + digits + ('.' + frac if frac else '')), bool(point)
 
 
@@ -150,6 +162,8 @@ _CODES = frozenset((
     'kr', 'kn', 'zł', 'zl', 'kč', 'kc', 'ft', 'lei', 'лв', 'руб', 'р', 'rs', 'r', 'rm', 'rp',
     'fr', 'sfr', 'tl', 'dh', 'dhs', 'грн', 'din', 'дин', 'ден',
 ))
+# The codes of _CODES whose currency has three decimals: KWD 1.250 is one dinar 250 fils.
+_THOUSANDTHS = frozenset(('kwd', 'bhd', 'omr', 'jod', 'tnd'))
 _DOLLAR_PREFIX = re.compile(r'([A-Z]{1,3})\$')        # US$, C$, A$, R$, NZ$, HK$
 _WORD_PREFIX = re.compile(r'([^\W\d_]{1,4})\.? ?(?=[\d+-])')
 _WORD_SUFFIX = re.compile(r'(?<=[\d\-–—]) ?([^\W\d_]{1,4})\.?$')
@@ -188,7 +202,8 @@ def _suffix(text, symbols=True):
 def _money(text):
     """(Decimal, currency) for a cleaned text that is an amount with a currency sign or code
     before or after it, or written as 129,- or 129:-, else None. A sign may come before the
-    currency or the number."""
+    currency or the number. The Decimal is None for an amount that is money but could be
+    read two ways (see _number's thousandths)."""
     sign = ''
     if text[:1] in ('-', '+') and text[1:2] and not text[1:2].isdigit():
         sign, text = text[0], text[1:].lstrip()
@@ -202,7 +217,7 @@ def _money(text):
         rest = rest[:-2]
     if currency is None or (sign and rest[:1] in ('-', '+')):
         return None
-    found = _number(sign + rest)
+    found = _number(sign + rest, thousandths=currency.casefold() in _THOUSANDTHS)
     return (found[0], currency) if found else None
 
 
@@ -214,7 +229,10 @@ def parse_money(text: Any) -> Decimal | None:
     and parse_money('USD 1299') are Decimal('1299.00') or Decimal('1299'), parse_money('129
     kr') is Decimal('129'), and '129,-' or '129:-' reads as 129 too. A minus sign may come
     before the currency or the amount. '1,299.00' without a currency is None (see
-    parse_number())."""
+    parse_number()). In a currency with three decimals (KWD, BHD, OMR, JOD, TND), a single .
+    before three digits is the decimal point, so parse_money('KWD 1.250') is
+    Decimal('1.250'), and a single , there is None, since 'TND 1,250' is 1.250 in Tunisia
+    and 1250 in English."""
     if not isinstance(text, str):
         return None
     found = _money(_clean(text))

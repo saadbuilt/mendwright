@@ -5,8 +5,14 @@ computes from the captured HTML, or a heal would score the page differently from
 list was recorded. Then a product grid whose card class changed heals as a list, with no
 provider, through heal.page.locator(selector).all() on Playwright and
 heal.driver.find_elements() on Selenium, and through heal.locator_all() on both; and a list
-that would heal onto one element is refused.
+that would heal onto one element is refused. So is another list in an emptied list's place
+(recommendations where search results were, a form's hints where its errors were), and the
+skeleton cards of a list that is still loading. A heal of one card never answers for the
+list, and the reads of a healed list are checked.
 """
+
+import json
+import re
 
 import lxml.html
 import pytest
@@ -143,3 +149,125 @@ def test_a_list_never_seen_with_items_is_empty_at_once(tab, store_file):
     heal = mendwright.open(tab.target, provider=None, store_path=store_file, timeout_ms=60000)
     assert _all(tab, heal, '.product-card') == []
     assert heal.locator_all('cards', '.product-card') == []
+
+
+# --- what is not the list ------------------------------------------------------------------
+
+def results(cls, names):
+    cards = ''.join('<div class="' + cls + '"><img alt="' + n + '" width="40" height="40"><h3>'
+                    + n + '</h3><span class="price">$9.00</span></div>' for n in names)
+    return page('<main id="search"><h1>Search</h1><div id="results">' + cards + '</div></main>',
+                'search')
+
+
+MUGS = ['Blue mug', 'Red mug', 'Green mug', 'Mug set']
+POPULAR = ['Tea pot', 'Kettle', 'Coffee grinder', 'French press']
+
+
+def test_a_search_with_no_results_is_not_healed_onto_its_recommendations(tab, store_file):
+    tab.load(results('result-card', MUGS))
+    heal = _open(tab, store_file)
+    assert len(_all(tab, heal, '#results .result-card')) == 4
+    tab.load(results('popular-card', POPULAR))
+    with pytest.raises(AttentionRequired) as info:
+        _all(tab, heal, '#results .result-card')
+    assert ('shares no id, test id, name, link, label or text with the items that were '
+            'recorded') in str(info.value)
+    assert heal.heals == []
+    key = _key(tab, '#results .result-card')
+    assert [x for x, c in saved_candidates(store_file, key).items() if c['source'] == 'heal'] == []
+
+
+def form(errors):
+    fields = ''
+    for name, hint, error in zip(('email', 'password'),
+                                 ('We never share your email', '8 characters or more'),
+                                 errors or (None, None), strict=True):
+        fields += ('<div class="field"><label for="' + name + '">' + name + '</label><input id="'
+                   + name + '" name="' + name + '"><span class="hint">' + hint + '</span>'
+                   + ('<span class="error">' + error + '</span>' if error else '') + '</div>')
+    return page('<form id="signup">' + fields + '<button type="button">Sign up</button></form>',
+                'signup')
+
+
+def test_an_emptied_error_list_is_not_healed_onto_the_hints(tab, store_file):
+    tab.load(form(('Email is required', 'Password is required')))
+    heal = _open(tab, store_file)
+    assert len(_all(tab, heal, '.error')) == 2
+    tab.load(form(None))                                  # the errors went away
+    with pytest.raises(AttentionRequired, match='shares no id, test id, name, link, label or '
+                                                'text'):
+        _all(tab, heal, '.error')
+    assert heal.heals == []
+
+
+SKELETON = ('<div class="card-skeleton"><img width="40" height="40"><h3></h3><span></span>'
+            '<button type="button" disabled></button></div>')
+# The grid shows skeleton cards, and the real cards a moment later, as a slow API answers.
+LOADING = shop(SKELETON * 4) + (
+    '<script>setTimeout(() => { document.getElementById("grid").innerHTML = '
+    + json.dumps(grid('product-card')) + '; }, 1500);</script>')
+
+
+def test_a_list_that_is_still_loading_is_not_healed_onto_its_skeletons(tab, store_file):
+    tab.load(SHOP_V1)
+    heal = _open(tab, store_file)
+    assert len(_all(tab, heal, '.product-card')) == 4
+    tab.load(LOADING)
+    if tab.family == SELENIUM:
+        # find_elements() raises a NoSuchElementException while it cannot find the list,
+        # so WebDriverWait goes on polling until the cards are there.
+        from selenium.webdriver.support.ui import WebDriverWait
+        cards = WebDriverWait(heal.driver, 10, poll_frequency=0.1).until(
+            lambda d: d.find_elements('css selector', '.product-card'))
+    else:
+        with pytest.raises(AttentionRequired, match='so the list may still be loading'):
+            heal.page.locator('.product-card').all()
+        tab.target.wait_for_selector('.product-card')
+        cards = heal.page.locator('.product-card').all()
+    assert _texts(tab, cards) == NAMES
+    assert heal.heals == []
+    saved = saved_candidates(store_file, _key(tab, '.product-card'))
+    assert [x for x, c in saved.items() if c['source'] == 'heal'] == []
+
+
+def test_a_heal_of_one_card_never_answers_for_the_list(tab, store_file, stub_provider):
+    tab.load(SHOP_V1)
+    provider = stub_provider(None)
+    heal = mendwright.open(tab.target, provider=provider, store_path=store_file,
+                           timeout_ms=FAST_MS)
+    assert len(_all(tab, heal, '.product-card')) == 4
+    tab.load(SHOP_V2)
+    provider.xpath = "//div[contains(@class, 'product-tile')][h3='Red mug']"
+    if tab.family == SELENIUM:
+        heal.driver.find_element('css selector', '.product-card').click()
+    else:
+        heal.page.click('.product-card')
+    assert tab.text('#out') == 'Red mug'                  # a heal of one card, by the model
+    assert _texts(tab, _all(tab, heal, '.product-card')) == NAMES
+    assert sorted(h.source for h in heal.heals) == ['fingerprint', 'model']
+    saved = saved_candidates(store_file, _key(tab, '.product-card'))
+    assert saved[TILE]['list'] is True and 'list' not in saved[provider.xpath]
+
+
+def _read(tab, item):
+    return item.text if tab.family == SELENIUM else item.inner_text()
+
+
+def test_the_reads_of_a_healed_list_are_checked(tab, store_file):
+    tab.load(SHOP_V1)
+    key = _key(tab, '.product-card')
+    heal = _open(tab, store_file, expect_values={key: 'money'})
+    assert 'Blue mug' in _read(tab, _all(tab, heal, '.product-card')[0])   # no heal: unchecked
+    assert len(heal.locator_all('cards', '.product-card', poll_ms=POLL_MS)) == 4
+    tab.load(SHOP_V2)
+    cards = heal.locator_all('cards', '.product-card', poll_ms=POLL_MS,
+                             expect_value=re.compile('mug|pot'))
+    assert 'Blue mug' in _read(tab, cards[0]) and 'Tea pot' in _read(tab, cards[3])
+    assert heal.pending()['cards'] == TILE               # a read that passes confirms nothing
+    items = _all(tab, heal, '.product-card')             # healed too, and checked for money
+    with pytest.raises(AttentionRequired, match="'" + re.escape(key) + "' was healed to "
+                       + re.escape(TILE) + ', and its ' + ('text' if tab.family == SELENIUM
+                                                           else r'inner_text\(\)')):
+        _read(tab, items[0])
+    assert saved_candidates(store_file, key)[TILE]['status'] == 'quarantined'
