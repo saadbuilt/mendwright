@@ -29,8 +29,23 @@ import inspect
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
-from .base import (FRAME_ATTRS_JS, INVENTORY_JS, element_summary, frame_selector,
-                   inventory_rows, is_async_api)
+from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
+                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
+                   frame_selector, inventory_rows, is_async_api)
+
+# What SeleniumDriver.covered() runs: whether another element is on top of arguments[0] at
+# its in-view centre, where WebDriver's click lands (the middle of its first box, clipped
+# to the viewport), or null when no part of that box is in the viewport. elementFromPoint
+# is asked of the element's own root, so an element in a shadow root is found there.
+_COVERED_JS = (
+    'const el = arguments[0], box = el.getClientRects()[0];'
+    ' if (!box) return null;'
+    ' const left = Math.max(box.left, 0), right = Math.min(box.right, window.innerWidth);'
+    ' const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, window.innerHeight);'
+    ' if (right <= left || bottom <= top) return null;'
+    ' const root = el.getRootNode(), from = root.elementFromPoint ? root : document;'
+    ' const hit = from.elementFromPoint((left + right) / 2, (top + bottom) / 2);'
+    ' return hit === null ? null : !(hit === el || el.contains(hit));')
 
 
 def _by():
@@ -407,7 +422,8 @@ class SeleniumDriver:
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
     through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
-    fingerprint."""
+    fingerprint. The interruption checks also use covered and inside_frame, which only
+    this driver has."""
 
     def __init__(self, driver):
         self._driver = driver
@@ -534,6 +550,29 @@ class SeleniumDriver:
             return native.in_frame(lambda el: run(self._driver, el))
         return selenium_verb(verb, args, kwargs)(self._driver, native)
 
+    def covered(self, native):
+        """Whether another element covers native (a handle() result, or any WebElement of
+        this driver) at the point a click on it lands: True or False, or None when that
+        cannot be told. One round trip. None for a FramedElement, whose iframe may be
+        covered on the page around it, for an element outside the viewport or without a
+        size, and when the check fails."""
+        if isinstance(native, FramedElement):
+            return None
+        try:
+            found = self._driver.execute_script(_COVERED_JS, native)
+        except Exception:
+            return None
+        return found if isinstance(found, bool) else None
+
+    def inside_frame(self):
+        """True when the driver is switched into a frame (the script called
+        switch_to.frame() itself), from where the page around the frame is out of reach.
+        False on the top document, or when that cannot be told."""
+        try:
+            return self._driver.execute_script('return window.self !== window.top;') is True
+        except Exception:
+            return False
+
     def url(self):
         try:
             return self._driver.current_url
@@ -654,6 +693,95 @@ class SeleniumDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+    # --- popups, for open(dismiss=True) (see mendwright.dismiss) ---------------------------
+
+    def _where(self, native, op, probe=True):
+        """op() where the element of a handle() result lives: as it is for a WebElement,
+        inside its frame chain for a FramedElement (with the implicit wait at 0 while the
+        frames are looked up, for probe=True). The page is restored afterwards."""
+        if isinstance(native, FramedElement):
+            return native._mw[0]._run(native.frame_chain, op, probe=probe)
+        return op()
+
+    def _element(self, native):
+        """The WebElement of a handle() result, for use inside _where()."""
+        if isinstance(native, FramedElement):
+            return native._mw[0]._find_one(native.selector)
+        return native
+
+    def popup_probe(self, native, known=None, scroll=False):
+        """What covers the element (POPUP_PROBE_JS), in one execute_script for a WebElement.
+        known is a popup's root from popup_root(): one that was removed from the page is a
+        stale reference, which Selenium refuses as an argument, so it reads as gone.
+        scroll=True scrolls an element whose middle is outside the window into view first."""
+        script = ('return (' + POPUP_PROBE_JS + ')([arguments[0]], '
+                  '{known: arguments[1], scroll: arguments[2]});')
+
+        def op():
+            el = self._element(native)
+            try:
+                return self._driver.execute_script(script, el, known, scroll)
+            except Exception as exc:
+                if known is None or not _is_stale(exc):
+                    raise
+            out = self._driver.execute_script(script, el, None, scroll)
+            if isinstance(out, dict):
+                out['gone'] = True
+            return out
+        return self._where(native, op)
+
+    def popup_root(self, native, expect):
+        script = 'return (' + POPUP_ROOT_JS + ')(arguments[0], arguments[1]);'
+        return self._where(native, lambda: self._driver.execute_script(
+            script, self._element(native), expect))
+
+    def popup_controls(self, native, root):
+        script = 'return (' + POPUP_CONTROLS_JS + ')(arguments[0]);'
+        return self._where(native, lambda: self._driver.execute_script(script, root))
+
+    def popup_click(self, native, root, expect, timeout_ms):
+        """Click control number expect['index'] of the popup with WebElement.click(), when
+        it is still the one mendwright chose. True when it was clicked; False when it was
+        not, or the click was refused before it reached the page (intercepted, not
+        interactable, stale); UNSURE when it raised another error, after which mendwright
+        cannot tell whether it reached the page."""
+        script = 'return (' + POPUP_CONTROL_JS + ')(arguments[0], arguments[1]);'
+
+        def op():
+            el = self._driver.execute_script(script, root, expect)
+            if el is None:
+                return False
+            try:
+                el.click()
+            except Exception as exc:
+                names = {cls.__name__ for cls in type(exc).__mro__}
+                return False if names & _NOT_CLICKED else UNSURE
+            return True
+        return self._where(native, op, probe=False)
+
+    def press_escape(self, native, root):
+        """Press Escape through ActionChains, when POPUP_FOCUS_JS says the key reaches the
+        popup whose root is root: ActionChains sends it to the focused element of the
+        window, which inside a frame may be in the page around it. True when it was
+        pressed."""
+        script = 'return (' + POPUP_FOCUS_JS + ')(arguments[0]);'
+
+        def op():
+            if self._driver.execute_script(script, root) is not True:
+                return False
+            _action_chains(self._driver).send_keys(_key_value('ESCAPE')).perform()
+            return True
+        return self._where(native, op, probe=False)
+
+
+# The errors of a click that never reached the page.
+_NOT_CLICKED = {'ElementClickInterceptedException', 'ElementNotInteractableException',
+                'StaleElementReferenceException'}
+
+
+def _is_stale(exc):
+    return any(cls.__name__ == 'StaleElementReferenceException' for cls in type(exc).__mro__)
 
 
 class SeleniumFrameDriver:

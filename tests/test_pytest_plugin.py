@@ -266,6 +266,44 @@ def test_without_strict_a_healing_test_passes(project):
     run(project).assert_outcomes(passed=1)
 
 
+def test_strict_passes_a_flow_whose_steps_came_in_another_order(project):
+    # heal.run_steps() on a checkout that now asks for the card first: no selector broke,
+    # so strict mode has nothing to fail, as for a handled interruption.
+    project.makepyfile('''
+        PAGES = {
+            'pay': "<h1>Payment</h1><input id='card'>",
+            'ship': "<h1>Shipping</h1><input id='ship'>",
+            'review': "<button id='place'>Place order</button>",
+        }
+
+        def test_checkout(heal, page):
+            def go(name):
+                page.url = 'https://shop.example/checkout/' + name
+                page.set_html(PAGES[name])
+
+            @heal.step('shipping', "//h1[.='Shipping']")
+            def shipping(p):
+                p.fill('#ship', 'Ada')
+                go('review')
+
+            @heal.step('payment', "//h1[.='Payment']")
+            def payment(p):
+                p.fill('#card', '4242')
+                go('ship')
+
+            @heal.step('review', "//button[.='Place order']", last=True)
+            def review(p):
+                p.click('#place')
+
+            go('pay')
+            assert heal.run_steps(poll_ms=5) == ['payment', 'shipping', 'review']
+            assert heal.heals == []
+    ''')
+    result = run(project, '--mendwright-strict')
+    result.assert_outcomes(passed=1)
+    assert '--mendwright-strict failed' not in result.stdout.str()
+
+
 def test_the_heal_fixture_takes_a_provider_from_mendwright_provider(project, monkeypatch):
     # No provider in the environment; conftest.py hands one to the 'heal' fixture.
     project.makeconftest(_conftest() + '''

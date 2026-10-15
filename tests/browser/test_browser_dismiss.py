@@ -1,0 +1,1080 @@
+"""Popups mendwright was never told about (open(dismiss=True)) on real browsers.
+
+Each test runs on every engine (see conftest.py): Playwright Chromium, Firefox and WebKit,
+patchright, camoufox, and Selenium with Chrome and with Firefox, unless it is marked for
+one family. The pages are built here: a signup form, and a popup over it that the script
+never names. The page logs every key press and every button its popup's buttons run into
+#log, so a test can tell what mendwright pressed and clicked. No model is called.
+"""
+
+import importlib
+import json
+import logging
+import time
+
+import pytest
+
+import mendwright
+import mendwright.aio
+from mendwright.dismiss import expect_control, expect_of, parse_probe, popup_of
+from mendwright.flow import DISMISS_KEY, InterruptionLoop, is_interception_error
+from mw_engines import FAST_MS, POLL_MS, SITE, page
+
+pytestmark = pytest.mark.browser
+
+_FORM = """<form id="signup"><label for="email">Email</label><input id="email" type="email">
+  <button type="button" id="go" onclick="done('go')">Go</button></form>
+<p>Done: <span id="done"></span> Log: <span id="log"></span></p>
+<script>
+function done(what) { document.getElementById('done').textContent += what + ' '; }
+function log(what) { document.getElementById('log').textContent += what + ' '; }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') log('key:Escape'); });
+</script>"""
+
+
+def _modal(buttons, *, escape=False, extra=''):
+    """A newsletter modal over the whole page: a dialog with an email field and buttons.
+    It closes on Escape only with escape=True."""
+    html = ('<div id="nl" class="nl" role="dialog" aria-modal="true" aria-label="Newsletter" '
+            'style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">'
+            '<div style="background: #fff; width: 320px; margin: 140px auto; padding: 16px">'
+            '<p>Get 10% off your first order.</p>'
+            '<input id="nl-email" type="email" placeholder="Your email"> '
+            + ' '.join(buttons) + extra + '</div></div>')
+    if escape:
+        html += ("<script>document.addEventListener('keydown', (e) => { if (e.key === "
+                 "'Escape') { const m = document.getElementById('nl'); if (m) m.remove(); } "
+                 '});</script>')
+    return html
+
+
+_CLOSE = "document.getElementById('nl').remove()"
+SIGN_UP = '<button type="button" id="nl-signup" onclick="log(\'signup\')">Sign up</button>'
+NO_THANKS = ('<button type="button" id="nl-no" onclick="log(\'no-thanks\'); ' + _CLOSE
+             + '">No thanks</button>')
+SUBSCRIBE = '<button type="button" onclick="log(\'subscribe\')">Subscribe</button>'
+YES = '<button type="button" onclick="log(\'yes\')">Yes, sign me up</button>'
+
+
+def _page(*popup):
+    return page(_FORM + ''.join(popup), 'popup')
+
+
+def _open(tab, provider, store_file, **kwargs):
+    kwargs.setdefault('timeout_ms', FAST_MS)
+    return mendwright.open(tab.target, provider=provider, store_path=store_file, **kwargs)
+
+
+def _step(heal, key, selector, **kwargs):
+    return heal.locator(key, selector, timeout_ms=FAST_MS, poll_ms=POLL_MS, **kwargs)
+
+
+def _log(tab):
+    return tab.text('#log').split()
+
+
+def _gone(tab, ident='nl'):
+    return tab.js('document.getElementById(' + json.dumps(ident) + ') === null') is True
+
+
+def _warnings(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == 'mendwright'
+            and r.levelno == logging.WARNING and r.getMessage().startswith('mendwright: ')]
+
+
+def test_a_newsletter_modal_is_dismissed_with_no_thanks_never_sign_up(tab, store_file,
+                                                                     stub_provider, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'go', '#go').click()
+
+    assert tab.text('#done') == 'go '
+    assert _log(tab) == ['key:Escape', 'no-thanks']           # never Sign up
+    assert _gone(tab)
+    [event] = heal.handled_interruptions
+    assert (event.key, event.before, event.how, event.label) == (DISMISS_KEY, 'go', 'decline',
+                                                                 'No thanks')
+    assert event.popup.startswith('<div id="nl" role="dialog" class="nl"> ("Get 10% off '
+                                  'your first order.')
+    assert [w for w in _warnings(caplog) if w.startswith(
+        "mendwright: dismissed a popup in the way of 'go': " + event.popup
+        + ' with “No thanks”, after Escape did not close it')]
+
+
+def test_a_modal_that_closes_on_escape_is_dismissed_by_escape_alone(tab, store_file,
+                                                                    stub_provider):
+    tab.load(_page(_modal([SUBSCRIBE], escape=True)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'email', '#email').fill('ada@example.com')
+
+    assert tab.value('#email') == 'ada@example.com'
+    assert _log(tab) == ['key:Escape'] and _gone(tab)
+    assert [e.how for e in heal.handled_interruptions] == ['escape']
+
+
+def test_an_icon_close_button_is_clicked(tab, store_file, stub_provider):
+    close = ('<button type="button" aria-label="Close" onclick="log(\'close\'); ' + _CLOSE
+             + '">&times;</button>')
+    tab.load(_page(_modal([SUBSCRIBE, close])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'go', '#go').click()
+
+    assert _log(tab) == ['key:Escape', 'close'] and tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('close', 'Close')]
+
+
+def test_a_modal_with_only_subscribe_and_yes_is_left_alone(tab, store_file, stub_provider,
+                                                           caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_modal([SUBSCRIBE, YES])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    with pytest.raises(Exception) as caught:
+        _step(heal, 'go', '#go').click(timeout=1500)    # Selenium ignores the timeout
+
+    assert is_interception_error(caught.value)           # the browser's own error
+    assert not isinstance(caught.value, mendwright.AttentionRequired)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
+    assert tab.text('#done') == '' and heal.handled_interruptions == []
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go': "
+                              '<div id="nl" role="dialog" class="nl"> ("Get 10% off your '
+                              'first order.')
+    assert ('mendwright pressed Escape, which did not close it, and it has no close or decline '
+            'button') in warning
+    assert 'heal.interrupt(' in warning and 'action="fill"' in warning
+
+
+def test_a_no_thanks_link_that_goes_somewhere_is_not_clicked(tab, store_file, stub_provider):
+    link = '<a id="nl-no" href="/no-thanks" onclick="log(\'link\'); return false;">No thanks</a>'
+    tab.load(_page(_modal([SUBSCRIBE, link])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    with pytest.raises(Exception) as caught:
+        _step(heal, 'go', '#go').click(timeout=1500)
+
+    assert is_interception_error(caught.value)
+    assert 'link' not in _log(tab) and not _gone(tab)
+
+
+def test_the_element_inside_the_modal_is_used_and_nothing_is_dismissed(tab, store_file,
+                                                                       stub_provider):
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'nl_email', '#nl-email').fill('ada@example.com')
+    _step(heal, 'nl_email', '#nl-email').click()
+
+    assert tab.value('#nl-email') == 'ada@example.com'
+    assert _log(tab) == [] and not _gone(tab)
+    assert heal.handled_interruptions == []
+
+
+def test_a_small_sticky_header_over_the_top_edge_is_left_alone(tab, store_file,
+                                                               stub_provider):
+    header = ('<header id="top" style="position: sticky; top: 0; height: 40px; z-index: 5; '
+              'background: #eee">Shop <button type="button" onclick="log(\'header\')">Close'
+              '</button></header>')
+    form = ('<button type="button" id="go" onclick="done(\'go\')" style="position: absolute; '
+            'top: 40px; left: 200px; height: 40px">Go</button>')
+    tab.load(page(header + form + _FORM.replace('id="go"', 'id="other"'), 'header'))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'go', '#go').click()
+
+    assert tab.text('#done') == 'go '
+    assert _log(tab) == [] and heal.handled_interruptions == []
+
+
+def test_a_consent_banner_is_declined_never_accepted(tab, store_file, stub_provider):
+    banner = """<div id="cmp" role="dialog" aria-label="Privacy choices"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <p>We and our partners use cookies to measure traffic.</p>
+    <button type="button" onclick="log('accept'); this.closest('#cmp').remove()">Accept all</button>
+    <button type="button" onclick="log('settings')">Settings</button>
+    <button type="button" onclick="log('reject'); this.closest('#cmp').remove()">Reject all</button>
+  </div></div>"""
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)   # no cookies=
+
+    _step(heal, 'go', '#go').click()
+
+    assert _log(tab) == ['key:Escape', 'reject'] and _gone(tab, 'cmp')
+    assert tab.text('#done') == 'go '
+
+
+def test_with_dismiss_off_the_modal_stops_the_click_as_before(tab, store_file, stub_provider):
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file)        # dismiss=False, the default
+
+    with pytest.raises(Exception) as caught:
+        _step(heal, 'go', '#go').click(timeout=1500)
+
+    assert is_interception_error(caught.value)
+    assert _log(tab) == [] and not _gone(tab)
+    assert heal.handled_interruptions == []
+
+
+def test_a_popup_that_comes_back_each_time_stops_the_step(tab, store_file, stub_provider):
+    again = ('<button type="button" id="nl-no" onclick="log(\'no-thanks\'); ' + _CLOSE
+             + '; document.body.insertAdjacentHTML(\'beforeend\', window.popupHtml)">'
+             'No thanks</button>')
+    popup = _modal([SIGN_UP, again])
+    tab.load(_page(popup, '<script>window.popupHtml = ' + json.dumps(popup) + ';</script>'))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    with pytest.raises(InterruptionLoop, match="3 interruptions and popups were handled for "
+                                               "'go' and a popup is still in the way"):
+        _step(heal, 'go', '#go').click()
+
+    assert _log(tab).count('no-thanks') == 3 and 'signup' not in _log(tab)
+    assert [e.key for e in heal.handled_interruptions] == [DISMISS_KEY] * 3
+    assert tab.text('#done') == ''
+
+
+def _framed():
+    """A page whose terms checkbox is inside an iframe, under a newsletter modal there."""
+    inner = page('<label><input type="checkbox" data-testid="legal-consent"> I accept the '
+                 'terms</label>' + _modal([SIGN_UP, NO_THANKS]).replace("log(", "void("),
+                 'consent')
+    return page('<h1>Outer page</h1><iframe id="consent-frame" width="600" height="400" '
+                'srcdoc="' + inner.replace('&', '&amp;').replace('"', '&quot;')
+                + '"></iframe>', 'iframe')
+
+
+TERMS = "//input[@data-testid='legal-consent']"
+
+
+def test_a_popup_inside_an_iframe_is_dismissed_there(tab, store_file, stub_provider):
+    # The key is followed into the iframe, so the look runs in the iframe's document.
+    tab.load(_framed())
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    _step(heal, 'terms', TERMS, role='checkbox').check()
+
+    frame = 'document.querySelector("#consent-frame").contentDocument'
+    assert tab.js(frame + '.querySelector("[data-testid=legal-consent]").checked') is True
+    assert tab.js(frame + '.getElementById("nl") === null') is True
+    assert [(e.key, e.how, e.label) for e in heal.handled_interruptions] == [
+        (DISMISS_KEY, 'decline', 'No thanks')]
+    assert [h.source for h in heal.heals] == ['frame']
+
+
+@pytest.mark.engine_family('selenium')
+def test_selenium_find_element_and_click(tab, store_file, stub_provider):
+    from selenium.webdriver.common.by import By
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS])))
+    driver = _open(tab, stub_provider(None), store_file, dismiss=True).driver
+
+    driver.find_element(By.ID, 'go').click()
+    driver.find_element(By.ID, 'email').send_keys('ada@example.com')
+
+    assert tab.text('#done') == 'go ' and tab.value('#email') == 'ada@example.com'
+    assert _log(tab) == ['key:Escape', 'no-thanks']
+
+
+@pytest.mark.engine_family('selenium')
+def test_with_an_implicit_wait_looking_and_dismissing_do_not_wait(tab, store_file,
+                                                                  stub_provider):
+    from selenium.webdriver.common.by import By
+    raw = tab.target
+    raw.implicitly_wait(5)
+    try:
+        tab.load(_page())                                      # nothing in the way
+        driver = _open(tab, stub_provider(None), store_file, dismiss=True).driver
+        started = time.monotonic()
+        driver.find_element(By.ID, 'go').click()
+        driver.find_elements(By.ID, 'email')[0].send_keys('ada@x.test')
+        plain = time.monotonic() - started
+
+        tab.load(_framed())                                    # a popup inside an iframe
+        heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+        started = time.monotonic()
+        _step(heal, 'terms', TERMS, role='checkbox').check()
+        framed = time.monotonic() - started
+        kept = raw.timeouts.implicit_wait
+    finally:
+        raw.implicitly_wait(0)
+    assert plain < 2.5 and framed < 4.5    # one lookup that waited would take 5 s
+    assert kept == 5
+    assert [e.label for e in heal.handled_interruptions] == ['No thanks']
+
+
+@pytest.mark.engine_family('playwright')
+def test_playwright_get_by_role_with_dismiss_and_expect(tab, store_file, stub_provider):
+    # expect() from the page's own library: patchright pages are not playwright's.
+    library = type(tab.target).__module__.split('.')[0]
+    expect = importlib.import_module(library + '.sync_api').expect
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    go = heal.page.get_by_role('button', name='Go')
+    go.click(timeout=5000)
+    expect(go).to_have_text('Go')
+    heal.page.locator('#signup').locator('#email').fill('ada@example.com')
+
+    assert tab.text('#done') == 'go ' and tab.value('#email') == 'ada@example.com'
+    assert _log(tab) == ['key:Escape', 'no-thanks']
+    assert [e.before for e in heal.handled_interruptions] == [
+        "page.get_by_role('button', name='Go')"]
+    assert heal.store.candidates("page.get_by_role('button', name='Go')") == []
+
+
+def _left_alone(tab, heal, selector='#go', key='go'):
+    """Click selector's element with a popup over it that mendwright must leave: the
+    browser's own error, and nothing recorded."""
+    with pytest.raises(Exception) as caught:
+        _step(heal, key, selector).click(timeout=1500)     # Selenium ignores the timeout
+    assert is_interception_error(caught.value)
+    assert not isinstance(caught.value, mendwright.AttentionRequired)
+    assert heal.handled_interruptions == []
+
+
+# --- where Escape goes ----------------------------------------------------------------------
+
+def test_escape_is_not_pressed_while_a_field_the_script_filled_has_the_focus(tab, store_file,
+                                                                            stub_provider):
+    # Escape goes to the focused element: in a search field it clears what was typed.
+    tab.load(_page('<input id="q" type="search">'))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'q', '#q').fill('red shoes')                  # the focus stays in #q
+    tab.js("document.body.insertAdjacentHTML('beforeend', "
+           + json.dumps(_modal([SIGN_UP, NO_THANKS])) + ')')
+
+    _step(heal, 'go', '#go').click()
+
+    assert _log(tab) == ['no-thanks'] and tab.text('#done') == 'go '
+    assert tab.value('#q') == 'red shoes'
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'No thanks')]
+
+
+_CHECKOUT = """<div id="checkout" role="dialog" aria-label="Checkout" style="position: fixed;
+  left: 200px; top: 60px; width: 400px; height: 300px; z-index: 5; background: #fff">
+  <input id="card" value="4242 4242">
+  <button type="button" id="pay" onclick="done('pay')">Place order</button></div>
+<div id="chat" style="position: fixed; left: 0; top: 0; width: 100%; height: 60%; z-index: 20;
+  background: rgba(0, 0, 0, 0.3)"><p>Chat with us!</p>
+  <button type="button" onclick="log('chat')">Chat</button></div>
+<script>document.addEventListener('keydown', (e) => { if (e.key === 'Escape') {
+  document.getElementById('checkout').style.display = 'none'; log('checkout-closed'); } });
+</script>"""
+
+
+def test_escape_is_not_pressed_while_the_focus_is_in_the_dialog_the_script_uses(
+        tab, store_file, stub_provider, caplog):
+    # The page's own checkout dialog closes on Escape; a chat layer covers it.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_CHECKOUT))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    tab.js("document.getElementById('card').focus() || true")
+
+    _left_alone(tab, heal, '#pay', 'pay')
+
+    assert _log(tab) == [] and tab.js("document.getElementById('checkout').style.display") == ''
+    [warning] = [w for w in _warnings(caplog) if 'popup' in w]
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'pay': "
+                              '<div id="chat"> ("Chat with us! Chat")')
+    assert 'mendwright did not press Escape' in warning
+
+
+def test_escape_that_hides_the_element_is_not_counted_as_a_dismissal(tab, store_file,
+                                                                     stub_provider, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_CHECKOUT))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)   # the focus is on body
+
+    _left_alone(tab, heal, '#pay', 'pay')
+
+    assert _log(tab) == ['key:Escape', 'checkout-closed']
+    assert tab.text('#done') == ''
+    warnings = [w for w in _warnings(caplog) if 'popup' in w]
+    assert len(warnings) == 1 and warnings[0].startswith(
+        "mendwright: Pressed Escape on a popup in the way of 'pay': <div id=\"chat\">")
+    assert 'it is hidden or outside the window' in warnings[0]
+
+
+def _framed_escape_only():
+    """A page whose own dialog closes on Escape and holds an iframe, inside which a
+    newsletter modal that only Escape closes covers the terms checkbox."""
+    inner = page('<label><input type="checkbox" data-testid="legal-consent"> I accept the '
+                 'terms</label>' + _modal([SUBSCRIBE.replace('log(', 'void(')], escape=True),
+                 'consent')
+    return page('<div id="outer" role="dialog" aria-label="Checkout"><h1>Checkout</h1>'
+                '<iframe id="consent-frame" width="600" height="400" srcdoc="'
+                + inner.replace('&', '&amp;').replace('"', '&quot;') + '"></iframe></div>'
+                '<p>Log: <span id="log"></span></p><script>document.addEventListener("keydown", '
+                '(e) => { if (e.key === "Escape") { document.getElementById("outer").style'
+                '.display = "none"; document.getElementById("log").textContent += "outer-escape '
+                '"; } });</script>', 'iframe')
+
+
+def test_in_an_iframe_escape_is_never_pressed(tab, store_file, stub_provider, caplog):
+    # The key would go to the page around the iframe, which mendwright never looked at, and
+    # close its dialog. A popup in the iframe that only Escape closes stays.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_framed_escape_only())
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+
+    with pytest.raises(Exception) as caught:
+        _step(heal, 'terms', TERMS, role='checkbox').check(timeout=1500)
+
+    assert is_interception_error(caught.value)
+    assert _log(tab) == [] and tab.js('document.getElementById("outer").style.display') == ''
+    frame = 'document.querySelector("#consent-frame").contentDocument'
+    assert tab.js(frame + '.getElementById("nl") !== null') is True
+    assert heal.handled_interruptions == []
+    [warning] = [w for w in _warnings(caplog) if w.startswith('mendwright: could not dismiss')]
+    assert 'mendwright did not press Escape' in warning
+
+
+@pytest.mark.engine_family('selenium')
+def test_selenium_inside_a_frame_the_script_switched_into(tab, store_file, stub_provider):
+    from selenium.webdriver.common.by import By
+    tab.load(_framed())
+    raw = tab.target
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    raw.switch_to.frame(raw.find_element(By.ID, 'consent-frame'))
+    try:
+        heal.driver.find_element(By.XPATH, TERMS).click()
+        checked = raw.execute_script(
+            'return document.querySelector("[data-testid=legal-consent]").checked')
+        gone = raw.execute_script('return document.getElementById("nl") === null')
+    finally:
+        raw.switch_to.default_content()
+    assert checked is True and gone is True
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'No thanks')]
+
+
+# --- buttons that are never clicked -----------------------------------------------------------
+
+@pytest.mark.parametrize('buttons, clicked', [
+    # A button inside a link that goes somewhere: the click follows the link.
+    (['<a href="#/upgrade-plan" onclick="log(\'link\')"><button type="button">No thanks'
+      '</button></a>'], 'link'),
+    # A button in a label: the click checks the label's box.
+    (['<label><input type="checkbox" id="mkt" onchange="log(\'checked\')"> <span role="button" '
+      'onclick="log(\'span\')">No thanks</span></label>'], 'checked'),
+    # A button with no type in a form submits it, email and all.
+    (['<form onsubmit="log(\'submitted\'); return false"><input name="email" '
+      'value="me@x.test"> <button>No thanks</button></form>'], 'submitted'),
+    # What it shows is Keep me updated; the No thanks is hidden.
+    (['<button type="button" onclick="log(\'keep\')"><span style="display: none">No thanks'
+      '</span>Keep me updated</button>'], 'keep'),
+    # A question: No is no decline button.
+    (['<p>Keep the items in your basket?</p>',
+      '<button type="button" onclick="log(\'no\')">No</button>',
+      '<button type="button" onclick="log(\'yes\')">Yes</button>'], 'no'),
+    (['<button type="button" onclick="log(\'trial\')">No-risk trial</button>'], 'trial'),
+    (['<button type="button" onclick="log(\'go-on\')">Continue without delay</button>'],
+     'go-on'),
+    (['<button type="button" onclick="log(\'thanks\')">Count me in, thanks</button>'],
+     'thanks'),
+    # What it shows is Thanks, an answer, not a decline: the No is hidden.
+    (['<button type="button" onclick="log(\'shown\')"><span style="display: none">No </span>'
+      'Thanks</button>'], 'shown'),
+    # A form with method="dialog" sends nothing, but its submit event fires.
+    (['<form method="dialog" onsubmit="log(\'submitted\')"><button>No thanks</button></form>'],
+     'submitted'),
+    # A survey answer, a link by its role, a toggle, a javascript: link whose code runs.
+    (['<button type="button" role="radio" aria-checked="false" onclick="log(\'radio\')">Not '
+      'interested</button>'], 'radio'),
+    (['<button type="button" role="link" onclick="log(\'role-link\')">Maybe later</button>'],
+     'role-link'),
+    (['<button type="button" aria-pressed="false" onclick="log(\'toggle\')">Not now</button>'],
+     'toggle'),
+    (['<a href="javascript:log(\'js-link\')">Not now</a>'], 'js-link'),
+    # A word it must not say, behind a soft hyphen, or in the text aria-labelledby names.
+    (['<button type="button" onclick="log(\'soft\')">No thanks<span style="display: none"> '
+      'and sub\u00adscribe me</span></button>'], 'soft'),
+    (['<h3 id="cta">Subscribe to weekly deals</h3><button type="button" aria-labelledby="cta" '
+      'onclick="log(\'labelledby\')">No thanks</button>'], 'labelledby'),
+    # Outside a popup about cookies, reject and decline answer a request.
+    (['<button type="button" onclick="log(\'reject\')">Reject</button>'], 'reject'),
+    (['<button type="button" onclick="log(\'decline\')">Decline</button>'], 'decline'),
+    # A bare ×, and an icon named for something else it closes.
+    (['<button type="button" onclick="log(\'bare\')">&times;</button>'], 'bare'),
+    (['<button type="button" aria-label="Close position EURUSD" onclick="log(\'position\')">'
+      '&times;</button>'], 'position'),
+])
+def test_buttons_mendwright_never_clicks(tab, store_file, stub_provider, buttons, clicked):
+    tab.load(_page(_modal(buttons)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    url = tab.js('location.href')
+
+    _left_alone(tab, heal)
+
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
+    assert clicked not in _log(tab) and tab.js('location.href') == url
+    if clicked == 'checked':
+        assert tab.checked('#mkt') is False
+
+
+def _drawer(*items, close=''):
+    """A cart drawer over the right of the window, where #go is, with one × per item."""
+    rows = ''.join('<li id="item' + str(n) + '">' + name + ' <button type="button" '
+                   'onclick="log(\'removed-' + str(n) + '\'); this.closest(\'li\').remove()">'
+                   '&times;</button></li>' for n, name in enumerate(items, 1))
+    return ('<div id="cart" role="dialog" aria-label="Your cart" style="position: fixed; inset: 0; '
+            'z-index: 10; background: #fff">'
+            '<h3>Added to your cart</h3><ul>' + rows + '</ul>' + close + '</div>')
+
+
+def test_a_cart_drawer_is_closed_by_its_named_close_button_never_an_items_x(tab, store_file,
+                                                                            stub_provider):
+    close = ('<button type="button" aria-label="Close cart" onclick="log(\'close\'); '
+             'document.getElementById(\'cart\').remove()">&times;</button>')
+    tab.load(_page(_drawer('Linen shirt', 'Canvas tote', close=close)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'close'] and _gone(tab, 'cart')
+    assert tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('close', 'Close cart')]
+
+
+def test_a_cart_drawer_with_only_items_x_buttons_is_left_alone(tab, store_file, stub_provider):
+    tab.load(_page(_drawer('Linen shirt', 'Canvas tote')))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab, 'item1') and not _gone(tab, 'item2')
+
+
+def test_a_share_sheets_x_is_not_a_close_button(tab, store_file, stub_provider):
+    share = ('<button type="button" onclick="log(\'facebook\')">Facebook</button>',
+             '<button type="button" onclick="log(\'x\')">X</button>')
+    tab.load(_page(_modal(share)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape']
+
+
+_ACCOUNT = """<div id="cf" role="alertdialog" aria-modal="true" aria-labelledby="cf-t"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 340px; margin: 120px auto; padding: 16px">
+  <h2 id="cf-t">Close your account? This cannot be undone.</h2>
+  <button type="button" onclick="log('cancel'); document.getElementById('cf').remove()">Cancel</button>
+  <button type="button" onclick="log('closed'); document.getElementById('cf').remove()">Close</button>
+  </div></div>
+<script>document.addEventListener('keydown', (e) => { if (e.key === 'Escape') {
+  const d = document.getElementById('cf'); if (d) { log('answered'); d.remove(); } } });</script>"""
+
+
+def test_an_alert_dialog_gets_no_escape_and_no_click(tab, store_file, stub_provider, caplog):
+    # It asks for an answer: Close closes the account, and even Escape answers it.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_ACCOUNT))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == [] and not _gone(tab, 'cf')
+    [warning] = [w for w in _warnings(caplog) if 'popup' in w]
+    assert warning.startswith("mendwright: left a popup in the way of 'go' alone: <div "
+                              'id="cf" role="alertdialog">')
+    assert 'role="alertdialog"), which asks for an answer' in warning
+
+
+@pytest.mark.parametrize('title, buttons', [
+    ('Close your account? This cannot be undone.', [('Close', 'closed')]),
+    ("Skip next week's delivery? Free shipping on every box.", [('Skip', 'skipped')]),
+    ('Delete this project?', [('Cancel', 'cancel'), ('Close', 'closed')]),
+    ('Your box ships on Monday, with free shipping.', [('Keep it', 'kept'), ('Skip', 'skipped')]),
+    ('Expense report #4471 from Bob is waiting for your approval.',
+     [('Approve', 'approved'), ('Reject', 'rejected')]),
+    ('Alice invited you to join the Finance workspace.', [('Decline', 'declined')]),
+], ids=['close-verb', 'skip-verb', 'cancel', 'keep', 'reject-expense', 'decline-invite'])
+def test_a_dialog_that_asks_a_question_gets_escape_only(tab, store_file, stub_provider, title,
+                                                        buttons):
+    inner = ''.join('<button type="button" onclick="log(\'' + tag + '\'); ' + _CLOSE + '">'
+                    + label + '</button>' for label, tag in buttons)
+    dialog = ('<div id="nl" role="dialog" aria-modal="true" style="position: fixed; inset: 0; '
+              'z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff; '
+              'width: 340px; margin: 120px auto; padding: 16px"><h2>' + title + '</h2>' + inner
+              + '</div></div>')
+    tab.load(_page(dialog))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
+
+
+# --- a bare Skip or Dismiss: only in a promotion --------------------------------------------
+
+def _button(label, tag, closes=True, aria=None):
+    """A button that logs tag, and with closes=True removes the popup."""
+    return ('<button type="button"' + (' aria-label="' + aria + '"' if aria else '')
+            + ' onclick="log(\'' + tag + '\')' + ('; ' + _CLOSE if closes else '') + '">'
+            + label + '</button>')
+
+
+def _notice(text, *buttons):
+    """A dialog over the whole page with its own text and the given buttons. Escape does
+    not close it."""
+    return ('<div id="nl" role="dialog" aria-modal="true" style="position: fixed; inset: 0; '
+            'z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff; '
+            'width: 340px; margin: 120px auto; padding: 16px"><p>' + text + '</p>'
+            + ' '.join(buttons) + '</div></div>')
+
+
+_SIGN_IN = 'New sign-in detected. We noticed a sign-in to your account from a new device.'
+_PAYMENT = 'Update your payment method. Your card expires at the end of the month.'
+# A security notice and a payment prompt: a bare Dismiss or Skip may acknowledge them.
+_NOTICES = {
+    'sign-in': _notice(_SIGN_IN, _button('Dismiss', 'dismissed'),
+                       _button('Review', 'review', closes=False)),
+    'payment': _notice(_PAYMENT, _button('Skip', 'skipped'),
+                       _button('Update', 'update', closes=False)),
+}
+# A newsletter and an app-install prompt: there they decline.
+_PROMOTIONS = {
+    'newsletter-skip': (_notice('Sign up for our newsletter and never miss a sale.', SUBSCRIBE,
+                                _button('Skip', 'skipped')), 'skipped', 'Skip'),
+    'app-dismiss': (_notice('Get the Acme app for faster checkout.',
+                            _button('Install the app', 'install', closes=False),
+                            _button('Dismiss', 'dismissed')), 'dismissed', 'Dismiss'),
+}
+
+
+@pytest.mark.parametrize('name', list(_NOTICES))
+def test_a_bare_skip_or_dismiss_outside_a_promotion_is_never_clicked(tab, store_file,
+                                                                     stub_provider, caplog,
+                                                                     name):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_NOTICES[name]))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == ['key:Escape'] and not _gone(tab)
+    [warning] = _warnings(caplog)
+    assert warning.startswith("mendwright: could not dismiss a popup in the way of 'go': "
+                              '<div id="nl" role="dialog"> ("'
+                              + (_SIGN_IN if name == 'sign-in' else _PAYMENT)[:30])
+    assert ('mendwright pressed Escape, which did not close it, and it has no close or decline '
+            'button that mendwright may click') in warning
+
+
+@pytest.mark.parametrize('name', list(_PROMOTIONS))
+def test_a_bare_skip_or_dismiss_in_a_promotion_dismisses_it(tab, store_file, stub_provider,
+                                                            name):
+    html, clicked, label = _PROMOTIONS[name]
+    tab.load(_page(html))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', clicked] and _gone(tab)     # never Subscribe, Install
+    assert tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', label)]
+
+
+@pytest.mark.parametrize('button, how, label', [
+    (_button('No thanks', 'clicked'), 'decline', 'No thanks'),
+    (_button('Not now', 'clicked'), 'decline', 'Not now'),
+    (_button('&times;', 'clicked', aria='Close dialog'), 'close', 'Close dialog'),
+], ids=['no-thanks', 'not-now', 'named-close'])
+def test_no_thanks_not_now_and_a_named_close_count_outside_a_promotion(tab, store_file,
+                                                                       stub_provider, button,
+                                                                       how, label):
+    # The payment prompt above, with one more button: only a bare Skip needs a promotion.
+    tab.load(_page(_notice(_PAYMENT, _button('Skip', 'skipped'), button,
+                           _button('Update', 'update', closes=False))))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'clicked'] and _gone(tab)
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [(how, label)]
+
+
+@pytest.mark.engine_family('playwright')
+def test_async_a_bare_skip_or_dismiss_is_dismissed_only_in_a_promotion(engine, tmp_path,
+                                                                       stub_provider):
+    cases = dict(_NOTICES, **{name: html for name, (html, _, _) in _PROMOTIONS.items()})
+
+    async def run(tab):
+        found = {}
+        for name, html in cases.items():
+            await tab.set_content(_page(html))
+            heal = await mendwright.aio.open(tab, provider=stub_provider(None),
+                                             store_path=str(tmp_path / name / 'overrides.json'),
+                                             timeout_ms=FAST_MS, dismiss=True)
+            error = None
+            try:
+                await heal.locator('go', '#go').click(timeout=1500)
+            except Exception as exc:
+                error = exc
+            found[name] = (error, (await tab.text_content('#log')).split(),
+                           await tab.text_content('#done'), await tab.locator('#nl').count(),
+                           [(e.how, e.label) for e in heal.handled_interruptions])
+        return found
+
+    found = engine.with_async_page(run)
+
+    for name in _NOTICES:
+        error, log, done, left, handled = found[name]
+        assert is_interception_error(error), name
+        assert (log, done, left, handled) == (['key:Escape'], '', 1, []), name
+    for name, (_, clicked, label) in _PROMOTIONS.items():
+        error, log, done, left, handled = found[name]
+        assert error is None, name
+        assert (log, done, left, handled) == (['key:Escape', clicked], 'go ', 0,
+                                              [('decline', label)]), name
+
+
+def test_skip_the_line_for_money_is_never_clicked_and_no_thanks_is(tab, store_file,
+                                                                  stub_provider):
+    skip = '<button type="button" onclick="log(\'skip-the-line\')">Skip the line - $9.99</button>'
+    tab.load(_page(_modal([skip, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'no-thanks'] and tab.text('#done') == 'go '
+
+
+def test_a_disabled_no_thanks_is_passed_over(tab, store_file, stub_provider):
+    disabled = '<button type="button" disabled onclick="log(\'disabled\')">No thanks</button>'
+    aria = ('<button type="button" aria-disabled="true" onclick="log(\'aria-disabled\')">'
+            'No thanks</button>')
+    not_now = ('<button type="button" onclick="log(\'not-now\'); ' + _CLOSE + '">Not now'
+               '</button>')
+    tab.load(_page(_modal([disabled, aria, not_now])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'not-now'] and tab.text('#done') == 'go '
+
+
+def test_with_cookies_accept_an_unknown_consent_banner_is_left_alone(tab, store_file,
+                                                                    stub_provider, caplog):
+    # Declining it would turn the consent down, the opposite of cookies="accept".
+    caplog.set_level(logging.INFO, logger='mendwright')
+    banner = """<div id="pop" role="dialog" aria-label="Privacy" style="position: fixed; inset: 0;
+  z-index: 10; background: #fff">
+  <p>We use cookies to improve your experience.</p>
+  <button type="button" onclick="log('reject'); this.closest('#pop').remove()">Reject all</button>
+  <button type="button" onclick="log('accept'); this.closest('#pop').remove()">Accept all</button>
+  </div>"""
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
+
+    _left_alone(tab, heal)
+
+    assert _log(tab) == [] and not _gone(tab, 'pop')
+    assert [w for w in _warnings(caplog) if "left a popup in the way of 'go' alone: <div "
+            'id="pop" role="dialog"> ("We use cookies to improve your experience.' in w]
+
+
+_CONSENT_JS = """<script>window.consent = 'unset';
+function setConsent(v) { window.consent = v; log('consent:' + v);
+  for (const id of ['pn', 'pn-bg']) { const e = document.getElementById(id); if (e) e.remove(); } }
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('pn')) setConsent('rejected-by-escape'); });
+</script>"""
+# A consent banner the preset does not know, which takes Escape as a refusal.
+_UNKNOWN_BANNER = """<div id="pn" class="privacy-notice" role="dialog" aria-label="Your choices"
+  style="position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 16px; z-index: 11">
+  We use cookies to measure and improve our site.
+  <button type="button" onclick="setConsent('accepted')">Accept all</button>
+  <button type="button" onclick="setConsent('rejected')">Reject all</button></div>"""
+
+
+@pytest.mark.parametrize('over', ['backdrop', 'newsletter'])
+def test_with_cookies_accept_escape_never_refuses_a_banner_elsewhere(tab, store_file,
+                                                                    stub_provider, over):
+    # Escape reaches every key listener of the page: under a backdrop of its own, or with a
+    # newsletter modal over the element, the banner would take it as a refusal.
+    if over == 'backdrop':
+        top = ('<div id="pn-bg" class="overlay" style="position: fixed; inset: 0; z-index: 10; '
+               'background: rgba(0, 0, 0, 0.4)"></div>')
+    else:
+        top = _modal([SUBSCRIBE], escape=True)
+    tab.load(_page(top, _UNKNOWN_BANNER, _CONSENT_JS))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
+    _left_alone(tab, heal)
+    # The page's log, not window.consent: patchright and camoufox evaluate in an isolated
+    # world, where the page's own globals are not seen.
+    assert _log(tab) == [] and not _gone(tab, 'pn')
+
+
+def test_with_cookies_accept_a_banner_with_an_accept_button_is_left_alone(tab, store_file,
+                                                                         stub_provider, caplog):
+    # Like an IAB TCF first layer, but its name and its text say nothing about cookies:
+    # its accept button says it asks for consent.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    banner = """<div id="msg" class="message-container" style="position: fixed;
+  inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)"><div style="background: #fff;
+  width: 420px; margin: 100px auto; padding: 16px"><p>Choose how we and our vendors use information
+  on your device.</p>
+  <button type="button" onclick="log('accept')">Alle akzeptieren</button>
+  <button type="button" aria-label="Close" onclick="log('refused');
+    this.closest('.message-container').remove()">&times;</button></div></div>"""
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
+    _left_alone(tab, heal)
+    assert _log(tab) == []
+    assert [w for w in _warnings(caplog) if w.startswith(
+        "mendwright: left a popup in the way of 'go' alone: <div id=\"msg\"")]
+
+
+# --- what is a popup and what is not ----------------------------------------------------------
+
+def test_a_small_toast_in_a_full_window_layer_is_not_a_popup(tab, store_file, stub_provider):
+    # Toast libraries put toasts in a full-window layer with pointer-events: none.
+    toast = """<div id="toaster" style="position: fixed; inset: 0; pointer-events: none;
+  z-index: 50"><div id="toast" role="status" style="position: absolute; pointer-events: auto;
+  width: 220px; height: 60px; background: #333; color: #fff">Item added
+  <button type="button" onclick="log('toast-dismiss')">Dismiss</button></div></div>
+<script>const r = document.getElementById('go').getBoundingClientRect();
+const t = document.getElementById('toast');
+t.style.left = (r.left + r.width / 2 - 30) + 'px'; t.style.top = (r.top + r.height / 2 - 30) + 'px';
+</script>"""
+    tab.load(_page(toast))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == []
+
+
+def test_an_element_in_the_popup_under_a_part_of_the_popup_is_left_alone(tab, store_file,
+                                                                         stub_provider):
+    # A floating label over a field of the popup the script is filling in.
+    field = ('<div style="position: relative"><input id="nl-code" placeholder="Code">'
+             '<span style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; '
+             'background: #eef">Your code</span></div>')
+    tab.load(_page(_modal([SIGN_UP, NO_THANKS], extra=field)))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal, '#nl-code', 'nl_code')
+    assert _log(tab) == [] and not _gone(tab)
+
+
+def test_a_small_fixed_header_over_the_middle_of_the_element_is_left_alone(tab, store_file,
+                                                                           stub_provider):
+    header = ('<header id="top" style="position: fixed; top: 0; left: 0; right: 0; height: '
+              '60px; z-index: 5; background: #eee">Shop <button type="button" '
+              'onclick="log(\'header\')">Close</button></header>')
+    go = ('<button type="button" id="go" onclick="done(\'go\')" style="position: fixed; top: '
+          '15px; left: 300px; height: 30px; z-index: 1">Go</button>')
+    tab.load(page(header + go + _FORM.replace('id="go"', 'id="other"'), 'header'))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _left_alone(tab, heal)
+    assert _log(tab) == [] and tab.text('#done') == ''
+
+
+@pytest.mark.parametrize('height, popup', [('70%', True), ('15%', False)])
+def test_a_plain_fixed_layer_is_a_popup_when_it_covers_a_quarter_of_the_window(
+        tab, store_file, stub_provider, height, popup):
+    # An app-install banner: no dialog role, only position: fixed.
+    layer = ('<div id="app" style="position: fixed; left: 0; right: 0; top: 0; height: '
+             + height + '; z-index: 10; background: #fff"><p>Get our app</p>'
+             '<button type="button" onclick="log(\'not-now\'); this.parentNode.remove()">'
+             'Not now</button></div>')
+    tab.load(_page(layer))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    if popup:
+        _step(heal, 'go', '#go').click()
+        assert _log(tab) == ['key:Escape', 'not-now'] and _gone(tab, 'app')
+        assert tab.text('#done') == 'go '
+    else:
+        _left_alone(tab, heal)
+        assert _log(tab) == [] and not _gone(tab, 'app')
+
+
+def test_a_modal_dialog_element_is_a_popup(tab, store_file, stub_provider):
+    dialog = ('<dialog id="rate"><p>Rate us</p><button type="button" onclick="log(\'close\'); '
+              'this.closest(\'dialog\').close()">Close</button></dialog>'
+              '<script>document.getElementById("rate").showModal();</script>')
+    tab.load(_page(dialog))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert tab.js('document.getElementById("rate").open') is False
+    assert tab.text('#done') == 'go '
+    [event] = heal.handled_interruptions
+    assert event.key == DISMISS_KEY and event.popup.startswith('<dialog id="rate">')
+
+
+_SHADOW_BANNER = """<cmp-banner></cmp-banner><script>
+customElements.define('cmp-banner', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = '<div role="dialog" aria-label="Privacy" style="position: fixed; inset: 0; '
+      + 'z-index: 10; background: rgba(0, 0, 0, 0.4)"><p>We use cookies.</p>'
+      + '<button type="button" id="a">Accept all</button> '
+      + '<button type="button" id="r">Reject all</button></div>';
+    root.getElementById('a').onclick = () => { log('accept'); this.remove(); };
+    root.getElementById('r').onclick = () => { log('reject'); this.remove(); };
+  }
+});
+</script>"""
+
+
+# A dialog of the page whose buttons are drawn by a component, in its own open shadow root.
+_SHADOW_BUTTONS = """<div id="cmp" role="dialog" aria-modal="true" style="position: fixed; inset: 0;
+  z-index: 10; background: rgba(0, 0, 0, 0.4)"><p>We use cookies.</p><cmp-buttons></cmp-buttons></div>
+<script>
+customElements.define('cmp-buttons', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = '<button type="button" id="a">Accept all</button> '
+      + '<button type="button" id="r">Reject all</button>';
+    root.getElementById('a').onclick = () => { log('accept'); document.getElementById('cmp').remove(); };
+    root.getElementById('r').onclick = () => { log('reject'); document.getElementById('cmp').remove(); };
+  }
+});
+</script>"""
+
+
+@pytest.mark.parametrize('banner', [_SHADOW_BANNER, _SHADOW_BUTTONS], ids=['popup', 'buttons'])
+def test_a_banner_in_an_open_shadow_root_is_declined(tab, store_file, stub_provider, banner):
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'reject'] and tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'Reject all')]
+
+
+def test_a_dialog_that_is_neither_modal_nor_fixed_is_a_popup(tab, store_file, stub_provider):
+    # A survey placed over the form with position: absolute, and only role="dialog".
+    survey = ('<div id="survey" role="dialog" style="position: absolute; left: 0; top: 0; '
+              'width: 600px; height: 200px; z-index: 10; background: #fff"><p>How did we do?</p>'
+              '<button type="button" onclick="log(\'not-now\'); this.parentNode.remove()">Not now'
+              '</button></div>')
+    tab.load(_page(survey))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'not-now'] and tab.text('#done') == 'go '
+    [event] = heal.handled_interruptions
+    assert event.popup == '<div id="survey" role="dialog"> ("How did we do? Not now")'
+
+
+# --- registered interruptions first -------------------------------------------------------------
+
+def test_a_registered_banner_that_is_also_a_popup_is_handled_its_registered_way(
+        tab, store_file, stub_provider):
+    banner = """<div id="cmp" role="dialog" style="position: fixed; inset: 0; z-index: 10;
+  background: rgba(0, 0, 0, 0.4)"><p>We and our partners use cookies.</p>
+  <button type="button" id="accept" onclick="log('accept'); this.closest('#cmp').remove()">Accept all</button>
+  <button type="button" onclick="log('reject'); this.closest('#cmp').remove()">Reject all</button></div>"""
+    tab.load(_page(banner))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    heal.interrupt('consent', '#accept')
+
+    _step(heal, 'go', '#go').click()
+
+    assert _log(tab) == ['accept'] and tab.text('#done') == 'go '
+    assert [e.key for e in heal.handled_interruptions] == ['consent']
+
+
+# --- the scripts' own checks -------------------------------------------------------------------
+
+def test_the_scripts_refuse_a_control_or_root_that_is_not_the_one_chosen(tab, store_file,
+                                                                         stub_provider):
+    # Between the list of buttons and the click the popup may re-render: the click script
+    # checks that button number N is still the one chosen, the root script the root's id.
+    tab.load(_page(_modal([SUBSCRIBE, NO_THANKS])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    driver = heal._driver
+    native = driver.handle('#go')
+    popup = popup_of(parse_probe(driver.popup_probe(native)))
+    root = driver.popup_root(native, expect_of(popup))
+    controls = driver.popup_controls(native, root)
+    texts = [c['text'] for c in controls]
+    subscribe, no_thanks = texts.index('Subscribe'), texts.index('No thanks')
+
+    assert driver.popup_click(native, root, expect_control(subscribe, controls[no_thanks]),
+                              1000) is False
+    assert driver.popup_root(native, dict(expect_of(popup), id='other')) is None
+    assert _log(tab) == [] and not _gone(tab)
+    assert driver.popup_click(native, root, expect_control(no_thanks, controls[no_thanks]),
+                              1000) is True
+    assert _log(tab) == ['no-thanks'] and _gone(tab)
+
+
+def test_the_click_script_refuses_an_input_whose_value_changed(tab, store_file, stub_provider):
+    # An input's label is its value, which its text does not show.
+    later = ('<input type="button" id="nl-no" value="No thanks" onclick="log(\'no-thanks\'); '
+             + _CLOSE + '">')
+    tab.load(_page(_modal([later])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    driver = heal._driver
+    native = driver.handle('#go')
+    popup = popup_of(parse_probe(driver.popup_probe(native)))
+    root = driver.popup_root(native, expect_of(popup))
+    controls = driver.popup_controls(native, root)
+    [index] = [i for i, c in enumerate(controls) if c['value'] == 'No thanks']
+    tab.js("document.getElementById('nl-no').value = 'Yes, subscribe me' || true")
+    tab.js("document.getElementById('nl-no').setAttribute('value', 'Yes, subscribe me') || true")
+    assert driver.popup_click(native, root, expect_control(index, controls[index]),
+                              1000) is False
+    assert _log(tab) == [] and not _gone(tab)
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_close_click_whose_navigation_does_not_commit_is_reported(tab, store_file,
+                                                                   stub_provider, caplog):
+    # The click goes through and starts a navigation that never commits, so Playwright's
+    # click raises: mendwright names the click and clicks nothing more.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    away = ('<button type="button" aria-label="Close" onclick="location.href = \'/stuck\'">'
+            '&times;</button>')
+    tab.load_at(_page(_modal([away, NO_THANKS])), '/popup')
+    held = []
+    tab.page.route('**/stuck', lambda route: held.append(route))     # not answered yet
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    try:
+        with pytest.raises(Exception) as caught:
+            _step(heal, 'go', '#go').click(timeout=1500)
+    finally:
+        for route in held:
+            route.abort()
+    assert not isinstance(caught.value, mendwright.AttentionRequired)   # the browser's own
+    assert [route.request.url for route in held] == [SITE + '/stuck']  # the click went through
+    assert heal.handled_interruptions == []
+    [warning] = [w for w in _warnings(caplog) if 'popup' in w]
+    assert warning.startswith("mendwright: Clicked “Close” on a popup in the way of 'go'")
+    assert 'the click raised an error after it may have reached the page' in warning
+    assert '“No thanks”' not in warning
+
+
+# --- timing ------------------------------------------------------------------------------------
+
+def _closes_after(ms):
+    return ('<button type="button" id="nl-no" onclick="log(\'no-thanks\'); setTimeout(() => '
+            + _CLOSE + ', ' + str(ms) + ')">No thanks</button>')
+
+
+def test_a_popup_that_closes_a_moment_after_the_click_is_dismissed(tab, store_file,
+                                                                   stub_provider):
+    # mendwright looks again for up to the step's timeout_ms (300 ms here) after each step.
+    tab.load(_page(_modal([SIGN_UP, _closes_after(100)])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click()
+    assert _log(tab) == ['key:Escape', 'no-thanks'] and tab.text('#done') == 'go '
+    assert [(e.how, e.label) for e in heal.handled_interruptions] == [('decline', 'No thanks')]
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_popup_that_closes_after_mendwright_stopped_looking_is_not_counted(
+        tab, store_file, stub_provider, caplog):
+    # Longer than the time mendwright looks again for: it reports that it could not dismiss
+    # the popup, and Playwright's click, which waits, goes through once the popup is gone.
+    caplog.set_level(logging.INFO, logger='mendwright')
+    tab.load(_page(_modal([SIGN_UP, _closes_after(1200)])))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    _step(heal, 'go', '#go').click(timeout=5000)
+    assert tab.text('#done') == 'go ' and _gone(tab)
+    assert heal.handled_interruptions == []
+    assert [w for w in _warnings(caplog) if w.startswith(
+        "mendwright: could not dismiss a popup in the way of 'go'")]
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('how', ['locator', 'get_by_role'])
+def test_an_element_below_the_window_gets_the_look_before_the_action(tab, store_file,
+                                                                    stub_provider, how):
+    # It is scrolled into view first, so the popup is dismissed before the click, not after
+    # the click waited out its timeout on it.
+    low = _FORM.replace('<form id="signup">', '<div style="height: 2500px"></div>'
+                        '<form id="signup">')
+    tab.load(page(low + _modal([SIGN_UP, NO_THANKS]), 'popup'))
+    heal = _open(tab, stub_provider(None), store_file, dismiss=True)
+    started = time.monotonic()
+    if how == 'locator':
+        _step(heal, 'go', '#go').click(timeout=8000)
+    else:
+        heal.page.get_by_role('button', name='Go', exact=True).click(timeout=8000)
+    took = time.monotonic() - started
+    assert tab.text('#done') == 'go ' and _log(tab) == ['key:Escape', 'no-thanks']
+    assert took < 6      # waiting on the popup would take the click's whole 8 s

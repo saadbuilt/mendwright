@@ -410,6 +410,57 @@ def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
     assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
 
 
+def test_flow_actions_mendwright_does_not_route_reject_the_banner_first(engine, tmp_path):
+    # get_by_role and a chained locator are the real page's: Playwright's overlay handler
+    # hands over to mendwright before them.
+    async def main():
+        page = await engine.page(_ONETRUST)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, cookies='reject')
+            await heal.page.get_by_role('button', name='Create account').click(timeout=5000)
+            await heal.page.locator('form').locator('#email').fill('ada@example.com')
+            return heal, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, texts = engine.run(main())
+    assert texts == ('ada@example.com', 'rejected', 'created')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookie_banner', '<page action>')]
+
+
+_RACE = _ONETRUST.replace('id="onetrust-consent-sdk"', 'id="onetrust-consent-sdk" hidden') + """
+<script>const create = document.getElementById('create'); create.disabled = true;
+setTimeout(() => document.getElementById('onetrust-consent-sdk').hidden = false, 500);
+setTimeout(() => { create.disabled = false; }, 1200);</script>"""
+
+
+@pytest.mark.parametrize('routed', [True, False])
+def test_flow_a_banner_that_opens_while_an_action_waits(engine, tmp_path, routed):
+    # Create account is disabled until 1.2 s and the banner opens at 0.5 s, after the
+    # check before the click: Playwright hands over to mendwright while the click waits.
+    async def main():
+        page = await engine.page(_RACE)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, cookies='reject')
+            started = asyncio.get_running_loop().time()
+            if routed:
+                await heal.locator('create', '#create').click(timeout=30000)
+            else:
+                await heal.page.get_by_role('button', name='Create account').click(timeout=30000)
+            return heal, asyncio.get_running_loop().time() - started, await _texts(page)
+        finally:
+            await _close(page)
+
+    heal, elapsed, texts = engine.run(main())
+    assert elapsed < 6              # without the handler: the click's whole 30 s timeout
+    assert texts[1:] == ('rejected', 'created')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        ('cookie_banner', 'create' if routed else '<page action>')]
+
+
 def test_flow_an_optional_step(engine, tmp_path):
     provider = Stub("//button[@id='create']")
 
@@ -566,3 +617,238 @@ def test_a_key_is_followed_into_an_iframe_and_heals_there(engine, tmp_path):
     assert [h.source for h in followed] == ['frame'] and first.bundles == []
     assert [h.source for h in heals] == ['model'] and checked
     assert 'terms-v2' in second.bundles[0]['html'] and 'Outer' not in second.bundles[0]['html']
+
+
+# --- popups mendwright was never told about: open(dismiss=True) -------------------------------
+
+_NEWSLETTER = _SIGNUP + """<p id='log'></p><div id="nl" role="dialog" aria-modal="true"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 300px; margin: 140px auto; padding: 16px">
+    <p>Get 10% off your first order.</p><input id="nl-email" type="email">
+    <button type="button" onclick="document.getElementById('log').textContent += 'signup '">Sign up</button>
+    <button type="button" onclick="document.getElementById('log').textContent += 'no-thanks ';
+      document.getElementById('nl').remove()">No thanks</button>
+  </div></div>"""
+
+
+@pytest.mark.parametrize('how', ['locator', 'get_by_role'])
+def test_flow_dismiss_a_newsletter_modal(engine, tmp_path, how):
+    async def main():
+        page = await engine.page(_NEWSLETTER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, dismiss=True)
+            if how == 'locator':
+                await heal.locator('create', '#create').click()
+            else:
+                from playwright.async_api import expect
+                go = heal.page.get_by_role('button', name='Create account')
+                await go.click(timeout=5000)
+                await expect(go).to_have_text('Create account')    # takes the guarded locator
+            return (heal, await page.text_content('#log'), await page.text_content('#done'),
+                    await page.locator('#nl').count())
+        finally:
+            await _close(page)
+
+    heal, log, done, left = engine.run(main())
+    assert (log, done, left) == ('no-thanks ', 'created', 0)       # never Sign up
+    [event] = heal.handled_interruptions
+    assert (event.key, event.how, event.label) == ('<popup>', 'decline', 'No thanks')
+    assert event.before == ('create' if how == 'locator'
+                            else "page.get_by_role('button', name='Create account')")
+
+
+def test_flow_dismiss_is_off_by_default(engine, tmp_path):
+    async def main():
+        page = await engine.page(_NEWSLETTER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            with pytest.raises(Exception) as caught:
+                await heal.locator('create', '#create').click(timeout=1000)
+            return heal, caught.value, await page.text_content('#log')
+        finally:
+            await _close(page)
+
+    heal, error, log = engine.run(main())
+    assert 'intercepts pointer events' in str(error)
+    assert log == '' and heal.handled_interruptions == []
+
+
+_ESCAPE_ONLY = _SIGNUP + """<p id='log'></p><div id="nl" role="dialog" aria-modal="true"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5)">
+  <div style="background: #fff; width: 300px; margin: 140px auto; padding: 16px">
+    <p>Get 10% off your first order.</p>
+    <button type="button" onclick="document.getElementById('log').textContent += 'subscribe '">Subscribe</button>
+  </div></div>
+<script>document.addEventListener('keydown', (e) => { if (e.key === 'Escape') {
+  document.getElementById('log').textContent += 'escape ';
+  const m = document.getElementById('nl'); if (m) m.remove(); } });</script>"""
+
+
+@pytest.mark.parametrize('focused', [False, True])
+def test_flow_dismiss_presses_escape_only_while_the_focus_lets_it_reach_the_popup(
+        engine, tmp_path, focused):
+    from mendwright.flow import is_interception_error
+
+    async def main():
+        page = await engine.page(_ESCAPE_ONLY)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300, dismiss=True)
+            if focused:
+                await page.focus('#email')        # a field outside the popup has the focus
+            error = None
+            try:
+                await heal.locator('create', '#create').click(timeout=1500)
+            except Exception as exc:
+                error = exc
+            return (heal, error, await page.text_content('#log'),
+                    await page.text_content('#done'))
+        finally:
+            await _close(page)
+
+    heal, error, log, done = engine.run(main())
+    if focused:
+        assert is_interception_error(error) and (log, done) == ('', '')
+        assert heal.handled_interruptions == []
+    else:
+        assert error is None and (log, done) == ('escape ', 'created')
+        assert [(e.how, e.label) for e in heal.handled_interruptions] == [('escape', None)]
+
+
+# --- steps in any order ------------------------------------------------------------------------
+
+def _step_page(heading, field, nxt):
+    return ("<h1>" + heading + "</h1><label for='" + field + "'>" + heading + " field</label>"
+            "<input id='" + field + "'><button type='button' id='next' "
+            "onclick=\"location.href = '" + nxt + "'\">Continue</button>")
+
+
+def test_steps_in_either_order_with_a_renamed_field_healed_on_its_new_page(engine, tmp_path):
+    from urllib.parse import urlsplit
+    site = 'https://mendwright.test/checkout/'
+    pages = {}           # what the route serves now: the checkout in one order or the other
+
+    def serve_order(first, second, ship_field):
+        steps = {'shipping': ('Shipping address', ship_field), 'payment': ('Payment', 'card-number')}
+        pages.clear()
+        pages['/checkout/step-a'] = _step_page(*steps[first], site + 'step-b')
+        pages['/checkout/step-b'] = _step_page(*steps[second], site + 'review')
+        pages['/checkout/review'] = ("<h1>Review</h1><button type='button' id='place' "
+                                     "onclick=\"document.body.innerHTML = '<p id=placed>Order "
+                                     "placed</p>'\">Place order</button>")
+
+    async def serve(route):
+        await route.fulfill(status=200, content_type='text/html',
+                            body=pages.get(urlsplit(route.request.url).path, ''))
+
+    provider = Stub("//input[@id='full-name']")
+    filled = []
+
+    async def run(page):
+        await page.goto(site + 'step-a')
+        heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                         timeout_ms=300, fingerprint=False)
+
+        @heal.step('shipping', "//h1[normalize-space()='Shipping address']")
+        async def shipping(p):
+            await p.fill('#ship-name', 'Ada Lovelace')
+            filled.append(('shipping', p.url))
+            await p.click('#next')
+
+        @heal.step('payment', '#card-number')
+        async def payment(p):
+            await p.fill('#card-number', '4242 4242 4242 4242')
+            await p.click('#next')
+
+        @heal.step('review', 'text=Place order', last=True)
+        def review(p):
+            return p.click('#place')          # a plain function returning the awaitable
+
+        return heal, await heal.run_steps(timeout_ms=5000, poll_ms=50)
+
+    async def main():
+        page = await engine.page('')
+        try:
+            await page.route('https://mendwright.test/**', serve)
+            serve_order('shipping', 'payment', 'ship-name')
+            first, ran_first = await run(page)
+            # The site now asks for the card first, and the shipping field has a new id.
+            serve_order('payment', 'shipping', 'full-name')
+            second, ran_second = await run(page)
+            return first, ran_first, second, ran_second, await page.text_content('#placed')
+        finally:
+            await _close(page)
+
+    first, ran_first, second, ran_second, placed = engine.run(main())
+    assert ran_first == ['shipping', 'payment', 'review']
+    assert ran_second == ['payment', 'shipping', 'review']
+    assert placed == 'Order placed'
+    assert first.heals == []
+    assert [(h.key, h.new) for h in second.heals] == [('#ship-name', "//input[@id='full-name']")]
+    assert len(provider.bundles) == 1
+    assert (provider.bundles[0]['page'], provider.bundles[0]['lastPage']) == (
+        '/checkout/step-b', '/checkout/step-a')
+    assert [where for _, where in filled] == [site + 'step-a', site + 'step-b']
+
+
+def test_a_lookup_after_a_step_went_on_to_the_next_page_is_declined(engine, tmp_path):
+    # '#ship-name' was found during shipping. This time shipping's function looks for it
+    # again after its own Continue went to the payment page, where a heal would fill the
+    # card field: the page guard declines it, as outside run_steps().
+    from urllib.parse import urlsplit
+    site = 'https://mendwright.test/checkout/'
+    pages = {'/checkout/step-a': _step_page('Shipping address', 'ship-name', site + 'step-b'),
+             '/checkout/step-b': _step_page('Payment', 'card-number', site + 'review'),
+             '/checkout/review': ("<h1>Review</h1><button type='button' id='place'>Place order"
+                                  "</button>")}
+
+    async def serve(route):
+        await route.fulfill(status=200, content_type='text/html',
+                            body=pages.get(urlsplit(route.request.url).path, ''))
+
+    provider = Stub("//input[@id='card-number']")
+
+    async def run(page, then_fill):
+        await page.goto(site + 'step-a')
+        heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                         timeout_ms=300, fingerprint=False)
+
+        @heal.step('shipping', "//h1[normalize-space()='Shipping address']")
+        async def shipping(p):
+            if not then_fill:
+                await p.fill('#ship-name', 'Ada Lovelace')
+            await p.click('#next')
+            if then_fill:
+                await p.fill('#ship-name', 'Ada Lovelace')
+
+        @heal.step('payment', '#card-number')
+        async def payment(p):
+            await p.fill('#card-number', '4242 4242 4242 4242')
+            await p.click('#next')
+
+        @heal.step('review', 'text=Place order', last=True)
+        async def review(p):
+            await p.click('#place')
+
+        try:
+            return await heal.run_steps(timeout_ms=5000, poll_ms=50), None
+        except AttentionRequired as exc:
+            return None, exc
+
+    async def main():
+        page = await engine.page('')
+        try:
+            await page.route('https://mendwright.test/**', serve)
+            first = await run(page, then_fill=False)
+            second = await run(page, then_fill=True)
+            return first, second, await page.input_value('#card-number')
+        finally:
+            await _close(page)
+
+    (ran, _), (_, error), card = engine.run(main())
+    assert ran == ['shipping', 'payment', 'review']
+    assert error is not None and 'was last found on /checkout/step-a' in str(error)
+    assert provider.bundles == []
+    assert card == ''

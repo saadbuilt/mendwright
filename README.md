@@ -14,9 +14,9 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-https://github.com/user-attachments/assets/865797e6-5642-4f81-9b8d-e6f5d97d9200
+https://github.com/user-attachments/assets/9332fddf-b63f-41d1-b0e5-f03b8f0064e2
 
-<p align="center"><sub>A real run on a made-up shop: the site redeploys and a cookie banner now pops up first. mendwright rejects the banner, repairs two selectors from memory and one with its 1 GB local model, and the next run uses the saved fixes.</sub></p>
+<p align="center"><sub>Real runs on a made-up shop, with the waits sped up. The site redeploys and breaks three selectors: mendwright finds two again from memory and one with its 1 GB local model, checks each on the live page and saves them, and the next run takes 0.28 s. Then it rejects a cookie banner, says “No thanks” to a sign-up popup and follows a checkout that asks for payment before shipping. Each of those has a short clip in the <a href="https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md">guide</a>.</sub></p>
 
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
@@ -26,39 +26,7 @@ For the model it supports Anthropic, OpenAI and compatible APIs, Gemini, Bedrock
 
 ```bash
 pip install mendwright
-mendwright demo
 ```
-
-If the `mendwright` command isn't on your PATH (common on Windows), run `python -m mendwright demo`.
-
-The demo runs offline, with no browser and no API key. A fake page built on lxml stands in for the browser and a canned reply stands in for the model. A redesign breaks two selectors, and a cookie banner that used to come later now opens first and covers the form. mendwright clicks the banner away because the demo registered it with `heal.interrupt()`, heals the checkbox, and refuses to heal the pay button because the demo marks it `destructive=True`.
-
-<img src="https://raw.githubusercontent.com/saadbuilt/mendwright/main/docs/assets/demo.svg" width="100%" alt="Terminal recording of mendwright demo. On v2 of a checkout page a cookie banner covers the form and is clicked away as a registered interruption. The accept_terms selector misses, the model proposes an XPath anchored on the label text, it passes the checks and the box is checked. The pay selector, marked destructive=True, also misses and is refused without a model call.">
-
-<details>
-<summary>The same output as text</summary>
-
-```text
-mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie banner.
-Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).
-
-  v1  accept_terms  #accept-terms   ok     matched, box checked
-  v1  pay           #pay            ok     matched (not clicked)
-      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --
-  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it (heal.interrupt)
-  v2  accept_terms  #accept-terms   MISS   no element matches
-      model    proposed //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (scripted reply, no API call)
-      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
-      retry    ok: box checked with the healed selector, heal confirmed
-  v2  pay           #pay            MISS   no element matches
-      refused  'pay' is marked destructive=True. Not healed, no model call.
-
-Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in total.
-```
-
-</details>
-
-`mendwright demo --browser chromium` runs the same demo in a real headless browser. It needs `pip install "mendwright[playwright]"` and `python -m playwright install chromium`. `mendwright demo --live` asks the model from your environment (set it up as shown below) instead of the canned reply. Only the demo page is sent.
 
 ## Quickstart
 
@@ -111,7 +79,7 @@ driver = mendwright.open(driver).driver    # Selenium (By from selenium.webdrive
 driver.find_element(By.ID, "terms").click()
 ```
 
-Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
+Each selector is also the key its heals are saved under. Chained locators, `get_by_*` and the other `By` values go to the real page or driver unhealed, and `.native` is the real object. Interruptions such as a cookie banner (below) are still handled before their actions: on a Playwright `Page` from Playwright 1.42, and before `click()`, `send_keys()`, `clear()` and `submit()` of the elements `heal.driver` returns (not through `.native`). The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#no-changes-per-step) lists what heals.
 
 ## Selenium
 
@@ -220,8 +188,11 @@ mendwright repairs a selector on the page your script is on. It handles layout c
 It also handles some changes in your script's flow:
 
 - A step that can show up at any point, such as a cookie banner, a newsletter modal or an "are you still there?" dialog. Register it once with `heal.interrupt()`. When it is in the way of a step (the step's element is missing, or the page shows the interruption), mendwright handles it first (a click, unless you register another action) and goes on with the step. If your script also has its own step for it, that step is skipped once the interruption was handled, so a cookie banner that now appears before signup instead of after it needs no other change.
+  This also covers actions that don't go through `heal.locator()`. On Playwright 1.42 and later mendwright registers the interruption with `page.add_locator_handler`, so Playwright hands over to it before a `get_by_*` or chained locator acts too, and while an action waits (not before `page.mouse`, `page.keyboard` or an action with `force=True`). On Selenium the elements `heal.driver` finds check for it before `click()`, `send_keys()`, `clear()` and `submit()` (not `ActionChains`, and only inside the frame after your own `switch_to.frame()`).
 - The consent banners of common consent managers, with `cookies="reject"` or `cookies="accept"`. This is off by default.
+- Popups you never registered, such as a newsletter modal, a survey or a chat invite, with `dismiss=True`. When one covers the element of an action, mendwright presses Escape (only while the keyboard focus is on the page or in the popup, so a field you filled keeps its text), then clicks the popup's close button (Close, or an icon named Close, never a bare × that in a cart removes an item), then a button such as No thanks or Not now, and looks again after each. It never clicks a button that says Subscribe, Accept, Yes or Continue (unless it says Continue without, as in Continue without an account), a link that goes somewhere, or a button that submits a form, it never types into the popup, and it leaves a dialog that asks a question alone, such as an alert dialog or one with a Cancel button. A popup it can't dismiss is named in a WARNING and the action fails with its own error. This is off by default. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#popups-mendwright-wasnt-told-about) lists what counts as a popup and as each button.
 - A step that may not be there, with `heal.locator(..., optional=True)`.
+- Steps the site shows in another order, puts on one page, or leaves out, such as a checkout that now asks for the card before the address. Register each step with `heal.step(name, when=...)`, where `when` is something only that step shows, such as its heading (it is never healed, so pick one that stays), and `heal.run_steps()` runs whichever step the site shows, each once, until the one marked `last=True`. A step the site left out is then named in a WARNING. A step that is on the page again after it ran, such as payment after a declined card, or a page where no step shows, stops the flow with an error instead of a guess. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#steps-in-any-order) has an example.
 
 <!-- readme-test: flow -->
 ```python
@@ -232,8 +203,8 @@ heal.locator("email", "#email").fill("ada@example.com")
 heal.locator("create_account", "#create-account").click()
 ```
 
-A step that moved to another page, steps in a new order, or a new required step still need a change to your script.
-mendwright remembers the last few pages each key was found on and doesn't heal a key on another page, so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, or the same steps run under language paths such as `/en/` and `/de/`, pass `heal_across_pages=True` to `mendwright.open()`.
+Outside `heal.run_steps()`, a step that moved to another page and steps in a new order need a change to your script. With `heal.run_steps()`, steps in a new order or on one page don't, and nor does a step left out when the final step has `last=True`. A new required step, an action that moved from one step to another, and a step whose landmark changed (landmarks are never healed) still do.
+mendwright remembers the last few pages each key was found on and doesn't heal a key on another page (inside `heal.run_steps()`, the page of the step it was found during counts as its own), so you get an error that says the flow changed, instead of a heal onto a similar element such as a Help button where a Continue button used to be. If a redesign only changed the URL, or the same steps run under language paths such as `/en/` and `/de/`, pass `heal_across_pages=True` to `mendwright.open()`.
 The model is also told it may answer that no element on the page fits, but a step that moved within the same address is still the model's call, so mark irreversible steps with `destructive=True`. The [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#flow-changes) has the details.
 
 Anchor selectors on ids, names, labels or text rather than position. A positional selector such as `(//form//input)[1]` that still matches after two fields swap now points at the wrong field, and since nothing broke, mendwright doesn't step in.

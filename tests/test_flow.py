@@ -10,6 +10,7 @@ with data-reveal="<id>" shows the element with that id. No browser, network or m
 """
 
 import asyncio
+import gc
 import json
 import logging
 import threading
@@ -21,9 +22,11 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired, InvalidSelector
-from mendwright.flow import (flow_change_message, is_interception_error, loop_message,
-                             page_path, skip_message)
-from mendwright.interruptions import COOKIE_BANNER_KEY, InterruptionEvent
+from mendwright.drivers.playwright_sync import playwright_selector
+from mendwright.flow import (UNROUTED_STEP, flow_change_message, is_interception_error,
+                             loop_message, page_path, rejected_selector_message, skip_message,
+                             stuck_message, unhandled_message)
+from mendwright.interruptions import COOKIE_BANNER_KEY, InterruptionEvent, cookie_preset
 
 SIDES = ('sync', 'async')
 
@@ -721,6 +724,608 @@ def test_the_cookies_preset_is_off_by_default_and_checks_its_value(side, tmp_pat
         entry + ' got cookies=\'yes\'. Use cookies="reject" to close consent banners without '
         'accepting, cookies="accept" to accept them, or leave cookies out to click nothing you '
         'did not ask for.')
+
+
+# --- Playwright's overlay handler (page.add_locator_handler) ------------------------------------
+
+class HandlerLocator(FlowLocator):
+    """A FlowLocator with what mendwright builds an overlay locator from: or_(), then
+    locator('visible=true') and .first. overlay_visible() is Playwright's check before an
+    action (isVisibleInternal(selector, {strict: true}) in the main frame): a locator that
+    matches several elements and is not narrowed to one fails with a strict mode violation."""
+
+    def __init__(self, page, selector, others=(), narrowed=''):
+        super().__init__(page, selector)
+        self.selectors = (selector,) + tuple(others)
+        self.narrowed = narrowed
+
+    def _with(self, selectors, narrowed):
+        return HandlerLocator(self._page, selectors[0], selectors[1:], narrowed)
+
+    def or_(self, other):
+        return self._with(self.selectors + other.selectors, self.narrowed)
+
+    def locator(self, selector):
+        return self._with(self.selectors, self.narrowed + ' >> ' + selector)
+
+    @property
+    def first(self):
+        return self._with(self.selectors, self.narrowed + ' >> nth=0')
+
+    def same(self, other):
+        """Locator._equals: the same frame and selector."""
+        return (self._page, self.selectors, self.narrowed) == (other._page, other.selectors,
+                                                                other.narrowed)
+
+    def _parse(self):
+        """Raise as Playwright does for a selector the browser cannot parse."""
+        for selector in self.selectors:
+            if selector in getattr(self._page, 'rejects', ()):
+                raise RuntimeError('Locator.count: Unexpected token "" while parsing css '
+                                   'selector "' + selector[len('css='):] + '".')
+
+    def count(self):
+        self._parse()
+        return super().count()
+
+    def overlay_visible(self):
+        self._parse()           # Playwright's check re-raises a parse error
+        found = [el for s in self.selectors for el in self._page.query(s)]
+        if self.narrowed == ' >> visible=true >> nth=0':
+            return any(not _hidden(el) for el in found)
+        if len(found) > 1:
+            raise RuntimeError('strict mode violation: resolved to ' + str(len(found)) + ' elements')
+        return bool(found) and not _hidden(found[0])
+
+    def scroll_into_view_if_needed(self, **kwargs):
+        self._page.checkpoint()          # Playwright scrolls through its action checks too
+
+
+class MainFrame:
+    parent_frame = None
+
+
+class ChildFrame:
+    parent_frame = MainFrame()
+
+
+class HandlerPage(FlowPage):
+    """A FlowPage with Playwright 1.44's add_locator_handler and remove_locator_handler.
+    Before each action it does what Playwright does: it runs the handler of each
+    registered locator that is visible, never while a handler runs, then goes on with the
+    action (no_wait_after=True). during_action callables run before that check, as a
+    banner that opens while an action waits. on() keeps event listeners, which emit()
+    calls, and rejects lists the selectors the browser cannot parse."""
+
+    def __init__(self, html, **kwargs):
+        super().__init__(html, **kwargs)
+        self.handlers = []          # [locator, handler, options]
+        self.removed = []
+        self.handler_runs = 0
+        self.listeners = {}         # event -> [callback]
+        self.rejects = ()
+        self._running = False
+
+    def locator(self, selector):
+        return HandlerLocator(self, selector)
+
+    def on(self, event, callback):
+        self.listeners.setdefault(event, []).append(callback)
+
+    def emit(self, event, arg):
+        for callback in self.listeners.get(event, []):
+            callback(arg)
+
+    def add_locator_handler(self, locator, handler, *, no_wait_after=None, times=None):
+        self.handlers.append([locator, handler, {'no_wait_after': no_wait_after}])
+
+    def remove_locator_handler(self, locator):
+        self.removed.append(locator)
+        self.handlers = [h for h in self.handlers if not h[0].same(locator)]
+
+    def checkpoint(self):
+        if self._running:
+            return
+        for locator, handler, _ in list(self.handlers):
+            if locator.overlay_visible():
+                self._running = True
+                self.handler_runs += 1
+                try:
+                    handler(locator)
+                finally:
+                    self._running = False
+
+    def act(self, selector, verb, args):
+        if self.during_action:
+            self.during_action.pop(0)(self)
+        self.checkpoint()
+        later, self.during_action = self.during_action, []
+        try:
+            return super().act(selector, verb, args)
+        finally:
+            self.during_action = later + self.during_action
+
+
+class OldHandlerPage(HandlerPage):
+    """Playwright 1.42 and 1.43: no no_wait_after (it never waited), no way to remove."""
+
+    remove_locator_handler = None
+
+    def add_locator_handler(self, locator, handler):
+        self.handlers.append([locator, handler, {}])
+
+
+CONSENT = ('<div id="consent" class="cookie-consent" data-overlay="" role="dialog">'
+           '<p>We use cookies.</p><button id="consent-reject" type="button">Reject all</button>'
+           '<button id="consent-close" type="button" aria-label="Close">×</button></div>')
+
+
+def _handler_page(body, cls=HandlerPage):
+    return cls('<html><body>' + body + '</body></html>')
+
+
+def _open_sync(page, tmp_path, **kwargs):
+    heal = mendwright.open(page, provider=None, store_path=_store(tmp_path), **kwargs)
+    heal.coordinator.log = None
+    return heal
+
+
+def _show(html):
+    return lambda p: p.doc.body.insert(0, lxml.html.fragment_fromstring(html))
+
+
+def test_cookies_registers_one_overlay_handler_narrowed_to_one_visible_match(tmp_path):
+    page = _handler_page(CONSENT + SIGNUP)
+    _open_sync(page, tmp_path, cookies='reject')
+    [[locator, _, options]] = page.handlers
+    assert options == {'no_wait_after': True}
+    assert locator.selectors == tuple(playwright_selector(s)
+                                      for s in cookie_preset('reject').selectors)
+    assert locator.narrowed == ' >> visible=true >> nth=0'
+    # Reject and Close both match: as written, Playwright's strict check would fail.
+    with pytest.raises(RuntimeError, match='strict mode violation'):
+        HandlerLocator(page, locator.selectors[0], locator.selectors[1:]).overlay_visible()
+    assert locator.overlay_visible() is True
+
+
+def test_an_action_mendwright_does_not_route_has_the_banner_handled_first(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    page = _handler_page(CONSENT + SIGNUP)
+    heal = _open_sync(page, tmp_path, cookies='reject')
+
+    page.locator('#email').click()      # as heal.page.get_by_label('Email').click() does
+
+    assert page.by_id('consent') is None
+    clicks = [s for s, v, _ in page.actions if v == 'click']
+    assert len(clicks) == 2 and clicks[1] == '#email'
+    assert [e.get('id') for e in _page(CONSENT).query(clicks[0])] == ['consent-reject']
+    assert heal.handled_interruptions == [InterruptionEvent(COOKIE_BANNER_KEY, UNROUTED_STEP)]
+    assert ("mendwright: handled interruption 'cookie_banner' before '<page action>'"
+            in _lines(caplog, logging.WARNING))
+    assert [(e['event'], e['before']) for e in _events(tmp_path)] == [
+        ('flow.interrupt', '<page action>')]
+    assert page.handler_runs == 1
+
+
+def test_a_banner_that_opens_while_a_step_acts_counts_against_that_step(tmp_path):
+    page = _handler_page(SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-accept')
+    proxy = heal.locator('next', '#next', timeout_ms=0, poll_ms=0)
+    page.during_action.append(_show(BANNER))
+    proxy.click()
+    assert page.clicks('css=#next') == 1        # Playwright handed over before the click
+    assert page.clicks('css=#cookie-accept') == 1
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', 'next')]
+
+
+def test_mendwright_s_own_click_on_the_banner_leaves_the_handler_out(tmp_path, caplog):
+    hidden = SIGNUP.replace('<form>', '<form id="form" style="display: none">')
+    page = _handler_page(BANNER.replace('id="cookie-accept"',
+                                        'id="cookie-accept" data-reveal="form"') + hidden)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-accept')
+    heal.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('ada@example.com')
+    assert page.handler_runs == 1               # Playwright called it for that click
+    assert page.clicks('css=#cookie-accept') == 1
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', 'email')]
+    assert not [line for line in _lines(caplog) if 'could not handle' in line]
+
+
+def test_registering_a_key_again_replaces_its_handler(tmp_path):
+    page = _handler_page(SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-accept')
+    first = page.handlers[0][0]
+    heal.interrupt('cookies', '#cookie-reject')
+    assert [r.selectors for r in page.removed] == [first.selectors]
+    assert [h[0].selectors for h in page.handlers] == [('css=#cookie-reject',)]
+
+
+def test_a_page_keeps_one_handler_per_key_for_all_its_healers(tmp_path):
+    page = _handler_page(CONSENT + SIGNUP)
+    first, second, third = (_open_sync(page, tmp_path / str(n), cookies='reject')
+                            for n in range(3))
+    assert len(page.handlers) == 1 and page.removed == []
+    page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second, third)] == [0, 0, 1]
+
+    del third               # the newest healer still alive acts for the handler
+    gc.collect()
+    page.during_action.append(_show(CONSENT))
+    page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second)] == [0, 1]
+
+    first.interrupt(COOKIE_BANNER_KEY, '#consent-reject')     # other selectors: replaced
+    assert [h[0].selectors for h in page.handlers] == [('css=#consent-reject',)]
+    assert len(page.removed) == 1
+
+
+def test_the_handler_stays_out_while_any_healer_of_the_page_clicks_the_banner(tmp_path):
+    hidden = SIGNUP.replace('<form>', '<form id="form" style="display: none">')
+    page = _handler_page(BANNER.replace('id="cookie-accept"',
+                                        'id="cookie-accept" data-reveal="form"') + hidden)
+    first, second = _open_sync(page, tmp_path / 'a'), _open_sync(page, tmp_path / 'b')
+    for heal in (first, second):
+        heal.interrupt('cookies', '#cookie-accept')     # one handler, acting for second
+    first.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('ada@example.com')
+    assert page.handler_runs == 1 and page.clicks('css=#cookie-accept') == 1
+    assert first.handled_interruptions == [InterruptionEvent('cookies', 'email')]
+    assert second.handled_interruptions == []
+
+
+def test_on_playwright_1_42_an_old_handler_stays_but_does_nothing(tmp_path):
+    page = _handler_page(BANNER + SIGNUP, cls=OldHandlerPage)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-close')
+    heal.interrupt('cookies', '#cookie-accept')
+    assert [options for _, _, options in page.handlers] == [{}, {}]
+    old, new = page.handlers[0][1], page.handlers[1][1]
+    old(None)
+    assert page.by_id('banner') is not None and heal.handled_interruptions == []
+    new(None)
+    assert page.by_id('banner') is None
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', UNROUTED_STEP)]
+
+
+def test_a_banner_that_stays_is_left_alone_after_three_times_in_a_row(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    sticky = BANNER.replace('data-overlay=""', 'data-overlay="" data-sticky=""')
+    page = _handler_page(sticky + SIGNUP)
+    heal = _open_sync(page, tmp_path, timeout_ms=20)
+    heal.interrupt('cookies', '#cookie-accept')
+
+    for _ in range(5):                  # Playwright retries an action that stays covered
+        with pytest.raises(RuntimeError, match='intercepts pointer events'):
+            page.locator('#next').click()
+
+    assert page.handler_runs == 5
+    assert page.clicks('css=#cookie-accept') == 3
+    assert [line for line in _lines(caplog, logging.WARNING) if 'times in a row' in line] == [
+        'mendwright: ' + stuck_message('cookies', 3)]
+
+    # Once mendwright sees it gone, a banner that comes back is handled again.
+    page.by_id('banner').drop_tree()
+    heal.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('x')
+    page.during_action.append(_show(BANNER))
+    page.locator('#next').click()
+    assert page.clicks('css=#cookie-accept') == 4 and page.clicks('#next') == 6
+
+
+def test_the_overlay_handler_never_breaks_the_action(tmp_path, caplog, monkeypatch):
+    page = _handler_page(BANNER + SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-accept')
+
+    def broken(*args, **kwargs):
+        raise ConnectionError('the browser went away')
+    monkeypatch.setattr(heal, '_interrupt', broken)
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):   # the action's own
+        page.locator('#next').click()
+    assert ('mendwright: ' + unhandled_message('cookies', UNROUTED_STEP,
+                                               ConnectionError('the browser went away'))
+            in _lines(caplog, logging.WARNING))
+
+
+def test_a_healer_that_is_gone_leaves_the_page_alone(tmp_path):
+    page = _handler_page(BANNER + SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('cookies', '#cookie-accept')
+    del heal
+    gc.collect()
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        page.locator('#next').click()
+    assert page.handler_runs == 1 and page.clicks('css=#cookie-accept') == 0
+
+
+def test_no_overlay_handler_without_add_locator_handler(tmp_path):
+    page = _page(BANNER + SIGNUP)       # a Frame, or Playwright before 1.42
+    heal = _open_sync(page, tmp_path, cookies='accept')
+    heal.interrupt('cookies', '#cookie-accept')
+    assert heal._overlays.handlers == {}
+
+
+def test_with_nothing_registered_no_overlay_handler_is_added(tmp_path):
+    page = _handler_page(SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.locator('email', '#email', timeout_ms=0, poll_ms=0).fill('ada@example.com')
+    page.locator('#next').click()
+    assert page.handlers == [] and page.listeners == {} and heal._overlays.handlers == {}
+
+
+def test_a_banner_left_alone_is_handled_again_once_the_page_navigates(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='mendwright')
+    sticky = BANNER.replace('data-overlay=""', 'data-overlay="" data-sticky=""')
+    page = _handler_page(sticky + SIGNUP)
+    heal = _open_sync(page, tmp_path, timeout_ms=20)
+    heal.interrupt('cookies', '#cookie-accept')
+    assert sorted(page.listeners) == ['framenavigated', 'load']
+
+    def stuck_three_times():
+        for _ in range(4):
+            with pytest.raises(RuntimeError, match='intercepts pointer events'):
+                page.locator('#next').click()
+
+    stuck_three_times()
+    assert page.clicks('css=#cookie-accept') == 3
+    page.emit('framenavigated', ChildFrame())       # an iframe navigated: still left alone
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        page.locator('#next').click()
+    assert page.clicks('css=#cookie-accept') == 3
+
+    page.emit('framenavigated', MainFrame())        # goto(), a link, a history change
+    stuck_three_times()
+    page.emit('load', page)                         # set_content()
+    stuck_three_times()
+    assert page.clicks('css=#cookie-accept') == 9
+    assert [line for line in _lines(caplog, logging.WARNING) if 'times in a row' in line] == [
+        'mendwright: ' + stuck_message('cookies', 3)] * 3
+
+
+def test_a_selector_the_browser_rejects_is_left_out_of_the_handler(tmp_path, caplog):
+    page = _handler_page(BANNER + SIGNUP)
+    page.rejects = ('css=div.promo[',)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('promo', 'div.promo[')
+    assert page.handlers == [] and heal._overlays.handlers == {}
+    heal.interrupt('cookies', ['div.promo[', '#cookie-accept'])
+    assert [h[0].selectors for h in page.handlers] == [('css=#cookie-accept',)]
+
+    page.locator('#next').click()       # the page's own action: no parse error, banner closed
+    assert page.by_id('banner') is None
+    error = RuntimeError('Locator.count: Unexpected token "" while parsing css selector '
+                         '"div.promo[".')
+    warned = [line for line in _lines(caplog, logging.WARNING) if 'rejected' in line]
+    assert warned == ['mendwright: ' + rejected_selector_message(key, 'div.promo[', error)
+                      for key in ('promo', 'cookies')]
+
+
+def test_replacing_a_key_keeps_the_handler_of_another_key_with_the_same_selectors(tmp_path):
+    # Playwright's remove_locator_handler removes every handler with an equal locator.
+    page = _handler_page(BANNER + SIGNUP)
+    heal = _open_sync(page, tmp_path)
+    heal.interrupt('promo', '#cookie-accept')
+    heal.interrupt('promo2', '#cookie-accept')
+    heal.interrupt('promo', '#cookie-reject')
+    assert page.removed == []
+    assert [h[0].selectors for h in page.handlers] == [
+        ('css=#cookie-accept',), ('css=#cookie-accept',), ('css=#cookie-reject',)]
+    page.locator('#next').click()
+    assert page.clicks('css=#cookie-accept') == 1 and page.by_id('banner') is None
+    assert heal.handled_interruptions == [InterruptionEvent('promo2', UNROUTED_STEP)]
+    heal.interrupt('promo2', None)          # the last one on those selectors: removed
+    assert [h[0].selectors for h in page.handlers] == [('css=#cookie-reject',)]
+
+
+def test_interrupt_with_none_removes_it_and_its_handler_once_no_healer_has_it(tmp_path):
+    page = _handler_page(SIGNUP)
+    first, second = (_open_sync(page, tmp_path / n, cookies='reject') for n in 'ab')
+    assert len(page.handlers) == 1
+    second.interrupt(COOKIE_BANNER_KEY, None)
+    assert len(page.handlers) == 1 and page.removed == []       # first still has it
+    assert COOKIE_BANNER_KEY not in second._interruptions
+
+    page.during_action.append(_show(CONSENT))
+    page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second)] == [1, 0]
+
+    first.interrupt(COOKIE_BANNER_KEY, None)
+    first.interrupt('never-registered', None)       # nothing to remove
+    assert page.handlers == [] and len(page.removed) == 1
+    assert first._interruptions == {} and first._overlays.handlers == {}
+    page.during_action.append(_show(CONSENT))
+    with pytest.raises(RuntimeError, match='intercepts pointer events'):
+        page.locator('#email').click()
+    assert [len(h.handled_interruptions) for h in (first, second)] == [1, 0]
+
+
+class AsyncHandlerLocator(AsyncFlowLocator):
+    """The async shape of HandlerLocator: each action runs the page's overlay check first."""
+
+    def __init__(self, page, loc):
+        super().__init__(loc)
+        self._apage = page
+
+    def or_(self, other):
+        return AsyncHandlerLocator(self._apage, self._loc.or_(other._loc))
+
+    def locator(self, selector):
+        return AsyncHandlerLocator(self._apage, self._loc.locator(selector))
+
+    @property
+    def first(self):
+        return AsyncHandlerLocator(self._apage, self._loc.first)
+
+    async def scroll_into_view_if_needed(self, **kwargs):
+        await self._apage.checkpoint()
+
+    def __getattr__(self, verb):
+        action = getattr(self._loc, verb)
+
+        async def run(*args, **kwargs):
+            if self._apage.on_action:
+                self._apage.on_action.pop(0)()
+            await self._apage.checkpoint()
+            return action(*args, **kwargs)
+        return run
+
+
+class AsyncHandlerPage(AsyncFlowPage):
+    """HandlerPage for the async API: add_locator_handler and remove_locator_handler are
+    coroutines, and so is the handler."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.handlers = []
+        self.removed = []
+        self.on_action = []
+        self.handler_threads = []
+        self._running = False
+
+    def locator(self, selector):
+        return AsyncHandlerLocator(self, HandlerLocator(self.sync, selector))
+
+    async def add_locator_handler(self, locator, handler, *, no_wait_after=None, times=None):
+        self.handlers.append([locator, handler, {'no_wait_after': no_wait_after}])
+
+    async def remove_locator_handler(self, locator):
+        self.removed.append(locator)
+        self.handlers = [h for h in self.handlers if not h[0]._loc.same(locator._loc)]
+
+    async def checkpoint(self):
+        if self._running:
+            return
+        for locator, handler, _ in list(self.handlers):
+            if locator._loc.overlay_visible():
+                self._running = True
+                try:
+                    await handler(locator)
+                finally:
+                    self._running = False
+
+
+def test_the_async_healer_registers_and_runs_the_overlay_handler(tmp_path):
+    sync = _page(SIGNUP)
+
+    async def main():
+        page = AsyncHandlerPage(sync)
+        heal = await mendwright.aio.open(page, provider=None, store_path=_store(tmp_path),
+                                         cookies='accept', timeout_ms=0)
+        heal.coordinator.log = None
+        assert [options for _, _, options in page.handlers] == [{'no_wait_after': True}]
+        heal.interrupt('promo', '#promo-close')
+        heal.interrupt('promo', '#promo-x')      # replaces the one before
+        while heal._watching:
+            await asyncio.sleep(0)
+        assert len(page.removed) == 1
+        assert [h[0]._loc.selectors for h in page.handlers][1:] == [('css=#promo-x',)]
+
+        threads = []
+        run = heal._core._overlay_run
+        heal._core._overlay_run = lambda *a: threads.append(threading.get_ident()) or run(*a)
+        sync.doc.body.insert(0, lxml.html.fragment_fromstring(ONETRUST))
+        await page.locator('#email').fill('ada@example.com')      # not routed
+        assert sync.by_id('onetrust-banner-sdk') is None
+
+        sync.doc.body.insert(0, lxml.html.fragment_fromstring(ONETRUST))
+        async with heal._lock:                  # a step of this healer is running
+            await page.checkpoint()
+        assert sync.by_id('onetrust-banner-sdk') is not None
+
+        sync.by_id('onetrust-consent-sdk').drop_tree()
+        nxt = await heal.locator('next', '#next', poll_ms=0)
+        page.on_action.append(_show_async(sync, ONETRUST))
+        await nxt.click()
+        return heal, threads
+
+    heal, threads = asyncio.run(main())
+    assert len(threads) == 2 and threading.get_ident() not in threads   # in a worker thread
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [
+        (COOKIE_BANNER_KEY, UNROUTED_STEP), (COOKIE_BANNER_KEY, 'next')]
+    assert sync.clicks('css=#next') == 1
+
+
+def _show_async(sync, html):
+    return lambda: sync.doc.body.insert(0, lxml.html.fragment_fromstring(html))
+
+
+class SlowHandlerPage(AsyncHandlerPage):
+    """An AsyncHandlerPage whose add_locator_handler and remove_locator_handler give the
+    event loop a turn before they act, as Playwright's round trips do."""
+
+    async def add_locator_handler(self, locator, handler, **options):
+        await asyncio.sleep(0)
+        await super().add_locator_handler(locator, handler, **options)
+
+    async def remove_locator_handler(self, locator):
+        await asyncio.sleep(0)
+        await super().remove_locator_handler(locator)
+
+
+async def _open_async(page, tmp_path, **kwargs):
+    heal = await mendwright.aio.open(page, provider=None, store_path=_store(tmp_path),
+                                     timeout_ms=0, **kwargs)
+    heal.coordinator.log = None
+    return heal
+
+
+async def _registered(heal):
+    while heal._watching:
+        await asyncio.sleep(0)
+
+
+def test_async_interrupt_calls_in_a_row_leave_one_handler_per_key(tmp_path):
+    async def main():
+        page = SlowHandlerPage(_page(SIGNUP))
+        heal = await _open_async(page, tmp_path)
+        for selector in ('#x', '#x', '#y', '#x'):       # no await in between
+            heal.interrupt('promo', selector)
+        await _registered(heal)
+        selectors = [h[0]._loc.selectors for h in page.handlers]
+        heal.interrupt('promo', None)
+        await _registered(heal)
+        return selectors, page.handlers, heal._core._overlays.handlers
+
+    selectors, left, entries = asyncio.run(main())
+    assert selectors == [('css=#x',)]
+    assert left == [] and entries == {}
+
+
+def test_async_interrupt_from_another_thread_changes_the_handler_on_the_page_s_loop(tmp_path):
+    async def main():
+        page = AsyncHandlerPage(_page(SIGNUP))
+        heal = await _open_async(page, tmp_path)
+        await (await heal.locator('email', '#email', poll_ms=0)).fill('ada@example.com')
+        nothing = list(page.handlers)       # nothing registered: no handler, no cost
+        await asyncio.to_thread(heal.interrupt, 'promo', '#promo-close')
+        added = [h[0]._loc.selectors for h in page.handlers]
+        await asyncio.to_thread(heal.interrupt, 'promo', None)
+        return nothing, added, page.handlers
+
+    nothing, added, left = asyncio.run(main())
+    assert nothing == [] and added == [('css=#promo-close',)] and left == []
+
+
+def test_async_a_selector_the_browser_rejects_is_left_out_of_the_handler(tmp_path, caplog):
+    sync = _page(BANNER + SIGNUP)
+
+    async def main():
+        page = AsyncHandlerPage(sync)
+        sync.rejects = ('css=div.promo[',)
+        heal = await _open_async(page, tmp_path)
+        heal.interrupt('cookies', ['div.promo[', '#cookie-accept'])
+        await _registered(heal)
+        selectors = [h[0]._loc.selectors for h in page.handlers]
+        await page.locator('#next').click()
+        return heal, selectors
+
+    heal, selectors = asyncio.run(main())
+    assert selectors == [('css=#cookie-accept',)] and sync.by_id('banner') is None
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', UNROUTED_STEP)]
+    assert [line for line in _lines(caplog, logging.WARNING) if 'rejected' in line] == [
+        'mendwright: ' + rejected_selector_message(
+            'cookies', 'div.promo[', RuntimeError('Locator.count: Unexpected token "" while '
+                                                  'parsing css selector "div.promo[".'))]
 
 
 # --- optional steps ----------------------------------------------------------------------------

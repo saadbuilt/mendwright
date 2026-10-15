@@ -12,12 +12,13 @@ comes.
 """
 
 import json
+import time
 
 import pytest
 
 import mendwright
 from mendwright import AttentionRequired
-from mw_engines import FAST_MS, POLL_MS, journal_events, page, saved_entry
+from mw_engines import FAST_MS, IFRAME_PAGE, POLL_MS, journal_events, page, saved_entry
 
 pytestmark = pytest.mark.browser
 
@@ -252,3 +253,328 @@ def test_an_action_that_a_banner_intercepts_is_retried_once(tab, store_file, stu
     assert tab.text('#done') == 'created'
     assert tab.text('#consent') == 'accepted'
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', 'create')]
+
+
+# --- every action of the script, not only the steps mendwright routes ------------------------
+#
+# A checkout page whose selectors still work, covered by a consent banner with Reject,
+# Accept and a Close icon. The script never names the banner: open(cookies='reject') is
+# all it has.
+
+_CONSENT = """<div id="cc-wrap" class="cookie-consent" role="dialog" aria-label="Cookie consent"
+  style="position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4); display: DISPLAY">
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff">
+    <p>We use cookies to measure traffic.</p>
+    <button type="button" onclick="consent('rejected')">Reject all</button>
+    <button type="button" onclick="consent('accepted')">Accept all</button>
+    <button type="button" aria-label="Close" onclick="consent('closed')">&times;</button>
+  </div>
+</div>"""
+
+_LATER = """<script>
+const go = document.getElementById('continue');
+go.disabled = true;
+setTimeout(() => { document.getElementById('cc-wrap').style.display = 'block'; }, 500);
+setTimeout(() => { go.disabled = false; }, 1200);
+</script>"""
+
+
+def _checkout(banner):
+    """banner is 'now' (it covers the form from the start), 'later' (it opens after
+    500 ms, while Continue stays disabled until 1200 ms) or 'never'."""
+    body = ("""<p>Consent: <span id="consent">none</span>. Done: <span id="done"></span></p>
+<form id="checkout"><label for="email">Email</label><input id="email" name="email" type="email">
+  <label><input type="checkbox" id="terms"> I accept the terms</label>
+  <a href="#help" id="help" onclick="done('help'); return false;">Help</a>
+  <button type="button" id="continue" onclick="done('continued')">Continue</button></form>
+<script>
+function consent(choice) {
+  document.getElementById('consent').textContent = choice;
+  document.getElementById('cc-wrap').remove();
+}
+function done(what) { document.getElementById('done').textContent += what + ' '; }
+</script>""")
+    if banner == 'now':
+        body += _CONSENT.replace('DISPLAY', 'block')
+    elif banner == 'later':
+        body += _CONSENT.replace('DISPLAY', 'none') + _LATER
+    return page(body, 'checkout')
+
+
+def _rejected_once(tab, heal):
+    return (tab.text('#consent') == 'rejected'
+            and [e.key for e in heal.handled_interruptions] == ['cookie_banner'])
+
+
+# How a Selenium script reaches an element, and what the action did.
+_SELENIUM_WAYS = {
+    'find_element click': (lambda d, By: d.find_element(By.ID, 'email').click(),
+                           lambda tab: tab.js('document.activeElement.id') == 'email'),
+    'send_keys': (lambda d, By: d.find_element(By.CSS_SELECTOR, '#email').send_keys('ada@x.test'),
+                  lambda tab: tab.value('#email') == 'ada@x.test'),
+    'checkbox': (lambda d, By: d.find_element(By.XPATH, "//input[@id='terms']").click(),
+                 lambda tab: tab.checked('#terms') is True),
+    'find_elements': (lambda d, By: d.find_elements(By.CSS_SELECTOR, '#checkout button')[0].click(),
+                      lambda tab: tab.text('#done') == 'continued '),
+    'link text': (lambda d, By: d.find_element(By.LINK_TEXT, 'Help').click(),
+                  lambda tab: tab.text('#done') == 'help '),
+    'inside an element': (lambda d, By: d.find_element(By.ID, 'checkout')
+                          .find_element(By.TAG_NAME, 'button').click(),
+                          lambda tab: tab.text('#done') == 'continued '),
+}
+
+
+@pytest.mark.engine_family('selenium')
+@pytest.mark.parametrize('way', list(_SELENIUM_WAYS))
+def test_every_element_heal_driver_finds_rejects_the_banner_first(tab, store_file,
+                                                                   stub_provider, way):
+    from selenium.webdriver.common.by import By
+    tab.load(_checkout('now'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject', timeout_ms=FAST_MS)
+    act, did = _SELENIUM_WAYS[way]
+
+    act(heal.driver, By)
+
+    assert _rejected_once(tab, heal)
+    assert did(tab)
+
+
+@pytest.mark.engine_family('selenium')
+def test_with_an_implicit_wait_and_no_banner_an_action_does_not_wait(tab, store_file,
+                                                                      stub_provider):
+    from selenium.webdriver.common.by import By
+    tab.load(_checkout('never'))
+    raw = tab.target
+    raw.implicitly_wait(5)
+    try:
+        driver = _open(tab, stub_provider(None), store_file, cookies='reject').driver
+        started = time.monotonic()
+        driver.find_element(By.ID, 'email').send_keys('ada@x.test')
+        driver.find_element(By.LINK_TEXT, 'Help').click()
+        driver.find_elements(By.ID, 'continue')[0].click()
+        elapsed = time.monotonic() - started
+        kept = raw.timeouts.implicit_wait
+    finally:
+        raw.implicitly_wait(0)
+    assert elapsed < 2.5            # one lookup that waited would take 5 s
+    assert kept == 5
+    assert tab.text('#done') == 'help continued '
+
+
+@pytest.mark.engine_family('selenium')
+def test_an_element_from_heal_driver_works_where_selenium_takes_a_web_element(
+        tab, store_file, stub_provider):
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.remote.webelement import WebElement
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+    tab.load(_checkout('never'))
+    driver = _open(tab, stub_provider(None), store_file, cookies='reject').driver
+
+    el = driver.find_element(By.ID, 'continue')
+    raw = tab.target.find_element(By.ID, 'continue')
+    assert isinstance(el, WebElement) and type(el) is not type(raw)
+    assert el == raw and raw == el and not (el != raw) and hash(el) == hash(raw)
+    assert el in {raw} and raw in {el}
+    assert el != tab.target.find_element(By.ID, 'email')
+    assert driver.execute_script('return arguments[0].id', el) == 'continue'
+    assert WebDriverWait(driver, 5).until(EC.element_to_be_clickable(el)) is el
+    ActionChains(driver).move_to_element(el).click().perform()
+    assert tab.text('#done') == 'continued '
+    assert 'HealingElement' in repr(el)
+
+
+def _iframe_with_consent(display):
+    end = IFRAME_PAGE.rindex('</body>')
+    return (IFRAME_PAGE[:end] + _CONSENT.replace('DISPLAY', display)
+            + "<script>function consent(c) { document.getElementById('cc-wrap').remove(); }"
+            + '</script>' + IFRAME_PAGE[end:])
+
+
+@pytest.mark.engine_family('selenium')
+def test_an_element_found_inside_an_iframe_acts_there(tab, store_file, stub_provider):
+    # The key is followed into the iframe, so find_element wraps a FramedElement. The
+    # banner opens after that, so only the check before the click can handle it.
+    from selenium.webdriver.common.by import By
+    tab.load(_iframe_with_consent('none'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject', timeout_ms=FAST_MS)
+
+    box = heal.driver.find_element(By.XPATH, "//input[@type='checkbox'][@data-testid='legal-consent']")
+    tab.js("document.getElementById('cc-wrap').style.display = 'block'")
+    box.click()
+
+    assert tab.js('document.getElementById("cc-wrap") === null') is True
+    assert tab.js('document.querySelector("#consent-frame").contentDocument'
+                  '.querySelector("[name=agreement]").checked') is True
+    assert tab.js('window.frameElement === null') is True        # back on the page
+    assert [h.source for h in heal.heals] == ['frame']
+    assert [e.key for e in heal.handled_interruptions] == ['cookie_banner']
+
+
+@pytest.mark.engine_family('selenium')
+def test_inside_a_frame_the_script_switched_into_the_warning_says_the_banner_is_out_of_reach(
+        tab, store_file, stub_provider, caplog):
+    from selenium.webdriver.common.by import By
+    tab.load(_iframe_with_consent('block'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject', timeout_ms=FAST_MS)
+    driver = heal.driver
+    driver.switch_to.frame(driver.find_element(By.ID, 'consent-frame'))
+    try:
+        box = driver.find_element(By.XPATH, "//input[@type='checkbox'][@data-testid='legal-consent']")
+        try:
+            box.click()
+            intercepted = False
+        except Exception as exc:
+            assert type(exc).__name__ == 'ElementClickInterceptedException'
+            intercepted = True
+        inside = tab.js('window.self !== window.top')
+    finally:
+        driver.switch_to.default_content()
+
+    assert inside is True                           # mendwright left the driver in the frame
+    assert heal.handled_interruptions == []         # the banner is out of reach in there
+    warned = [r.getMessage() for r in caplog.records if 'covered its element' in r.getMessage()]
+    if intercepted:                                 # Chrome sees the banner over the iframe
+        [line] = warned
+        assert 'inside a frame the script switched into' in line
+        assert 'its selector no longer matches' not in line
+    else:
+        assert warned == []
+
+
+# The script's own step for the banner. It clicks the banner itself, and the check before
+# the click must not handle the banner first: the button would be gone.
+_OWN_BANNER_STEPS = {
+    'cookies= and its Reject button': ({'cookies': 'reject'}, None, 'Reject all', 'rejected'),
+    'heal.interrupt() on the same button': ({}, 'Reject all', 'Reject all', 'rejected'),
+    'heal.interrupt() on another button': ({}, 'Reject all', 'Accept all', 'accepted'),
+}
+
+
+@pytest.mark.engine_family('selenium')
+@pytest.mark.parametrize('way', list(_OWN_BANNER_STEPS))
+def test_a_step_of_the_script_on_the_banner_itself_clicks_it(tab, store_file, stub_provider,
+                                                              way):
+    from selenium.webdriver.common.by import By
+    opened, registered, button, consent = _OWN_BANNER_STEPS[way]
+    tab.load(_checkout('now'))
+    heal = _open(tab, stub_provider(None), store_file, timeout_ms=FAST_MS, **opened)
+    if registered:
+        heal.interrupt('cookies', "xpath=//button[normalize-space()='" + registered + "']")
+
+    heal.driver.find_element(By.XPATH, "//button[normalize-space()='" + button + "']").click()
+
+    assert tab.text('#consent') == consent
+    assert heal.handled_interruptions == []
+    heal.driver.find_element(By.ID, 'email').send_keys('ada@x.test')
+    assert tab.value('#email') == 'ada@x.test'
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_stale_element_from_heal_driver_keeps_its_heal(tab, store_file, stub_provider):
+    # The page re-renders the element between find_element() and the click.
+    from selenium.common.exceptions import StaleElementReferenceException
+    from selenium.webdriver.common.by import By
+    form = ('<form id="f"><button id="ID" type="button" '
+            'onclick="document.title = \'clicked\'">Go</button></form>')
+    tab.load(page(form.replace('ID', 'go-old')))
+    _open(tab, stub_provider(None), store_file).driver.find_element(By.ID, 'go-old')
+    tab.load(page(form.replace('ID', 'go-new')))
+    heal = _open(tab, stub_provider(None), store_file, timeout_ms=FAST_MS)
+    el = heal.driver.find_element(By.ID, 'go-old')         # healed from its fingerprint
+    healed = {'id=go-old': "//button[@id='go-new']"}
+    assert heal.pending() == healed
+
+    tab.js("(() => { const f = document.getElementById('f'); f.innerHTML = f.innerHTML; })()")
+    with pytest.raises(StaleElementReferenceException):
+        el.click()
+
+    assert heal.pending() == healed and heal.store.quarantined('id=go-old') == []
+    heal.driver.find_element(By.ID, 'go-old').click()
+    assert tab.js('document.title') == 'clicked'
+
+
+# How a Playwright script reaches an element that mendwright does not route, and what
+# the action did.
+_PLAYWRIGHT_WAYS = {
+    'get_by_role': (lambda p: p.get_by_role('button', name='Continue').click(),
+                    lambda tab: tab.text('#done') == 'continued '),
+    'get_by_label': (lambda p: p.get_by_label('I accept the terms').check(),
+                     lambda tab: tab.checked('#terms') is True),
+    'chained': (lambda p: p.locator('#checkout').locator('#help').click(),
+                lambda tab: tab.text('#done') == 'help '),
+    'first': (lambda p: p.locator('#checkout button').first.click(),
+              lambda tab: tab.text('#done') == 'continued '),
+    'with options': (lambda p: p.locator('button', has_text='Continue').click(),
+                     lambda tab: tab.text('#done') == 'continued '),
+    'fill': (lambda p: p.get_by_label('Email').fill('ada@x.test'),
+             lambda tab: tab.value('#email') == 'ada@x.test'),
+    'the page itself': (lambda p: p.native.get_by_role('link', name='Help').click(),
+                        lambda tab: tab.text('#done') == 'help '),
+}
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('way', list(_PLAYWRIGHT_WAYS))
+def test_a_playwright_action_mendwright_does_not_route_rejects_the_banner_first(
+        tab, store_file, stub_provider, way):
+    tab.load(_checkout('now'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject')
+    act, did = _PLAYWRIGHT_WAYS[way]
+
+    act(heal.page)
+
+    assert _rejected_once(tab, heal)
+    assert did(tab)
+    assert [e.before for e in heal.handled_interruptions] == ['<page action>']
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('routed', [True, False])
+def test_a_banner_that_opens_while_an_action_waits_is_handled_at_once(
+        tab, store_file, stub_provider, routed):
+    tab.load(_checkout('later'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject')
+    started = time.monotonic()
+    if routed:
+        heal.page.click('#continue', timeout=30000)
+    else:
+        heal.page.get_by_role('button', name='Continue').click(timeout=30000)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 6              # without the handler: Playwright's whole 30 s timeout
+    assert tab.text('#done') == 'continued '
+    assert _rejected_once(tab, heal)
+    assert [e.before for e in heal.handled_interruptions] == [
+        '#continue' if routed else '<page action>']
+
+
+# Usercentrics draws its banner inside a shadow root, which only the preset's CSS selector
+# reaches.
+_USERCENTRICS = """<div id="usercentrics-root" style="position: fixed; inset: 0; z-index: 10"></div>
+<script>
+const root = document.getElementById('usercentrics-root').attachShadow({mode: 'open'});
+root.innerHTML = '<div style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.4)">'
+  + '<p>We use cookies.</p>'
+  + '<button data-testid="uc-deny-all-button">Deny</button>'
+  + '<button data-testid="uc-accept-all-button">Accept All</button></div>';
+for (const [id, choice] of [['uc-deny-all-button', 'rejected'], ['uc-accept-all-button', 'accepted']]) {
+  root.querySelector('[data-testid="' + id + '"]').onclick = () => {
+    document.getElementById('consent').textContent = choice;
+    document.getElementById('usercentrics-root').remove();
+  };
+}
+</script>"""
+
+
+@pytest.mark.engine_family('playwright')
+def test_a_banner_in_a_shadow_root_is_handled_before_an_action_mendwright_does_not_route(
+        tab, store_file, stub_provider):
+    tab.load(_checkout('never').replace('</body>', _USERCENTRICS + '</body>'))
+    heal = _open(tab, stub_provider(None), store_file, cookies='reject')
+
+    heal.page.get_by_role('button', name='Continue').click()
+
+    assert tab.text('#done') == 'continued '
+    assert _rejected_once(tab, heal)

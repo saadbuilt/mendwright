@@ -21,9 +21,27 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   frame_matches(selector)                 the child frames the selector matches in
   framed(frame_selector)                  a driver for the document inside one iframe
 
+For open(dismiss=True) (see mendwright.dismiss), each on a handle() result and run where it
+lives (inside its frame chain on Selenium):
+
+  popup_probe(native, known=None, scroll=False)   what covers the element (POPUP_PROBE_JS)
+  popup_root(native, expect)              a handle on the popup's root (POPUP_ROOT_JS)
+  popup_controls(native, root)            the buttons in it (POPUP_CONTROLS_JS)
+  popup_click(native, root, expect, timeout_ms)   click one of them (POPUP_CONTROL_JS):
+                                          True when it was clicked, False when it was
+                                          not (it changed, or the click failed before it
+                                          reached the page), UNSURE when the click raised
+                                          after it may have reached the page
+  press_escape(native, root)              press Escape, only when POPUP_FOCUS_JS says the
+                                          keyboard focus is on the body or in the popup
+                                          of a top-level page: the key goes to the
+                                          focused element, whatever document it is in
+  popup_release(root)                     let the root's handle go
+
 Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
-when a driver lacks the method.
+when a driver lacks the method, and through the driver_popup_* helpers, which fall back to
+None or False: a driver without them never dismisses anything.
 """
 
 import inspect
@@ -157,6 +175,62 @@ def frame_selector(info, count):
         except Exception:
             continue
     return None
+
+
+def _optional(driver, name, default, *args):
+    """driver.<name>(*args) when the driver has it, else default. Also default on any
+    error: a popup that cannot be read or reached is left alone."""
+    method = getattr(driver, name, None)
+    if not callable(method):
+        return default
+    try:
+        return method(*args)
+    except Exception:
+        return default
+
+
+def driver_popup_probe(driver, native, known=None, scroll=False):
+    """driver.popup_probe(native, known, scroll): POPUP_PROBE_JS's result for the element,
+    or None when the driver lacks it or the read failed. scroll=True scrolls an element
+    whose middle is outside the window into view first, as the action would."""
+    return _optional(driver, 'popup_probe', None, native, known, scroll)
+
+
+def driver_popup_root(driver, native, expect):
+    """driver.popup_root(native, expect): a handle on the popup's root, or None."""
+    return _optional(driver, 'popup_root', None, native, expect)
+
+
+def driver_popup_controls(driver, native, root):
+    """driver.popup_controls(native, root): the controls POPUP_CONTROLS_JS lists, or []."""
+    out = _optional(driver, 'popup_controls', None, native, root)
+    return out if isinstance(out, list) else []
+
+
+# What popup_click() returns for a click that raised an error after it may have reached
+# the page (mendwright.flow.click_may_have_run): mendwright records it and stops.
+UNSURE = 'unsure'
+
+
+def driver_popup_click(driver, native, root, expect, timeout_ms):
+    """driver.popup_click(...): True when the control was found as expected and clicked,
+    UNSURE when the click raised an error after it may have reached the page, else False
+    (also when the driver lacks it or raised)."""
+    out = _optional(driver, 'popup_click', False, native, root, expect, timeout_ms)
+    return out if out is True or out == UNSURE else False
+
+
+def driver_press_escape(driver, native, root):
+    """driver.press_escape(native, root): True when Escape was pressed. False when the
+    driver lacks it, or when the keyboard focus is not on the page's body or in the popup
+    whose root is root, or the element is in an iframe (POPUP_FOCUS_JS): Escape goes to the
+    focused element, and could clear a field the script filled or close a dialog it uses."""
+    return _optional(driver, 'press_escape', False, native, root) is True
+
+
+def driver_popup_release(driver, root):
+    """driver.popup_release(root), when the driver has it. Never raises."""
+    _optional(driver, 'popup_release', None, root)
 
 
 def driver_inventory(driver, limit=200):
@@ -298,6 +372,229 @@ INVENTORY_JS = r"""(limit) => {
               aria_label: e.getAttribute('aria-label') || ''});
   }
   return out;
+}"""
+
+
+# --- popups, for open(dismiss=True) (see mendwright.dismiss) -------------------------------
+#
+# The scripts below only report what the page shows; mendwright.dismiss decides. Each is a
+# function expression with the helpers inside it, so it runs as it is in Playwright's
+# evaluate calls and, called with its arguments, in Selenium's execute_script.
+
+_POPUP_HELPERS = r"""
+  // An element's parent, out of a shadow root to its host.
+  const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  // Whether a is b or holds it, across shadow roots.
+  const holds = (a, b) => { for (let n = b; n; n = up(n)) { if (n === a) return true; } return false; };
+  const style = (el) => (el.ownerDocument.defaultView || window).getComputedStyle(el);
+  const shown = (el) => {
+    if (!el || !el.isConnected) return false;
+    const s = style(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const clean = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+  // What is on top at the middle of t: {hit, w, h}, or {why} when t is not covered or
+  // cannot be: it has no size, is hidden, or its middle is outside the window.
+  const cover = (t) => {
+    const win = t.ownerDocument.defaultView || window;
+    const w = win.innerWidth, h = win.innerHeight;
+    const r = t.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0) || !shown(t)) return {why: 'hidden'};
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x >= w || y >= h) return {why: 'outside'};
+    let hit = t.ownerDocument.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (!hit || holds(t, hit) || holds(hit, t)) return {why: 'free'};
+    return {hit: hit, w: w, h: h};
+  };
+  // What may be a button: mendwright.dismiss.is_control decides which of them count.
+  const control = (el) => el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT'
+    || (el.getAttribute('role') || '').trim().toLowerCase() === 'button';
+  // The controls of a popup in page order, open shadow roots included.
+  const controls = (root) => {
+    const out = [];
+    const walk = (scope) => {
+      for (const el of scope.querySelectorAll('*')) {
+        if (control(el) && shown(el)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+        if (out.length >= 50) return;
+      }
+    };
+    if (root.shadowRoot) walk(root.shadowRoot);
+    walk(root);
+    return out.slice(0, 50);
+  };
+  // A popup's own text: its text outside its controls (open shadow roots included), as
+  // mendwright.dismiss.setting reads it: "Close your account?" around [Cancel] [Close].
+  const prose = (root) => {
+    const parts = [];
+    let size = 0;
+    const walk = (scope) => {
+      for (const node of scope.childNodes) {
+        if (size > 3000) return;
+        if (node.nodeType === 3) { parts.push(node.data); size += node.data.length; continue; }
+        if (node.nodeType !== 1 || control(node)
+            || /^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT)$/.test(node.tagName)) continue;
+        if (style(node).display === 'none') continue;
+        if (node.shadowRoot) walk(node.shadowRoot);
+        walk(node);
+      }
+    };
+    if (root.shadowRoot) walk(root.shadowRoot);
+    walk(root);
+    return clean(parts.join(' '), 1500);
+  };
+  // A link that goes somewhere: an href other than '#' and javascript: code that does
+  // nothing (javascript:, javascript:void(0), javascript:;), as dismiss.goes_nowhere says.
+  const real = (a) => {
+    if (!a.hasAttribute('href')) return false;
+    const href = a.getAttribute('href').trim().toLowerCase();
+    if (href === '#') return false;
+    if (!href.startsWith('javascript:')) return true;
+    const code = href.slice('javascript:'.length).replace(/\s+/g, '').replace(/;+$/, '');
+    return !['', 'void(0)', 'void0', 'void(null)'].includes(code);
+  };
+  // Whether a click on el may follow a link: one holds el, or el holds one.
+  const linked = (el) => {
+    for (let n = up(el); n; n = up(n)) { if (n.tagName === 'A' && real(n)) return true; }
+    for (const a of el.querySelectorAll('a[href]')) { if (real(a)) return true; }
+    return false;
+  };
+  // Whether el is a <label> or in one: a click on it may check the label's box.
+  const labelled = (el) => {
+    for (let n = el; n; n = up(n)) { if (n.tagName === 'LABEL') return true; }
+    return false;
+  };
+  const FIELDS = 'input:not([type=button]):not([type=submit]):not([type=reset])'
+    + ':not([type=hidden]):not([type=image]), select, textarea, [contenteditable]';
+  // Whether a click on el submits or resets its form. A form with method="dialog" counts
+  // too: it fires its submit event, and the page's handlers of it run.
+  const submits = (el) => {
+    const form = el.form;
+    if (!form || !(el.tagName === 'BUTTON' || el.tagName === 'INPUT')) return false;
+    const type = String(el.type || '').toLowerCase();
+    return type === 'reset' || type === 'submit' || type === 'image';
+  };
+  // The text of the elements el's aria-labelledby names: its accessible name.
+  const labelledby = (el) => {
+    const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    const scope = el.getRootNode();
+    return ids.map((id) => {
+      const n = (scope && scope.getElementById ? scope.getElementById(id) : null)
+        || el.ownerDocument.getElementById(id);
+      return n ? n.textContent : '';
+    }).join(' ');
+  };
+  // A control's facts. text is what it shows (innerText leaves out the text hidden with
+  // display: none), all its whole text. The value attribute is read for button-like inputs
+  // only, whose value is their label: a text field's can hold what was typed.
+  const facts = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').trim().toLowerCase();
+    return {
+      tag: tag, type: type, role: (el.getAttribute('role') || '').trim().toLowerCase(),
+      href: tag === 'a' ? el.getAttribute('href') : null,
+      text: clean(typeof el.innerText === 'string' ? el.innerText : el.textContent, 200),
+      all: clean(el.textContent, 200),
+      value: tag === 'input' && ['button', 'submit', 'reset'].includes(type)
+        ? clean(el.getAttribute('value'), 200) : '',
+      aria: clean(el.getAttribute('aria-label'), 200),
+      title: clean(el.getAttribute('title'), 200),
+      disabled: el.disabled === true
+        || (el.getAttribute('aria-disabled') || '').trim().toLowerCase() === 'true',
+      link: linked(el), label: labelled(el), field: el.querySelector(FIELDS) !== null,
+      submits: submits(el), labelledby: clean(labelledby(el), 200),
+      // A radio, checkbox, switch, option or toggle: a click on it chooses something.
+      checked: ['aria-checked', 'aria-pressed', 'aria-selected'].some((a) => el.hasAttribute(a)),
+    };
+  };
+"""
+
+# For a Locator's evaluate_all, or (with [element]) execute_script: null unless one element
+# matched. Else {covered, gone} and, when covered, chain: the element on top and each
+# container up to (not including) body, with what mendwright.dismiss.popup_of reads; when
+# not covered, why (see cover above). gone says whether arg.known (a popup's root from
+# POPUP_ROOT_JS) was removed or hidden. With arg.scroll, an element whose middle is outside
+# the window is scrolled to the middle of it first, as the action would scroll it.
+POPUP_PROBE_JS = r"""(els, arg) => {""" + _POPUP_HELPERS + r"""
+  if (!els || els.length !== 1) return null;
+  const t = els[0];
+  const known = arg && arg.known ? arg.known : null;
+  const gone = known ? !shown(known) : null;
+  let c = cover(t);
+  if (c.why === 'outside' && arg && arg.scroll) {
+    try { t.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); }
+    catch (e) { t.scrollIntoView({block: 'center', inline: 'center'}); }
+    c = cover(t);
+  }
+  if (!c.hit) return {covered: false, why: c.why, gone: gone};
+  const doc = c.hit.ownerDocument;
+  const chain = [];
+  for (let n = c.hit; n && n.nodeType === 1 && n !== doc.body && n !== doc.documentElement
+       && chain.length < 60; n = up(n)) {
+    const s = style(n), r = n.getBoundingClientRect();
+    const iw = Math.max(0, Math.min(r.right, c.w) - Math.max(r.left, 0));
+    const ih = Math.max(0, Math.min(r.bottom, c.h) - Math.max(r.top, 0));
+    const role = (n.getAttribute('role') || '').trim().toLowerCase();
+    const modal = (n.getAttribute('aria-modal') || '').trim().toLowerCase() === 'true';
+    const open = n.tagName === 'DIALOG' && n.open === true;
+    const inside = holds(n, t);
+    const named = !inside && (role === 'dialog' || role === 'alertdialog' || modal || open
+                              || s.position === 'fixed' || s.position === 'sticky');
+    chain.push({tag: n.tagName.toLowerCase(), id: clean(n.getAttribute('id'), 100),
+                cls: clean(n.getAttribute('class'), 200), role: role, modal: modal, open: open,
+                pos: s.position, area: c.w * c.h ? (iw * ih) / (c.w * c.h) : 0, holds: inside,
+                events: s.pointerEvents !== 'none',
+                aria: named ? clean(n.getAttribute('aria-label'), 200) : '',
+                text: named ? clean(n.innerText || n.textContent, 1500) : '',
+                prose: named ? prose(n) : ''});
+  }
+  return {covered: true, gone: gone, chain: chain};
+}"""
+
+# For a Locator's evaluate_handle (element first): the element arg.depth steps up from the
+# one on top at the middle of el, when its tag and id are still arg.tag and arg.id; else null.
+POPUP_ROOT_JS = r"""(t, arg) => {""" + _POPUP_HELPERS + r"""
+  const c = cover(t);
+  if (!c.hit) return null;
+  let n = c.hit;
+  for (let i = 0; n && i < arg.depth; i++) n = up(n);
+  if (!n || n.tagName.toLowerCase() !== arg.tag || clean(n.getAttribute('id'), 100) !== arg.id) return null;
+  return n;
+}"""
+
+# For a root's evaluate: the facts of each control in it, in page order.
+POPUP_CONTROLS_JS = r"""(root) => {""" + _POPUP_HELPERS + r"""
+  return controls(root).map(facts);
+}"""
+
+# For a root's evaluate_handle: control number arg.index, when every fact of it is still
+# what arg.facts says (mendwright.dismiss.expect_control); else null.
+POPUP_CONTROL_JS = r"""(root, arg) => {""" + _POPUP_HELPERS + r"""
+  const el = controls(root)[arg.index];
+  const want = (arg && arg.facts) || {};
+  if (!el || Object.keys(want).length === 0) return null;
+  const f = facts(el);
+  const same = (a, b) => JSON.stringify(a === undefined ? null : a)
+    === JSON.stringify(b === undefined ? null : b);
+  return Object.keys(want).every((k) => same(f[k], want[k])) ? el : null;
+}"""
+
+# For a root's evaluate, before Escape is pressed: true when Escape would reach the popup,
+# because the keyboard focus (through open shadow roots) is on the body, or nowhere, or
+# inside the root, in a top-level page. In an iframe it is false: the key goes to the
+# focused element of the page, which may be in the page around the iframe.
+POPUP_FOCUS_JS = r"""(root) => {""" + _POPUP_HELPERS + r"""
+  const doc = root.ownerDocument;
+  const win = doc.defaultView || window;
+  if (win !== win.top) return false;
+  let a = doc.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  return !a || a === doc.body || a === doc.documentElement || holds(root, a);
 }"""
 
 

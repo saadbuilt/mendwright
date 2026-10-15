@@ -243,6 +243,33 @@ def test_flow_events_name_the_step_and_what_happened(capsys, sample):
         parsed.text
 
 
+def test_a_dismissed_popup_is_a_flow_event_and_a_card(capsys, tmp_path):
+    store = write_sample(tmp_path / "s", extra_events=[
+        {"ts": "2026-10-04T11:00:04+00:00", "event": "flow.dismiss", "key": "<popup>",
+         "before": "email", "popup": '<div role="dialog" class="nl"> ("Get 10% off")',
+         "outcome": "dismissed", "how": "decline", "label": "No thanks",
+         "tried": [{"how": "escape"}]},
+        {"ts": "2026-10-04T11:00:05+00:00", "event": "flow.dismiss", "key": "<popup>",
+         "before": "go", "popup": "<aside>", "outcome": "dismissed", "how": "escape",
+         "tried": []},
+        {"ts": "2026-10-04T11:00:06+00:00", "event": "flow.dismiss", "key": "<popup>",
+         "before": "go", "popup": "<aside>", "outcome": "failed",
+         "tried": [{"how": "escape"}, {"how": "decline", "label": "Skip"}]}])
+    parsed = Page(page(capsys, "--store", str(store)))
+    rows = parsed.tables["Flow events"]
+    assert rows[0][0] == "popup left"
+    assert rows[0][2:] == ["<popup>", "Could not dismiss a popup in the way of go: <aside>. Tried "
+                                      "Escape, its button Skip, which did not close it."]
+    assert rows[1][3] == "Dismissed a popup in the way of go: <aside>, with Escape."
+    assert rows[2][1:] == ["2026-10-04 11:00:04 UTC", "<popup>",
+                           'Dismissed a popup in the way of email: <div role="dialog" '
+                           'class="nl"> ("Get 10% off"), with its button No thanks, after '
+                           'Escape did not close it.']
+    assert cards(page(capsys, "--store", str(store)))["popups dismissed"] == "2"
+    assert ("2 interruptions handled, 1 step skipped, 1 heal declined by the page guard, "
+            "2 popups dismissed.") in parsed.text
+
+
 def test_quarantines_come_from_the_store_and_the_journal(capsys, tmp_path):
     store = write_sample(tmp_path / "s", extra_events=[
         {"ts": "2026-10-05T00:00:00+00:00", "event": "heal.quarantine", "key": "gone",

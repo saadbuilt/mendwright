@@ -50,6 +50,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
 | `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
+| `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -79,7 +80,7 @@ It raises `AttentionRequired` when the element can't be found or healed, `Invali
 Other `Healer` members:
 
 - `heal.interrupt(key, selector, *, action="click", args=(), role=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions).
-- `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`.
+- `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`. With `dismiss=True`, the popups it dismissed are listed too, under the key `<popup>`, with `popup` (how the log line names it), `how` (`"escape"`, `"close"` or `"decline"`) and `label` (the button's) set (see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about)).
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
@@ -236,6 +237,7 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
 - These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
+- From Playwright 1.42, interruptions are still handled before the actions of those locators (`click`, `fill`, `check`, `hover` and so on) and before `expect(...)`, `wait_for_selector()` and `Locator.wait_for()`, but not before `page.mouse`, `page.keyboard`, `dispatch_event()` or an action with `force=True`: see [Interruptions](#interruptions). With `dismiss=True`, the locators among them come back as guard-only proxies whose actions look for interruptions and popups first: see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about).
 - The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
 - `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
 - `strict=` is dropped, because a mendwright lookup is always strict.
@@ -245,14 +247,16 @@ On a Playwright healer, `heal.driver` is still mendwright's own driver object.
 
 ### Selenium
 
-`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the `WebElement` (a `FramedElement` inside an iframe).
+`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the element as a `HealingElement` (around a `FramedElement` inside an iframe).
 `By.ID` and `By.NAME` become `[id="..."]` and `[name="..."]` CSS selectors, and the key for `find_element(By.ID, "terms")` is `id=terms`.
 
 - A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
 - When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
-- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, `find_element()` on a returned element, and every other driver method.
+- These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), `find_elements()`, and `find_element()` or `find_elements()` on a returned element. Their elements come back as `HealingElement`s too. Every other driver method is the real driver's.
+- A `HealingElement`'s `click()`, `send_keys()`, `clear()` and `submit()` handle a registered [interruption](#interruptions) that covers the element first, as a proxy action does, and try a click that something covered once more after handling one. Otherwise they raise Selenium's own error. With no interruption registered and `dismiss` off, they make no browser call besides the element's own; with `dismiss=True`, one more, to look for a popup. `ActionChains` actions, and the elements that `execute_script()` or `switch_to.active_element` return, are Selenium's own and get no such check.
+- A `HealingElement` passes `isinstance(el, WebElement)`, is equal to the element it wraps (and hashes the same), and works with `driver.execute_script(..., el)`, `ActionChains` and `expected_conditions`. One around a `FramedElement` needs `in_frame()` for those, as before (see [Selenium](#selenium-1)). Everything else is the element's own, and `el.native` is the element.
 - A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)` or `driver.native`.
-- Actions on the returned `WebElement` are Selenium's own, so a wrong heal isn't quarantined when the action fails. The pytest plugin confirms it when the test passes, and `heal.confirm_all(False)` quarantines it.
+- When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The elements of the other `By` values and of `find_elements()` were never healed, so their actions confirm and quarantine nothing. A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
 
 On a Selenium healer, `heal.page` is still the WebDriver.
 
@@ -484,6 +488,7 @@ Update the selector in your code to the new one, or run without --mendwright-str
 ```
 
 Strict mode only fires on the run that makes the heal.
+It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`), a dismissed popup (`flow.dismiss`) or steps that came in another order (`flow.step`, see [Steps in any order](#steps-in-any-order)) don't fail a test.
 On the next run with the same store, the saved heal resolves as a fallback, no heal happens, and the test passes.
 For a strict CI job, give each run a fresh store (see [CI](#ci)).
 Strict mode also covers reruns from pytest-rerunfailures: a rerun that passes only because of a heal fails too.
@@ -516,8 +521,9 @@ print(await heal.present("newsletter"))
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` raises `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
-- `heal.interrupt()`, `cookies=`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
+- `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
 - Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
+- `heal.step()` is a plain call, and `await heal.run_steps()` runs the steps (see [Steps in any order](#steps-in-any-order)). A step's function is an async function, which is awaited, or a plain one that returns an awaitable, such as `lambda page: page.click("#place")`. `heal.page`'s calls are coroutines here, so a plain function that makes them without `await` would do nothing on the page: `run_steps()` raises `TypeError` for a function that returns anything else, and the journal records the step as failed.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
@@ -624,13 +630,22 @@ What mendwright does with each kind:
 | Change | What mendwright does |
 |---|---|
 | A step that can show up anywhere: a cookie banner, a newsletter modal, an "are you still there?" dialog | Handles it when it is in the way, if you registered it with `heal.interrupt()` or `cookies=` |
+| A popup nobody registered: a newsletter or discount modal, a survey, a chat invite | Dismisses it when it covers the element of an action, if you pass `dismiss=True`: Escape, then its close button, then a button such as No thanks |
 | A step that may not be there | Skips it, if you pass `optional=True` |
 | A step that moved to another page | Declines to heal the key on a page where it was never found, before any model call |
 | A step that moved away while the address stayed the same | Leaves it to the model, which is told it may answer that no element fits. The error then gives the model's reason. |
+| Steps in another order, put on one page, or left out, such as a checkout that now asks for the card before the address | Runs whichever step the site shows, each once, if you register the steps with `heal.step()` and run them with `heal.run_steps()`. A step left out is named in a WARNING when a step has `last=True`; with none, `run_steps()` waits for it and stops with an error |
 
-Steps in a new order across pages, and a new required step such as a field you must fill before you can continue, still need a change to your script.
+With `heal.run_steps()`, steps in a new order or on one page need no change to your script, and nor does a step the site leaves out, when the step that ends the flow has `last=True`. These still need one:
+
+- a new required step, such as a field you must fill before you can continue: `run_steps()` stops on its page with an error that names the page
+- an action that moved from one step to another, since each step's function does only its own actions
+- a step whose landmark changed, since landmarks are never healed
+- a flow where your script picks the way, such as delivery or pickup
 
 ### Interruptions
+
+https://github.com/user-attachments/assets/cf8ef09a-7666-4303-9e14-66dc6dec33ef
 
 ```python
 heal = mendwright.open(page)
@@ -651,6 +666,24 @@ mendwright looks for registered interruptions only when a step needs help:
 - before an action, when the page shows one of them (a quick check for each registered interruption, only when you registered any)
 - when an action fails because something covered the element: Playwright's "intercepts pointer events" or "element is not visible", Selenium's `ElementClickInterceptedException` or `ElementNotInteractableException`
 
+On Selenium, the elements `heal.driver` returns look for registered interruptions in the same way before `click()`, `send_keys()`, `clear()` and `submit()`, whatever `By` found them (see [No changes per step](#no-changes-per-step)).
+
+- On Selenium, the check before an action, of `heal.locator()` and of `heal.driver`'s elements, handles an interruption only when something covers the element where a click on it lands, or when that can't be told (for an element outside the viewport, or inside an iframe). So a step of your own on the interruption itself goes ahead and does not find it gone: the banner's Reject or Manage preferences button, or the email field of a newsletter form. If the action fails because something covered the element after all, the interruptions are handled and it is tried once more, as above.
+- `ActionChains` actions and the elements that `execute_script()` or `switch_to.active_element` return are Selenium's own, so nothing is checked before their actions.
+- After the script calls `switch_to.frame()` itself, mendwright looks for interruptions in that frame only, and a banner on the page around the frame is out of reach. When a click there is intercepted, the WARNING says so. Find the element from the page without switching instead: `heal.driver` follows a selector into an iframe one level down (see [Iframes](#iframes)).
+
+On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` also register each interruption with `page.add_locator_handler()`. Playwright then checks for it before each locator or selector action on the page (`click`, `fill`, `check`, `hover` and so on), and again each time an action that waits (for a disabled button, say) tries once more, and hands over to mendwright when the page shows it. So it is handled before the actions mendwright does not route as well: `get_by_role()` and the other `get_by_*` locators, chained locators, `.first` and `.nth()`, and the page's own selector methods, on `heal.page` or on the page itself. A banner that opens while an action waits is handled at once, instead of after the action's timeout.
+
+- Playwright runs no handler before `page.mouse` and `page.keyboard` actions, `dispatch_event()`, or an action with `force=True`, so those get no such help.
+- Such an action has no key, so the WARNING line and the journal event say `before '<page action>'`. One that happens during a step of mendwright, such as the scroll before a click, is logged before that step and counts toward its 3.
+- An interruption that is still on the page after mendwright handled it 3 times in a row this way is left alone, with one WARNING, until mendwright sees it gone (a step that mendwright routes looks for it) or the page navigates or loads: `goto()`, a link, `set_content()`, or a history change in a single-page app.
+- A page keeps one handler per key, however many healers you open on it: one that registers the same selectors joins the handler there, which acts for the newest of them that is still alive. Registering a key with other selectors replaces it. From Playwright 1.44 the old one is removed from the page, unless the handler of another key watches the same selectors, because Playwright would remove both. Before 1.44, and in that case, it stays and does nothing.
+- `heal.interrupt(key, None)` removes an interruption from the healer, `cookie_banner` included, and its handler from the page (Playwright 1.44 and later) once no other healer of the page has registered it. A healer you stop using is not freed at once, because it refers to itself (through `heal.page`, for one): Python frees it when its garbage collector next runs, and until then its handler still acts. When the page outlives the healer, such as a page shared between tests, call `heal.interrupt(key, None)` for each key once you are done with it.
+- Playwright runs the check at least twice per action, as it finds the element and as it acts, and again while it waits or retries. So each registered interruption costs at least two queries of the page per action. With `cookies=`, on a page of 2,000 elements in Chromium, that added 15 to 50 ms to each action.
+- A selector the browser cannot parse would fail every action on the page in that check, with an error that names the interruption's selector. `heal.interrupt()` checks XPath without a browser but leaves CSS to the browser (`'button:contains("Close")'` passes it), so mendwright tries each CSS or Playwright selector once on the page when it registers the handler. One the browser rejects is left out, with a WARNING that names it.
+- Playwright also runs the check before an auto-waiting assertion, `wait_for_selector()`, `Locator.wait_for()`, an element screenshot and `aria_snapshot()`, on the page itself too. So `expect(page.locator("#cookie-banner")).to_be_visible()` and `page.wait_for_selector("#cookie-banner")` fail once the banner is registered: mendwright closes it first, and the wait runs out. A step of your own that clicks the banner through a locator mendwright does not route, such as `page.get_by_role("button", name="Accept all").click()`, now finds it gone and waits out its timeout. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there.
+- A `Frame` has no `add_locator_handler()`, so a healer opened on one, and Playwright before 1.42, keep the checks above only.
+
 When one is there and visible, mendwright performs its action, waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
 A failed action is tried again once, and only after an interception error and a handled interruption, so an action that may already have taken effect is never repeated. An error whose Playwright call log says the action was done (`click action done`), such as a click that went through and then timed out waiting for the next page, is never tried again, even when an earlier attempt in the same log was intercepted.
 At most 3 interruptions are handled for one step (one `locator()` call, or one action). If one is still there after that, mendwright raises `AttentionRequired` and tries no heal. That stops an interruption that comes back each time it is closed, for example when its action doesn't close it.
@@ -663,10 +696,12 @@ An interruption that hides the element instead of covering it, such as a consent
 
 ### Cookie banners
 
+https://github.com/user-attachments/assets/403a35cd-93a7-43c7-950b-1beadd9ba9bd
+
 `mendwright.open(page, cookies="reject")` registers an interruption under the key `cookie_banner` that closes consent banners without accepting. `cookies="accept"` accepts them instead. It is off by default, so mendwright never clicks anything you didn't ask for.
 
 It knows the reject, decline, necessary-only and close buttons (or the accept buttons) of these consent managers by their ids and classes: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, the cookieconsent library (Osano's and orestbida's), CookieYes (and its older Cookie Law Info plugin) and Complianz.
-For other banners there is a fallback: a button or link whose text, aria-label or title says reject, decline, deny, disagree, necessary only, essential only or continue without accepting (for `"reject"`), or accept, allow or agree (for `"accept"`), inside a cookie banner. With `"reject"`, a Close button counts too, but only when its label is just Close (or Close banner, Close notice, Close message, Close dialog or Close popup), or when it is an icon whose aria-label or title says close. So a button such as Close account never counts.
+For other banners there is a fallback: a button or link whose text, aria-label or title says reject, decline, deny, disagree, necessary only, essential only or continue without accepting (for `"reject"`), or accept, allow or agree (for `"accept"`), inside a cookie banner. With `"reject"`, a Close button counts too, but only when its whole label is Close, or Close followed by what it closes, the banner itself (Close banner, Close this dialog, Close the popup and the like, listed as `CLOSE_NAMES` in `mendwright/interruptions.py`), or when it is an icon whose aria-label (or, without one, title) is one of those. So a button such as Close account never counts, as text or as an icon's name.
 
 The cookie banner is one element that meets all of these:
 
@@ -680,7 +715,88 @@ So a consent screen that isn't about cookies, such as an OAuth screen with Allow
 The selectors are XPath, so they run on Playwright and Selenium. Usercentrics draws its banner in a shadow root, which XPath can't reach, so its buttons are also looked for with CSS, which Playwright reaches and Selenium doesn't.
 The selector lists are in `mendwright/interruptions.py`.
 
-If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way.
+If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way, and on Playwright a step that reaches the banner through `get_by_role()` or another locator mendwright does not route finds it closed already (see [Interruptions](#interruptions)). On Selenium such a step goes ahead: nothing covers the banner's own buttons, so mendwright leaves the banner to it.
+
+### Popups mendwright wasn't told about
+
+https://github.com/user-attachments/assets/496d37f9-4b0c-47bf-9a84-3a77b097a786
+
+```python
+heal = mendwright.open(page, dismiss=True)
+
+heal.locator("email", "#email").fill("ada@example.com")   # a newsletter modal opened first
+```
+
+`mendwright.open(page, dismiss=True)` dismisses a popup that nobody registered when it is in the way of an action: a newsletter or discount modal, a prompt for your address or location that can be put off, an app-install banner, a survey, a chat invite, or a consent banner when `cookies=` isn't set.
+It is off by default, and with `dismiss=False` mendwright makes no browser call for it.
+
+mendwright acts only when the action's element is covered:
+
+- before an action, when the middle of the element is inside the window and the browser says another element is on top there (`document.elementFromPoint`, into open shadow roots): not the element, not inside it, and not one of its containers. An element below the window is scrolled into view first, as the action would scroll it.
+- when an action fails because something covered the element (the same errors as for [interruptions](#interruptions)), after which it looks in the same way
+
+[Registered interruptions](#interruptions) come first.
+Before an action, mendwright handles those the page shows, and then looks for a popup over the element.
+While an interruption it handled for the action is still on the page, such as a banner that fades out slowly, it leaves popups alone: the popup over the element may be that banner, and declining it could undo what its action did.
+After an action fails because something covered its element, mendwright handles the registered interruptions the page shows, and looks for a popup only when none of them is there.
+
+The element on top belongs to a popup when it is in a dialog (`role="dialog"` or `"alertdialog"`, `aria-modal="true"`, or an open `<dialog>`). The nearest one is the popup. Otherwise the popup is the outermost fixed or sticky element it is in, other than `body`, that takes pointer events, and only when that element covers at least a quarter of the window.
+mendwright leaves these alone:
+
+- a popup that holds the action's element: you are using it
+- a fixed header, footer or toolbar over the element, which covers less than a quarter of the window. Playwright scrolls to get around one, and the action's own error stands.
+- a small toast in a full-window layer with `pointer-events: none`, as toast libraries and Angular's CDK overlay container draw them. The layer is left out, so the toast is measured on its own.
+- an element on top that is in neither, such as an absolutely positioned one
+- an alert dialog (`role="alertdialog"`, or a popup inside one). By its ARIA definition it asks for an answer, such as "Delete this project?" or "Close your position at market price?", and Escape or any of its buttons would give one, so mendwright presses and clicks nothing on it and logs a WARNING. That holds for a confirmation your own script opened too.
+- with `cookies="accept"`, a popup that looks like a consent banner the preset doesn't know: its text says cookie, consent, "value your privacy", partners, personal data or trackers (and their German, French, Spanish and Italian words, such as Datenschutz and traceurs), its id, class or aria-label says cookie, consent, gdpr, privacy, dsgvo, rgpd, cmp, tcf or a consent manager's name, or it has a button that says accept, agree, allow or consent, in English or another language (akzeptieren, accepter, aceptar, accettare, zustimmen and others). A close button or a decline button could turn the consent down, the opposite of what you asked for, so mendwright logs a WARNING instead. Register its accept button with `heal.interrupt()`. With `cookies="reject"`, such a banner is declined like any popup.
+
+For a popup, mendwright tries these in order, and after each looks again for up to 2 seconds (or the step's `timeout_ms`, when that is shorter) until the popup is gone or hidden or the element is on top again:
+
+1. It presses Escape, but only while the keyboard focus is on the page's body or in the popup, not inside an iframe, and never with `cookies="accept"`. Escape goes to the element that has the focus, wherever it is: in a search field your script filled it clears the field, and it closes the page's own dialogs. In an iframe, the focus may be in the page around it, which mendwright never looked at. And every key listener of the page gets the key, not only the popup's: a consent banner elsewhere on the page, or behind a backdrop of its own, may take it as a refusal.
+2. It clicks the popup's close button: one whose whole label is Close, or Close followed by what it closes, the popup itself (Close dialog, Close this banner, Close the popup, Close cart, Close newsletter and the like, listed as `CLOSE_NAMES` in `mendwright/interruptions.py`), or an icon whose aria-label (or, without one, title) is one of those. A bare ×, ✕ or X with no such name is never one: in a cart, a list of filters or an upload panel it removes one row, and X is also a network to share on. Neither is an icon named Close position, Close ticket or Close account.
+3. It clicks a button of the popup that declines: one whose label says no thanks (or no thank you), not now, maybe later, later, skip, skip for now, dismiss or not interested, or says continue without and what it leaves out (accepting, accepting all, accepting cookies, agreeing, an account, account, signing in, signing up, logging in, registering, subscribing or cookies). In a popup whose text speaks of cookies, reject, reject all and decline count too. Elsewhere they answer a request, such as an expense report to approve, an invitation to a workspace or new terms, so they never count there. Skip, skip for now and dismiss count only in a popup whose own text (its text outside its buttons, and its aria-label) reads as a promotion or onboarding: it says newsletter, subscribe, sign up for, offer, discount, % off (as in 10% off), sale, deal, coupon, promo or promotion, free shipping, download, install or get the app (or our app, or the Acme app), turn on, enable, allow, push or get notifications, survey, feedback, rate us, tour, tips, what's new, welcome (but not welcome back), getting started or chat with us, or it speaks of cookies or consent. Elsewhere a bare Skip or Dismiss may acknowledge something that matters, such as Dismiss in "New sign-in detected" or Skip in "Update your payment method", so it never counts there. These are whole words: "Your subscription payment failed" doesn't say subscribe, and notifications alone doesn't count, since Dismiss all in a notification centre clears its alerts. The label may have up to 4 other words, from a short list that changes nothing: "No thanks, I'd rather not", "Remind me later" and "Not now, thanks" decline, and "Skip the line", "Thanks, I'm in", "Decline offer" and "Continue without delay" don't.
+
+A popup that asks a question gets Escape and nothing more. That is one with a button whose label says cancel or keep, such as Cancel, Keep it, Keep open or Keep my plan: its other buttons, No thanks too, may be the answer. And a close, skip or dismiss button whose verb the popup's own text says (its text outside its buttons, and its aria-label) is never clicked: Close in "Close your account?", Skip in "Skip next week's delivery?", Dismiss in "Dismiss this alert for good?".
+
+A button is a `<button>`, an element with `role="button"`, an `<input>` of type `button` or `submit`, or a link with no `href`, or with `#` or `javascript:` code that does nothing (`javascript:`, `javascript:void(0)` or `javascript:;`). Other `javascript:` code runs, and may load a page, so such a link is one that goes somewhere. An element with another role (radio, checkbox, switch, tab, option, link, menu item and so on), or with `aria-checked`, `aria-pressed` or `aria-selected`, is never a button: a click on it chooses or toggles something. What a button shows is its text as the page renders it (text hidden with `display: none` left out) and an input's value; for an icon that shows one character or none, its aria-label (or, without one, its title) stands in. The words are compared in lower case, with punctuation read as spaces, as for the [cookie banners](#cookie-banners), and in their compatibility form: a ligature such as ﬁ reads as fi, a fullwidth letter as the letter, any dash as a space, and a soft hyphen or a zero-width space as nothing. The first close button in page order is tried, and the first decline button whose label is a decline phrase and nothing else, such as No thanks, else the first decline button.
+
+mendwright never:
+
+- clicks a link that goes somewhere, a button inside such a link or one that holds one, or a disabled button
+- clicks a button in a `<label>`, a label itself, or a button that holds a field: the click could check a box
+- clicks a button that would submit or reset its form: a `<button>` in a form with no `type`, or with `type="submit"` or `"reset"`, or an `<input type="submit">` in a form, whatever the form's method. A form with `method="dialog"` sends nothing, but it still fires its `submit` event, and the page's handlers of it run. An `<input type="submit">` outside any form submits nothing.
+- clicks a button whose label (its text, the text it hides, its value, aria-label, title, and the text of the elements its `aria-labelledby` names) says accept, agree, allow, subscribe, sign up, sign in, log in, join, register, yes, ok, confirm, continue (unless it says continue without and what it leaves out), buy, pay, order, save, submit, delete, remove, install, enable, notify, start, get, claim or try, or one of these words with the same risk: signup, signin, login, unsubscribe, subscription, registration, submission, trial, bought, paid, sent, discard, create, purchase, checkout, cancel, send, share, download, upgrade, unlock, redeem, apply, book, donate, follow, open, next, proceed, verify, activate, connect, log out, logout, sign out or leave. Each matches as the start of a word, without a last e or y, so pay also catches payment and paying, save catches saving, and notify catches notification. So "No thanks, I'll pay full price", "Skip to payment" and "Continue without saving" are never clicked.
+- clicks a button whose label has a digit or a currency sign, such as "Skip the line - $9.99" or "No, I want 10% off"
+- types, checks a box or selects an option, or clicks a radio, checkbox, switch, tab or option, whatever its tag
+- presses Escape or clicks anything on an alert dialog
+- acts on a popup only because it is visible somewhere on the page
+
+When a popup was dismissed, mendwright logs one WARNING line, writes a `flow.dismiss` journal event, lists it in `heal.handled_interruptions` as `InterruptionEvent("<popup>", before, popup=..., how=..., label=...)`, and goes on with the action, or tries a failed one once more, as after an interruption. `popup` names it as the WARNING does, `how` is `"escape"`, `"close"` or `"decline"`, and `label` is the label of the button that closed it (`None` for Escape).
+Each popup counts once toward the 3 interruptions a step may handle, whatever was tried on it. A popup that comes back each time it is dismissed raises `InterruptionLoop`, an `AttentionRequired`, once the step has handled 3, and so does a popup still in the way after the step handled 3 registered interruptions.
+
+When nothing worked, mendwright logs one WARNING that names the popup, says what it pressed and clicked, and says how to handle it. It doesn't try again in that step, and writes a `flow.dismiss` event with `outcome` `failed` when it pressed or clicked anything. The action goes ahead as it would without mendwright, and if the popup blocks it, the browser's own error is raised and the action isn't tried again.
+A popup that takes longer to close than the time mendwright looks again for, such as one with a long exit animation, is reported this way too, though it may close afterwards: mendwright looks once more before it gives up, and no longer than that.
+When the action's element can't be looked at as before after one of the steps, mendwright can't tell what that step did. That is when the element matches no element or several now (a button submitted a form and the page changed), or is hidden or outside the window (Escape closed the page's own dialog that held it). It stops there with a WARNING that says so, writes a `flow.dismiss` event with `outcome` `lost`, doesn't count the popup as dismissed, and doesn't try a failed action again.
+A click that raises an error after it may have reached the page is handled the same way: a close button that starts a navigation that doesn't commit within the click's timeout, for one. The WARNING names the button, the event's `tried` lists the click, and nothing more is clicked.
+
+What it can't do:
+
+- A popup that needs data before it closes, such as a postcode prompt with no skip. Register its field and then its button with `heal.interrupt()`, which handles them in that order: `heal.interrupt("postcode", "#postcode", action="fill", args=("10115",))`, then `heal.interrupt("postcode_ok", "#postcode-ok")`.
+- A popup whose only way out is a button mendwright never clicks, such as Subscribe or OK, or a bare Skip or Dismiss in a popup that doesn't read as a promotion or onboarding. Register the button you want with `heal.interrupt()`.
+- A backdrop that is a separate element from the popup's buttons, as some consent managers draw one. Only Escape is tried there, and with `cookies="accept"` not even that. Use `cookies=` or `heal.interrupt()` for those.
+- See what a button's own script does. A close or decline button whose click handler loads another page, sends a request or starts a trial is clicked like any other: the `lost` WARNING, when the page changed under the element, is the only sign. Escape, too, reaches every key listener of the page.
+- A popup of the page over an iframe that holds the element. mendwright looks in the element's own document, so a popup inside the iframe is handled, and one outside it isn't. Inside an iframe Escape is never pressed, so a popup there that only Escape closes stays.
+- A popup that opens while Playwright waits on an action is found only when the action fails, after its timeout.
+- A popup that hides the element instead of covering it, such as a wall that replaces the page until you answer. The lookup then misses, and mendwright looks for popups only over an element it found. Register it with `heal.interrupt()`, which is also handled when a lookup misses.
+- Actions that don't go through `heal.locator()`, `heal.page` or `heal.driver`. The page or driver you passed to `open()`, and the locators you build from it, get no popup check, and neither do `page.mouse`, `page.keyboard`, `dispatch_event()`, `ElementHandle`s from `query_selector()` or `wait_for_selector()`, `Frame`s from `page.frame()` or `page.frames`, the locators `Locator.all()` returns, page methods that aren't `heal.page` shortcuts (such as `tap()`, `set_checked()` or `drag_and_drop()`), and a shortcut whose selector mendwright can't store. On Selenium, `ActionChains`, and the elements that `execute_script()` or `switch_to.active_element` return, get none. Playwright's overlay handler, which also handles [interruptions](#interruptions) before such actions, isn't used for popups.
+
+On Playwright, with `dismiss=True`, the locators `heal.page` doesn't heal are guarded too: `get_by_role()` and the other `get_by_*` locators, a locator built with options, chained locators, `frame_locator()`, `and_()`, `or_()`, `.first`, `.last`, `.nth()` and `.filter()`.
+They come back as `GuardedLocator`s, the real locators with the checks above and the interruption checks before their actions. They aren't healed and nothing about them is saved. They pass `isinstance()` checks, so `expect()` takes them, and `.native` is the real locator. Log lines name their step after the calls that built it, such as `"page.get_by_role('button', name='Continue')"`. With `dismiss=False` they are the real locators, as before.
+On Selenium, the elements `heal.driver` finds are covered whatever `By` found them (see [No changes per step](#no-changes-per-step)), inside iframes too.
+
+The look costs one browser round trip before each action, and none before `focus()` and `set_input_files()`, which work on a covered element.
+On Selenium it runs inside the element's iframe, with the implicit wait at 0 while mendwright finds the iframe, and Escape is sent with `ActionChains`. The async healer awaits the look on the event loop, and dismisses a popup in a worker thread, as it handles interruptions.
+A dismissed popup isn't a heal: `--mendwright-strict` doesn't fail a test because of one, as it doesn't for a handled interruption.
 
 ### Optional steps
 
@@ -703,9 +819,89 @@ When a key's selector misses on a page that isn't one of its saved pages, mendwr
 'continue' was last found on /signup, and this page is /signup/details. That looks like a change in the flow, not a renamed element, so mendwright did not heal it. If the step moved, update your script. If the URL itself changed in a redesign, pass heal_across_pages=True to mendwright.open().
 ```
 
-If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. Pass it too when the same steps run under several language paths, such as `/en/checkout` and `/de/checkout`, because those are different pages to the guard. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on. When two processes share a store, as with pytest-xdist, the pages both of them found a key on are kept.
+If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. Pass it too when the same steps run under several language paths, such as `/en/checkout` and `/de/checkout`, because those are different pages to the guard. Inside [`heal.run_steps()`](#steps-in-any-order), a key found during the step that runs heals on the page that step showed on, whatever its address. A key that is used on several pages, such as a search box in the header, heals on any of the last 5 pages it was found on. When two processes share a store, as with pytest-xdist, the pages both of them found a key on are kept.
 
 The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the path stays the same. That last case covers apps that route with the URL fragment (`/#/signup`) or the query string (`?page=signup`), and apps that never change the URL. A single-page app that changes the path with the History API is covered. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
+
+### Steps in any order
+
+https://github.com/user-attachments/assets/16e41116-4813-4cc9-a05e-8b762c64d00a
+
+```python
+heal = mendwright.open(page)
+
+@heal.step("shipping", when="#ship-name")      # what shows this step is on the page
+def shipping(page): page.fill("#ship-name", "Ada"); page.click("#next")
+
+@heal.step("payment", when="#card-number")
+def payment(page): page.fill("#card-number", "4242 4242 4242 4242"); page.click("#next")
+
+@heal.step("review", when="text=Place order", last=True)
+def review(page): page.click("text=Place order")
+
+heal.run_steps()   # runs whichever step the site shows, each once, in any order, until the last one
+```
+
+The ids keep the example short. In a real flow, use something such as a heading as `when`, so that a renamed field still heals inside its step: a landmark is never healed.
+
+`heal.step(name, when=None, fn=None, *, url=None, last=False, optional=False)` registers one step of a flow, such as a checkout, a signup or a booking, whose steps the site may show in another order, put on one page, or leave out. Use it as a decorator, or pass the function: `heal.step("payment", "#card-number", payment)`. It returns the function.
+
+- `when` is what shows the step is on the page, its landmark: one selector, or a list of them, and any visible match counts. A landmark that matches several elements counts when one of the first 5 is visible. On Selenium a CSS selector that matches several counts when the first is visible, and an XPath is looked at match by match.
+- `url` is a pattern for the page's path, such as `"/checkout/payment"` or `"*/payment*"`, instead of a landmark or as one more condition with it. It and the page's path are normalized as for the [page guard](#steps-that-moved-to-another-page): lower case, without empty parts, and parts that look like record ids read as `*`, so `"/orders/123/pay"` matches `/orders/987/pay`. `*` matches any characters, `/` included. A pattern that starts with `/` starts at the root of the path, and one that starts with `*` is kept as written, so `"*/payment*"` matches `/payment` and `/checkout/payment`. A page with no path, such as `about:blank` or the site root, matches no pattern.
+- `last=True` marks the step that ends the flow, such as placing the order. A flow has at most one, and it can't be optional. Give it to the final step of any flow that ends in a submit: then a step the site left out is named in a WARNING once the flow ends. With no last step, `run_steps()` waits for every step that isn't optional, so a step the site left out stops it with an error, after the steps that did show ran.
+- `optional=True` marks a step that may not show at all, such as an upsell.
+- The function gets `heal.page` on Playwright and `heal.driver` on Selenium, so its selectors heal as usual.
+- Registering a name again replaces its step, which keeps its place in the order.
+- Steps stay on the healer for every later `run_steps()` call, so the same flow can run again. For another flow, open a new healer with `mendwright.open()`.
+- Arguments that can never work raise `TypeError`, `ValueError` or `InvalidSelector` at once, before anything touches the page. On Selenium that includes a Playwright selector in `when`, such as `text=Place order`.
+
+`heal.run_steps(*, timeout_ms=None, poll_ms=200)` runs the steps and returns their names in the order they ran:
+
+1. It waits, up to `timeout_ms` (by default the healer's), until a step that hasn't run yet shows: its landmark is visible, its URL pattern matches, or both when it has both.
+2. It runs that step's function.
+3. It looks again. It stops after the last step ran. With no last step, it stops once every step that isn't optional ran, so an optional step that comes after them isn't waited for.
+
+Each step runs at most once. When several steps that haven't run show at the same time, as on a one-page checkout, they run in the order they were registered, and `run_steps()` looks again after each. The last step runs only when no other step that hasn't run shows, wherever it was registered.
+
+Landmarks are never healed, and nothing is saved for them: a missing landmark is what a step that isn't on the page looks like. Pick ones that stay, such as a heading's text or a field's name, and that only that step's page shows. A landmark that every page shows, such as a Place order button in a sidebar, makes its step run as soon as no other step shows.
+
+While it waits, `run_steps()` handles the [interruptions](#interruptions) you registered, and `cookies=`, when the page shows them, as when a `locator()` misses. So a consent wall that hides the page until you answer doesn't stop the flow. The log line and the `flow.interrupt` event name the step as `'<next step>'`. It handles up to 3 interruptions in each wait, as for one action. An interruption whose action fails is named in one WARNING and not tried again in that wait, and the others still are, so a consent wall that loads late is still answered. With `dismiss=True`, a [popup](#popups-mendwright-wasnt-told-about) is dismissed by the step's own actions, as everywhere else: a popup over a landmark doesn't hide it, so the step runs, and its first action finds the popup in its way.
+
+When it can't tell what to do, `run_steps()` stops:
+
+- A step that ran and is on the page again, with no step that hasn't run for the whole `timeout_ms`, raises `AttentionRequired`. That is most often a submit that failed, such as a declined card, and running the step again could pay twice:
+
+  ```text
+  mendwright: 'payment' is on the page again after it ran, and no step that has not run showed on /checkout/payment within 10000 ms: its submit probably failed, for example because the card was declined or the site rejected a field. mendwright runs each step once, so it stopped instead of running 'payment' again. Look at the page for the site's message. Steps that ran: 'shipping', 'payment'.
+  ```
+
+- A step that ran and shows again on another page, with no step that hasn't run for the whole `timeout_ms`, raises `AttentionRequired` with other advice. The page changed, so its submit most likely worked, and this is most often a step the site added that shows part of it, such as gift options under the Shipping heading:
+
+  ```text
+  mendwright: 'shipping' shows on /checkout/gift, and it ran on /checkout/shipping, so the page changed after it ran, and no step that has not run showed within 10000 ms. This is probably a step the site added that shows part of 'shipping', such as its heading. If it is, add it with heal.step(): @heal.step("<name>", "<selector of something only that step shows>"), or give 'shipping' a landmark only its own page shows. If its submit failed instead, look at the page for the site's message. mendwright runs each step once, so it stopped instead of running 'shipping' again. Steps that ran: 'shipping'.
+  ```
+
+- A page where no step shows within `timeout_ms` raises `AttentionRequired` with the page and every landmark it looked for. A step the site added, such as gift options, needs a `heal.step()` of its own:
+
+  ```text
+  mendwright: no step showed on /checkout/gift within 10000 ms. mendwright looked for 'payment' (#card-number) and 'review' (text=Place order). Steps that ran: 'shipping'. If the site added a step here, add it with heal.step(): @heal.step("<name>", "<selector of something only that step shows>"). If a step's landmark changed, update its when=: landmarks are never healed.
+  ```
+
+  When steps ran and none has `last=True`, the message also says that the site may have dropped a step, and to mark the step that ends the flow with `last=True`.
+
+- An error in a step's function is raised as it is, after the journal records which step failed.
+- It runs at most 3 times as many steps as were registered when it started. A step function that keeps registering new steps could otherwise keep the flow going.
+
+Inside a step, a key's page is the step, not its URL. mendwright saves with each key the steps it was found during, as `steps` in the store next to `pages`. While a step runs, a key found during that step before heals on the page the step showed on when it started, whatever its address, because the step's landmark, or its `url`, showed there that this is that step's page. So a field renamed in a step that also moved to another page heals there, where the [page guard](#steps-that-moved-to-another-page) would decline it, and one INFO line says so. Once the step's function goes to another page, such as with its own Continue, that page may be the next step's, and the guard is as before there: a lookup that misses after the step's submit is not healed onto the next step's controls. For the same reason, a key is saved with a step only when it was found on the page the step showed on. A key never found during the step that runs is guarded as before, and so is every key outside `run_steps()`.
+
+What it reports:
+
+- one INFO line for each step it ran, with the page and the time it took
+- one WARNING when a step runs after steps registered behind it: `ran 'payment' before 'shipping': the site changed the order of the steps`
+- once the last step ran, one WARNING for each step that isn't optional and never showed, since the site may have dropped it, and one INFO line for each optional step that didn't show
+- a `flow.step` journal event for each step that ran, failed or never showed (see [Log lines and journal events](#log-lines-and-journal-events))
+
+None of this is a heal, so `--mendwright-strict` doesn't fail a test because the steps came in another order, as it doesn't for a handled interruption. A heal inside a step still fails it.
 
 ### When the model finds no element
 
@@ -721,16 +917,26 @@ Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes th
 
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
+WARNING mendwright: handled interruption 'cookie_banner' before '<page action>'
+WARNING mendwright: dismissed a popup in the way of 'email': <div role="dialog" class="nl"> ("Get 10% off your first order. Sign up No thanks") with “No thanks”, after Escape did not close it
+WARNING mendwright: left a popup in the way of 'go' alone: <div id="cf" role="alertdialog"> ("Delete this project? Cancel Delete"). It is an alert dialog (role="alertdialog"), which asks for an answer, such as "Delete this project?", and Escape or any of its buttons would give one, so mendwright does not press or click anything on it. The action goes ahead, and fails with the browser's own error if the dialog blocks it. If your script should answer it, register the button with heal.interrupt("<name>", "<selector of the button>").
+WARNING mendwright: could not dismiss a popup in the way of 'create': <div id="promo" role="dialog"> ("Join our list. Subscribe Yes, sign me up"). mendwright pressed Escape, which did not close it, and it has no close or decline button that mendwright may click. The action goes ahead, and fails with the browser's own error if the popup blocks it. Register the button that closes it with heal.interrupt("<name>", "<selector of the button>"). If it needs data first, register its field before the button: heal.interrupt("<name>_field", "<selector of the field>", action="fill", args=("<value>",)).
 WARNING mendwright: the action on 'email' failed because something covered its element or it could not be reached, and none of the interruptions mendwright looks for (heal.interrupt(): 'cookies') matched a visible element, so it did not try the action again. If the element in the way is one of those registered with heal.interrupt(), its selector no longer matches: update it. Otherwise register the button that closes the element in the way with heal.interrupt().
 INFO mendwright: skipped 'cookies': it was already handled as an interruption before 'email', and it is not on the page now.
 INFO mendwright: skipped 'promo_close': it is optional (optional=True) and is not on the page.
+INFO mendwright: ran step 'payment' on /checkout/step-a (0.4s)
+WARNING mendwright: ran 'payment' before 'shipping': the site changed the order of the steps
+WARNING mendwright: 'gift' never showed before the flow ended with 'review': the site may have dropped it. If it did, delete its heal.step(). If it shows only sometimes, pass optional=True to heal.step('gift', ...).
+INFO mendwright: the page guard lets '#ship-name' heal on /checkout/step-b: it was found during step 'shipping' before (last on /checkout/step-a), and this is the page 'shipping' showed on
 ```
 
 | Event | Fields |
 |---|---|
-| `flow.interrupt` | `key`, `before` (the step it was handled for), `action`, and `selector` or `preset` |
+| `flow.interrupt` | `key`, `before` (the step it was handled for, `<page action>`, or `<next step>` while `run_steps()` waits), `action`, and `selector` or `preset` |
+| `flow.dismiss` | `key` (`<popup>`), `before` (the step the popup was in the way of), `popup` (as the WARNING names it), `outcome` (`dismissed`, `failed` when mendwright pressed or clicked something and the popup stayed, or `lost` when the element could not be looked at after a step, or a click raised an error after it may have reached the page), `how` (`escape`, `close` or `decline`, for `dismissed`), `label` (the button's, for `close` and `decline`), `tried` (the steps that did not close it, in order, such as `[{"how": "escape"}, {"how": "close", "label": "Close"}]`: for `dismissed`, those before the one that did) |
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
+| `flow.step` | `key` (the step's name), `outcome` (`ran`, `failed` when its function raised, or `missing` for a step that isn't optional and never showed), `error` (the error's type, for `failed`), `position` (1 for the first step that ran), `registered` (its place in the order the steps were registered), `page`, `seconds` |
 
 ## Selectors
 
@@ -884,7 +1090,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 {"ts":"2026-10-10T19:07:53+00:00","event":"heal.canary","key":"accept_terms","xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","success":true}
 ```
 
-The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.skip` and `flow.page_guard` (see [Log lines and journal events](#log-lines-and-journal-events)).
+The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
@@ -1034,7 +1240,7 @@ Last applied heals, newest first:
 mendwright report --format html --out mendwright-report.html
 ```
 
-- It has a summary (keys, selectors, quarantined selectors, heals asked for, applied and confirmed, proposals rejected, interruptions, skipped steps and page guard stops), each key with its selectors, the last 25 heals with their old and new selector, state, provider and latency, the last 50 flow events, and the quarantined selectors.
+- It has a summary (keys, selectors, quarantined selectors, heals asked for, applied and confirmed, proposals rejected, interruptions, skipped steps and page guard stops), each key with its selectors, the last 25 heals with their old and new selector, state, provider and latency, the last 50 flow events, and the quarantined selectors. Its flow events don't include `flow.step` yet.
 - A heal shows as confirmed when the test that made it passed (the pytest plugin reports that), or when an `expect=` check or `confirm(True)` said so. A fingerprint heal shows `fingerprint` as its provider.
 - The page is self-contained: inline CSS only, no scripts, no fonts, no images, and nothing loaded from the network. It follows the system's light or dark theme and stacks its tables on a narrow screen.
 - Every value from the store and journal is escaped, and the output is ASCII, so any console encoding can print it.

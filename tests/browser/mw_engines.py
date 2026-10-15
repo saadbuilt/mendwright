@@ -10,13 +10,16 @@ on this machine skips its tests with the reason and the command that fixes it. P
 loaded with page.set_content() on Playwright and from a file:// page written to tmp_path
 on Selenium, so nothing touches the network. tab.load() keeps one address for the whole
 test (as a redesign of one page would); tab.load_at(html, path) gives a page its own
-path, served from a route on Playwright and from its own file on Selenium.
+path, served from a route on Playwright and from its own file on Selenium. For a site of
+several pages that link to each other, tab.serve(pages) serves them all without opening
+one, tab.address(path) is where a page links to another, and tab.visit(path) opens one.
 """
 
 import asyncio
 import contextlib
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -208,6 +211,22 @@ class PlaywrightTab(Tab):
         self._ctx = self.page
         self.page.goto(SITE + path)
 
+    def serve(self, pages):
+        """Serve each of pages ({path: html}) at SITE + path, from the route, without
+        opening one. A path served again gets its new html."""
+        if not self._served:
+            self.page.route(SITE + '/**', self._serve)
+        self._served.update(pages)
+
+    def address(self, path):
+        """Where a served page is, for a link from another one."""
+        return SITE + path
+
+    def visit(self, path):
+        """Open a page that serve() serves."""
+        self._ctx = self.page
+        self.page.goto(SITE + path)
+
     def _serve(self, route):
         html = self._served.get(urlsplit(route.request.url).path)
         if html is None:
@@ -272,6 +291,28 @@ class SeleniumTab(Tab):
         target.write_text(html, encoding='utf-8')
         self.driver.switch_to.default_content()
         self.driver.get(target.as_uri() + '?load=' + str(self._loads))
+
+    def _site_file(self, path):
+        target = self._workdir.joinpath('site', *path.strip('/').split('/'))
+        return target.with_name(target.name + '.html')
+
+    def serve(self, pages):
+        """Write each of pages ({path: html}) to its own file, site/<path>.html, without
+        opening one. A path served again gets its new html."""
+        for path, html in pages.items():
+            target = self._site_file(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(html, encoding='utf-8')
+
+    def address(self, path):
+        """Where a served page is, for a link from another one: its file:// URL."""
+        return self._site_file(path).as_uri()
+
+    def visit(self, path):
+        """Open a page that serve() wrote."""
+        self._loads += 1
+        self.driver.switch_to.default_content()
+        self.driver.get(self.address(path) + '?load=' + str(self._loads))
 
     def js(self, expression):
         return self.driver.execute_script('return (' + expression + ');')
@@ -348,6 +389,11 @@ def _run_in_thread(coro_fn, timeout=120):
     return box['value']
 
 
+async def _awaited(value):
+    """value, or what it gives once awaited when it is awaitable."""
+    return await value if inspect.isawaitable(value) else value
+
+
 class PlaywrightEngine(Engine):
     """Playwright or patchright: library module, browser type and how to install it."""
 
@@ -389,7 +435,7 @@ class PlaywrightEngine(Engine):
 
     def with_async_page(self, fn):
         """Call fn(page) with an async_api Page of the same engine, from a worker thread,
-        and return what fn returns."""
+        and return what fn returns (awaited, when fn is a coroutine function)."""
         async_api = importlib.import_module(self.library + '.async_api')
 
         async def main():
@@ -398,7 +444,7 @@ class PlaywrightEngine(Engine):
                 try:
                     page_ = await browser.new_page()
                     await page_.set_content('<button type="button">Go</button>')
-                    return fn(page_)
+                    return await _awaited(fn(page_))
                 finally:
                     await browser.close()
         return _run_in_thread(main)
@@ -491,6 +537,7 @@ class CamoufoxEngine(Engine):
         return PlaywrightTab(self.id, self._browser)
 
     def with_async_page(self, fn):
+        """As PlaywrightEngine.with_async_page, with AsyncCamoufox."""
         from camoufox.async_api import AsyncCamoufox
         options = self._options()
 
@@ -498,7 +545,7 @@ class CamoufoxEngine(Engine):
             async with AsyncCamoufox(**options) as browser:
                 page_ = await browser.new_page()
                 await page_.set_content('<button type="button">Go</button>')
-                return fn(page_)
+                return await _awaited(fn(page_))
         return _run_in_thread(main)
 
 
