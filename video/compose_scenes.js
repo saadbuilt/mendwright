@@ -39,7 +39,7 @@ function scene(def) {
     sc.card = el('div', '', `<div style="font-size:16px;letter-spacing:.16em;text-transform:uppercase;color:${sc.title.col || C.purple};font-weight:700">${sc.title.kicker || ''}</div>
       <div style="font-size:64px;font-weight:700;letter-spacing:-.025em;margin-top:14px">${sc.title.text}</div>
       <div class="mono" style="font-size:24px;color:var(--ink2);margin-top:18px">${sc.title.sub || ''}</div>`, actLayer,
-      'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(6,8,13,.72);backdrop-filter:blur(14px)');
+      'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(6,8,13,.72);backdrop-filter:blur(14px);visibility:hidden');
   }
   sc.boxEls = sc.boxes.map(() => box());
   sc.chipEls = sc.chips.map(c => chip(c.html, c.style || ''));
@@ -204,6 +204,10 @@ function drawScene(sc, t) {
 }
 
 function drawScenes(t) {
+  // the run chip: Selenium in its act, hidden before
+  const sel = SCENES.find(s => s.runChip === 'sel');
+  const selOn = sel ? pres(t, sel.t0 + .2, S.end, .4, .4) : 0;
+  mat(runSel, selOn, { dy: -10, blur: 6 });
   if (!SCENES.length || t < S.s6 - .7) {
     for (const sc of SCENES) drawScene(sc, t);
     return;
@@ -217,15 +221,10 @@ function drawScenes(t) {
   mat(f1, 0);
   f2.style.opacity = (+f2.style.opacity * (1 - gone)).toFixed(3);
   for (const sc of SCENES) drawScene(sc, t);
-  // the run chip: Selenium in its act
-  const sel = SCENES.find(s => s.runChip === 'sel');
-  if (sel) {
-    const on = pres(t, sel.t0 + .2, S.end, .4, .4);
-    mat(runSel, on, { dy: -10, blur: 6 });
-    runMw.style.opacity = (+runMw.style.opacity * (1 - on)).toFixed(3);
-  }
+  if (sel) runMw.style.opacity = (+runMw.style.opacity * (1 - selOn)).toFixed(3);
 }
 const runSel = el('div', '', `<span class="d" style="background:${C.blue};box-shadow:0 0 12px ${C.blue}"></span>Selenium <span style="color:var(--ink3);font-weight:500">+</span> <span style="color:#d9c4ff">mendwright</span>`, stage); runSel.id = 'run';
+runSel.style.visibility = 'hidden';            // shown only in its act (drawScenes)
 
 // ---------- helpers for the definitions ----------
 const sx = s => `${(+s).toFixed(2)} s`;
