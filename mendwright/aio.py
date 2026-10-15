@@ -965,10 +965,25 @@ class AsyncHealer:
     def step(self, name: str, when: Selector | None = None,
              fn: Callable[[Any], Any] | None = None, *, url: str | None = None,
              last: bool = False, optional: bool = False) -> Any:
-        """Register a step for run_steps(), as Healer.step() does. The function may be async
-        (it is awaited) or plain, and gets heal.page. Sync: it only registers."""
+        """Register a step for run_steps(), as Healer.step() does. The function gets
+        heal.page and may be async (it is awaited) or plain, when it returns an awaitable,
+        such as lambda page: page.click('#place'): heal.page's calls are coroutines, so a
+        plain function that makes them without await would do nothing, and run_steps()
+        raises TypeError for one that returns anything else. Sync: it only registers."""
         return _steps.add(self._core, name, when, fn, url=url, last=last, optional=optional,
                           awaits=True)
+
+    async def _interrupt_waiting(self, budget, timeout_ms, poll_ms, failed):
+        """mendwright.steps.interrupt() while run_steps() waits for a step: in a worker
+        thread through SyncBridge and under the lock, as _interrupt_for_action() runs
+        _interrupt() before an action. No thread when nothing is left to look for."""
+        __tracebackhide__ = True
+        core = self._core
+        if all(item.key in failed for item in core._others(_steps.WAITING_STEP)):
+            return False
+        async with self._lock:
+            return await _in_thread(_steps.interrupt, core, budget, timeout_ms, poll_ms, failed,
+                                    self._sync_driver())
 
     async def run_steps(self, *, timeout_ms: int | None = None, poll_ms: int = 200) -> list:
         """Healer.run_steps(), with the page work awaited: the landmarks are looked at on

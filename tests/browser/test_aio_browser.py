@@ -791,3 +791,64 @@ def test_steps_in_either_order_with_a_renamed_field_healed_on_its_new_page(engin
     assert (provider.bundles[0]['page'], provider.bundles[0]['lastPage']) == (
         '/checkout/step-b', '/checkout/step-a')
     assert [where for _, where in filled] == [site + 'step-a', site + 'step-b']
+
+
+def test_a_lookup_after_a_step_went_on_to_the_next_page_is_declined(engine, tmp_path):
+    # '#ship-name' was found during shipping. This time shipping's function looks for it
+    # again after its own Continue went to the payment page, where a heal would fill the
+    # card field: the page guard declines it, as outside run_steps().
+    from urllib.parse import urlsplit
+    site = 'https://mendwright.test/checkout/'
+    pages = {'/checkout/step-a': _step_page('Shipping address', 'ship-name', site + 'step-b'),
+             '/checkout/step-b': _step_page('Payment', 'card-number', site + 'review'),
+             '/checkout/review': ("<h1>Review</h1><button type='button' id='place'>Place order"
+                                  "</button>")}
+
+    async def serve(route):
+        await route.fulfill(status=200, content_type='text/html',
+                            body=pages.get(urlsplit(route.request.url).path, ''))
+
+    provider = Stub("//input[@id='card-number']")
+
+    async def run(page, then_fill):
+        await page.goto(site + 'step-a')
+        heal = await mendwright.aio.open(page, provider=provider, store_path=_store(tmp_path),
+                                         timeout_ms=300, fingerprint=False)
+
+        @heal.step('shipping', "//h1[normalize-space()='Shipping address']")
+        async def shipping(p):
+            if not then_fill:
+                await p.fill('#ship-name', 'Ada Lovelace')
+            await p.click('#next')
+            if then_fill:
+                await p.fill('#ship-name', 'Ada Lovelace')
+
+        @heal.step('payment', '#card-number')
+        async def payment(p):
+            await p.fill('#card-number', '4242 4242 4242 4242')
+            await p.click('#next')
+
+        @heal.step('review', 'text=Place order', last=True)
+        async def review(p):
+            await p.click('#place')
+
+        try:
+            return await heal.run_steps(timeout_ms=5000, poll_ms=50), None
+        except AttentionRequired as exc:
+            return None, exc
+
+    async def main():
+        page = await engine.page('')
+        try:
+            await page.route('https://mendwright.test/**', serve)
+            first = await run(page, then_fill=False)
+            second = await run(page, then_fill=True)
+            return first, second, await page.input_value('#card-number')
+        finally:
+            await _close(page)
+
+    (ran, _), (_, error), card = engine.run(main())
+    assert ran == ['shipping', 'payment', 'review']
+    assert error is not None and 'was last found on /checkout/step-a' in str(error)
+    assert provider.bundles == []
+    assert card == ''

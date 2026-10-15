@@ -18,6 +18,7 @@ or not at all run through heal.step() and heal.run_steps() (see mendwright.steps
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import inspect
 import logging
 import os
@@ -57,6 +58,12 @@ from . import steps as _steps
 from .store import load_store
 
 logger = logging.getLogger('mendwright')
+
+# The step run_steps() runs now, as (healer, step name, page path), in this thread or asyncio
+# task only (see Healer._in_step), or None. A context variable rather than an attribute, so
+# a coroutine gathered next to run_steps() on the same healer is not taken for part of the
+# step.
+_RUNNING_STEP = contextvars.ContextVar('mendwright_running_step', default=None)
 
 # What role= takes: the gate's own words, the ARIA names it maps, or any HTML tag name.
 Role = Union[Literal['button', 'checkbox', 'radio', 'link', 'input', 'combobox', 'textbox',
@@ -705,10 +712,8 @@ class Healer:
         # (key, xpath) pairs whose fingerprint this Healer has read already.
         self._fingerprinted: set = set()
         self._proxies: dict = {}
-        # Steps registered with step(), by name in the order registered, and the name of the
-        # one run_steps() runs now (see mendwright.steps and _step_pages).
+        # Steps registered with step(), by name in the order registered (see mendwright.steps).
         self._step_book: dict = {}
-        self._current_step = None
         _register(self)
 
     @property
@@ -1677,11 +1682,11 @@ class Healer:
     def _remember_page(self, key, url=None):
         """Save the page key's element was just found on (see mendwright.flow.page_path),
         and the step run_steps() runs now, if any (see _remember_step)."""
-        self._remember_step(key)
+        path = page_path(self._url() if url is None else url)
+        self._remember_step(key, path)
         setter = getattr(self.store, 'set_last_page', None)
         if not callable(setter):
             return
-        path = page_path(self._url() if url is None else url)
         if path:
             setter(key, path)
 
@@ -1894,13 +1899,15 @@ class Healer:
         pick one that stays. url is a pattern for the page's path, such as
         '/checkout/payment' or '*/payment*', normalized as the page guard normalizes paths:
         instead of when=, or as one more condition with it. last=True marks the step that
-        ends the flow, such as placing the order; a flow has one. optional=True marks one
-        that may not show at all, such as an upsell.
+        ends the flow, such as placing the order; a flow has at most one, and one that ends
+        in a submit should have it. optional=True marks one that may not show at all, such
+        as an upsell.
 
         The function gets heal.page on Playwright and heal.driver on Selenium, so its
         selectors heal as usual. Registering a name again replaces its step, which keeps its
-        place in the order. Raises TypeError, ValueError or InvalidSelector for arguments
-        that can never work, before anything touches the page."""
+        place in the order. Steps stay on the healer for every later run_steps() call: for
+        another flow, open a new healer. Raises TypeError, ValueError or InvalidSelector for
+        arguments that can never work, before anything touches the page."""
         return _steps.add(self, name, when, fn, url=url, last=last, optional=optional)
 
     def run_steps(self, *, timeout_ms: int | None = None, poll_ms: int = 200) -> list:
@@ -1913,17 +1920,19 @@ class Healer:
         were registered, and the last step only when no other shows. Registered
         interruptions the page shows meanwhile are handled.
 
-        While a step runs, a key found during that step before heals on any page, since
-        the step's landmark shows it is that step's page: the page guard declines only keys
-        never found during it. Outside run_steps() the guard is as before.
+        While a step runs, a key found during that step before heals on the page the step
+        showed on, whatever its address, where the page guard would decline a page the key
+        was never found on. Once the step's function goes to another page, such as with its
+        own submit, and outside run_steps(), the guard is as before.
 
         Raises AttentionRequired when a step that ran is on the page again with no new step
-        for the whole timeout (its submit probably failed: it is never run twice), when no
-        step shows (the message names the page and every landmark), and after 3 times as
-        many step runs as there are steps. An error from a step's function is raised as it
-        is, after the flow.step journal event records it. Each run logs one INFO line, a
-        step run after one registered later logs a WARNING, and so does each step that is
-        not optional and never showed. See mendwright.steps."""
+        for the whole timeout (its submit probably failed, or the site added a step that
+        shows part of it: it is never run twice), when no step shows (the message names the
+        page and every landmark), and after 3 times as many step runs as there are steps.
+        An error from a step's function is raised as it is, after the flow.step journal
+        event records it. Each run logs one INFO line, a step run after one registered
+        later logs a WARNING, and so does each step that is not optional and never showed.
+        See mendwright.steps."""
         __tracebackhide__ = True  # pytest shows the caller
         return _steps.run(self, timeout_ms, poll_ms)
 
@@ -1933,33 +1942,50 @@ class Healer:
         return self.driver if isinstance(self._driver, SeleniumDriver) else self.page
 
     @contextlib.contextmanager
-    def _in_step(self, name):
-        """Mark step ``name`` as the one running for the block (see _step_pages)."""
-        saved = self._current_step
-        self._current_step = name
+    def _in_step(self, name, path):
+        """Mark step ``name``, which showed on the page at ``path`` (see
+        mendwright.flow.page_path), as the one running for the block, in this thread or
+        asyncio task only (see _step_now)."""
+        token = _RUNNING_STEP.set((self, name, path))
         try:
             yield
         finally:
-            self._current_step = saved
+            _RUNNING_STEP.reset(token)
 
-    def _remember_step(self, key):
-        """While run_steps() runs a step, save its name with key (SelectorStore.set_last_step),
-        so a later run lets key heal wherever that step shows."""
+    def _step_now(self):
+        """(name, page path) of the step run_steps() runs now on this healer, or None. Only
+        in the thread or asyncio task that runs it, and in the asyncio tasks and
+        asyncio.to_thread() workers it starts, which copy its context: a coroutine gathered
+        next to run_steps() is not part of the step."""
+        running = _RUNNING_STEP.get()
+        if running is None or running[0] is not self:
+            return None
+        return running[1], running[2]
+
+    def _remember_step(self, key, path):
+        """While run_steps() runs a step, and key was found on the page that step showed on
+        (path), save the step's name with key (SelectorStore.set_last_step), so a later run
+        lets key heal wherever that step shows. Not for a key found after the step's
+        function went to another page: that page may be the next step's."""
+        running = self._step_now()
         setter = getattr(self.store, 'set_last_step', None)
-        if self._current_step is not None and callable(setter):
-            setter(key, self._current_step)
+        if running is not None and path and path == running[1] and callable(setter):
+            setter(key, running[0])
 
     def _step_pages(self, key, meta, here):
         """The pages the page guard compares for key: the ones saved with it, and, while
-        run_steps() runs a step that key was found during before, this page too. The step's
-        landmark shows, so this is that step's page whatever its address: a site that moved
-        the step to another page or another place in the flow still heals the key. One INFO
-        line says so when the page is new to the key. Outside run_steps(), or for a key never
-        found during the step that runs, nothing changes."""
+        run_steps() runs a step that key was found during before, this page too when it is
+        the page that step showed on (its landmark, its url=) when it started. So a site
+        that moved the step to another page or another place in the flow still heals the
+        key there, and one INFO line says so when the page is new to the key. Once the
+        step's function went to another page, such as with its own submit, that page may be
+        the next step's, and nothing changes; nor outside run_steps(), or for a key never
+        found during the step that runs."""
         pages = list(meta.get('pages') or ())
-        step, steps = self._current_step, meta.get('steps') or ()
-        if step is None or not here or step not in steps:
+        running, steps = self._step_now(), meta.get('steps') or ()
+        if running is None or not here or here != running[1] or running[0] not in steps:
             return pages
+        step = running[0]
         last = meta.get('lastPage')
         if (here not in pages and here != last and (pages or last)
                 and not self.coordinator.heal_across_pages):

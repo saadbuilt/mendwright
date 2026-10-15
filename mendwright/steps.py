@@ -22,7 +22,14 @@ runs it, and looks again, until the step marked last=True ran, or, with no last 
 until every step that is not optional ran. Each step runs at most once. Steps that show at
 the same time (a one-page checkout) run in the order they were registered, and the last
 step only once no other step that has not run shows. The function gets heal.page (on
-Playwright) or heal.driver (on Selenium), so its selectors heal as usual.
+Playwright) or heal.driver (on Selenium), so its selectors heal as usual. Steps stay on the
+healer for every later run_steps() call, so the same flow can run again; another flow needs
+a new healer.
+
+Mark the step that ends the flow last=True, above all one that ends in a submit: a step the
+site dropped is then named in one WARNING once the last step ran. With no last step,
+run_steps() waits for every step that is not optional, so a dropped one stops it with
+AttentionRequired, which says so.
 
 What mendwright does not guess:
 - A landmark is looked up with the driver's count() and is_visible() only. It is never
@@ -30,22 +37,29 @@ What mendwright does not guess:
   on the page looks. So a landmark must be stable, such as a heading's text or a field's
   name.
 - A step that ran and is on the page again, with no new step for the whole timeout (the
-  card was declined, a field was rejected), stops the flow with AttentionRequired: it is
-  never run twice. So does a page where no step shows, which names the page and every
+  card was declined, a field was rejected, or the site added a step that shows part of
+  it, such as its heading), stops the flow with AttentionRequired: it is never run twice.
+  The message tells the two apart by the page, the one the step ran on or another. A page
+  where no step shows stops the flow too, and the message names the page and every
   landmark run_steps() looked for. A function that raises stops the flow with its own
   error, after the journal records which step failed.
 - run_steps() never runs more steps than 3 times the number registered when it started.
+- On mendwright.aio.open(), a plain function that returns no awaitable stops the flow with
+  TypeError, and the step counts as failed: heal.page's calls there are coroutines, and
+  one that is not awaited does nothing on the page.
 
 While run_steps() waits, the registered interruptions (heal.interrupt(), cookies=) the
-page shows are handled, as when a locator() misses, with the budget of one step for each
-wait. One whose action fails is named in one WARNING and not tried again in that wait.
-Popups nobody registered (open(dismiss=True)) are dismissed by the steps' own actions, as
-everywhere else: a popup over a landmark does not hide it.
+page shows are handled, as when a locator() misses: up to 3 in each wait, as for one
+action. One whose action fails is named in one WARNING and not tried again in that wait;
+the others still are. Popups nobody registered (open(dismiss=True)) are dismissed by the
+steps' own actions, as everywhere else: a popup over a landmark does not hide it.
 
 While a step runs, a key's page is the step: a key found during that step in an earlier
-run heals on any page while the step's landmark shows, where the page guard would decline
-a page it was never found on (Healer._step_pages). The store saves the steps each key was
-found during ('steps', next to 'pages').
+run heals on the page the step showed on when it started, whatever its address, where the
+page guard would decline a page it was never found on (Healer._step_pages). Once the
+step's function goes to another page, such as with its own submit, the guard is as before:
+that page may be the next step's. The store saves the steps each key was found during
+('steps', next to 'pages'), for a key found on the page its step showed on.
 
 Each step run logs one INFO line and writes a flow.step journal event. A step that runs
 after steps registered behind it logs one WARNING ("ran 'payment' before 'shipping': the
@@ -64,6 +78,7 @@ from typing import Callable
 from .exceptions import AttentionRequired
 from .flow import _is_id, _listed, journal_event, page_path
 from .interruptions import Budget, nth_targets
+from .journal import FLOW_STEP
 from .selectors import XPATH, InvalidSelector, check_syntax, classify, normalize
 
 # What an interruption handled while run_steps() waits is logged as handled before: no step
@@ -105,9 +120,11 @@ def _flag(name, value, flag):
 def url_pattern(name, url):
     """The path pattern of url= for step ``name``, normalized as mendwright.flow.page_path()
     normalizes a page's path: lower case, without empty parts, with parts that look like
-    record ids as '*'. '*' matches any characters, '/' included, and '?' one. Raises
-    TypeError for a non-string and ValueError for a pattern that is not a path (it must
-    start with '/' or '*') or names the site root, which has no page."""
+    record ids as '*'. '*' matches any characters, '/' included, and '?' one. A pattern
+    that starts with '/' starts at the root of the path; one that starts with '*' is kept
+    as written, so '*/payment' matches /payment and /checkout/payment. Raises TypeError for
+    a non-string and ValueError for a pattern that is not a path (it must start with '/'
+    or '*') or names the site root, which has no page."""
     if not isinstance(url, str):
         raise TypeError('mendwright: heal.step(' + repr(name) + ', url=...) takes the path of '
                         "the step's page as a string, such as '/checkout/payment', got "
@@ -122,7 +139,7 @@ def url_pattern(name, url):
         raise ValueError('mendwright: heal.step(' + repr(name) + ', url=' + repr(url) + ') names '
                          'the site root, which has no page path to compare. Use when= for a '
                          'step on the site root.')
-    return '/' + '/'.join(parts)
+    return ('' if text.startswith('*') else '/') + '/'.join(parts)
 
 
 def url_matches(pattern, url):
@@ -204,8 +221,10 @@ def register(book, step):
             if other.last and other.name != step.name:
                 raise ValueError('mendwright: heal.step(' + repr(step.name) + ', ..., last=True): '
                                  + repr(other.name) + ' is the last step already, and a flow '
-                                 'has one. Register ' + repr(other.name) + ' again without '
-                                 'last=True first, or drop last=True here.')
+                                 'has at most one. Register ' + repr(other.name) + ' again '
+                                 'without last=True first, or drop last=True here. Steps stay '
+                                 'on the healer for every later run_steps(): for another '
+                                 'flow, open a new healer.')
     book[step.name] = step
 
 
@@ -382,14 +401,44 @@ def again_message(name, page, timeout_ms, ran):
             + _ran_text(ran))
 
 
-def unknown_message(page, waiting, ran, timeout_ms):
+def changed_message(name, ran_on, page, timeout_ms, ran):
+    """The AttentionRequired text for a step that ran on the page ran_on and shows on
+    another page, with no new step for the whole timeout: the site probably added a step
+    that shows part of it, such as its heading."""
+    return ('mendwright: ' + repr(name) + ' shows on ' + page + ', and it ran on ' + ran_on
+            + ', so the page changed after it ran, and no step that has not run showed within '
+            + format(timeout_ms, 'g') + ' ms. This is probably a step the site added that '
+            'shows part of ' + repr(name) + ', such as its heading. If it is, add it with '
+            'heal.step(): @heal.step("<name>", "<selector of something only that step '
+            'shows>"), or give ' + repr(name) + " a landmark only its own page shows. If its "
+            "submit failed instead, look at the page for the site's message. mendwright runs "
+            'each step once, so it stopped instead of running ' + repr(name) + ' again. '
+            + _ran_text(ran))
+
+
+def unknown_message(page, waiting, ran, timeout_ms, *, no_last=False):
     """The AttentionRequired text for a page where no step showed within the timeout.
-    waiting are the steps run_steps() looked for, ran the names of those that ran."""
+    waiting are the steps run_steps() looked for, ran the names of those that ran.
+    no_last: steps ran and none has last=True, so a step the site dropped is waited for."""
     return ('mendwright: no step showed on ' + _on(page) + ' within ' + format(timeout_ms, 'g')
             + ' ms. mendwright looked for ' + _listed(_landmark_text(s) for s in waiting) + '. '
             + _ran_text(ran) + ' If the site added a step here, add it with heal.step(): '
             '@heal.step("<name>", "<selector of something only that step shows>"). If a '
-            "step's landmark changed, update its when=: landmarks are never healed.")
+            "step's landmark changed, update its when=: landmarks are never healed."
+            + (' No step has last=True, so run_steps() waits until every step that is not '
+               'optional ran, and the site may have dropped one: mark the step that ends the '
+               'flow with last=True, and the flow ends there, with a WARNING for a step that '
+               'never showed.' if no_last else ''))
+
+
+def plain_message(name, result):
+    """The TypeError text for a plain function on the async healer that returned no
+    awaitable."""
+    return ('mendwright: the function of step ' + repr(name) + ' returned ' + repr(result)
+            + ", not an awaitable. On mendwright.aio.open()'s healer, heal.page's calls are "
+            'coroutines, and a plain function that makes them without await does nothing on '
+            'the page: make it async def and await them, or return the awaitable, as in '
+            "lambda page: page.click('#place').")
 
 
 def cap_message(count, registered):
@@ -402,10 +451,11 @@ def cap_message(count, registered):
 
 def scope_message(key, step, page, last):
     """The INFO line for a key the page guard lets heal on a page it was never found on,
-    because it was found during the step that runs now."""
+    because it was found during the step that runs now, and this is the page that step
+    showed on."""
     return ('the page guard lets ' + repr(key) + ' heal on ' + page + ': it was found during '
             'step ' + repr(step) + ' before' + (' (last on ' + last + ')' if last else '')
-            + ', and ' + repr(step) + ' is on the page now')
+            + ', and this is the page ' + repr(step) + ' showed on')
 
 
 # --- one run of run_steps() ----------------------------------------------------------------
@@ -419,6 +469,7 @@ class Run:
         self.core = core
         self.timeout_ms = timeout_ms
         self.ran = []          # names, in the order they ran
+        self.ran_on = {}       # name -> the page path each step that ran showed on
         self.ended = None      # the last step, once it ran
         self.cap = MAX_RUNS_PER_STEP * len(core._step_book)
         self.registered = len(core._step_book)
@@ -461,12 +512,18 @@ class Run:
 
     def stuck(self, again, page):
         """The AttentionRequired for a wait that ran out. again are the steps that ran and
-        show now, most recent first."""
+        show now, most recent first. One that shows on another page than the one it ran on
+        is probably part of a step the site added, not a submit that failed."""
         if again:
-            return AttentionRequired(again_message(again[0].name, page, self.timeout_ms,
-                                                   self.ran))
+            name = again[0].name
+            ran_on = self.ran_on.get(name)
+            if ran_on and page and ran_on != page:
+                return AttentionRequired(changed_message(name, ran_on, page, self.timeout_ms,
+                                                         self.ran))
+            return AttentionRequired(again_message(name, page, self.timeout_ms, self.ran))
+        no_last = bool(self.ran) and not any(s.last for s in self.steps())
         return AttentionRequired(unknown_message(page, self.waiting(), self.ran,
-                                                 self.timeout_ms))
+                                                 self.timeout_ms, no_last=no_last))
 
     def _emit(self, level, message):
         self.core.coordinator._emit(level, message)
@@ -492,9 +549,10 @@ class Run:
         with error (only its type is journaled: an error text can quote the page)."""
         failed = error is not None
         self.ran.append(step.name)
+        self.ran_on[step.name] = page
         if step.last and not failed:
             self.ended = step.name
-        journal_event(self.core.coordinator.journal, 'flow.step', step.name,
+        journal_event(self.core.coordinator.journal, FLOW_STEP, step.name,
                       position=len(self.ran), registered=self._position(step.name), page=page,
                       seconds=round(seconds, 3), outcome='failed' if failed else 'ran',
                       error=type(error).__name__ if failed else None)
@@ -510,7 +568,7 @@ class Run:
                 self._emit(logging.INFO, not_shown_message(step.name))
             else:
                 self._emit(logging.WARNING, dropped_message(step.name, self.ended))
-                journal_event(self.core.coordinator.journal, 'flow.step', step.name,
+                journal_event(self.core.coordinator.journal, FLOW_STEP, step.name,
                               registered=self._position(step.name), outcome='missing')
         return list(self.ran)
 
@@ -520,22 +578,34 @@ def _sleep_ms(poll_ms):
 
 
 class _Wait:
-    """One wait for the next step: its deadline and the interruption budget it shares. An
-    interruption whose action failed (Healer._run_interruption logged a WARNING and handled
-    nothing, though the budget went down) is not tried again in this wait, as before an
-    action."""
+    """One wait for the next step: its deadline, the interruption budget it shares (up to
+    3 handled, as for one action), and the keys of the interruptions whose action failed in
+    it, which are not tried again in this wait (see interrupt())."""
 
     def __init__(self, now, timeout_ms):
         self.deadline = now + timeout_ms / 1000.0
         self.budget = Budget()
-        self.interrupting = True
+        self.failed = set()
 
-    def handled(self, used, result):
-        """After a look for interruptions that started at budget.used == used and returned
-        result: True when one was handled."""
-        if not result and self.budget.used > used:
-            self.interrupting = False
-        return bool(result)
+
+def interrupt(core, budget, timeout_ms, poll_ms, failed, driver=None):
+    """Handle the registered interruptions the page shows while run_steps() waits, one key
+    at a time (Healer._interrupt with only=), leaving out the keys in failed. A key whose
+    action fails (Healer._run_interruption logged a WARNING and handled nothing, though the
+    budget went down) is added to failed, so it is not tried again in this wait, and the
+    others still are. True when one was handled. core is the sync Healer; driver is the
+    async healer's SyncBridge, from a worker thread."""
+    __tracebackhide__ = True
+    handled = False
+    for item in core._others(WAITING_STEP):
+        if item.key in failed:
+            continue
+        used = budget.used
+        if core._interrupt(WAITING_STEP, budget, timeout_ms, poll_ms, driver, only=item.key):
+            handled = True
+        elif budget.used > used:
+            failed.add(item.key)
+    return handled
 
 
 def run(healer, timeout_ms, poll_ms):
@@ -549,7 +619,7 @@ def run(healer, timeout_ms, poll_ms):
         step, path = _next_step(healer, flow, timeout_ms, poll_ms)
         flow.starting(step)
         started = time.monotonic()
-        with healer._in_step(step.name):
+        with healer._in_step(step.name, path):
             try:
                 step.fn(page)
             except BaseException as exc:
@@ -569,9 +639,7 @@ def _next_step(healer, flow, timeout_ms, poll_ms):
         shown = [s for s in flow.waiting() if shows(driver, s, url)]
         if shown:
             return flow.pick(shown), page_path(url)
-        used = wait.budget.used
-        if wait.interrupting and wait.handled(used, healer._interrupt(
-                WAITING_STEP, wait.budget, timeout_ms, poll_ms)):
+        if interrupt(healer, wait.budget, timeout_ms, poll_ms, wait.failed):
             continue
         if time.monotonic() >= wait.deadline:
             again = [s for s in flow.ran_steps() if shows(driver, s, url)]
@@ -581,8 +649,9 @@ def _next_step(healer, flow, timeout_ms, poll_ms):
 
 async def run_async(healer, timeout_ms, poll_ms):
     """AsyncHealer.run_steps(): the same loop, with the page work awaited. The step function
-    may be async (it is awaited) or plain. The healer's lock is never held while it runs:
-    its own actions take it."""
+    may be async (it is awaited) or plain when it returns an awaitable; for one that returns
+    anything else the step is recorded as failed and TypeError is raised (plain_message).
+    The healer's lock is never held while it runs: its own actions take it."""
     __tracebackhide__ = True
     core = healer._core
     timeout_ms, poll_ms = run_args(core._step_book, timeout_ms, poll_ms, core.timeout_ms)
@@ -593,9 +662,12 @@ async def run_async(healer, timeout_ms, poll_ms):
         step, path = await _anext_step(healer, flow, timeout_ms, poll_ms)
         flow.starting(step)
         started = healer._clock()
-        with core._in_step(step.name):
+        with core._in_step(step.name, path):
             try:
-                await _awaited(step.fn(page))
+                result = step.fn(page)
+                if not inspect.isawaitable(result):
+                    raise TypeError(plain_message(step.name, result))
+                await result
             except BaseException as exc:
                 flow.record(step, path, healer._clock() - started, exc)
                 raise
@@ -611,8 +683,9 @@ async def _url(driver):
 
 
 async def _anext_step(healer, flow, timeout_ms, poll_ms):
-    """_next_step(), awaited: the landmarks on the event loop, the interruptions as the
-    async healer handles them before an action."""
+    """_next_step(), awaited: the landmarks on the event loop, the interruptions in a
+    worker thread under the healer's lock (AsyncHealer._interrupt_waiting), as before an
+    action."""
     __tracebackhide__ = True
     driver, wait = healer._driver, _Wait(healer._clock(), timeout_ms)
     while True:
@@ -620,9 +693,7 @@ async def _anext_step(healer, flow, timeout_ms, poll_ms):
         shown = [s for s in flow.waiting() if await ashows(driver, s, url)]
         if shown:
             return flow.pick(shown), page_path(url)
-        used = wait.budget.used
-        if wait.interrupting and wait.handled(used, await healer._interrupt_for_action(
-                WAITING_STEP, wait.budget, timeout_ms, poll_ms)):
+        if await healer._interrupt_waiting(wait.budget, timeout_ms, poll_ms, wait.failed):
             continue
         if healer._clock() >= wait.deadline:
             again = [s for s in flow.ran_steps() if await ashows(driver, s, url)]

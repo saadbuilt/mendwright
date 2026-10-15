@@ -12,6 +12,7 @@ No model is called.
 """
 
 import logging
+import time
 
 import pytest
 
@@ -32,14 +33,18 @@ CARD = '4242 4242 4242 4242'
 DECLINED = '4000 0000 0000 0002'
 
 # go(url, [[param, field id], ...]) opens url with the fields' values added to what the
-# query carries already. The payment page sends a declined card back to itself.
+# query carries already, DELAY ms after the click (see _checkout). The payment page sends a
+# declined card back to itself.
 _SCRIPT = """<script>
+var DELAY = 0;
 function go(url, fields) {
   var q = location.search.slice(1).split('&').filter(function (p) {
     return p && p.indexOf('declined=') !== 0; });
   (fields || []).forEach(function (f) {
     q.push(f[0] + '=' + encodeURIComponent(document.getElementById(f[1]).value)); });
-  location.href = url + (q.length ? '?' + q.join('&') : '');
+  var to = url + (q.length ? '?' + q.join('&') : '');
+  if (DELAY) { setTimeout(function () { location.href = to; }, DELAY); }
+  else { location.href = to; }
 }
 </script>"""
 
@@ -103,12 +108,14 @@ def _path(i):
     return '/checkout/step-' + 'abcdefg'[i]
 
 
-def _checkout(tab, *order, field='ship-name'):
-    """Serve a checkout whose pages come in this order, and open its first page."""
+def _checkout(tab, *order, field='ship-name', delay_ms=0):
+    """Serve a checkout whose pages come in this order, and open its first page. With
+    delay_ms, each Continue goes to the next page that long after the click."""
     paths = [_path(i) for i in range(len(order))] + ['/checkout/done']
     pages = {'/checkout/done': _DONE}
     for i, name in enumerate(order):
-        pages[paths[i]] = _PAGES[name](tab, paths[i + 1], paths[i], field)
+        pages[paths[i]] = _PAGES[name](tab, paths[i + 1], paths[i], field).replace(
+            'var DELAY = 0;', 'var DELAY = ' + str(delay_ms) + ';')
     tab.serve(pages)
     tab.visit(paths[0])
 
@@ -326,7 +333,58 @@ def test_a_renamed_field_in_a_reordered_step_heals_on_its_new_page(tab, store_fi
              if 'the page guard lets' in r.getMessage()]
     assert len(scope) == 1
     assert ("it was found during step 'shipping' before (last on " in scope[0]
-            and "'shipping' is on the page now" in scope[0])
+            and "and this is the page 'shipping' showed on" in scope[0])
+
+
+def test_a_lookup_after_a_step_went_on_to_the_next_page_is_not_healed_there(tab, store_file,
+                                                                            stub_provider):
+    # '#ship-name' was found during shipping. This time shipping's function looks for it
+    # again after its own Continue went to the payment page: a heal there would fill the
+    # card field, so the page guard declines it as outside run_steps().
+    _checkout(tab, 'shipping', 'payment', 'review')
+    first = _open(tab, stub_provider(None), store_file, fingerprint=False)
+    _steps(first, tab)
+    assert _run(first) == ['shipping', 'payment', 'review']
+
+    _checkout(tab, 'shipping', 'payment', 'review')
+    provider = stub_provider("//input[@id='card-number']")
+    heal = _open(tab, provider, store_file, fingerprint=False)
+    _steps(heal, tab)
+
+    @heal.step('shipping', "//h1[normalize-space()='Shipping address']")
+    def shipping(target):
+        _click(tab, target, '#next')
+        _fill(tab, target, '#ship-name', 'Ada Lovelace')
+
+    with pytest.raises(AttentionRequired, match='was last found on'):
+        _run(heal)
+    assert provider.bundles == []
+    assert heal.heals == []
+    assert tab.value('#card-number') == ''
+
+
+def _page_text(tab):
+    try:
+        return tab.js('document.body ? document.body.innerText : ""') or ''
+    except Exception:          # the page is navigating
+        return ''
+
+
+def test_a_page_that_loads_a_moment_after_the_click_is_waited_for(tab, store_file,
+                                                                  stub_provider):
+    # Each Continue goes to the next page 300 ms after the click, as on a site that checks
+    # the form with its server first: until then the step that just ran is the only one on
+    # the page, and that is not a step that came back.
+    _checkout(tab, 'shipping', 'payment', 'review', delay_ms=300)
+    heal = _open(tab, stub_provider(None), store_file)
+    _steps(heal, tab)
+
+    assert _run(heal) == ['shipping', 'payment', 'review']
+
+    deadline = time.monotonic() + 5
+    while 'Thank you' not in _page_text(tab) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert (tab.text('#ship'), tab.text('#card')) == ('Ada Lovelace', CARD)
 
 
 _CONSENT_WALL = """<div id="consent-wall" role="dialog" aria-label="Cookie consent"

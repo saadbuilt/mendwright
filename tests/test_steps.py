@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 
 import lxml.html
@@ -25,9 +26,11 @@ from mendwright import AttentionRequired, InvalidSelector
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
 from mendwright.drivers.selenium import SeleniumDriver
 from mendwright.fingerprint import FINGERPRINT_JS
-from mendwright.steps import (WAITING_STEP, Step, again_message, cap_message, dropped_message,
-                              landmark_targets, order_message, ran_message, scope_message,
-                              unknown_message, url_matches, url_pattern)
+from mendwright.flow import InterruptionLoop
+from mendwright.steps import (WAITING_STEP, Step, again_message, cap_message, changed_message,
+                              dropped_message, landmark_targets, order_message, plain_message,
+                              ran_message, scope_message, unknown_message, url_matches,
+                              url_pattern)
 from mendwright.store import load_store
 
 SIDES = ('sync', 'async')
@@ -158,6 +161,42 @@ class Shop:
 
     def evaluate(self, js, arg=None):
         return []
+
+
+class SlowShop(Shop):
+    """A Shop whose pages load 30 ms after the click that goes to them, as on a site that
+    answers slowly: until then the page that was clicked on stays, with the landmark of the
+    step that just ran on it."""
+
+    DELAY = 0.03
+
+    def __init__(self, pages, start):
+        self._pending = None
+        super().__init__(pages, start)
+
+    @property
+    def url(self):
+        self._land()
+        return self._url
+
+    @url.setter
+    def url(self, value):
+        self._url = value
+
+    def goto(self, path):
+        if getattr(self, 'doc', None) is None:      # the first page opens at once
+            super().goto(path)
+        else:
+            self._pending = (path, time.monotonic() + self.DELAY)
+
+    def _land(self):
+        if self._pending is not None and time.monotonic() >= self._pending[1]:
+            path, self._pending = self._pending[0], None
+            super().goto(path)
+
+    def query(self, selector):
+        self._land()
+        return super().query(selector)
 
 
 class AsyncShopLocator:
@@ -450,6 +489,43 @@ def test_two_steps_on_one_page_then_the_rest(side, tmp_path, stub_provider):
     assert shop.visits == ['both', 'review', 'done']
 
 
+def test_steps_that_showed_together_are_looked_at_again_after_each(side, tmp_path,
+                                                                 stub_provider):
+    # The upsell shows with shipping, and shipping's Next goes to the review page: the
+    # upsell is gone by then, so its function must not run there.
+    both = shipping_page('review') + UPSELL.replace('{go}', 'review')
+    shop = Shop({'both': both, 'review': review_page(), 'done': DONE}, 'both')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    heal = side.heal
+    heal.step('shipping', SHIPPING, side.does(('fill', '#ship-name', 'Ada'), ('click', '#next')))
+    heal.step('upsell', "//h1[.='Add insurance?']", side.does(('click', '#no-thanks')),
+              optional=True)
+    heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+
+    assert side.run() == ['shipping', 'review']
+    assert shop.visits == ['both', 'review', 'done']
+
+
+def test_a_step_that_shows_a_moment_later_is_waited_for(side, tmp_path, stub_provider):
+    # Each page loads 30 ms after its click: until then the step that ran is still the only
+    # one on the page, which is not yet a step that came back.
+    shop = SlowShop(in_order('shipping', 'payment', 'review').pages, 'a')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    _checkout(side)
+
+    assert side.run(timeout_ms=2000) == ['shipping', 'payment', 'review']
+    assert [v for _, v, _ in shop.actions] == ['fill', 'click', 'fill', 'click', 'click']
+    assert shop.filled == {'ship-name': 'Ada', 'card-number': '4242 4242 4242 4242'}
+
+
+def test_run_steps_waits_as_long_as_the_healer_by_default(side, tmp_path, stub_provider):
+    side.open(Shop({'a': '<h1>Nothing</h1>'}, 'a'), provider=stub_provider(None),
+              store_path=_store(tmp_path), timeout_ms=70)
+    side.heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+    with pytest.raises(AttentionRequired, match='within 70 ms'):
+        side.run()
+
+
 def test_a_step_that_comes_back_stops_the_flow(side, tmp_path, stub_provider):
     shop = in_order('shipping', 'payment', 'review', declined=True)
     side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
@@ -482,6 +558,28 @@ def test_a_page_with_a_step_nobody_registered_stops_the_flow(side, tmp_path, stu
             "(//button[.='Place order'])") in message
     assert "Steps that ran: 'shipping'." in message
     assert 'add it with heal.step()' in message
+
+
+def test_a_new_page_that_shows_part_of_a_step_that_ran_is_named_as_a_new_step(side, tmp_path,
+                                                                             stub_provider):
+    # The site added gift options on a page that keeps the Shipping heading: shipping's
+    # submit worked, so the error must not send the reader after a failed submit.
+    gift = ("<h1>Shipping</h1><p>Ada, 1 Main St</p><h2>Gift options</h2>"
+            "<button id='wrap' type='button' data-go='{go}'>Wrap it</button>")
+    shop = in_order('shipping', 'gift', 'payment', 'review', gift=gift)
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    _checkout(side)
+
+    with pytest.raises(AttentionRequired) as caught:
+        side.run(timeout_ms=30)
+
+    message = str(caught.value)
+    assert message == changed_message('shipping', '/checkout/a', '/checkout/b', 30, ['shipping'])
+    assert message.startswith("mendwright: 'shipping' shows on /checkout/b, and it ran on "
+                              '/checkout/a, so the page changed after it ran')
+    assert 'add it with heal.step()' in message
+    assert 'its submit probably failed' not in message
+    assert shop.visits == ['a', 'b']
 
 
 def test_an_optional_step_that_sometimes_shows(side, tmp_path, caplog, stub_provider):
@@ -531,6 +629,23 @@ def test_without_a_last_step_the_flow_ends_when_every_required_step_ran(side, tm
     assert shop.visits == ['a', 'b', 'c']
 
 
+def test_without_a_last_step_a_step_the_site_dropped_stops_the_flow_and_says_so(
+        side, tmp_path, stub_provider):
+    shop = in_order('shipping', 'review')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    _checkout(side, review_last=False)
+
+    with pytest.raises(AttentionRequired) as caught:
+        side.run(timeout_ms=30)
+
+    waiting = [side.core._step_book['payment']]
+    assert str(caught.value) == unknown_message('/checkout/done', waiting,
+                                                ['shipping', 'review'], 30, no_last=True)
+    assert ('No step has last=True, so run_steps() waits until every step that is not '
+            'optional ran, and the site may have dropped one') in str(caught.value)
+    assert shop.visits == ['a', 'b', 'done']
+
+
 def test_an_error_in_a_step_is_raised_as_it_is(side, tmp_path, stub_provider):
     shop = in_order('shipping', 'payment', 'review')
     side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
@@ -552,7 +667,7 @@ def test_an_error_in_a_step_is_raised_as_it_is(side, tmp_path, stub_provider):
     assert _steps_journal(tmp_path)[-1] == {'key': 'payment', 'position': 2, 'registered': 2,
                                             'page': '/checkout/b', 'outcome': 'failed',
                                             'error': 'ValueError'}
-    assert side.core._current_step is None
+    assert side.core._step_now() is None
 
 
 def test_a_step_function_gets_heal_page(side, tmp_path, stub_provider):
@@ -564,15 +679,49 @@ def test_a_step_function_gets_heal_page(side, tmp_path, stub_provider):
     assert got == [side.heal.page]
 
 
-def test_the_async_healer_takes_a_plain_function_too(tmp_path, stub_provider):
+def test_the_async_healer_takes_a_plain_function_that_returns_an_awaitable(tmp_path,
+                                                                           stub_provider):
     side = Side('async')
     try:
         shop = in_order('review')
         heal = side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
-        seen = []
-        heal.step('review', REVIEW, lambda page: seen.append(page), last=True)
+        heal.step('review', REVIEW, lambda page: page.click('#place'), last=True)
         assert side.run() == ['review']
-        assert seen == [heal.page]
+        assert shop.visits == ['a', 'done']
+        assert shop.actions == [('css=#place', 'click', ())]
+    finally:
+        side.close()
+
+
+@pytest.mark.filterwarnings('ignore:coroutine .* was never awaited:RuntimeWarning')
+@pytest.mark.parametrize('name', ['review', 'shipping'])
+def test_a_plain_function_on_the_async_healer_that_awaits_nothing_raises(tmp_path,
+                                                                         stub_provider, name):
+    # heal.page's calls are coroutines there: made as statements, they do nothing on the
+    # page, so the step must not count as having run, last or not.
+    side = Side('async')
+    try:
+        shop = in_order('shipping', 'review') if name == 'shipping' else in_order('review')
+        heal = side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+
+        def shipping(page):
+            page.fill('#ship-name', 'Ada')
+            page.click('#next')
+
+        def review(page):
+            page.click('#place')
+
+        heal.step('shipping', SHIPPING, shipping)
+        heal.step('review', REVIEW, review, last=True)
+
+        with pytest.raises(TypeError) as caught:
+            side.run()
+        assert str(caught.value) == plain_message(name, None)
+        assert shop.actions == []
+        assert _steps_journal(tmp_path) == [{'key': name, 'position': 1,
+                                             'registered': 1 if name == 'shipping' else 2,
+                                             'page': '/checkout/a', 'outcome': 'failed',
+                                             'error': 'TypeError'}]
     finally:
         side.close()
 
@@ -615,15 +764,89 @@ def test_an_interruption_whose_action_fails_is_tried_once_per_wait(side, tmp_pat
     assert shop.actions == [('css=#promo-close', 'click', ())]
 
 
+def test_an_interruption_whose_action_fails_leaves_the_others_to_be_handled(side, tmp_path,
+                                                                           caplog,
+                                                                           stub_provider):
+    # The promotion's Close button is covered, so its click fails; a consent wall that
+    # hides the review step loads a moment later and must still be answered.
+    class LateWall(Shop):
+        looks = 0
+
+        def query(self, selector):
+            if ('Place order' in selector and self.url.endswith('/a')
+                    and ('css=#promo-close', 'click', ()) in self.actions):
+                self.looks += 1
+                if self.looks == 2:
+                    self.goto('wall')
+            return super().query(selector)
+
+    wall = ("<div id='wall' data-overlay=''><p>We use cookies.</p>"
+            "<button id='accept' type='button' data-closes='wall' data-reveal='main'>Accept"
+            "</button></div><div id='main' style='display: none'>" + review_page() + '</div>')
+    shop = LateWall({'a': "<div id='cover' data-overlay=''></div>"
+                          "<button id='promo-close' type='button'>Close</button>",
+                     'wall': wall, 'done': DONE}, 'a')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    side.heal.interrupt('promo', '#promo-close')
+    side.heal.interrupt('consent', '#accept')
+    side.heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+
+    assert side.run(timeout_ms=1000) == ['review']
+
+    assert shop.actions == [('css=#promo-close', 'click', ()), ('css=#accept', 'click', ()),
+                            ('css=#place', 'click', ())]
+    warnings = _lines(caplog, logging.WARNING)
+    assert len(warnings) == 2
+    assert warnings[0].startswith("mendwright: could not handle interruption 'promo' before "
+                                  "'<next step>'")
+    assert warnings[1] == "mendwright: handled interruption 'consent' before '<next step>'"
+
+
+def test_an_interruption_that_keeps_coming_back_ends_the_wait(side, tmp_path, stub_provider):
+    # The promotion's Close button takes it away only on the 5th click: each wait handles
+    # 3 interruptions, as one action does, and then stops instead of clicking forever.
+    class Stubborn(Shop):
+        closes = 0
+
+        def act(self, selector, verb, args):
+            if selector != 'css=#promo-close':
+                return super().act(selector, verb, args)
+            self.actions.append((selector, verb, args))
+            self.closes += 1
+            if self.closes >= 5:
+                self.by_id('promo').drop_tree()
+                self.by_id('main').attrib.pop('style', None)
+
+    shop = Stubborn({'a': "<div id='promo' data-overlay=''><button id='promo-close' "
+                          "type='button'>Close</button></div><div id='main' "
+                          "style='display: none'>" + review_page() + '</div>',
+                     'done': DONE}, 'a')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    side.heal.interrupt('promo', '#promo-close')
+    side.heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+
+    with pytest.raises(InterruptionLoop):
+        side.run(timeout_ms=50)
+    assert shop.closes == 3
+
+
 def test_a_flow_that_keeps_growing_stops(side, tmp_path, stub_provider):
     shop = Shop({'a': '<h1>Anything</h1>'}, 'a')
     side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
     heal = side.heal
     count = [0]
 
-    def grow(page):
+    def register_another():
         count[0] += 1
-        heal.step('step' + str(count[0]), '//h1', grow)
+        if count[0] < 6:        # so a run_steps() without the cap ends, and fails, here
+            heal.step('step' + str(count[0]), '//h1', grow)
+
+    if side.kind == 'sync':
+        def grow(page):
+            register_another()
+    else:
+        async def grow(page):
+            register_another()
 
     heal.step('step0', '//h1', grow)
     with pytest.raises(AttentionRequired) as caught:
@@ -650,6 +873,28 @@ def test_a_landmark_on_the_wrong_url_does_not_show_the_step(side, tmp_path, stub
     with pytest.raises(AttentionRequired) as caught:
         side.run(timeout_ms=0)
     assert "'payment' (//h1[.='Payment'], url /checkout/pay)" in str(caught.value)
+
+
+def test_a_step_with_a_url_and_a_landmark_shows_only_with_both(side, tmp_path, stub_provider):
+    # url= scopes every step to the checkout and the landmarks tell them apart: payment's
+    # url matches the review page, but its landmark is not there.
+    shop = in_order('shipping', 'review')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    heal = side.heal
+    heal.step('shipping', SHIPPING, side.does(('fill', '#ship-name', 'Ada'), ('click', '#next')),
+              url='/checkout/*')
+    heal.step('payment', PAYMENT, side.does(('fill', '#card-number', '4242'), ('click', '#next')),
+              url='/checkout/*')
+    heal.step('review', REVIEW, side.does(('click', '#place')), url='/checkout/*', last=True)
+    assert side.run() == ['shipping', 'review']
+
+
+def test_a_later_selector_of_a_landmark_list_shows_the_step(side, tmp_path, stub_provider):
+    shop = in_order('payment', 'review')
+    side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+    side.heal.step('payment', ['#gone', PAYMENT], side.does(('click', '#next')))
+    side.heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+    assert side.run() == ['payment', 'review']
 
 
 def test_any_visible_match_of_a_landmark_shows_the_step(side, tmp_path, stub_provider):
@@ -702,8 +947,8 @@ def test_a_renamed_field_in_a_step_that_moved_heals_there(side, tmp_path, caplog
     assert provider.bundles[0]['page'] == '/checkout/b'
     assert provider.bundles[0]['lastPage'] == '/checkout/a'
     assert ("mendwright: the page guard lets '#ship-name' heal on /checkout/b: it was found "
-            "during step 'shipping' before (last on /checkout/a), and 'shipping' is on the page "
-            "now") in _lines(caplog, logging.INFO)
+            "during step 'shipping' before (last on /checkout/a), and this is the page "
+            "'shipping' showed on") in _lines(caplog, logging.INFO)
     assert not [e for e in _journal(tmp_path) if e['event'] == 'flow.page_guard']
 
 
@@ -732,6 +977,113 @@ def test_a_key_of_another_step_is_declined_on_a_new_page(side, tmp_path, stub_pr
     with pytest.raises(AttentionRequired, match="'#ship-name' was last found on /checkout/a"):
         side.run()
     assert provider.bundles == []
+
+
+def test_a_key_missed_after_the_step_went_to_another_page_is_declined(side, tmp_path,
+                                                                     stub_provider):
+    # '#ship-name' was found during shipping. This time shipping's function looks for it
+    # again after its own Next went to the payment page, which is not shipping's page.
+    _first_run(tmp_path, stub_provider)
+    shop = in_order('shipping', 'payment', 'review')
+    provider = stub_provider("//input[@id='card-number']")     # a field that would pass
+    side.open(shop, provider=provider, store_path=_store(tmp_path))
+    side.heal.step('shipping', SHIPPING,
+                   side.does(('click', '#next'), ('fill', '#ship-name', 'Ada')))
+
+    with pytest.raises(AttentionRequired, match="'#ship-name' was last found on /checkout/a, "
+                                                "and this page is /checkout/b"):
+        side.run()
+    assert provider.bundles == []
+    assert shop.filled == {}
+
+
+def _verify_flow(side):
+    heal = side.heal
+    heal.step('shipping', SHIPPING, side.does(('fill', '#ship-name', 'Ada'), ('click', '#next'),
+                                              ('click', '#use-address')))
+    heal.step('payment', PAYMENT,
+              side.does(('fill', '#card-number', '4242 4242 4242 4242'), ('click', '#next')))
+    heal.step('review', REVIEW, side.does(('click', '#place')), last=True)
+
+
+def test_a_step_that_no_longer_goes_through_a_page_does_not_heal_onto_the_next_step(
+        side, tmp_path, stub_provider):
+    # Shipping's Next went to an address check whose Use this address button went on to
+    # payment. The site dropped the check: the button's lookup now misses on the payment
+    # page, where a heal would press payment's Next with no card.
+    verify = ("<h1>Check your address</h1><button id='use-address' type='button' "
+              "data-go='b'>Use this address</button>")
+    first = Side('sync')
+    try:
+        first.open(Shop({'a': shipping_page('verify'), 'verify': verify, 'b': payment_page('c'),
+                         'c': review_page(), 'done': DONE}, 'a'),
+                   provider=stub_provider(None), store_path=_store(tmp_path))
+        _verify_flow(first)
+        assert first.run() == ['shipping', 'payment', 'review']
+    finally:
+        first.close()
+    meta = load_store(None, _store(tmp_path)).meta('#use-address')
+    assert meta['pages'] == ['/checkout/verify']
+    assert not meta['steps']        # found after shipping left its page: not shipping's
+
+    shop = in_order('shipping', 'payment', 'review')
+    provider = stub_provider("//button[@id='next']")
+    side.open(shop, provider=provider, store_path=_store(tmp_path))
+    _verify_flow(side)
+
+    with pytest.raises(AttentionRequired, match="'#use-address' was last found on "
+                                                "/checkout/verify, and this page is /checkout/b"):
+        side.run()
+    assert provider.bundles == []
+    assert shop.visits == ['a', 'b']
+    assert shop.filled == {'ship-name': 'Ada'}
+
+
+def test_a_key_found_after_the_step_went_to_another_page_is_not_saved_with_it(tmp_path,
+                                                                              stub_provider):
+    side = Side('sync')
+    try:
+        side.open(in_order('shipping', 'payment', 'review'), provider=stub_provider(None),
+                  store_path=_store(tmp_path))
+        _checkout(side)
+        # Shipping's function goes on to fill the card on the payment page.
+        side.heal.step('shipping', SHIPPING, side.does(
+            ('fill', '#ship-name', 'Ada'), ('click', '#next'), ('fill', '#card-number', '4242')))
+        assert side.run() == ['shipping', 'payment', 'review']
+    finally:
+        side.close()
+    store = load_store(None, _store(tmp_path))
+    assert store.meta('#card-number')['steps'] == ['payment']
+    assert store.meta('#ship-name')['steps'] == ['shipping']
+
+
+def test_a_coroutine_gathered_next_to_run_steps_is_not_part_of_the_step(tmp_path,
+                                                                        stub_provider):
+    side = Side('async')
+    try:
+        shop = Shop({'a': review_page() + "<input id='search' name='q'>", 'done': DONE}, 'a')
+        heal = side.open(shop, provider=stub_provider(None), store_path=_store(tmp_path))
+
+        async def review(page):
+            await asyncio.sleep(0.05)
+            await page.click('#place')
+
+        async def search():
+            await asyncio.sleep(0.01)                   # while review runs
+            await heal.locator('search', '#search', timeout_ms=0)
+
+        async def both():
+            return await asyncio.gather(heal.run_steps(poll_ms=5), search())
+
+        heal.step('review', REVIEW, review, last=True)
+        ran, _ = side.call(both())
+        assert ran == ['review']
+    finally:
+        side.close()
+    store = load_store(None, _store(tmp_path))
+    assert store.meta('#place')['steps'] == ['review']
+    assert store.meta('search')['pages'] == ['/checkout/a']
+    assert not store.meta('search')['steps']
 
 
 # --- argument checks --------------------------------------------------------------------------------
@@ -836,7 +1188,8 @@ def test_a_decorator_with_bad_arguments_raises_before_the_function(tmp_path, stu
     ('/checkout/payment', '/checkout/payment'),
     ('/Checkout//Payment/', '/checkout/payment'),
     ('/orders/123/pay', '/orders/*/pay'),
-    ('*/payment*', '/*/payment*'),
+    ('*/payment*', '*/payment*'),
+    ('*payment', '*payment'),
     ('  /checkout/*  ', '/checkout/*'),
 ])
 def test_url_pattern(pattern, normalized):
@@ -848,6 +1201,9 @@ def test_url_pattern(pattern, normalized):
     ('/checkout/payment', 'https://shop.test/checkout/payment/card', False),
     ('/checkout/*', 'https://shop.test/checkout/payment/card', True),
     ('/*/payment*', 'file:///C:/site/checkout/payment.html', True),
+    ('*/payment*', 'https://shop.test/payment', True),
+    ('*/payment*', 'https://shop.test/checkout/payment', True),
+    ('*/payment*', 'https://shop.test/repayment', False),
     ('/orders/*/pay', 'https://shop.test/orders/507f1f77bcf86cd799439011/pay', True),
     ('/*', 'about:blank', False),
     ('/*', 'https://shop.test/', False),
@@ -882,6 +1238,8 @@ def test_the_guide_quotes_the_messages_the_code_writes():
     for message in (
             unknown_message('/checkout/gift', waiting, ['shipping'], 10000),
             again_message('payment', '/checkout/payment', 10000, ['shipping', 'payment']),
+            changed_message('shipping', '/checkout/shipping', '/checkout/gift', 10000,
+                            ['shipping']),
             dropped_message('gift', 'review'),
             order_message(['payment'], 'shipping'),
             ran_message('payment', '/checkout/step-a', 0.4),
