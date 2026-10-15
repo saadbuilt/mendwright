@@ -14,9 +14,9 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-https://github.com/user-attachments/assets/2b9b7438-e369-415f-8a5c-4b28dcc58e11
+https://github.com/user-attachments/assets/9332fddf-b63f-41d1-b0e5-f03b8f0064e2
 
-<p align="center"><sub>Real runs on a made-up shop, with the waits sped up. Plain Playwright dies on a cookie banner, and one line of mendwright gets past it. After a redesign, two selectors are repaired from memory and one by the 1 GB local model. Then <code>dismiss=True</code> declines popups nobody registered, without ever clicking “Sign up”, a paid upsell or a “Dismiss” that would cancel the order; the checkout runs its steps in whatever order the site shows them; and Selenium gets past the banner too.</sub></p>
+<p align="center"><sub>Real runs on a made-up shop, with the waits sped up. The site redeploys and breaks three selectors: mendwright finds two again from memory and one with its 1 GB local model, checks each on the live page and saves them, and the next run takes 0.28 s. Then it rejects a cookie banner, says “No thanks” to a sign-up popup and follows a checkout that asks for payment before shipping. Each of those has a short clip in the <a href="https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md">guide</a>.</sub></p>
 
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 

@@ -645,6 +645,8 @@ With `heal.run_steps()`, steps in a new order or on one page need no change to y
 
 ### Interruptions
 
+https://github.com/user-attachments/assets/cf8ef09a-7666-4303-9e14-66dc6dec33ef
+
 ```python
 heal = mendwright.open(page)
 heal.interrupt("cookies", "#cookie-accept")
@@ -694,6 +696,8 @@ An interruption that hides the element instead of covering it, such as a consent
 
 ### Cookie banners
 
+https://github.com/user-attachments/assets/403a35cd-93a7-43c7-950b-1beadd9ba9bd
+
 `mendwright.open(page, cookies="reject")` registers an interruption under the key `cookie_banner` that closes consent banners without accepting. `cookies="accept"` accepts them instead. It is off by default, so mendwright never clicks anything you didn't ask for.
 
 It knows the reject, decline, necessary-only and close buttons (or the accept buttons) of these consent managers by their ids and classes: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, the cookieconsent library (Osano's and orestbida's), CookieYes (and its older Cookie Law Info plugin) and Complianz.
@@ -714,6 +718,8 @@ The selector lists are in `mendwright/interruptions.py`.
 If your script has its own step for the banner, register that key with `heal.interrupt()` instead of using the preset, so the step is skipped once the banner is gone. A preset and a step of your own for the same banner can get in each other's way, and on Playwright a step that reaches the banner through `get_by_role()` or another locator mendwright does not route finds it closed already (see [Interruptions](#interruptions)). On Selenium such a step goes ahead: nothing covers the banner's own buttons, so mendwright leaves the banner to it.
 
 ### Popups mendwright wasn't told about
+
+https://github.com/user-attachments/assets/496d37f9-4b0c-47bf-9a84-3a77b097a786
 
 ```python
 heal = mendwright.open(page, dismiss=True)
@@ -818,6 +824,8 @@ If a redesign only moved the page to a new URL, pass `heal_across_pages=True`. P
 The guard needs a page on both sides, so it doesn't cover a key on its first run, pages loaded with `page.set_content()` (they are `about:blank`), or a step that moved away while the path stays the same. That last case covers apps that route with the URL fragment (`/#/signup`) or the query string (`?page=signup`), and apps that never change the URL. A single-page app that changes the path with the History API is covered. In those cases the model is told it may say that no element fits, and gets the current page and the last page the key was found on when they are known.
 
 ### Steps in any order
+
+https://github.com/user-attachments/assets/16e41116-4813-4cc9-a05e-8b762c64d00a
 
 ```python
 heal = mendwright.open(page)
