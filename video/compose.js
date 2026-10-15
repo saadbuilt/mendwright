@@ -70,7 +70,8 @@ const LH = 36;
 const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#5aa9ff', purple: '#b98cff', amber: '#f2c14e' };
 
 // ---------- timeline (seconds) ----------
-const S = { title: 0, s1: 3.4, s2: 9.8, s3: 19.6, s4: 29.0, s5: 48.6, s6: 53.6, s7: 72.6, end: 79.6, total: 87.0 };
+const S = { title: 0, s1: 3.4, s2: 9.8, s3: 19.6, s4: 29.0, s5: 48.6, s6: 53.6, s7: 65.6, s7b: 74.4, s7c: 85.6,
+            s8: 95.6, s9: 113.6, end: 121.6, total: 129.0 };
 window.DURATION = S.total * K;
 
 // ---------- build ----------
@@ -127,7 +128,7 @@ const ov = el('div', '', null, stage); ov.id = 'ov';
 // top bar
 const runPlain = el('div', '', `<span class="d" style="background:rgba(255,255,255,.45)"></span>Plain Playwright`, stage); runPlain.id = 'run';
 const runMw = el('div', '', `<span class="d" style="background:${C.purple};box-shadow:0 0 12px ${C.purple}"></span>Playwright <span style="color:var(--ink3);font-weight:500">+</span> <span style="color:#d9c4ff">mendwright</span>`, stage); runMw.id = 'run';
-const STEPS = ['Today', 'Cookie banner', '+ mendwright', 'Redesign', 'Next run', 'Flow', 'Selenium'];
+const STEPS = ['Today', 'Banner', 'One line', 'Redesign', 'Next run', 'Popups', 'Judgement', 'Any order', 'Selenium'];
 const stepsEl = el('div', '', STEPS.map(s => `<div class="s"><i></i><span>${s}</span></div>`).join(''), stage); stepsEl.id = 'steps';
 const stepEls = [...stepsEl.children];
 
@@ -252,8 +253,8 @@ const end = el('div', 'card', `<div class="wm" style="font-size:104px"><b>mendwr
  <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Fixes from memory first, with no AI.</div>
  <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A 1 GB local model for the hard ones. No API key.</div>
  <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
- <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners and popups out of the way, optional steps skipped.</div>
- <div><span class="ic" style="background:${C.red}22;color:${C.red}">⊘</span>A step that moved to another page stops instead of guessing.</div>
+ <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners and popups declined, never “Sign up”, never a cancel.</div>
+ <div><span class="ic" style="background:${C.green}22;color:${C.green}">⇄</span>Checkout steps in any order, with heal.step() and run_steps().</div>
 </div>
 <div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>mendwright model install</div></div>
 <div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
@@ -297,8 +298,7 @@ function measure() {
     selTok[tok.dataset.k] = { line: id, dx: tr.left - lr.left, w: tr.width, h: tr.height, tok };
   }
   buildScenes();
-  if (window.measureFlow) measureFlow();
-  if (window.measureSel) measureSel();
+  if (window.measureScenes) measureScenes();
 }
 
 const P = (r, dx = 0, dy = 0) => [r.cx + dx, r.cy + dy];
@@ -424,14 +424,14 @@ function render(t) {
   mat(runPlain, pres(t, S.s1 + .4, 21.0), { dy: -10, blur: 6 });
   mat(runMw, pres(t, 21.05, S.end), { dy: -10, blur: 6 });
   mat(stepsEl, spring(t - S.s1 - .5, .6), { dy: -10, blur: 6 });
-  const scene = t < S.s2 ? 0 : t < S.s3 ? 1 : t < S.s4 ? 2 : t < S.s5 ? 3 : t < S.s6 ? 4 : t < S.s7 ? 5 : 6;
-  const sceneStart = [S.s1, S.s2, S.s3, S.s4, S.s5, S.s6, S.s7][scene];
+  const scene = t < S.s2 ? 0 : t < S.s3 ? 1 : t < S.s4 ? 2 : t < S.s5 ? 3 : t < S.s6 ? 4 : t < S.s7 ? 5 : t < S.s8 ? 6 : t < S.s9 ? 7 : 8;
+  const sceneStart = [S.s1, S.s2, S.s3, S.s4, S.s5, S.s6, S.s7, S.s8, S.s9][scene];
   stepEls.forEach((s, i) => {
     const on = i === scene, done = i < scene;
     const p = on ? spring(t - sceneStart, .4) : 0;
     s.style.color = on ? `rgba(238,242,247,${lerp(.4, .95, p)})` : done ? 'rgba(238,242,247,.55)' : '';
     const dot = s.firstChild;
-    const col = i === 6 ? C.blue : i === 5 ? C.green : i >= 2 ? C.purple : i === 1 ? C.amber : C.blue;
+    const col = [C.blue, C.amber, C.purple, C.purple, C.purple, C.green, C.amber, C.green, C.blue][i];
     dot.style.background = on ? col : done ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.18)';
     dot.style.boxShadow = on ? `0 0 ${lerp(0, 14, p)}px ${col}` : 'none';
     dot.style.transform = `scale(${on ? lerp(1, 1.35, spring(t - sceneStart, .35, .6)) : 1})`;
@@ -448,8 +448,7 @@ function render(t) {
   drawRun(t);
   drawBrowser(t);
   drawOverlay(t);
-  if (window.drawFlow) drawFlow(t);
-  if (window.drawSel) drawSel(t);
+  if (window.drawScenes) drawScenes(t);
   drawCaps(t);
   drawCards(t);
 }

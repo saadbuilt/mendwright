@@ -7,7 +7,7 @@
    "ok": false,
    "error_type": "ElementClickInterceptedException",
    "error": "Message: element click intercepted: Element <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"> is not clickable at point (271, 249). Other element would receive the click: <div id=\"cc-wrap\" class=\"cookie-consent\" style=\"display:flex;position:fixed;top:0;left:0;bottom:0;right:0;",
-   "seconds": 1.063,
+   "seconds": 1.078,
    "log": []
   }
  ],
@@ -17,7 +17,7 @@
    "value": "email",
    "act": "click",
    "ok": true,
-   "seconds": 0.203,
+   "seconds": 0.235,
    "log": [
     "WARNING mendwright: handled interruption 'cookie_banner' before 'id=email'"
    ]
@@ -27,7 +27,7 @@
    "value": "accept-terms",
    "act": "click",
    "ok": true,
-   "seconds": 0.078,
+   "seconds": 0.093,
    "log": []
   },
   {
@@ -35,7 +35,7 @@
    "value": "continue",
    "act": "click",
    "ok": true,
-   "seconds": 0.063,
+   "seconds": 0.094,
    "log": []
   }
  ],

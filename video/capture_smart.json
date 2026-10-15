@@ -1,0 +1,114 @@
+{
+ "pages": {
+  "upsell": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"x8k2\"><h2>Your details</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-77a1\"> Email me deals and news</label>\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-91c4\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\">Back to cart</button>\n</div></div>\n<div id=\"pop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"pt\" style=\"position:fixed;inset:0;background:rgba(18,16,40,.5);display:flex;align-items:center;justify-content:center\"><div style=\"background:#fff;border-radius:18px;padding:26px 28px;width:430px;box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:system-ui,Segoe UI,sans-serif\">\n  <div id=\"pt\" style=\"font-size:24px;font-weight:700;margin-bottom:8px\">Skip the queue?</div>\n  <div style=\"color:#57606a;font-size:15px;line-height:1.45;margin-bottom:14px\">Orders are busy today. Priority handling ships yours first.</div>\n  <button type=\"button\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim())\" style=\"width:100%;padding:13px;border:0;border-radius:10px;background:#3b2a86;color:#fff;font-size:16px;font-weight:600;margin-top:6px\">Skip the line – $9.99</button>\n  <button type=\"button\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());document.getElementById('pop').remove()\" style=\"width:100%;margin-top:8px;padding:10px;border:0;background:none;color:#57606a;font-size:15px\">No thanks</button></div></div></body></html>",
+  "order": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"x8k2\"><h2>Your details</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-77a1\"> Email me deals and news</label>\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-91c4\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\">Back to cart</button>\n</div></div>\n<div id=\"pop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"pt\" style=\"position:fixed;inset:0;background:rgba(18,16,40,.5);display:flex;align-items:center;justify-content:center\"><div style=\"background:#fff;border-radius:18px;padding:26px 28px;width:430px;box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:system-ui,Segoe UI,sans-serif\">\n  <div id=\"pt\" style=\"font-size:24px;font-weight:700;margin-bottom:8px\">Your order is on hold</div>\n  <div style=\"color:#57606a;font-size:15px;line-height:1.45;margin-bottom:14px\">Click Continue with order to keep it, or Dismiss to cancel it.</div>\n  <button type=\"button\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());document.getElementById('pop').remove()\" style=\"width:100%;padding:13px;border:0;border-radius:10px;background:#3b2a86;color:#fff;font-size:16px;font-weight:600;margin-top:6px\">Continue with order</button>\n  <button type=\"button\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());window.mwCancelled=true;document.getElementById('pop').remove()\" style=\"width:100%;margin-top:8px;padding:10px;border:0;background:none;color:#57606a;font-size:15px\">Dismiss</button></div></div></body></html>",
+  "zip": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"x8k2\"><h2>Your details</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-77a1\"> Email me deals and news</label>\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-91c4\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\">Back to cart</button>\n</div></div>\n<div id=\"pop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"pt\" style=\"position:fixed;inset:0;background:rgba(18,16,40,.5);display:flex;align-items:center;justify-content:center\"><div style=\"background:#fff;border-radius:18px;padding:26px 28px;width:430px;box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:system-ui,Segoe UI,sans-serif\">\n  <div id=\"pt\" style=\"font-size:24px;font-weight:700;margin-bottom:8px\">Confirm your ZIP code</div>\n  <div style=\"color:#57606a;font-size:15px;line-height:1.45;margin-bottom:14px\">Re-enter your ZIP code to see delivery options for your order.</div>\n  <input id=\"zip\" placeholder=\"ZIP code\" style=\"width:100%;padding:12px;border:1px solid #d0d7de;border-radius:9px;font-size:16px;margin:4px 0 8px\">\n  <button type=\"button\" id=\"zip-ok\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());window.mwZip=document.getElementById('zip').value;if (window.mwZip) document.getElementById('pop').remove()\" style=\"width:100%;padding:13px;border:0;border-radius:10px;background:#3b2a86;color:#fff;font-size:16px;font-weight:600;margin-top:6px\">Continue</button></div></div></body></html>"
+ },
+ "upsell": {
+  "name": "upsell",
+  "interrupts": [],
+  "step": "page.click(\"input[name=email]\")",
+  "ok": true,
+  "seconds": 2.187,
+  "log": [
+   "WARNING mendwright: dismissed a popup in the way of 'input[name=email]': <div id=\"pop\" role=\"dialog\"> (\"Skip the queue? Orders are busy today. Priority handling shi…\") with “No thanks”, after Escape did not close it"
+  ],
+  "page": {
+   "clicked": [
+    "No thanks"
+   ],
+   "cancelled": false,
+   "zip": null,
+   "popup_up": false
+  },
+  "handled": [
+   "InterruptionEvent(key='<popup>', before='input[name=email]', popup='<div id=\"pop\" role=\"dialog\"> (\"Skip the queue? Orders are busy today. Priority handling shi…\")', how='decline', label='No thanks')"
+  ]
+ },
+ "order_alone": {
+  "name": "order_alone",
+  "interrupts": [],
+  "step": "page.click(\"input[name=email]\")",
+  "ok": false,
+  "error_type": "TimeoutError",
+  "error": "Locator.click: Timeout 6000ms exceeded.",
+  "seconds": 8.157,
+  "log": [
+   "WARNING mendwright: could not dismiss a popup in the way of 'input[name=email]': <div id=\"pop\" role=\"dialog\"> (\"Your order is on hold Click Continue with order to keep it,…\"). mendwright pressed Escape, which did not close it, and it has no close or decline button that mendwright may click. The action goes ahead, and fails with the browser's own error if the popup blocks it. Register the button that closes it with heal.interrupt(\"<name>\", \"<selector of the button>\"). If it needs data first, register its field before the button: heal.interrupt(\"<name>_field\", \"<selector of the field>\", action=\"fill\", args=(\"<value>\",))."
+  ],
+  "page": {
+   "clicked": [],
+   "cancelled": false,
+   "zip": null,
+   "popup_up": true
+  },
+  "handled": []
+ },
+ "order_registered": {
+  "name": "order_registered",
+  "interrupts": [
+   [
+    "order",
+    "text=\"Continue with order\"",
+    "click",
+    []
+   ]
+  ],
+  "step": "page.click(\"input[name=email]\")",
+  "ok": true,
+  "seconds": 0.172,
+  "log": [
+   "WARNING mendwright: handled interruption 'order' before 'input[name=email]'"
+  ],
+  "page": {
+   "clicked": [
+    "Continue with order"
+   ],
+   "cancelled": false,
+   "zip": null,
+   "popup_up": false
+  },
+  "handled": [
+   "InterruptionEvent(key='order', before='input[name=email]', popup=None, how=None, label=None)"
+  ]
+ },
+ "zip_registered": {
+  "name": "zip_registered",
+  "interrupts": [
+   [
+    "zip",
+    "#zip",
+    "fill",
+    [
+     "10115"
+    ]
+   ],
+   [
+    "zip_ok",
+    "#zip-ok",
+    "click",
+    []
+   ]
+  ],
+  "step": "page.click(\"input[name=email]\")",
+  "ok": true,
+  "seconds": 2.172,
+  "log": [
+   "WARNING mendwright: handled interruption 'zip' before 'input[name=email]'",
+   "WARNING mendwright: handled interruption 'zip_ok' before 'input[name=email]'"
+  ],
+  "page": {
+   "clicked": [
+    "Continue"
+   ],
+   "cancelled": false,
+   "zip": "10115",
+   "popup_up": false
+  },
+  "handled": [
+   "InterruptionEvent(key='zip', before='input[name=email]', popup=None, how=None, label=None)",
+   "InterruptionEvent(key='zip_ok', before='input[name=email]', popup=None, how=None, label=None)"
+  ]
+ },
+ "mendwright_file": "C:\\Users\\Omen\\Documents\\Software\\mw-dismiss\\mendwright\\__init__.py"
+}
