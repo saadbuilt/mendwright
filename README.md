@@ -14,7 +14,7 @@ Self-healing selectors for Playwright and Selenium.
 
 </div>
 
-https://github.com/user-attachments/assets/9332fddf-b63f-41d1-b0e5-f03b8f0064e2
+https://github.com/user-attachments/assets/35eb4f22-28ee-46f9-a221-a10ad261ba8c
 
 <p align="center"><sub>Real runs on a made-up shop, with the waits sped up. The site redeploys and breaks three selectors: mendwright finds two again from memory and one with its 1 GB local model, checks each on the live page and saves them, and the next run takes 0.28 s. Then it rejects a cookie banner, says “No thanks” to a sign-up popup and follows a checkout that asks for payment before shipping. Each of those has a short clip in the <a href="https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md">guide</a>.</sub></p>
 

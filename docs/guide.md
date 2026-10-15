@@ -645,7 +645,7 @@ With `heal.run_steps()`, steps in a new order or on one page need no change to y
 
 ### Interruptions
 
-https://github.com/user-attachments/assets/cf8ef09a-7666-4303-9e14-66dc6dec33ef
+https://github.com/user-attachments/assets/4c88aaef-a6af-49f6-ac33-d3a6f8be4572
 
 ```python
 heal = mendwright.open(page)
@@ -696,7 +696,7 @@ An interruption that hides the element instead of covering it, such as a consent
 
 ### Cookie banners
 
-https://github.com/user-attachments/assets/403a35cd-93a7-43c7-950b-1beadd9ba9bd
+https://github.com/user-attachments/assets/d2d067eb-c394-42ca-98e7-6c1645246551
 
 `mendwright.open(page, cookies="reject")` registers an interruption under the key `cookie_banner` that closes consent banners without accepting. `cookies="accept"` accepts them instead. It is off by default, so mendwright never clicks anything you didn't ask for.
 
@@ -719,7 +719,7 @@ If your script has its own step for the banner, register that key with `heal.int
 
 ### Popups mendwright wasn't told about
 
-https://github.com/user-attachments/assets/496d37f9-4b0c-47bf-9a84-3a77b097a786
+https://github.com/user-attachments/assets/71f4a9e2-9e89-4da5-84d2-05d74fca0c71
 
 ```python
 heal = mendwright.open(page, dismiss=True)
@@ -825,7 +825,7 @@ The guard needs a page on both sides, so it doesn't cover a key on its first run
 
 ### Steps in any order
 
-https://github.com/user-attachments/assets/16e41116-4813-4cc9-a05e-8b762c64d00a
+https://github.com/user-attachments/assets/42818d17-e419-4f5b-80f2-595c1d080c7b
 
 ```python
 heal = mendwright.open(page)
