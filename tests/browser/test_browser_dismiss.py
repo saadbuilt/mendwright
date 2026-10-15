@@ -666,7 +666,9 @@ def test_with_cookies_accept_escape_never_refuses_a_banner_elsewhere(tab, store_
     tab.load(_page(top, _UNKNOWN_BANNER, _CONSENT_JS))
     heal = _open(tab, stub_provider(None), store_file, dismiss=True, cookies='accept')
     _left_alone(tab, heal)
-    assert tab.js('window.consent') == 'unset' and 'key:Escape' not in _log(tab)
+    # The page's log, not window.consent: patchright and camoufox evaluate in an isolated
+    # world, where the page's own globals are not seen.
+    assert _log(tab) == [] and not _gone(tab, 'pn')
 
 
 def test_with_cookies_accept_a_banner_with_an_accept_button_is_left_alone(tab, store_file,
