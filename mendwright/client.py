@@ -331,6 +331,29 @@ _SAME_ELEMENTS = ('previously quarantined (it takes elements of a quarantined he
                   'another group)')
 
 
+def _code_back(store, selector_key, driver):
+    """For a list heal: why not to save one when a selector of the key's code matches on the
+    live page now, as a list that was still loading does once it came while mendwright
+    looked for it, else ''. Without a driver, or on a driver error, ''."""
+    if driver is None:
+        return ''
+    try:
+        code = [c['xpath'] for c in store.candidates(selector_key)
+                if c.get('source') == 'code' and not c.get('frameXPath')]
+    except Exception:
+        return ''
+    for selector in code:
+        try:
+            count = driver.count(selector)
+        except Exception:
+            continue
+        if count:
+            return ('the selector in your code, ' + selector + ', matches ' + str(count)
+                    + (' element' if count == 1 else ' elements') + ' on the live page '
+                    'now, so the list needs no heal')
+    return ''
+
+
 def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None):
     """The gate for a list heal (see mendwright.lists): (applied_xpath, reason, count), with
     applied_xpath None and the reason when it is refused, else the xpath saved, 'ok' and how
@@ -339,7 +362,9 @@ def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None)
     The XPath must have no position, match two or more elements of the key's role in the
     captured HTML, none of them inside another (lists.validate), not be quarantined or
     superseded for the key, take no element a quarantined selector of the key matches, and
-    pass list_live_reason() on the live page. It is saved marked as a list heal ("list":
+    pass list_live_reason() on the live page, while no selector of the key's code matches
+    there (the list may have come while mendwright looked for it). It is saved marked as a
+    list heal ("list":
     true): of the key's heals, its list lookups try only those, so a heal of one element
     saved under the same key (by heal.driver.find_element(), or a heal.page shortcut) never
     answers for the list. When one of the key's selectors in code is CSS, css, the same
@@ -362,7 +387,7 @@ def apply_list(store, selector_key, proposed, html, meta, driver=None, css=None)
         tree = doc.getroottree()
         if any(tree.getpath(n) in bad for n in doc.xpath(body) if hasattr(n, 'tag')):
             return None, _SAME_ELEMENTS, result.count
-    live = list_live_reason(driver, xpath, meta)
+    live = list_live_reason(driver, xpath, meta) or _code_back(store, selector_key, driver)
     if live:
         return None, live, result.count
     twin = None

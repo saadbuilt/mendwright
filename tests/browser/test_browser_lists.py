@@ -206,7 +206,7 @@ SKELETON = ('<div class="card-skeleton"><img width="40" height="40"><h3></h3><sp
 # The grid shows skeleton cards, and the real cards a moment later, as a slow API answers.
 LOADING = shop(SKELETON * 4) + (
     '<script>setTimeout(() => { document.getElementById("grid").innerHTML = '
-    + json.dumps(grid('product-card')) + '; }, 1500);</script>')
+    + json.dumps(grid('product-card')) + '; }, 3000);</script>')
 
 
 def test_a_list_that_is_still_loading_is_not_healed_onto_its_skeletons(tab, store_file):
@@ -227,8 +227,12 @@ def test_a_list_that_is_still_loading_is_not_healed_onto_its_skeletons(tab, stor
         cards = heal.page.locator('.product-card').all()
     assert _texts(tab, cards) == NAMES
     assert heal.heals == []
-    saved = saved_candidates(store_file, _key(tab, '.product-card'))
+    key = _key(tab, '.product-card')
+    saved = saved_candidates(store_file, key)
     assert [x for x, c in saved.items() if c['source'] == 'heal'] == []
+    events = [e for e in journal_events(store_file) if e.get('key') == key]
+    assert any(e['event'] == 'heal.requested' and e.get('list') for e in events)  # and declined
+    assert not any(e['event'] == 'heal.applied' for e in events)
 
 
 def test_a_heal_of_one_card_never_answers_for_the_list(tab, store_file, stub_provider):

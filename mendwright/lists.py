@@ -75,7 +75,8 @@ MAX_DEPTH = 3        # levels between a group's container and its members
 SHAPE_TAGS = 40      # tags kept in a shape
 SHAPE_LIMIT = 500    # descendants counted for a shape
 SCORED = 25          # members of a group compared with the recorded items
-IDENTIFIED = 200     # members of the best group looked through for the recorded items
+IDENTIFIED = 200     # members of the best group looked through for the recorded items,
+                     # spread over it, the first and the last included
 RANKED = 30          # groups scored in full, of those that score best in a quick look
 PROMPT_GROUPS = 12   # groups listed for the model
 ITEM_TEXT = 100      # how much of an item's text a group's description shows
@@ -550,7 +551,8 @@ class _Scorer:
 
     def identified(self, group):
         """(found, shared): how many of the recorded items are among the group's members
-        (its first IDENTIFIED), and whether a member shares an identity signal with every
+        (IDENTIFIED of them, spread over the group, as the recorded items are the first, the
+        middle and the last of the list), and whether a member shares an identity signal with every
         recorded item. A recorded item is among them when a member shares an id, test id,
         name, link, label or text with it (fingerprint.score's strong) that not every
         recorded item has, and does not share one with every recorded item: what all the
@@ -558,7 +560,7 @@ class _Scorer:
         apart, says what kind of list it is, not which items it holds. With one recorded
         item, any such member counts."""
         found, shared = set(), False
-        for el in group.members[:IDENTIFIED]:
+        for el in _sample(group.members, IDENTIFIED):
             new = self.fp(el)
             if new is None:
                 continue

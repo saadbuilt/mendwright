@@ -179,6 +179,15 @@ def test_a_search_with_no_results_is_not_healed_onto_its_recommendations():
     assert lists.find(lfp, _results('popular-card', MUGS, tested), 'div').reason == ''
 
 
+def test_a_long_list_whose_class_changed_is_found():
+    # The recorded items are the first, the middle and the last of 450: the last two are
+    # far past the first members a group is looked through for.
+    many = [('Mug ' + str(i), '$' + str(i) + '.00') for i in range(450)]
+    lfp = _lfp(shop(grid('product-card', many)))
+    match = lists.find(lfp, shop(grid('product-tile', many)), 'div')
+    assert match.xpath == TILE and match.count == 450 and match.reason == ''
+
+
 def _skeleton():
     return ("<div class='card-skeleton'><img src='/i/blank.png'><h3></h3><span></span>"
             "<button type='button' disabled></button></div>")
@@ -728,6 +737,28 @@ def test_a_list_that_is_still_loading_is_not_healed_onto_its_placeholders(tmp_pa
             if c['source'] == 'heal'] == []
 
 
+def test_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
+    page = make_page(V1, fingerprints=True, css=True)
+    heal = _open(page, tmp_path)
+    assert len(heal.page.locator('.product-card').all()) == 4
+    page.set_html(shop(''))                               # the grid is loading
+    capture = heal.coordinator.html_provider
+
+    def cards_arrive():
+        page.set_html(V1)                                 # as the page is captured
+        return capture()
+    heal.coordinator.html_provider = cards_arrive
+    assert len(heal.page.locator('.product-card').all()) == 4
+    assert heal.heals == []
+    assert [c for c in heal.store.candidates('.product-card') if c['source'] == 'heal'] == []
+    store = _store(tmp_path / 'b', code=CARDS)
+    applied, reason, _count = apply_list(store, 'cards', TILE, V2, store.meta('cards'),
+                                         driver=LiveDriver(shop(grid('product-tile') + grid('product-card'))))
+    assert applied is None and reason == ('the selector in your code, ' + CARDS + ', matches 4 '
+                                          'elements on the live page now, so the list needs no '
+                                          'heal')
+
+
 class CountingDriver(ListDriver):
     """ListDriver that counts what reaches the browser."""
 
@@ -900,3 +931,40 @@ def test_async_lists_optional_reads_and_item_actions(tmp_path, make_page):
     heal, sync, pending = asyncio.run(main())
     assert pending == {'cards': TILE} and sync.actions[-1][1] == 'click'
     assert heal.store.status('cards', TILE) == 'quarantined' and heal.pending() == {}
+
+
+def test_async_heal_page_list_reads_are_checked(tmp_path, make_page):
+    from mendwright.proxies import AsyncGuardedLocator
+
+    async def main():
+        sync = make_page(V1, fingerprints=True, css=True)
+        heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0, expect_values={'.product-card': 'money'})
+        items = await heal.page.locator('.product-card').all()
+        assert type(items[0]) is not AsyncGuardedLocator     # not found through a heal
+        sync.set_html(V2)
+        items = await heal.page.locator('.product-card').all()
+        assert type(items[0]) is AsyncGuardedLocator
+        with pytest.raises(AttentionRequired, match="'.product-card' was healed to"):
+            await items[0].inner_text()
+        return heal
+    heal = asyncio.run(main())
+    assert heal.store.status('.product-card', TILE) == 'quarantined'
+
+
+def test_async_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
+    async def main():
+        sync = make_page(V1, fingerprints=True, css=True)
+        heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0)
+        await heal.locator_all('cards', CARDS)
+        sync.set_html(shop(''))                           # the grid is loading
+        capture = heal.coordinator.html_provider
+
+        def cards_arrive():
+            sync.set_html(V1)                             # as the page is captured
+            return capture()
+        heal.coordinator.html_provider = cards_arrive
+        return heal, await heal.locator_all('cards', CARDS)
+    heal, cards = asyncio.run(main())
+    assert len(cards) == 4 and heal.heals == []

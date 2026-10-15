@@ -639,8 +639,15 @@ class AsyncHealer:
             except InterruptionLoop:
                 raise
             except AttentionRequired as exc:
-                await _in_thread(core._heal_list, key, exc, await _url(self._driver))
-                found = await self._list_attempt(key, 0, poll_ms)
+                try:
+                    await _in_thread(core._heal_list, key, exc, await _url(self._driver))
+                except AttentionRequired:
+                    # The list may have come while mendwright looked for it.
+                    found = await self._list_look(key, core._list_runnable(key))
+                    if found is None:
+                        raise
+                else:
+                    found = await self._list_attempt(key, 0, poll_ms)
         selector, count = found
         core._remember_page(key, await _url(self._driver))
         if core._list_target(key, selector, count):

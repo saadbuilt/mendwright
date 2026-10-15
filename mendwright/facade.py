@@ -1133,8 +1133,15 @@ class Healer:
                 except InterruptionLoop:
                     raise   # the page is blocked: a heal would not help
                 except AttentionRequired as exc:
-                    self._heal_list(key, exc, self._url())
-                    found = self._list_attempt(key, 0, poll_ms)
+                    try:
+                        self._heal_list(key, exc, self._url())
+                    except AttentionRequired:
+                        # The list may have come while mendwright looked for it.
+                        found = self._list_look(key, self._list_runnable(key))
+                        if found is None:
+                            raise
+                    else:
+                        found = self._list_attempt(key, 0, poll_ms)
         selector, count = found
         self._remember_page(key)
         if self._list_target(key, selector, count):
