@@ -1171,6 +1171,11 @@ def test_the_guide_quotes_the_messages_the_code_writes():
             landmark[:landmark.index(' Use a landmark')],
             loop[loop.index('Check that'):]):
         assert message in guide, message
+    # The role selector it names for a button, and for a link.
+    for tag, role in (('button', 'button'), ('a', 'link')):
+        match = {'tag': tag, 'role': role, 'text': 'No thanks', 'outer_html': ''}
+        assert 'role=' + role + '[name="No thanks"]' in precise_selectors(match, playwright=True)
+        assert '`role=' + role + '[name="..."]`' in guide, role
 
 
 def test_precise_selectors():
@@ -1973,7 +1978,8 @@ def test_async_the_overlay_handler_awaits_a_run_function_whose_calls_skip_the_lo
 ASIDE_RELOGIN = RELOGIN.replace(' data-overlay=""', '')
 
 
-def test_an_action_that_went_through_raises_what_its_run_function_raised_meanwhile(tmp_path):
+def test_an_action_that_went_through_raises_what_its_run_function_raised_meanwhile(tmp_path,
+                                                                                  caplog):
     page = _handler_page(SIGNUP)
     heal = _open_sync(page, tmp_path)
     calls, error = [], ValueError('wrong password')
@@ -1992,6 +1998,16 @@ def test_an_action_that_went_through_raises_what_its_run_function_raised_meanwhi
     assert caught.value is error and len(calls) == 1
     assert page.clicks('css=#next') == 1               # the click went through all the same
     assert [(e['before'], e['outcome']) for e in _events(tmp_path)] == [('next', 'failed')]
+    # The WARNING says when the step raises it: once its action ends, which it did here by
+    # going through, and otherwise does when its timeout runs out.
+    message = run_failed_message('relogin', 'next', 'relogin', error, overlay=True)
+    assert message.endswith(
+        "Playwright's overlay handler cannot raise it into the action, which goes on, so "
+        "'next' raises it once that action ends, when it goes through or its timeout runs "
+        "out, and the handler leaves 'relogin' alone until mendwright sees it gone or the "
+        "page navigates.")
+    assert [line for line in _lines(caplog, logging.WARNING) if 'run= function' in line] == [
+        'mendwright: ' + message]
 
 
 def test_async_an_action_that_went_through_raises_what_its_run_function_raised(tmp_path):

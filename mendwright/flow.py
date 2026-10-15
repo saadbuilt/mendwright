@@ -154,8 +154,8 @@ def handled_message(key, before, function=None):
 def run_failed_message(key, before, function, error, overlay=False):
     """The WARNING for the run= function of interruption key, named function, that raised
     error. overlay is True when Playwright's overlay handler called it: the handler cannot
-    raise into the action it runs for, so the step before raises it, when mendwright routes
-    it, and otherwise nothing does."""
+    raise into the action it runs for, which goes on, so the step before raises it once
+    that action ends, when mendwright routes it, and otherwise nothing does."""
     first = (str(error).strip().splitlines() or [type(error).__name__])[0]
     text = (function + '(), the run= function of interruption ' + repr(key) + ', raised an '
             'error while mendwright handled it before ' + repr(before) + ' ('
@@ -165,9 +165,9 @@ def run_failed_message(key, before, function, error, overlay=False):
     left = ('leaves ' + repr(key) + ' alone until mendwright sees it gone or the page '
             'navigates.')
     if before != UNROUTED_STEP:
-        return (text + " Playwright's overlay handler cannot raise it into the action, so "
-                + repr(before) + ' raises it once Playwright hands back to it, and the handler '
-                + left)
+        return (text + " Playwright's overlay handler cannot raise it into the action, which "
+                'goes on, so ' + repr(before) + ' raises it once that action ends, when it goes '
+                'through or its timeout runs out, and the handler ' + left)
     return (text + " Playwright's overlay handler cannot raise it into the action, so it "
             + left + ' A step mendwright routes still handles ' + repr(key) + ', and raises '
             'what ' + function + '() raises.')

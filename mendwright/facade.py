@@ -1952,11 +1952,11 @@ class Healer:
         raises: Playwright runs this in the middle of an action, which goes on either way.
 
         What a run= function raises here (one WARNING already says so) cannot reach the
-        action. The step that is running, if any, keeps it in its budget and raises it once
-        Playwright gives the step back (_reraise), without calling the function again. And
-        the interruption is left alone, as one still there after 3 times in a row is, until
-        mendwright sees it gone or the page navigates: before every action mendwright does
-        not route, it would only fail again."""
+        action, which goes on. The step that is running, if any, keeps it in its budget and
+        raises it once that action ends (_reraise), when it goes through or its timeout runs
+        out, without calling the function again. And the interruption is left alone, as one
+        still there after 3 times in a row is, until mendwright sees it gone or the page
+        navigates: before every action mendwright does not route, it would only fail again."""
         steps = self._steps
         if len(steps) == 1:
             before, budget, timeout_ms, poll_ms = steps[0]
