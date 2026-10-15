@@ -20,6 +20,26 @@
    "/checkout/done": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"></div><div class=\"wrap\"><h2>Thanks, Ada!</h2><div class=\"card\"><div style=\"font-size:15px;color:#3b3f46\">Order #10482 is confirmed.</div></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>"
   }
  },
+ "open_kwargs": {},
+ "steps": [
+  [
+   "shipping",
+   "#ship-name",
+   {}
+  ],
+  [
+   "payment",
+   "#card-number",
+   {}
+  ],
+  [
+   "review",
+   "text=\"Place order\"",
+   {
+    "last": true
+   }
+  ]
+ ],
  "today": {
   "flow": "today",
   "ran": [
@@ -28,11 +48,17 @@
    "review"
   ],
   "ok": true,
-  "seconds": 0.468,
+  "seconds": 0.39,
+  "timeout_ms": 10000,
   "log": [
-   "INFO mendwright: ran step 'shipping' on /checkout (0.2s)",
+   "INFO mendwright: ran step 'shipping' on /checkout (0.1s)",
    "INFO mendwright: ran step 'payment' on /checkout/payment (0.1s)",
    "INFO mendwright: ran step 'review' on /checkout/review (0.1s)"
+  ],
+  "log_at": [
+   0.171,
+   0.312,
+   0.39
   ],
   "visited": [
    "/checkout",
@@ -51,12 +77,19 @@
    "review"
   ],
   "ok": true,
-  "seconds": 0.422,
+  "seconds": 0.328,
+  "timeout_ms": 10000,
   "log": [
    "INFO mendwright: ran step 'payment' on /checkout (0.1s)",
    "WARNING mendwright: ran 'payment' before 'shipping': the site changed the order of the steps",
    "INFO mendwright: ran step 'shipping' on /checkout/shipping (0.1s)",
    "INFO mendwright: ran step 'review' on /checkout/review (0.1s)"
+  ],
+  "log_at": [
+   0.125,
+   0.125,
+   0.234,
+   0.328
   ],
   "visited": [
    "/checkout",
@@ -71,10 +104,15 @@
   "flow": "extra",
   "ok": false,
   "error_type": "AttentionRequired",
-  "error": "mendwright: no step showed on /checkout/protection within 6000 ms. mendwright looked for 'shipping' (#ship-name) and 'review' (text=\"Place order\"). Steps that ran: 'payment'. If the site added a step here, add it with heal.step(): @heal.step(\"<name>\", \"<selector of something only that step shows>\"). If a step's landmark changed, update its when=: landmarks are never healed.",
-  "seconds": 6.297,
+  "error": "mendwright: no step showed on /checkout/protection within 10000 ms. mendwright looked for 'shipping' (#ship-name) and 'review' (text=\"Place order\"). Steps that ran: 'payment'. If the site added a step here, add it with heal.step(): @heal.step(\"<name>\", \"<selector of something only that step shows>\"). If a step's landmark changed, update its when=: landmarks are never healed.",
+  "error_line": "mendwright.exceptions.AttentionRequired: mendwright: no step showed on /checkout/protection within 10000 ms. mendwright looked for 'shipping' (#ship-name) and 'review' (text=\"Place order\"). Steps that ran: 'payment'. If the site added a step here, add it with heal.step(): @heal.step(\"<name>\", \"<selector of something only that step shows>\"). If a step's landmark changed, update its when=: landmarks are never healed.",
+  "seconds": 10.219,
+  "timeout_ms": 10000,
   "log": [
    "INFO mendwright: ran step 'payment' on /checkout (0.1s)"
+  ],
+  "log_at": [
+   0.125
   ],
   "visited": [
    "/checkout",
@@ -83,5 +121,9 @@
   "final_url": "https://northwind.example/checkout/protection",
   "done": false
  },
- "mendwright_file": "C:\\Users\\Omen\\Documents\\Software\\mw-dismiss\\mendwright\\__init__.py"
+ "dist_version": "0.6.1",
+ "init_sha256": "383f9bb2a1633e3e50bb395fac66b50a9ec449d1edaa69bf33778e9831931088",
+ "version": "0.7.0",
+ "git_rev": "89764ba333f3b821d88fa0b38441b2e114d12893",
+ "git_dirty": false
 }

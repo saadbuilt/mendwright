@@ -2,3 +2,5 @@ video/compose.html
 stills/
 *.mp4
 __pycache__/
+stills_*/
+video/stills_*/

@@ -1,4 +1,5 @@
 {
+ "plain_seconds": 1.062,
  "plain": [
   {
    "by": "id",
@@ -7,17 +8,19 @@
    "ok": false,
    "error_type": "ElementClickInterceptedException",
    "error": "Message: element click intercepted: Element <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"> is not clickable at point (271, 249). Other element would receive the click: <div id=\"cc-wrap\" class=\"cookie-consent\" style=\"display:flex;position:fixed;top:0;left:0;bottom:0;right:0;",
-   "seconds": 1.078,
+   "error_line": "selenium.common.exceptions.ElementClickInterceptedException: Message: element click intercepted: Element <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"> is not clickable at point (271, 249). Other element would receive the click: <div id=\"cc-wrap\" class=\"cookie-consent\" style=\"display:flex;position:fixed;top:0;left:0;bottom:0;right:0;",
+   "seconds": 1.062,
    "log": []
   }
  ],
+ "mendwright_seconds": 0.375,
  "mendwright": [
   {
    "by": "id",
    "value": "email",
    "act": "click",
    "ok": true,
-   "seconds": 0.235,
+   "seconds": 0.203,
    "log": [
     "WARNING mendwright: handled interruption 'cookie_banner' before 'id=email'"
    ]
@@ -27,7 +30,7 @@
    "value": "accept-terms",
    "act": "click",
    "ok": true,
-   "seconds": 0.093,
+   "seconds": 0.109,
    "log": []
   },
   {
@@ -35,12 +38,15 @@
    "value": "continue",
    "act": "click",
    "ok": true,
-   "seconds": 0.094,
+   "seconds": 0.063,
    "log": []
   }
  ],
  "banner_up_after": false,
  "terms_checked": true,
- "version": "0.6.1",
- "mendwright_file": "C:\\Users\\Omen\\Documents\\Software\\mw-dismiss\\mendwright\\__init__.py"
+ "dist_version": "0.6.1",
+ "init_sha256": "383f9bb2a1633e3e50bb395fac66b50a9ec449d1edaa69bf33778e9831931088",
+ "version": "0.7.0",
+ "git_rev": "89764ba333f3b821d88fa0b38441b2e114d12893",
+ "git_dirty": false
 }

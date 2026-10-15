@@ -7,11 +7,19 @@
  "upsell": {
   "name": "upsell",
   "interrupts": [],
+  "open_kwargs": {
+   "dismiss": true
+  },
+  "click": "input[name=email]",
+  "click_kwargs": {},
   "step": "page.click(\"input[name=email]\")",
   "ok": true,
   "seconds": 2.187,
   "log": [
    "WARNING mendwright: dismissed a popup in the way of 'input[name=email]': <div id=\"pop\" role=\"dialog\"> (\"Skip the queue? Orders are busy today. Priority handling shi…\") with “No thanks”, after Escape did not close it"
+  ],
+  "log_at": [
+   2.156
   ],
   "page": {
    "clicked": [
@@ -28,13 +36,24 @@
  "order_alone": {
   "name": "order_alone",
   "interrupts": [],
-  "step": "page.click(\"input[name=email]\")",
+  "open_kwargs": {
+   "dismiss": true
+  },
+  "click": "input[name=email]",
+  "click_kwargs": {
+   "timeout": 6000
+  },
+  "step": "page.click(\"input[name=email]\", timeout=6000)",
   "ok": false,
   "error_type": "TimeoutError",
   "error": "Locator.click: Timeout 6000ms exceeded.",
-  "seconds": 8.157,
+  "error_line": "playwright._impl._errors.TimeoutError: Locator.click: Timeout 6000ms exceeded.",
+  "seconds": 8.156,
   "log": [
    "WARNING mendwright: could not dismiss a popup in the way of 'input[name=email]': <div id=\"pop\" role=\"dialog\"> (\"Your order is on hold Click Continue with order to keep it,…\"). mendwright pressed Escape, which did not close it, and it has no close or decline button that mendwright may click. The action goes ahead, and fails with the browser's own error if the popup blocks it. Register the button that closes it with heal.interrupt(\"<name>\", \"<selector of the button>\"). If it needs data first, register its field before the button: heal.interrupt(\"<name>_field\", \"<selector of the field>\", action=\"fill\", args=(\"<value>\",))."
+  ],
+  "log_at": [
+   2.156
   ],
   "page": {
    "clicked": [],
@@ -54,11 +73,21 @@
     []
    ]
   ],
-  "step": "page.click(\"input[name=email]\")",
+  "open_kwargs": {
+   "dismiss": true
+  },
+  "click": "input[name=email]",
+  "click_kwargs": {
+   "timeout": 6000
+  },
+  "step": "page.click(\"input[name=email]\", timeout=6000)",
   "ok": true,
-  "seconds": 0.172,
+  "seconds": 0.125,
   "log": [
    "WARNING mendwright: handled interruption 'order' before 'input[name=email]'"
+  ],
+  "log_at": [
+   0.047
   ],
   "page": {
    "clicked": [
@@ -90,12 +119,23 @@
     []
    ]
   ],
-  "step": "page.click(\"input[name=email]\")",
+  "open_kwargs": {
+   "dismiss": true
+  },
+  "click": "input[name=email]",
+  "click_kwargs": {
+   "timeout": 6000
+  },
+  "step": "page.click(\"input[name=email]\", timeout=6000)",
   "ok": true,
-  "seconds": 2.172,
+  "seconds": 2.203,
   "log": [
    "WARNING mendwright: handled interruption 'zip' before 'input[name=email]'",
    "WARNING mendwright: handled interruption 'zip_ok' before 'input[name=email]'"
+  ],
+  "log_at": [
+   2.078,
+   2.125
   ],
   "page": {
    "clicked": [
@@ -110,5 +150,9 @@
    "InterruptionEvent(key='zip_ok', before='input[name=email]', popup=None, how=None, label=None)"
   ]
  },
- "mendwright_file": "C:\\Users\\Omen\\Documents\\Software\\mw-dismiss\\mendwright\\__init__.py"
+ "dist_version": "0.6.1",
+ "init_sha256": "383f9bb2a1633e3e50bb395fac66b50a9ec449d1edaa69bf33778e9831931088",
+ "version": "0.7.0",
+ "git_rev": "89764ba333f3b821d88fa0b38441b2e114d12893",
+ "git_dirty": false
 }

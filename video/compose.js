@@ -1,19 +1,16 @@
 // mendwright explainer: a deterministic composition. render(t) draws the frame at t seconds
 // as a pure function of t, so every frame can be captured at an exact time.
-// Motion follows Apple's fluid-interface rules: critically damped springs by default
-// (a little bounce only on completion pops), additive springs so a new target never
-// jumps, materialize (blur + scale + opacity) for glass, and enter/exit on the same path.
+// One composition, five cuts (window.CUT): 'main' and the clips 'A'..'D'. Every time below is
+// a real second of the cut. Motion: critically damped springs, materialize transitions.
+// Every selector, log fragment, outcome and run time on screen comes from window.DATA,
+// which render.py builds from the capture JSON of real runs.
 'use strict';
 const D = window.DATA;
+const CUT = window.CUT || 'main';
 
 // ---------- motion math ----------
-// The story is laid out in story seconds; it plays K times slower. Springs keep their real
-// response (SS = 1/K while drawing), so the pace slows down but no motion turns sluggish.
-const K = 1.4;
-let SS = 1;
 function spring(t, resp = 0.42, damp = 1) {
   if (t <= 0) return 0;
-  resp *= SS;
   const w = 2 * Math.PI / resp;
   if (damp >= 1) return 1 - (1 + w * t) * Math.exp(-w * t);
   const wd = w * Math.sqrt(1 - damp * damp);
@@ -26,7 +23,7 @@ const easeIO = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
 function pres(t, tin, tout = 1e9, ri = 0.42, ro = 0.34) {
   return spring(t - tin, ri) * (1 - clamp(spring(t - tout, ro)));
 }
-// Additive spring track: each key re-targets from wherever the value is, keeping velocity.
+// Additive spring track: each key re-targets from wherever the value is.
 function track(t, keys, resp = 0.5, damp = 1) {
   let v = keys[0][1];
   for (let i = 1; i < keys.length; i++) v += (keys[i][1] - keys[i - 1][1]) * spring(t - keys[i][0], keys[i][2] || resp, damp);
@@ -40,14 +37,19 @@ function trackN(t, keys, resp, damp) {
 function mat(e, p, o = {}) {
   const { dy = 22, dx = 0, s0 = .97, blur = 12, origin } = o;
   if (p <= 0.002) { if (e.style.visibility !== 'hidden') e.style.visibility = 'hidden'; return; }
-  e.style.visibility = 'visible';
+  e.style.visibility = 'inherit';
   e.style.opacity = clamp(p).toFixed(4);
   if (origin) e.style.transformOrigin = origin;
   e.style.transform = `translate(${((1 - p) * dx).toFixed(2)}px,${((1 - p) * dy).toFixed(2)}px) scale(${lerp(s0, 1, p).toFixed(4)})`;
   const b = (1 - clamp(p)) * blur;
   e.style.filter = b > 0.05 ? `blur(${b.toFixed(2)}px)` : 'none';
 }
-const typed = (s, t, t0, t1) => s.slice(0, Math.round(s.length * lin(t, t0, t1)));
+// piecewise-linear interpolation of [[x, y], ...]
+function pw(keys, x) {
+  if (x <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) if (x <= keys[i][0]) return lerp(keys[i - 1][1], keys[i][1], lin(x, keys[i - 1][0], keys[i][0]));
+  return keys[keys.length - 1][1];
+}
 
 // ---------- DOM helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -59,640 +61,1144 @@ function el(tag, cls, html, parent, style) {
   (parent || document.body).appendChild(e);
   return e;
 }
-const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// ---------- layout ----------
-const ED = { x: 64, y: 150, w: 664, h: 300 };
-const TERM = { x: 64, y: 474, w: 664, h: 458 };
-const BR = { x: 764, y: 150, w: 1092, h: 782 };
-const CO = { x: BR.x, y: BR.y + 46 };           // browser content origin on the stage
-const LH = 36;
-const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#5aa9ff', purple: '#b98cff', amber: '#f2c14e' };
+// ---------- layout (1920x1080; the same in every cut) ----------
+const LAYOUT = {
+  ED: { x: 40, y: 56, w: 640, h: 400 }, TERM: { x: 40, y: 476, w: 640, h: 454 }, BR: { x: 712, y: 56, w: 1168, h: 874 },
+  LH: 50, HEAD: 56, CHROME: 46, ROW0: 12, Z: 1.4, CARD_AT: [16, 120],
+};
+const { ED, TERM, BR, LH, Z } = LAYOUT;
+const CO = { x: BR.x, y: BR.y + LAYOUT.CHROME, w: BR.w, h: BR.h - LAYOUT.CHROME };   // browser content on the stage
+const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#5aa9ff', purple: '#b98cff', amber: '#f2c14e', grey: '#9aa4b2', white: '#ffffff' };
 
-// ---------- timeline (seconds) ----------
-const S = { title: 0, s1: 3.4, s2: 9.8, s3: 19.6, s4: 29.0, s5: 48.6, s6: 53.6, s7: 65.6, s7b: 74.4, s7c: 85.6,
-            s8: 95.6, s9: 113.6, end: 121.6, total: 129.0 };
-window.DURATION = S.total * K;
-
-// ---------- build ----------
+// ---------- static DOM ----------
 const bg = el('div', '', null, document.body); bg.id = 'bg';
-const g1 = el('div', 'glow', null, bg, 'width:900px;height:700px;left:-200px;top:-260px;background:rgba(124,92,255,.32)');
-const g2 = el('div', 'glow', null, bg, 'width:900px;height:700px;right:-260px;bottom:-300px;background:rgba(40,160,255,.22)');
-const g3 = el('div', 'glow', null, bg, 'width:600px;height:500px;left:700px;top:520px;background:rgba(63,212,122,.08)');
+const g1 = el('div', 'glow', null, bg, 'width:900px;height:700px;left:-200px;top:-260px;background:rgba(124,92,255,.30)');
+const g2 = el('div', 'glow', null, bg, 'width:900px;height:700px;right:-260px;bottom:-300px;background:rgba(40,160,255,.20)');
 el('div', '', null, bg).id = 'grid';
-
 const stage = el('div', '', null, document.body); stage.id = 'stage';
 
-// editor
-const ed = el('div', 'panel', `<div class="phead"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">checkout.py</span><span class="r">Python</span></div><div class="code"><div id="hl"></div></div>`, stage, `left:${ED.x}px;top:${ED.y}px;width:${ED.w}px;height:${ED.h}px`);
+const ed = el('div', 'panel', `<div class="phead"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">checkout.py</span></div><div class="code"><div id="hl"></div></div><div class="veil"></div>`, stage,
+  `left:${ED.x}px;top:${ED.y}px;width:${ED.w}px;height:${ED.h}px`);
 ed.id = 'ed';
-const code = $('.code', ed), hl = $('#hl', ed);
-const P_ = s => `<span class="k-p">${s}</span>`, O_ = s => `<span class="k-obj">${s}</span>`,
-  F_ = s => `<span class="k-fn">${s}</span>`, Str = (s, k) => `<span class="k-str${k ? ' sel' : ''}"${k ? ` data-k="${k}"` : ''}>${esc(s)}</span>`;
-const LINES = {
-  L0: O_('page') + ' ' + P_('=') + ' <span class="k-mw">mendwright</span>' + P_('.') + F_('open') + P_('(') + O_('page') + P_(', ') + O_('cookies') + P_('=') + Str('"reject"') + P_(').') + O_('page'),
-  L1: O_('page') + P_('.') + F_('click') + P_('(') + Str('"#email"', 'email') + P_(')'),
-  L2: O_('page') + P_('.') + O_('keyboard') + P_('.') + F_('type') + P_('(') + Str('"ada@example.com"') + P_(')'),
-  L3: O_('page') + P_('.') + F_('check') + P_('(') + Str('"#accept-terms"', 'terms') + P_(')'),
-  L4: O_('page') + P_('.') + F_('click') + P_('(') + Str('"#continue"', 'cont') + P_(')'),
-};
-const L0_TEXT = 'page = mendwright.open(page, cookies="reject").page';
-const lineEls = {};
-for (const id of Object.keys(LINES)) {
-  const ln = el('div', 'ln mono', `<span class="g"></span><span class="c"><span class="cw">${LINES[id]}</span></span><span class="st"></span>`, code);
-  lineEls[id] = { root: ln, g: $('.g', ln), c: $('.c', ln), cw: $('.cw', ln), st: $('.st', ln) };
-}
-const T_INS = 20.2;                          // the mendwright line goes in
-const BASE = { L0: 0, L1: 0, L2: 1, L3: 2, L4: 3 };
-function lineIdx(id, t) {
-  if (id === 'L0') return 0;
-  return BASE[id] + spring(t - T_INS, 0.5);
-}
-const lineY = (id, t) => 14 + lineIdx(id, t) * LH;   // inside .code
-
-// run panel
-const term = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.18)"></span><span class="t">Run</span><span class="r mono">python checkout.py</span></div><div class="body"></div>`, stage, `left:${TERM.x}px;top:${TERM.y}px;width:${TERM.w}px;height:${TERM.h}px`);
+const code = $('.code', ed), hl = $('#hl', ed), edHead = $('.phead', ed);
+const term = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.18)"></span><span class="t">Run</span></div><div class="veil"></div>`, stage,
+  `left:${TERM.x}px;top:${TERM.y}px;width:${TERM.w}px;height:${TERM.h}px`);
 term.id = 'term';
-const tbody = $('.body', term);
-
-// browser
-const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span>northwind.example/checkout</div></div><div id="prog"></div><div class="content"></div>`, stage, `left:${BR.x}px;top:${BR.y}px;width:${BR.w}px;height:${BR.h}px`);
+const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span><span class="u">northwind.example/checkout</span></div></div><div id="prog"></div><div class="content"><div id="ov"></div></div><div class="veil"></div>`, stage,
+  `left:${BR.x}px;top:${BR.y}px;width:${BR.w}px;height:${BR.h}px`);
 br.id = 'br';
-const content = $('.content', br), prog = $('#prog', br);
-const f1 = el('iframe', '', null, content); f1.srcdoc = D.pages.v1;
-const f2 = el('iframe', '', null, content); f2.srcdoc = D.pages.v2;
+const content = $('.content', br), ov = $('#ov', br), prog = $('#prog', br), urlEl = $('.url .u', br);
+const VEIL = { code: $('.veil', ed), run: $('.veil', term), page: $('.veil', br) };
+const ann = el('div', '', `<svg width="1920" height="1080"></svg>`, stage); ann.id = 'ann';
+const annSvg = $('svg', ann);
+const sveil = el('div', '', null, stage); sveil.id = 'sveil';
+const band = el('div', '', null, document.body); band.id = 'band';
+const cursor = el('div', '', `<svg width="36" height="36" viewBox="0 0 30 30"><path d="M5 3 L5 24 L10.5 18.8 L14.2 27 L18 25.3 L14.4 17.3 L22 17.3 Z" fill="#fff" stroke="#11151d" stroke-width="1.6" stroke-linejoin="round"/></svg>`, ov); cursor.id = 'cursor';
+const halo = el('div', '', null, ov); halo.id = 'halo';
 
-// overlay
-const ov = el('div', '', null, stage); ov.id = 'ov';
-
-// top bar
-const runPlain = el('div', '', `<span class="d" style="background:rgba(255,255,255,.45)"></span>Plain Playwright`, stage); runPlain.id = 'run';
-const runMw = el('div', '', `<span class="d" style="background:${C.purple};box-shadow:0 0 12px ${C.purple}"></span>Playwright <span style="color:var(--ink3);font-weight:500">+</span> <span style="color:#d9c4ff">mendwright</span>`, stage); runMw.id = 'run';
-const STEPS = ['Today', 'Banner', 'One line', 'Redesign', 'Next run', 'Popups', 'Judgement', 'Any order', 'Selenium'];
-const stepsEl = el('div', '', STEPS.map(s => `<div class="s"><i></i><span>${s}</span></div>`).join(''), stage); stepsEl.id = 'steps';
-const stepEls = [...stepsEl.children];
-
-// ---------- data from the real runs ----------
-const ERR = D.B_error_lines;                      // trimmed real call log
-const MODEL_S = D.model_seconds;                  // e.g. "0.5"
-const PICK = D.model_pick_label;                  // "I agree to the purchase terms"
-const XP = D.xpaths;                              // {email, terms, cont}
-
-// ---------- run panel entries ----------
-// group: [t0, t1, entries[[t, cls, html]]]
-const sec = s => `${(+s).toFixed(2)} s`;
-const okRow = (txt, s) => `<span class="i">✓</span>${esc(txt)}<span style="float:right;color:var(--ink3)">${s}</span>`;
-const GROUPS = [
-  [4.9, S.s2, [
-    [5.0, 'cmd', '$ python checkout.py'],
-    [5.65, 'ok', okRow('page.click("#email")', sec(D.A[0]))],
-    [6.4, 'ok', okRow('page.keyboard.type(...)', sec(D.A[1]))],
-    [7.0, 'ok', okRow('page.check("#accept-terms")', sec(D.A[2]))],
-    [7.65, 'ok', okRow('page.click("#continue")', sec(D.A[3]))],
-    [7.9, 'sum', `<span style="color:${C.green}">Passed</span> · 4 steps`],
-  ]],
-  [S.s2 + .1, S.s3, [
-    [11.45, 'cmd', '$ python checkout.py'],
-    [14.7, 'err', ERR],
-  ]],
-  [S.s3 + .1, S.s4, [
-    [21.95, 'cmd', '$ python checkout.py'],
-    [23.0, 'log', `<span class="i">▸</span><span class="tag-log">log</span>${esc(D.C_log)}`],
-    [24.1, 'ok', okRow('page.click("#email")', sec(D.C[0]))],
-    [25.4, 'ok', okRow('page.check("#accept-terms")', sec(D.C[2]))],
-    [26.0, 'ok', okRow('page.click("#continue")', sec(D.C[3]))],
-    [26.25, 'sum', `<span style="color:${C.green}">Passed</span> · banner rejected`],
-  ]],
-  [S.s4 + .1, S.s5, [
-    [33.0, 'cmd', '$ python checkout.py'],
-    [35.2, 'log', `<span class="i">◆</span><span class="tag-log">log</span>${esc(D.D_logs[0])}`],
-    [37.0, 'ok', okRow('page.click("#email")', sec(D.D[0]))],
-    [41.35, 'log', `<span class="i">★</span><span class="tag-log">log</span>${esc(D.D_logs[2])}`],
-    [43.1, 'ok', okRow('page.check("#accept-terms")', sec(D.D[2]))],
-    [45.0, 'log', `<span class="i">◆</span><span class="tag-log">log</span>${esc(D.D_logs[3])}`],
-    [46.3, 'ok', okRow('page.click("#continue")', sec(D.D[3]))],
-    [46.55, 'sum', `<span style="color:${C.green}">Passed</span> · 3 selectors repaired and saved`],
-  ]],
-  [S.s5 + .1, S.s6, [
-    [49.4, 'cmd', '$ python checkout.py'],
-    [50.05, 'ok', okRow('page.click("#email")  · saved fix', sec(D.E[0]))],
-    [50.8, 'ok', okRow('page.check("#accept-terms")  · saved fix', sec(D.E[2]))],
-    [51.2, 'ok', okRow('page.click("#continue")  · saved fix', sec(D.E[3]))],
-    [51.45, 'sum', `<span style="color:${C.green}">Passed</span> · ${D.E_total} s · no waiting, no model`],
-  ]],
-];
-const groupEls = GROUPS.map(([t0, t1, ents]) => {
-  const g = el('div', 'grp mono', null, tbody);
-  return { t0, t1, g, ents: ents.map(([t, cls, html]) => ({ t, e: el('div', 'ent ' + cls, html, g) })) };
-});
-
-// ---------- overlay pieces ----------
-const cursor = el('div', '', `<svg width="30" height="30" viewBox="0 0 30 30"><path d="M5 3 L5 24 L10.5 18.8 L14.2 27 L18 25.3 L14.4 17.3 L22 17.3 Z" fill="#fff" stroke="#11151d" stroke-width="1.6" stroke-linejoin="round"/></svg>`, ov); cursor.id = 'cursor';
-const halo = el('div', '', null, ov, `position:absolute;width:64px;height:64px;border-radius:50%;background:radial-gradient(circle,rgba(185,140,255,.55),rgba(185,140,255,0) 70%)`);
-const RIPPLES = [];
-function ripple(t, at, color) { RIPPLES.push({ t, at, color, e: el('div', 'ripple', null, ov) }); }
-const box = (style) => el('div', 'box', null, ov, style || '');
-const chip = (html, style) => el('div', 'chip', html, ov, style || '');
-const ffIcon = col => `<svg width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="2.5"/><circle class="arc" cx="11" cy="11" r="9" fill="none" stroke="${col}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="56.55" stroke-dashoffset="56.55" transform="rotate(-90 11 11)"/></svg>`;
-function timer(col) { const e = el('div', 'timer', `${ffIcon(col)}<span class="tx"></span><span class="ff" style="color:var(--ink3);font-size:13px;font-weight:700;letter-spacing:.04em">▶▶ SPED UP</span>`, ov); return { e, arc: $('.arc', e), tx: $('.tx', e) }; }
-
-// HUDs
-function hud(rows) {
-  const h = el('div', 'hud', null, ov);
-  const parts = rows.map(r => {
-    if (r.xp != null) return { ...r, e: el('div', 'xp mono', '', h) };
-    if (r.shimmer) return { ...r, e: el('div', 'shimmer', '<i></i>', h) };
-    return { ...r, e: el('div', 'row', `<span class="ic" style="color:${r.col}">${r.ic}</span><span>${r.html}</span>`, h) };
-  });
-  return { h, parts };
+// ---------- code tokens ----------
+const P_ = s => `<span class="k-p">${esc(s)}</span>`, O_ = s => `<span class="k-obj">${esc(s)}</span>`,
+  F_ = s => `<span class="k-fn">${esc(s)}</span>`, MW = s => `<span class="k-mw">${esc(s)}</span>`,
+  Str = (s, k) => `<span class="k-str${k ? ' sel' : ''}"${k ? ` data-k="${k}"` : ''}>${esc(s)}</span>`,
+  KW = s => `<span class="k-fn">${esc(s)}</span>`, FOLD = `<span class="k-fold">  ⋯</span>`;
+const IND = n => ' '.repeat(n);
+// Python source for a captured keyword argument's value (the scripts' own quoting: "...")
+const pyv = v => v === true ? 'True' : v === false ? 'False' : v === null ? 'None' : typeof v === 'number' ? String(v) : JSON.stringify(v);
+const kwArg = (k, v) => `<span style="color:${C.purple}">${esc(k)}=${esc(pyv(v))}</span>`;
+// heal = mendwright.open(page, k=v, ...): on one row when it is short, else wrapped
+function openRows(obj, kwargs, tail) {
+  const kws = Object.entries(kwargs || {});
+  const one = O_(obj) + ' ' + P_('=') + ' ' + MW('mendwright') + P_('.') + F_('open') + P_('(') + O_(obj === 'heal' ? 'page' : obj);
+  const end = P_(')') + (tail ? P_('.') + O_(tail) : '');
+  if (!kws.length) return [{ id: 'o1', n: 1, html: one + end }];
+  return [{ id: 'o1', n: 1, html: O_(obj) + ' ' + P_('=') + ' ' + MW('mendwright') + P_('.') + F_('open') + P_('(') },
+    { id: 'o2', n: '', html: IND(4) + O_(obj === 'heal' ? 'page' : obj) + P_(', ') + kws.map(([k, v]) => kwArg(k, v)).join(P_(', ')) + end }];
+}
+// heal.page.click("sel", k=v): the selector, then the captured keyword arguments on a row below
+function clickRows(sel, kwargs, n, id = 'c') {
+  const kws = Object.entries(kwargs || {}), head = O_('heal') + P_('.') + O_('page') + P_('.') + F_('click') + P_('(') + Str(JSON.stringify(sel));
+  if (!kws.length) return [{ id: id + '1', n, html: head + P_(')') }];
+  return [{ id: id + '1', n, html: head + P_(',') },
+    { id: id + '2', n: '', html: IND('heal.page.click('.length) + kws.map(([k, v]) => O_(k) + P_('=') + KW(pyv(v))).join(P_(', ')) + P_(')') }];
 }
 
-// ---------- captions ----------
-const CAPS = [
-  [3.9, 9.5, 'Your Playwright script, on the site as it is today.'],
-  [10.0, 12.75, 'Then the site adds a cookie banner.'],
-  [12.85, 19.4, 'Plain Playwright <s>can’t click the email field</s> through it. After 30 s the run dies.'],
-  [19.8, 22.35, 'Add <em>one line</em>.'],
-  [22.45, 28.7, 'mendwright <em>rejects the banner</em>, then carries on.'],
-  [29.2, 31.3, 'A week later, the site redeploys.'],
-  [31.4, 35.0, 'New ids, new classes, reworded labels. <s>All three selectors are gone.</s>'],
-  [35.1, 39.35, 'The email field is found again <u>from memory</u>. No AI.'],
-  [39.45, 43.5, 'Too close to call from memory, so the <em>1 GB local model</em> picks. On your machine.'],
-  [43.6, 48.4, 'Every fix is <u>checked on the live page</u>, then saved.'],
-  [48.9, 53.4, 'Next run, the saved fixes are used directly. <u>No waiting, no model.</u>'],
-];
-const capEls = CAPS.map(([a, b, h]) => ({ a, b, e: el('div', 'cap', h, document.body) }));
+// ---------- the timeline: every cut declares its items here, in real seconds ----------
+const TL = {
+  dur: 0, beats: [], code: [], frames: [], runs: [], caps: [], callouts: [], tags: [], boxes: [], clicks: [],
+  cur: [], curOn: [], halo: [], focus: [], fills: [], checks: [], press: [], urls: [], badges: [], reloads: [],
+  keycaps: [], pstamps: [], montage: [], stageIn: 0, stageOut: 1e9, title: null, end: null, ctitle: null, estrip: null,
+  lead: 0,      // a clip's title holds this long (real s) before the story's clock starts
+};
+const beat = (t, name, real) => TL.beats.push({ t, name, real: !!real });
+const cap = (a, b, html) => TL.caps.push({ a, b, html });
+const focus = (t, zone) => TL.focus.push([t, zone]);
+const url = (t, u) => TL.urls.push([t, u]);
+const click = (t, at, col) => TL.clicks.push({ t, at, col });
+const cur = (t, at, dx = 0, dy = 0, edge) => TL.cur.push({ t, at, dx, dy, edge });
+const curOn = (a, b) => TL.curOn.push([a, b]);
+const haloOn = (a, b) => TL.halo.push([a, b]);
+const fill = (a, b, at, text, until = 1e9) => TL.fills.push({ a, b, at, text, until });
+const check = (t, at, until = 1e9) => TL.checks.push({ t, at, until });
+const press = (t, at) => TL.press.push({ t, at });
+const box = o => TL.boxes.push(Object.assign({ pad: 7, dashed: false }, o));
+const tag = o => TL.tags.push(Object.assign({ zone: 'page', place: 'right' }, o));
+const callout = o => TL.callouts.push(Object.assign({ zone: 'page', place: 'auto' }, o));
+const keycap = o => TL.keycaps.push(o);
+const pstamp = o => TL.pstamps.push(o);
+const badge = (t, html, col) => TL.badges.push({ t, html, col });
+const reload = t => TL.reloads.push(t);
+const montage = (a, b) => TL.montage.push([a, b]);
+function codeBlock(o) { const b = Object.assign({ marks: [], hl: [], tok: {} }, o); TL.code.push(b); return b; }
+function frame(o) { const f = Object.assign({ pop: [], reloads: [] }, o); TL.frames.push(f); return f; }
+function run(o) { const r = Object.assign({ receipts: [] }, o); TL.runs.push(r); return r; }
 
-// status pills: [t, kind, text]
-const STATUS = [
-  [5.0, 'run', 'Running'], [7.8, 'ok', 'Passed'], [S.s2, null],
-  [11.5, 'run', 'Running'], [14.8, 'bad', 'Failed at line 1'], [S.s3, null],
-  [21.9, 'run', 'Running'], [26.2, 'ok', 'Passed'], [S.s4, null],
-  [33.0, 'run', 'Running'], [46.5, 'ok', 'Passed · 3 repaired'], [S.s5, null],
-  [49.4, 'run', 'Running'], [51.5, 'ok', `Passed · ${D.E_total} s`], [S.s6 - .2, null],
-];
-const statusEls = [];
-STATUS.forEach(([t, kind, text], i) => {
-  if (!kind) return;
-  const tout = STATUS[i + 1][0];
-  const col = kind === 'ok' ? C.green : kind === 'bad' ? C.red : C.blue;
-  const ic = kind === 'ok' ? '✓' : kind === 'bad' ? '✕' : '';
-  const e = el('div', '', `${kind === 'run' ? `<span class="spin" style="width:14px;height:14px;border-radius:50%;border:2.5px solid rgba(90,169,255,.25);border-top-color:${C.blue}"></span>` : `<span style="font-size:18px">${ic}</span>`}${text}`, stage, `background:${col}1f;border:1px solid ${col}55;color:${kind === 'run' ? '#cfe3ff' : col}`);
-  e.id = 'status';
-  statusEls.push({ t, tout, kind, e, spin: $('.spin', e) });
-});
+// ---------- formatting and receipts (verbatim pieces of real log lines) ----------
+const secs = s => (+s).toFixed(2);
+function verbatim(line, part) {
+  if (!line || !line.includes(part)) throw new Error('receipt is not in the log line: ' + part);
+  return part;
+}
+// "a … b": both pieces verbatim and in this order in the real line
+function elide(line, a, b) {
+  const i = line.indexOf(a), j = line.indexOf(b, i + a.length);
+  if (i < 0 || j < 0) throw new Error('elision pieces are not in the log line: ' + a + ' / ' + b);
+  return a + ' … ' + b;
+}
+const msgOf = l => l.replace(/^(INFO|WARNING|ERROR) /, '');
+// The speed of a run's clock between story times a and b: round(real / shown).
+function speedOf(keys, a, b) {
+  const r = (pw(keys, b) - pw(keys, a)) / (b - a);
+  if (r <= 1.5) throw new Error('not sped up between ' + a + ' and ' + b);
+  return Math.round(r);
+}
 
-// cards
-const band = el('div', '', null, document.body); band.id = 'band';
-const title = el('div', 'card', `<div class="wm"><b>mendwright</b></div><div class="tsub">Playwright &amp; Selenium selectors that repair themselves.</div><div class="tcode mono"><span class="k-obj">page</span><span class="k-p">.</span><span class="k-fn">click</span><span class="k-p">(</span><span class="old">"#email"</span><span class="neu">"//input[@name='email']"</span><span class="k-p">)</span><span class="ok">✓</span></div>`, document.body);
-const [tWm, tSub, tCode] = title.children;
-const tOld = $('.old', tCode), tNeu = $('.neu', tCode), tOk = $('.ok', tCode);
-const T_OLD = '"#email"', T_NEU = `"//input[@name='email']"`;
-const end = el('div', 'card', `<div class="wm" style="font-size:104px"><b>mendwright</b></div>
-<div class="feat">
- <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Fixes from memory first, with no AI.</div>
- <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A 1 GB local model for the hard ones. No API key.</div>
- <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
- <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners and popups declined, never “Sign up”, never a cancel.</div>
- <div><span class="ic" style="background:${C.green}22;color:${C.green}">⇄</span>Checkout steps in any order, with heal.step() and run_steps().</div>
-</div>
-<div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>mendwright model install</div></div>
-<div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
-const [eWm, eFeat, ePills, eRepo] = end.children;
-const featRows = [...eFeat.children];
+// ---------- the main cut's data, from the real runs ----------
+const XP = D.xpaths;
+const SCRIPT = D.script;                              // [[verb, arg], ...] exactly as capture.py ran it
+const TIMEOUT = D.D_timeout_ms / 1000;                // mendwright's default wait before it repairs
+const GB = Math.round(D.model_bytes / 1e9);           // the local model's size on disk
+function scriptRows() {
+  const row = ([verb, arg], k) => verb === 'type'
+    ? O_('page') + P_('.') + O_('keyboard') + P_('.') + F_('type') + P_('(') + Str(JSON.stringify(arg)) + P_(')')
+    : O_('page') + P_('.') + F_(verb) + P_('(') + Str(JSON.stringify(arg), k) + P_(')');
+  const keys = { '#email': 'email', '#accept-terms': 'terms', '#continue': 'cont' };
+  return SCRIPT.map(s => row(s, keys[s[1]]));
+}
+const OPEN_ROW = O_('page') + ' ' + P_('=') + ' ' + MW('mendwright') + P_('.') + F_('open') + P_('(') + O_('page') + P_(').') + O_('page');
 
-// ---------- measured after the pages load ----------
-let R = null;     // rects in content coordinates
-let doc1, doc2, banner, bCard, bReject, v1email, v1chk, v1cont, v2email, v2a, v2b, v2cont;
-let selTok = {};  // editor selector tokens: offset of each in its line
-let CW = 10.8;    // editor char width
-let H = {};       // HUDs and other pieces needing rects
-let CURSOR, CLICKS, GHOST;
+// "Two checkboxes. Memory isn't sure which.": in the real run the fingerprint tier found two
+// elements that score alike, the model was asked to pick between 2 candidates, and the page
+// has exactly two checkboxes (the two amber boxes).
+function twoCandidates() {
+  const note = D.D_fingerprint_notes.find(n => n.key === SCRIPT[2][1]);
+  if (!note || note.applied || !/two elements score alike/.test(note.note)) throw new Error('B4: the fingerprint tier did not find two alike elements: ' + JSON.stringify(note));
+  const prop = D.D_proposed.find(x => x.key === SCRIPT[2][1]);
+  if (!prop || !/candidate \d+ of 2\b/.test(prop.reasoning)) throw new Error('B4: the model did not pick between 2 candidates: ' + JSON.stringify(prop));
+  if (D.D_checked.length !== 2) throw new Error('B4: the page does not have two checkboxes');
+  return note.note;
+}
+
+// ---------- B0: the hook (also the poster frame) ----------
+function hookCard(t0, t1) {
+  if (D.D_heals[0].source !== 'fingerprint') throw new Error('the hook says "from memory, no AI": D_heals[0] is not a fingerprint repair');
+  TL.title = { t0, t1 };
+  beat(t0, 'B0 poster');
+  beat(t0 + 1.4, 'B0 selector swaps');
+  beat(t0 + 2.9, 'B0 found from memory');
+}
+// ---------- B8: the end card ----------
+function endCard(t0, t1) { TL.end = { t0, t1 }; beat(t0 + 3.2, 'B8 end card'); }
+// The clip title: on a plate, over the stage with every zone veiled (the cut's first focus
+// key is 'none'). It holds LEAD s longer than the story's t1, so the story starts LEAD late.
+const LEAD = .8;
+function clipTitle(t1, title, api) {
+  TL.ctitle = { t0: 0, t1, title, api }; TL.stageIn = -2; TL.lead = LEAD;
+  focus(0, 'none');
+  beat(1.2, 'title', true);
+}
+// The end strip: on a plate, every zone veiled; the last run's stamp and receipts and the
+// page's annotations leave as it comes in, so nothing competes with the wordmark.
+function endStrip(t0) {
+  TL.estrip = { t0, t1: t0 + 2.4 }; TL.dur = t0 + 2.4;
+  focus(t0, 'none');
+  for (const x of [...TL.runs, ...TL.callouts]) x.t1 = Math.min(x.t1, t0);
+  for (const x of [...TL.tags, ...TL.boxes, ...TL.pstamps, ...TL.keycaps]) x.t[1] = Math.min(x.t[1], t0);
+  beat(t0 + 1.2, 'end strip');
+  return t0 + 2.4;
+}
+
+// ---------- main cut: B1..B6 ----------
+function mainStory() {
+  const V1 = frame({ id: 'v1', html: D.pages.v1, t: [4.2, 11.7], popup: '#cc-wrap', pop: [] });   // today's site, no banner
+  const V2 = frame({ id: 'v2', html: D.pages.v2, t: [11.75, 48.4], reloads: [41.4] });
+  if (V2.html.match(/id="(email|accept-terms|continue)"/)) throw new Error('V2 still has an old id');
+  url(4.2, 'northwind.example/checkout');
+  const rows = scriptRows();
+  const blk = codeBlock({
+    t0: 4.2, t1: 48.4,
+    rows: [{ id: 'L0', html: OPEN_ROW, n: 1, type: [4.8, 5.6], tint: [4.8, 7.2] },
+      { id: 'L1', html: rows[0], n: 2 }, { id: 'L2', html: rows[1], n: 3 }, { id: 'L3', html: rows[2], n: 4 }, { id: 'L4', html: rows[3], n: 5 }],
+  });
+  // ----- B1: today; one line, and it remembers
+  beat(4.6, 'B1 empty line 1');
+  focus(4.4, 'code');
+  cap(4.4, 7.8, 'Add <em>one line</em> to your script.');
+  beat(5.9, 'B1 one line typed in');
+  focus(6.2, 'page');
+  // no clock here: B1 is about memory; the only small run time on screen is the next run's
+  const M = D.M;
+  if (M.steps.length !== SCRIPT.length) throw new Error('M: the run did not run the whole script');
+  const fp = Object.values(M.fingerprints).filter(Boolean).length;
+  if (fp !== 3) throw new Error('M: not all three elements were remembered');
+  run({ t0: 6.2, t1: 11.7, cmd: [6.4, '$ python checkout.py'],
+    stamp: { t: 9.9, kind: 'ok', html: `✓ Passed · ${fp} elements remembered` } });
+  curOn(6.1, 9.8);
+  cur(6.0, [CO.x + 560, CO.y + 520]); cur(6.25, 'v1:#email', -60, 4); cur(8.1, 'v1:#accept-terms', 2, 3); cur(8.8, 'v1:#continue', -40, 4); cur(9.5, [CO.x + 640, CO.y + 560]);
+  click(6.8, 'v1:#email', C.white); fill(6.9, 7.45, 'v1:#email', 'ada@example.com');
+  click(8.6, 'v1:#accept-terms', C.white); check(8.6, 'v1:#accept-terms');
+  click(9.3, 'v1:#continue', C.white); press(9.3, 'v1:#continue');
+  const REM = `<span style="color:${C.blue}">◆</span> remembered`;
+  tag({ at: 'v1:#email', html: REM, col: C.blue, t: [6.8, 11.7], col0: 'v1:.card' });
+  tag({ at: 'v1:label.chk', html: REM, col: C.blue, t: [8.75, 11.7], col0: 'v1:.card' });
+  tag({ at: 'v1:#continue', html: REM, col: C.blue, t: [9.45, 11.7], col0: 'v1:.card' });
+  blk.hl.push([4.2, 'L1', 0], [6.4, 'L1', 1], [7.0, 'L2', 1], [8.1, 'L3', 1], [8.9, 'L4', 1], [9.9, 'L4', 0]);
+  blk.marks.push([6.8, 'L1', '✓', C.green, 11.7], [7.5, 'L2', '✓', C.green, 11.7], [8.6, 'L3', '✓', C.green, 11.7], [9.3, 'L4', '✓', C.green, 11.7]);
+  cap(8.0, 11.4, 'It <i>remembers</i> each element it touches.');
+  focus(9.9, 'run');
+  beat(7.4, 'B1 email remembered');
+  beat(10.6, 'B1 passed, 3 remembered');
+
+  // ----- B2: the break
+  cap(11.5, 14.9, 'Then the site redeploys.');
+  beat(12.1, 'B2 redeploy crossfade');
+  focus(12.8, 'code');
+  blk.tok.email = [[13.2, 'broken'], [19.9, 'mem'], [42.0, 'saved']];
+  blk.tok.terms = [[13.8, 'broken'], [30.2, 'ai'], [42.0, 'saved']];
+  blk.tok.cont = [[14.4, 'broken'], [36.7, 'mem'], [42.0, 'saved']];
+  blk.marks.push([13.2, 'L1', '✕', C.red, 20.6], [13.8, 'L3', '✕', C.red, 30.8], [14.4, 'L4', '✕', C.red, 37.0]);
+  cap(15.0, 18.0, '<s>All three selectors are gone.</s>');
+  beat(15.6, 'B2 three selectors broken');
+
+  // ----- B3..B5: the first run after the redesign
+  const d = D.Dsteps, s = [0];
+  d.forEach(x => s.push(s[s.length - 1] + x.seconds));      // real step boundaries
+  const found = i => s[i] + d[i].log_at[0];                  // when the repair's log line came
+  const keys2 = [[16.6, 0], [18.4, TIMEOUT], [18.6, found(0)], [20.6, s[1]], [23.6, s[1]], [23.8, s[2]],
+    [24.0, s[2]], [25.6, s[2] + TIMEOUT], [27.4, s[2] + TIMEOUT], [28.8, found(2)], [30.8, s[3]],
+    [35.2, s[3]], [36.3, s[3] + TIMEOUT], [36.4, found(3)], [37.0, s[4]], [38.9, D.D_seconds]];
+  focus(16.6, 'page');
+  run({ t0: 16.6, t1: 41.4, cmd: [16.6, '$ python checkout.py'], keys: keys2,
+    stamp: { t: 38.9, kind: 'ok', html: `✓ Passed · ${D.D_heals.length} repaired, checked, saved` } });
+  blk.hl.push([16.6, 'L1', 1]);
+  // B3 #email: mendwright waits its timeout, then finds the field from memory
+  const sel = SCRIPT.map(x => x[1]);
+  const WAIT = (a, b) => `${TIMEOUT} s timeout · ▶▶ sped up ×${speedOf(keys2, a, b)}`;
+  callout({ at: 'v2:input[name=email]', t: [16.8, 23.8], leader: 18.6, sets: [
+    { t: 16.8, ic: 'ring', ring: [16.8, 18.4], h: `Waiting for ${sel[0]}`, s: WAIT(16.6, 18.4) },
+    { t: 18.6, ic: '◆', col: C.blue, h: `${sel[0]} found again`, s: XP.email, mono: true, typed: [18.7, 19.1], result: true },
+  ] });
+  box({ at: 'v2:input[name=email]', col: C.blue, t: [18.6, 23.8] });
+  beat(17.6, 'B3 waiting for #email');
+  cap(19.8, 23.4, 'Found <i>from memory</i>. No AI.');
+  curOn(19.9, 21.3); cur(19.85, 'v2:input[name=email]', -90, 4);
+  click(20.6, 'v2:input[name=email]', C.white); fill(20.7, 21.2, 'v2:input[name=email]', 'ada@example.com', 41.4);
+  blk.marks.push([20.6, 'L1', '✓', C.green, 41.4]);
+  beat(21.4, 'B3 found from memory');
+  // B4 #accept-terms: memory can't tell two checkboxes apart, the local model picks
+  blk.marks.push([23.8, 'L2', '✓', C.green, 41.4]);
+  blk.hl.push([23.8, 'L3', 1]);
+  callout({ at: 'v2:label.opt:nth-of-type(2)', t: [24.0, 25.8], sets: [
+    { t: 24.0, ic: 'ring', ring: [24.0, 25.6], h: `Waiting for ${sel[2]}`, s: WAIT(24.0, 25.6) }] });
+  beat(24.9, 'B4 waiting for #accept-terms');
+  box({ at: 'v2:label.opt:nth-of-type(1)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
+  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
+  twoCandidates();
+  cap(26.0, 29.5, 'Two checkboxes. Memory isn’t sure which.');
+  beat(26.9, 'B4 two candidates');
+  const modelS = D.model_seconds;
+  callout({ at: 'v2:label.opt:nth-of-type(2)', t: [27.4, 34.6], leader: 28.8, sets: [
+    { t: 27.4, ic: '★', col: C.purple, h: 'Asking the local model', s: `${GB} GB · runs on this machine`, shimmer: [27.4, 28.8] },
+    { t: 28.8, ic: '★', col: C.purple, h: `Picked in ${modelS} s`, s: XP.terms, mono: true, typed: [28.9, 29.3], result: true },
+  ] });
+  beat(28.1, 'B4 asking the local model');
+  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.purple, t: [28.8, 34.6], pad: 6 });
+  cap(30.0, 34.6, `So mendwright’s <em>${GB} GB local model</em> picks.`);
+  curOn(30.25, 31.4); cur(30.2, 'v2:#opt-91c4', 2, 3);
+  click(30.8, 'v2:#opt-91c4', C.white); check(30.8, 'v2:#opt-91c4', 41.4);
+  blk.marks.push([30.8, 'L3', '✓', C.green, 41.4]);
+  beat(30.95, 'B4 token purple, click');
+  beat(31.8, 'B4 picked by the local model');
+  // B5 #continue from memory, and the run passes
+  blk.hl.push([34.8, 'L4', 1], [38.9, 'L4', 0]);
+  callout({ at: 'v2:.btn-x82hd', t: [35.2, 41.4], leader: 36.4, sets: [
+    { t: 35.2, ic: 'ring', ring: [35.2, 36.3], h: `Waiting for ${sel[3]}`, s: WAIT(35.2, 36.3) },
+    { t: 36.4, ic: '◆', col: C.blue, h: `${sel[3]} found again`, result: true },
+  ] });
+  box({ at: 'v2:.btn-x82hd', col: C.blue, t: [36.4, 41.4] });
+  beat(35.8, 'B5 waiting for #continue');
+  beat(36.95, 'B5 #continue found again');
+  curOn(36.45, 37.6); cur(36.4, 'v2:.btn-x82hd', 120, 4);
+  click(37.0, 'v2:.btn-x82hd', C.white); press(37.0, 'v2:.btn-x82hd');
+  blk.marks.push([37.0, 'L4', '✓', C.green, 41.4]);
+  cap(37.6, 41.4, '<u>Checked on the live page</u>, then saved.');
+  focus(38.9, 'run');
+  beat(40.2, 'B5 passed, 3 repaired');
+
+  // ----- B6: the next run
+  reload(41.4);
+  focus(41.4, 'page');
+  cap(41.6, 48.0, 'Next run: saved fixes, <u>no waiting, no model.</u>');
+  if (D.E_heals.length) throw new Error('E: the next run repaired something');
+  const e = D.Esteps, Et = [42.0, 42.4, 42.7, 43.0, 43.6];
+  let ea = 0;
+  const keys3 = [[Et[0], 0]];
+  e.forEach((x, i) => { ea += x; keys3.push([Et[i + 1], ea]); });
+  keys3.push([43.8, D.E_seconds]);
+  run({ t0: 41.4, t1: 48.4, cmd: [41.4, '$ python checkout.py'], prev: [41.4, `first run after the redesign · ${secs(D.D_seconds)} s`],
+    keys: keys3, clockCol: [[44.2, C.green]], stamp: { t: 44.2, kind: 'ok', html: '✓ Passed' } });
+  blk.hl.push([42.0, 'L1', 1], [42.7, 'L3', 1], [43.3, 'L4', 1], [44.0, 'L4', 0]);
+  blk.marks.push([42.4, 'L1', '✓', C.green, 48.4], [42.7, 'L2', '✓', C.green, 48.4], [43.0, 'L3', '✓', C.green, 48.4], [43.6, 'L4', '✓', C.green, 48.4]);
+  curOn(41.85, 44.0); cur(41.8, 'v2:input[name=email]', -90, 4); cur(42.55, 'v2:#opt-91c4', 2, 3); cur(43.15, 'v2:.btn-x82hd', 120, 4);
+  click(42.4, 'v2:input[name=email]', C.white); fill(42.45, 42.7, 'v2:input[name=email]', 'ada@example.com');
+  click(43.0, 'v2:#opt-91c4', C.white); check(43.0, 'v2:#opt-91c4');
+  click(43.6, 'v2:.btn-x82hd', C.white); press(43.6, 'v2:.btn-x82hd');
+  const SAVED = '✓ saved fix';
+  box({ at: 'v2:input[name=email]', col: C.green, t: [42.4, 48.2] });
+  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.green, t: [43.0, 48.2], pad: 6 });
+  box({ at: 'v2:.btn-x82hd', col: C.green, t: [43.6, 48.2] });
+  tag({ at: 'v2:input[name=email]', html: SAVED, col: C.green, t: [42.8, 48.2], solid: true, col0: 'v2:.f9a1' });
+  tag({ at: 'v2:label.opt:nth-of-type(2)', html: SAVED, col: C.green, t: [43.1, 48.2], solid: true, col0: 'v2:.f9a1' });
+  tag({ at: 'v2:.btn-x82hd', html: SAVED, col: C.green, t: [43.7, 48.2], solid: true, col0: 'v2:.f9a1' });
+  focus(44.2, 'run');
+  beat(43.2, 'B6 saved fixes used');
+  beat(46.0, 'B6 next run, no waiting');
+}
+
+// ---------- the montage (brief mode: one caption, one stamp, focal on the page) ----------
+function montageCookies(t0) {
+  const t1 = t0 + 4.2;
+  montage(t0, t1);
+  if (D.C_banner_up_after || !D.C_ok) throw new Error('C: the banner run did not pass');
+  run({ t0, t1, cmd: [t0, '$ python checkout.py'] });
+  frame({ id: 'm1', html: D.pages.v1, t: [t0, t1], popup: '#cc-wrap', pop: [[t0 - 1, t0 + 1.6]] });
+  url(t0, 'northwind.example/checkout');
+  codeBlock({ t0, t1, rows: openRows('page', { cookies: 'reject' }, 'page') });
+  cap(t0 + .2, t1 - .2, 'Cookie banner? It clicks “Reject all”.');
+  beat(t0 + .9, 'M1 cookie banner');
+  curOn(t0 + .9, t0 + 1.9); cur(t0 + .9, 'm1:#cc-wrap button', -10, 4); haloOn(t0 + 1.0, t0 + 1.8);
+  click(t0 + 1.3, 'm1:#cc-wrap button', C.purple); press(t0 + 1.3, 'm1:#cc-wrap button');
+  pstamp({ t: [t0 + 2.2, t1], kind: 'ok', html: '✓ Passed · banner rejected', frame: 'm1' });
+  beat(t0 + 3.4, 'M1 banner rejected');
+  return t1;
+}
+function montagePopup(t0) {
+  const t1 = t0 + 4.2, F1 = D.F.F1;
+  montage(t0, t1);
+  if (F1.sign_up !== 'never clicked' || F1.popup_up_after) throw new Error('F1: wrong outcome');
+  run({ t0, t1, cmd: [t0, '$ python checkout.py'] });
+  frame({ id: 'm2', html: D.F.pages.v2_nl, t: [t0, t1], popup: '#nl', pop: [[t0 + .2, t0 + 2.5]] });
+  codeBlock({ t0, t1, rows: openRows('page', F1.open_kwargs, 'page') });
+  cap(t0 + .2, t1 - .2, 'A popup? <u>“No thanks”</u>. <s>Never “Sign up”.</s>');
+  box({ at: 'm2:.nl-yes', col: C.red, dashed: true, t: [t0 + 1.4, t0 + 2.5], pad: 6 });
+  tag({ at: 'm2:.nl-yes', html: 'never', col: C.red, solid: true, t: [t0 + 1.4, t0 + 2.5], clear: 'm2:#nl > div', leader: true, pad: 6 });
+  beat(t0 + 1.9, 'M2 popup: never Sign up');
+  curOn(t0 + 1.6, t0 + 2.7); cur(t0 + 1.6, 'm2:.nl-no', -8, 4); haloOn(t0 + 1.7, t0 + 2.5);
+  click(t0 + 2.2, 'm2:.nl-no', C.purple); press(t0 + 2.2, 'm2:.nl-no');
+  pstamp({ t: [t0 + 3.0, t1], kind: 'ok', html: '✓ “Sign up” never clicked', frame: 'm2' });
+  beat(t0 + 3.7, 'M2 never clicked');
+  return t1;
+}
+
+// ---------- draw state ----------
+let R = {};          // 'frame:css' -> { f, r (iframe px) }
+let CW = 14;         // editor char width at 24px
+const FR = {};       // frames by id
+const resolved = new Map();
 
 function rectOf(node) {
   const r = node.getBoundingClientRect();
-  return { x: r.left, y: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  return { x: r.left, y: r.top, w: r.width, h: r.height };
 }
-function grow(r, p) { return { x: r.x - p, y: r.y - p, w: r.w + 2 * p, h: r.h + 2 * p }; }
+const grow = (r, p) => ({ x: r.x - p, y: r.y - p, w: r.w + 2 * p, h: r.h + 2 * p });
+const cxy = r => [r.x + r.w / 2, r.y + r.h / 2];
+// iframe px -> content px -> stage px
+function toContent(f, r) { return { x: (r.x - f.cam.x) * Z, y: (r.y - f.cam.y) * Z, w: r.w * Z, h: r.h * Z }; }
+function toStage(f, r) { const c = toContent(f, r); return { x: c.x + CO.x, y: c.y + CO.y, w: c.w, h: c.h }; }
+function frameOf(at) { const i = at.indexOf(':'); return FR[at.slice(0, i)]; }
+function nodeOf(at) {
+  if (resolved.has(at)) return resolved.get(at);
+  const i = at.indexOf(':'), f = FR[at.slice(0, i)];
+  if (!f) throw new Error('no frame for ' + at);
+  const n = f.doc.querySelector(at.slice(i + 1));
+  if (!n) throw new Error('selector not found: ' + at);
+  resolved.set(at, n);
+  return n;
+}
+// a stage rect for an anchor: 'frame:css', 'code:rowId' or [x, y] (stage)
+function SR(at, t) {
+  if (Array.isArray(at)) return { x: at[0], y: at[1], w: 0, h: 0 };
+  if (at.startsWith('code:')) return codeRect(at.slice(5), t);
+  const f = frameOf(at);
+  if (!R[at]) R[at] = rectOf(nodeOf(at));
+  return toStage(f, R[at]);
+}
+const toCO = p => [p[0] - CO.x, p[1] - CO.y];
+
+// ---------- build after the pages load ----------
+const ROWS = [];     // every code row element
+function buildCode() {
+  for (const b of TL.code) {
+    b.rowEls = {};
+    b.rows.forEach((r, i) => {
+      const ln = el('div', 'ln mono', `<span class="g">${Array.isArray(r.n) ? r.n[0][1] : r.n}</span><span class="c"><span class="cw">${r.html}</span></span><span class="st"></span>`, code);
+      const o = { b, r, ln, g: $('.g', ln), cw: $('.cw', ln), st: $('.st', ln), len: ln.querySelector('.cw').textContent.length,
+        at: r.at || [[0, i]], toks: [...ln.querySelectorAll('[data-k]')] };
+      b.rowEls[r.id] = o;
+      ROWS.push(o);
+    });
+  }
+}
+function rowIdx(o, t) { return track(t, o.at.map(([tt, i], k) => [tt, i, .5]), .5); }
+function blockAt(t) {   // the code block on screen at t (the latest that started)
+  let cur = null;
+  for (const b of TL.code) if (t >= b.t0 - .3 && t < b.t1 + .3) cur = b;
+  return cur;
+}
+function codeRect(id, t = 1e9) {
+  for (const b of TL.code) if (b.rowEls && b.rowEls[id]) {
+    const o = b.rowEls[id];
+    let idx = o.at[0][1];
+    for (const [tt, i] of o.at) if (t >= tt) idx = i;
+    return { x: ED.x + 58, y: ED.y + LAYOUT.HEAD + LAYOUT.ROW0 + idx * LH, w: o.len * CW, h: LH };
+  }
+  throw new Error('no code row ' + id);
+}
 
 function measure() {
-  doc1 = f1.contentDocument; doc2 = f2.contentDocument;
-  banner = doc1.getElementById('cc-wrap'); bCard = banner.firstElementChild; bReject = bCard.querySelector('button');
-  v1email = doc1.getElementById('email'); v1chk = doc1.getElementById('accept-terms'); v1cont = doc1.getElementById('continue');
-  v2email = doc2.querySelector('input[name=email]'); v2a = doc2.getElementById('opt-77a1'); v2b = doc2.getElementById('opt-91c4');
-  v2cont = doc2.querySelector('.btn-x82hd');
-  for (const d of [doc1, doc2]) { d.documentElement.style.overflow = 'hidden'; }
-  bCard.style.willChange = 'transform,opacity,filter';
-  R = {
-    v1email: rectOf(v1email), v1chk: rectOf(v1chk), v1chkL: rectOf(v1chk.closest('label')), v1cont: rectOf(v1cont),
-    reject: rectOf(bReject), card: rectOf(bCard),
-    v2email: rectOf(v2email), v2a: rectOf(v2a.closest('label')), v2b: rectOf(v2b.closest('label')), v2bIn: rectOf(v2b),
-    v2cont: rectOf(v2cont),
-  };
-  // editor char width and token offsets
-  const probe = el('span', 'mono', 'x'.repeat(40), code, 'position:absolute;visibility:hidden;font-size:18px;white-space:pre');
-  CW = probe.getBoundingClientRect().width / 40; probe.remove();
-  for (const id of ['L1', 'L3', 'L4']) {
-    const tok = $('.sel', lineEls[id].root);
-    const lr = lineEls[id].root.getBoundingClientRect(), tr = tok.getBoundingClientRect();
-    selTok[tok.dataset.k] = { line: id, dx: tr.left - lr.left, w: tr.width, h: tr.height, tok };
+  for (const f of TL.frames) {
+    f.doc = f.ifr.contentDocument;
+    f.doc.documentElement.style.overflow = 'hidden';
+    if (f.popup) {
+      f.popEl = f.doc.querySelector(f.popup);
+      if (!f.popEl) throw new Error('no popup ' + f.popup + ' in ' + f.id);
+      f.popCard = f.popEl.firstElementChild;
+      f.popEl.style.visibility = 'hidden';
+    }
+    // the page camera: the form card lands at content (16, 120)
+    const card = f.doc.querySelector('.card, .f9a1');
+    const r = rectOf(card);
+    f.cam = f.cam || { x: r.x - LAYOUT.CARD_AT[0] / Z, y: r.y - LAYOUT.CARD_AT[1] / Z };
+    f.pgw.style.transform = `scale(${Z}) translate(${(-f.cam.x).toFixed(2)}px,${(-f.cam.y).toFixed(2)}px)`;
   }
-  buildScenes();
-  if (window.measureScenes) measureScenes();
+  // the redesign must break all three selectors
+  if (FR.v2 && FR.v2.doc.querySelector('#email, #accept-terms, #continue')) throw new Error('V2 still matches an old selector: "no match" would be false');
+  // editor char width
+  const probe = el('span', 'mono', 'x'.repeat(40), code, 'position:absolute;visibility:hidden;font-size:24px;white-space:pre');
+  CW = probe.getBoundingClientRect().width / 40; probe.remove();
+  buildCode();
+  buildRuns();
+  buildAnn();
+  buildPage();
+  if (TL.title) buildTitle();
+  if (TL.end) buildEnd();
+  if (TL.ctitle) buildClipTitle();
+  if (TL.estrip) buildEndStrip();
+  for (const c of TL.caps) c.e = el('div', 'cap', c.html, document.body);
+  TL.focus.sort((a, b) => a[0] - b[0]);
+  if (!TL.focus.length || TL.focus[0][0] > 0) TL.focus.unshift([0, 'all']);
+  checkFits();
 }
 
-const P = (r, dx = 0, dy = 0) => [r.cx + dx, r.cy + dy];
-function buildScenes() {
-  const rest1 = [700, 560], rest2 = [760, 520];
-  const em1 = [R.v1email.x + 74, R.v1email.cy + 3], chk1 = P(R.v1chk, 2, 3), cont1 = P(R.v1cont, -30, 4);
-  const rej = P(R.reject, -10, 4);
-  const em2 = [R.v2email.x + 80, R.v2email.cy + 3], chk2 = P(R.v2bIn, 2, 3), cont2 = [R.v2cont.x + 150, R.v2cont.cy + 4];
-  CURSOR = [
-    [0, rest1],
-    [5.0, em1], [6.4, chk1], [7.05, cont1], [8.2, rest2],
-    [11.6, em1], [15.2, rest1],
-    [22.3, rej], [23.6, em1], [24.9, chk1], [25.5, cont1], [26.6, rest2],
-    [33.2, em1], [36.55, em2], [37.75, chk1], [42.6, chk2], [43.6, cont1], [45.95, cont2], [47.0, rest2],
-    [49.55, em2], [50.4, chk2], [50.8, cont2], [51.7, rest2],
-  ];
-  CLICKS = [
-    [5.6, em1, '#fff'], [6.95, chk1, '#fff'], [7.6, cont1, '#fff'],
-    [12.3, em1, C.red], [12.75, em1, C.red], [13.2, em1, C.red], [13.65, em1, C.red], [14.1, em1, C.red],
-    [22.95, rej, C.purple], [24.1, em1, '#fff'], [25.4, chk1, '#fff'], [26.0, cont1, '#fff'],
-    [37.0, em2, '#fff'], [43.1, chk2, '#fff'], [46.3, cont2, '#fff'],
-    [50.05, em2, '#fff'], [50.8, chk2, '#fff'], [51.2, cont2, '#fff'],
-  ];
-  for (const [t, at, col] of CLICKS) ripple(t, at, col);
-
-  // S2: blocked click
-  H.block = chip(`<span style="color:${C.red}">⊘</span>&nbsp; <span class="mono" style="font-weight:500">&lt;div class="cookie-consent"&gt;</span> intercepts pointer events`,
-    `background:rgba(14,18,27,.9);border:1px solid ${C.red}66;color:#ffd3d3;font-size:16px;padding:9px 14px;border-radius:11px;box-shadow:0 14px 40px rgba(0,0,0,.45)`);
-  H.t30 = timer(C.red);
-  // S3: banner chip
-  H.bchip = chip(`▸ cookie banner in the way · clicking “Reject all”`, `background:${C.amber};color:#1b1405;font-size:15.5px;box-shadow:0 10px 30px rgba(0,0,0,.35)`);
-  // S4: selector chips that leave the page for the code
-  H.selChips = ['email', 'terms', 'cont'].map(k => chip(`<span class="mono">${{ email: '#email', terms: '#accept-terms', cont: '#continue' }[k]}</span>`,
-    `font-size:16px;padding:4px 10px;border-radius:8px`));
-  H.ghosts = ['email', 'terms', 'cont'].map(() => box());
-  H.ghostLbl = ['#email', '#accept-terms', '#continue'].map(s => chip(`<span class="mono">${s}</span> &nbsp;not on the page`,
-    `background:rgba(20,10,14,.9);border:1px solid ${C.red}88;color:#ffc4c4;font-size:14px;padding:4px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.3)`));
-  H.t10 = [timer(C.amber), timer(C.amber), timer(C.amber)];
-  H.amber = [box(), box()];
-  H.hudE = hud([
-    { ic: '◆', col: C.blue, html: '<b>Repaired from memory.</b> <span class="sub">No AI.</span>', t: 35.15 },
-    { xp: XP.email, t: 35.4, t1: 35.95 },
-    { ic: '✓', col: C.green, html: 'Checked on the live page: <b>1 visible textbox</b>', t: 36.15 },
-  ]);
-  H.hudT = hud([
-    { ic: '?', col: C.amber, html: 'Two checkboxes, reworded label. <span class="sub">Too close to call from memory.</span>', t: 39.5 },
-    { ic: '★', col: C.purple, html: `<b>Asking the local model</b> <span class="sub">1 GB · runs on this machine</span>`, t: 40.35 },
-    { shimmer: true, t: 40.35, t1: 41.25 },
-    { ic: '', col: C.purple, html: `Picked <b>“${esc(PICK)}”</b> <span class="sub">in ${MODEL_S} s</span>`, t: 41.3 },
-    { xp: XP.terms, t: 41.5, t1: 41.95 },
-    { ic: '✓', col: C.green, html: 'Checked on the live page: <b>1 visible checkbox</b>', t: 42.15 },
-  ]);
-  H.hudC = hud([
-    { ic: '◆', col: C.blue, html: '<b>Repaired from memory.</b> <span class="sub">No AI.</span>', t: 44.95 },
-    { xp: XP.cont, t: 45.05, t1: 45.6 },
-    { ic: '✓', col: C.green, html: 'Checked on the live page: <b>1 visible button</b>', t: 45.75 },
-  ]);
-  H.saved = [R.v2email, R.v2b, R.v2cont].map(() => chip(`✓ saved fix`, `background:${C.green};color:#04210f;font-size:14px;padding:3px 10px`));
-  H.savedBox = [box(), box(), box()];
+// ---------- the browser: pages, boxes, ripples, cursor ----------
+function makeFrames() {
+  for (const f of TL.frames) {
+    f.pgw = el('div', 'pgw', null, content);
+    content.insertBefore(f.pgw, ov);
+    f.ifr = el('iframe', '', null, f.pgw);
+    f.ifr.srcdoc = f.html;
+    FR[f.id] = f;
+  }
 }
-
-// ---------- per-frame drawing ----------
-function setBox(e, r, { col, dashed = false, fill = 'transparent', glow = 0, p = 1, radius = 10 }) {
+function buildPage() {
+  for (const b of TL.boxes) b.e = el('div', 'box', null, ov);
+  for (const c of TL.clicks) c.e = el('div', 'ripple', null, ov);
+  TL.curKeys = [[0, [CO.x + 600, CO.y + 560]]].concat(TL.cur.map(k => {
+    const r = SR(k.at);
+    // a wide input: point near its start, where the text goes; anything else: its centre
+    const big = r.w > 300 && k.edge !== 'top' && !Array.isArray(k.at) && !k.at.startsWith('code:') && nodeOf(k.at).tagName === 'INPUT';
+    const p = Array.isArray(k.at) ? k.at : [(big ? r.x + 110 : r.x + r.w / 2) + k.dx, (k.edge === 'top' ? r.y : r.y + r.h / 2) + k.dy];
+    return [k.t, p];
+  }));
+  for (const c of TL.clicks) { const r = SR(c.at); c.p = Array.isArray(c.at) ? c.at : [r.x + r.w / 2, r.y + r.h / 2]; }
+  TL.clicks.forEach((c, i) => {   // a click lands where the cursor is pointing, when the cursor is there
+    const k = TL.curKeys.filter(x => x[0] <= c.t).pop();
+    if (k && k[0] > c.t - 1.2) c.p = k[1];
+  });
+}
+function setBox(e, r, { col, dashed = false, fill = 'transparent', glow = 0, p = 1, radius = 12 }) {
   if (p <= 0.002) { e.style.visibility = 'hidden'; return; }
-  e.style.visibility = 'visible';
+  e.style.visibility = 'inherit';
   e.style.left = r.x + 'px'; e.style.top = r.y + 'px'; e.style.width = r.w + 'px'; e.style.height = r.h + 'px';
-  e.style.border = `${dashed ? 2 : 2.5}px ${dashed ? 'dashed' : 'solid'} ${col}`;
+  e.style.border = `${dashed ? 3 : 3.5}px ${dashed ? 'dashed' : 'solid'} ${col}`;
   e.style.background = fill;
   e.style.borderRadius = radius + 'px';
   e.style.boxShadow = glow ? `0 0 0 ${glow}px ${col}33, 0 0 30px ${col}44` : 'none';
   e.style.opacity = clamp(p).toFixed(3);
-  e.style.transform = `scale(${lerp(1.06, 1, clamp(p)).toFixed(4)})`;
-}
-function place(e, x, y, p, o) { e.style.left = x + 'px'; e.style.top = y + 'px'; mat(e, p, o); }
-function rectLerp(a, b, p) { return { x: lerp(a.x, b.x, p), y: lerp(a.y, b.y, p), w: lerp(a.w, b.w, p), h: lerp(a.h, b.h, p) }; }
-function drawTimer(tm, x, y, p, frac, text) {
-  place(tm.e, x, y, p, { dy: 10, s0: .9 });
-  tm.arc.setAttribute('stroke-dashoffset', (56.55 * (1 - frac)).toFixed(2));
-  tm.tx.textContent = text;
-}
-
-function render(t) {
-  if (!R) return;
-  // background drift
-  g1.style.transform = `translate(${Math.sin(t * .21) * 60}px,${Math.cos(t * .17) * 40}px)`;
-  g2.style.transform = `translate(${Math.cos(t * .19) * 70}px,${Math.sin(t * .23) * 50}px)`;
-  g3.style.transform = `translate(${Math.sin(t * .13) * 90}px,0)`;
-
-  // ---- title card
-  const tOut = 3.05;
-  // The first frame already shows the wordmark: it is the poster frame.
-  mat(tWm, 1 - clamp(spring(t - tOut, .36)), { dy: 0, s0: .94, blur: 24 });
-  if (t < tOut + .6) tWm.style.transform += ` scale(${lerp(1, 1.025, lin(t, 0, 3)).toFixed(4)})`;
-  mat(tSub, pres(t, .35, tOut, .55), { dy: 18, blur: 10 });
-  mat(tCode, pres(t, .8, tOut, .55), { dy: 18, blur: 10 });
-  const cw30 = CW * 30 / 18;
-  const strike = clamp(spring(t - 1.35, .3)), gone = clamp(spring(t - 1.8, .35));
-  tOld.style.color = `rgb(${Math.round(lerp(165, 255, strike))},${Math.round(lerp(214, 107, strike))},${Math.round(lerp(255, 107, strike))})`;
-  tOld.style.textDecoration = strike > .5 ? 'line-through 3px' : 'none';
-  tOld.style.width = (T_OLD.length * cw30 * (1 - gone)).toFixed(1) + 'px';
-  tOld.style.opacity = (1 - gone).toFixed(3);
-  tNeu.style.width = (Math.round(T_NEU.length * lin(t, 1.95, 2.4)) * cw30).toFixed(1) + 'px';
-  tOk.style.opacity = clamp(spring(t - 2.5, .3)).toFixed(3);
-  tOk.style.transform = `scale(${lerp(.3, 1, spring(t - 2.5, .36, .55)).toFixed(3)})`;
-
-  // ---- stage presence + camera
-  const stIn = t < S.end ? 1 : 0;
-  const sp = spring(t - S.s1, .6) * (1 - spring(t - S.end, .5));
-  const camS = track(t, [[0, 1], [12.0, 1.13, .9], [14.45, 1, .9], [39.25, 1.13, .9], [43.25, 1, .9]]);
-  const fx = track(t, [[0, 960], [12.0, CO.x + R.v1email.x + 120, .9], [39.25, CO.x + 560, .9]]);
-  const fy = track(t, [[0, 540], [12.0, CO.y + R.v1email.cy, .9], [39.25, CO.y + R.v2b.cy - 10, .9]]);
-  const endS = lerp(.985, 1, sp);
-  stage.style.transform = `translate(${fx}px,${fy}px) scale(${(camS * endS).toFixed(4)}) translate(${-fx}px,${-fy}px)`;
-  stage.style.opacity = clamp(sp).toFixed(3);
-  stage.style.filter = sp < .995 ? `blur(${((1 - clamp(sp)) * 14).toFixed(2)}px)` : 'none';
-  stage.style.visibility = sp < .002 ? 'hidden' : 'visible';
-  if (sp < .002) { drawCards(t); drawCaps(t); return; }
-  mat(br, spring(t - S.s1 - .05, .6), { dy: 40, s0: .96, blur: 18 });
-  mat(ed, spring(t - S.s1 - .15, .6), { dy: 40, s0: .96, blur: 18 });
-  mat(term, spring(t - S.s1 - .25, .6), { dy: 40, s0: .96, blur: 18 });
-
-  // ---- top bar
-  mat(runPlain, pres(t, S.s1 + .4, 21.0), { dy: -10, blur: 6 });
-  mat(runMw, pres(t, 21.05, S.end), { dy: -10, blur: 6 });
-  mat(stepsEl, spring(t - S.s1 - .5, .6), { dy: -10, blur: 6 });
-  const scene = t < S.s2 ? 0 : t < S.s3 ? 1 : t < S.s4 ? 2 : t < S.s5 ? 3 : t < S.s6 ? 4 : t < S.s7 ? 5 : t < S.s8 ? 6 : t < S.s9 ? 7 : 8;
-  const sceneStart = [S.s1, S.s2, S.s3, S.s4, S.s5, S.s6, S.s7, S.s8, S.s9][scene];
-  stepEls.forEach((s, i) => {
-    const on = i === scene, done = i < scene;
-    const p = on ? spring(t - sceneStart, .4) : 0;
-    s.style.color = on ? `rgba(238,242,247,${lerp(.4, .95, p)})` : done ? 'rgba(238,242,247,.55)' : '';
-    const dot = s.firstChild;
-    const col = [C.blue, C.amber, C.purple, C.purple, C.purple, C.green, C.amber, C.green, C.blue][i];
-    dot.style.background = on ? col : done ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.18)';
-    dot.style.boxShadow = on ? `0 0 ${lerp(0, 14, p)}px ${col}` : 'none';
-    dot.style.transform = `scale(${on ? lerp(1, 1.35, spring(t - sceneStart, .35, .6)) : 1})`;
-  });
-  for (const s of statusEls) {
-    const p = pres(t, s.t, s.tout, .36, .3);
-    s.e.style.right = '64px';
-    mat(s.e, p, { dy: 0, s0: s.kind === 'run' ? .92 : .8, blur: 6 });
-    if (p > .002 && s.kind !== 'run') s.e.style.transform = `scale(${lerp(.8, 1, spring(t - s.t, .38, .62)).toFixed(4)})`;
-    if (s.spin) s.spin.style.transform = `rotate(${(t * 420) % 360}deg)`;
-  }
-
-  drawEditor(t);
-  drawRun(t);
-  drawBrowser(t);
-  drawOverlay(t);
-  if (window.drawScenes) drawScenes(t);
-  drawCaps(t);
-  drawCards(t);
-}
-
-function drawEditor(t) {
-  // line numbers and positions
-  const ins = clamp(spring(t - T_INS, .5));
-  for (const id of Object.keys(lineEls)) {
-    const L = lineEls[id];
-    L.root.style.top = lineY(id, t) + 'px';
-    const n = Math.round(lineIdx(id, t)) + 1;
-    L.g.textContent = id === 'L0' ? '1' : String(t >= T_INS + .2 ? BASE[id] + 2 : BASE[id] + 1);
-  }
-  // the inserted line types in
-  const L0 = lineEls.L0;
-  const shown = Math.round(L0_TEXT.length * lin(t, T_INS + .25, T_INS + 1.25));
-  L0.root.style.opacity = t < T_INS ? 0 : clamp(spring(t - T_INS, .35)).toFixed(3);
-  L0.cw.style.display = 'inline-block'; L0.cw.style.overflow = 'hidden'; L0.cw.style.verticalAlign = 'bottom';
-  L0.cw.style.width = (shown * CW).toFixed(1) + 'px';
-  L0.root.style.background = t > T_INS ? `rgba(185,140,255,${(0.14 * pres(t, T_INS, 22.0, .4, .9)).toFixed(3)})` : 'transparent';
-  L0.root.style.borderRadius = '8px';
-  // selector tokens: red while broken, then the colour of the repair
-  const tokState = {
-    email: [[32.55, 'broken'], [35.3, 'mem'], [S.s5 + .1, 'saved']],
-    terms: [[32.65, 'broken'], [41.3, 'ai'], [S.s5 + .1, 'saved']],
-    cont: [[32.75, 'broken'], [44.95, 'mem'], [S.s5 + .1, 'saved']],
-  };
-  for (const k of Object.keys(selTok)) {
-    let st = null, t0 = 0;
-    for (const [tt, s] of tokState[k]) if (t >= tt) { st = s; t0 = tt; }
-    if (t >= S.s6) st = null;
-    const tok = selTok[k].tok;
-    const col = st === 'broken' ? C.red : st === 'mem' ? C.blue : st === 'ai' ? C.purple : st === 'saved' ? C.green : null;
-    if (!col) { tok.style.textDecoration = 'none'; tok.style.background = 'transparent'; continue; }
-    tok.style.textDecoration = `underline ${st === 'broken' ? 'wavy' : 'solid'} ${col}`;
-    tok.style.textUnderlineOffset = '6px'; tok.style.textDecorationThickness = '2px';
-    tok.style.background = `${col}${Math.round(0x22 * clamp(spring(t - t0, .4))).toString(16).padStart(2, '0')}`;
-  }
-  // current-line highlight
-  const HL = [[0, 'L1', 0], [5.0, 'L1', 1], [6.35, 'L2', 1], [6.6, 'L3', 1], [7.1, 'L4', 1], [7.9, 'L4', 0],
-    [11.5, 'L1', 1], [16.5, 'L1', 0],
-    [21.9, 'L1', 1], [24.2, 'L2', 1], [24.85, 'L3', 1], [25.5, 'L4', 1], [26.3, 'L4', 0],
-    [33.0, 'L1', 1], [37.3, 'L2', 1], [37.7, 'L3', 1], [43.5, 'L4', 1], [46.5, 'L4', 0],
-    [49.4, 'L1', 1], [50.1, 'L2', 1], [50.4, 'L3', 1], [50.8, 'L4', 1], [51.5, 'L4', 0]];
-  const yk = HL.map(([tt, id]) => [tt, lineY(id, t)]);
-  const ok = HL.map(([tt, , on]) => [tt, on]);
-  hl.style.top = track(t, yk, .32) + 'px';
-  const failed = t >= 14.7 && t < S.s3;
-  const op = clamp(track(t, ok, .3));
-  hl.style.opacity = op.toFixed(3);
-  hl.style.background = failed ? 'rgba(255,107,107,.14)' : 'rgba(90,169,255,.12)';
-  hl.style.boxShadow = failed ? 'inset 0 0 0 1px rgba(255,107,107,.4)' : 'inset 0 0 0 1px rgba(90,169,255,.28)';
-  // per-line results
-  const MARKS = {
-    L1: [[5.65, '✓', C.green, S.s2], [14.7, '✕', C.red, S.s3], [24.1, '✓', C.green, S.s4], [37.0, '✓', C.green, S.s5], [50.05, '✓', C.green, S.s6]],
-    L2: [[6.35, '✓', C.green, S.s2], [24.8, '✓', C.green, S.s4], [37.6, '✓', C.green, S.s5], [50.4, '✓', C.green, S.s6]],
-    L3: [[6.95, '✓', C.green, S.s2], [25.4, '✓', C.green, S.s4], [43.1, '✓', C.green, S.s5], [50.8, '✓', C.green, S.s6]],
-    L4: [[7.6, '✓', C.green, S.s2], [26.0, '✓', C.green, S.s4], [46.3, '✓', C.green, S.s5], [51.2, '✓', C.green, S.s6]],
-    L0: [],
-  };
-  for (const id of Object.keys(lineEls)) {
-    const L = lineEls[id];
-    let m = null;
-    for (const mk of MARKS[id]) if (t >= mk[0] && t < mk[3]) m = mk;
-    if (!m) { L.st.style.opacity = 0; continue; }
-    L.st.textContent = m[1]; L.st.style.color = m[2];
-    const p = pres(t, m[0], m[3] - .15, .36, .25);
-    L.st.style.opacity = clamp(p).toFixed(3);
-    L.st.style.transform = `scale(${lerp(.4, 1, spring(t - m[0], .36, .55)).toFixed(3)})`;
-  }
-}
-
-function drawRun(t) {
-  for (const g of groupEls) {
-    const gp = pres(t, g.t0, g.t1 - .25, .3, .3);
-    mat(g.g, gp, { dy: 0, blur: 6, s0: 1 });
-    if (gp <= .002) continue;
-    for (const en of g.ents) {
-      const p = spring(t - en.t, .38);
-      en.e.style.display = t >= en.t ? 'block' : 'none';
-      if (t >= en.t) { en.e.style.opacity = clamp(p).toFixed(3); en.e.style.transform = `translateY(${((1 - p) * 8).toFixed(2)}px)`; }
-    }
-  }
-}
-
-function setVal(input, v) { if (input.value !== v) input.value = v; }
-function focusRing(input, on, col) {
-  input.style.boxShadow = on > .01 ? `0 0 0 ${(3.5 * on).toFixed(2)}px ${col}` : 'none';
+  e.style.transform = `scale(${lerp(1.05, 1, clamp(p)).toFixed(4)})`;
 }
 function drawBrowser(t) {
-  // reloads
-  const RL = [S.s2 + .05, S.s3 + .1, S.s5 + .1];
-  let pw = 0, po = 0;
-  for (const r of RL) {
-    if (t >= r && t < r + 1.0) { pw = easeIO(lin(t, r, r + .5)); po = 1 - lin(t, r + .55, r + .9); }
+  let pw_ = 0, po = 0, dip = 0;
+  for (const r of TL.reloads) {
+    if (t >= r && t < r + 1.0) { pw_ = easeIO(lin(t, r, r + .5)); po = 1 - lin(t, r + .55, r + .9); }
+    dip = Math.max(dip, Math.sin(Math.PI * lin(t, r + .05, r + .5)) * .35);
   }
-  prog.style.width = (pw * 100).toFixed(2) + '%'; prog.style.opacity = po.toFixed(3);
-  let dip = 0;
-  for (const r of RL) dip = Math.max(dip, Math.sin(Math.PI * lin(t, r + .05, r + .5)) * .35);
-
-  // which page: V1 until the redesign, then V2
-  const out1 = spring(t - 30.4, .6), in2 = spring(t - 30.6, .6);
-  mat(f1, (1 - out1) * (1 - dip), { dy: 0, s0: 1.015, blur: 10 });
-  if (t >= 30.4 && out1 < .999) f1.style.transform = `scale(${lerp(1, .985, out1)})`;
-  mat(f2, in2 * (1 - (t > S.s5 ? dip : 0)), { dy: 0, s0: 1.015, blur: 10 });
-
-  // V1 state
-  const em1 = t < S.s2 ? typed('ada@example.com', t, 5.75, 6.3) : (t >= S.s3 && t < S.s4) ? typed('ada@example.com', t, 24.25, 24.75) : '';
-  setVal(v1email, em1);
-  focusRing(v1email, pres(t, 5.6, 6.45, .3, .3) + pres(t, 24.1, 24.9, .3, .3), 'rgba(90,169,255,.45)');
-  v1chk.checked = (t >= 6.95 && t < S.s2) || (t >= 25.4 && t < S.s4);
-  const press1 = Math.sin(Math.PI * lin(t, 7.6, 7.85)) + Math.sin(Math.PI * lin(t, 26.0, 26.25));
-  v1cont.style.transform = `scale(${(1 - .04 * press1).toFixed(4)})`;
-  // banner: in for S2, reload in S3, rejected by mendwright
-  const bp = pres(t, 10.4, S.s3 + .12, .55, .25) + pres(t, S.s3 + .55, 23.05, .55, .5);
-  if (bp <= .002) banner.style.visibility = 'hidden';
-  else {
-    banner.style.visibility = 'visible';
-    banner.style.opacity = clamp(bp).toFixed(3);
-    const cp = clamp(bp);
-    bCard.style.transform = `translateY(${((1 - bp) * 46).toFixed(2)}px) scale(${lerp(.94, 1, bp).toFixed(4)})`;
-    bCard.style.filter = cp < .995 ? `blur(${((1 - cp) * 10).toFixed(2)}px)` : 'none';
+  prog.style.width = (pw_ * 100).toFixed(2) + '%'; prog.style.opacity = po.toFixed(3);
+  let u = null;
+  for (const [tt, s] of TL.urls) if (t >= tt) u = s;
+  if (u != null && urlEl.textContent !== u) urlEl.textContent = u;
+  for (const f of TL.frames) {
+    const p = pres(t, f.t[0], f.t[1], .45, .35);
+    let fdip = 0;
+    for (const r of f.reloads) fdip = Math.max(fdip, Math.sin(Math.PI * lin(t, r + .05, r + .5)) * .35);
+    if (p <= .002) { f.pgw.style.visibility = 'hidden'; continue; }
+    f.pgw.style.visibility = 'inherit';
+    f.pgw.style.opacity = (clamp(p) * (1 - fdip)).toFixed(4);
+    if (f.popEl) {
+      let np = 0;
+      for (const [a, b] of f.pop) np = Math.max(np, pres(t, a, b, .5, .3));
+      if (np <= .002) f.popEl.style.visibility = 'hidden';
+      else {
+        f.popEl.style.visibility = 'inherit'; f.popEl.style.opacity = clamp(np).toFixed(3);
+        f.popCard.style.transform = `translateY(${((1 - np) * 40).toFixed(2)}px) scale(${lerp(.95, 1, np).toFixed(4)})`;
+        f.popCard.style.filter = np < .995 ? `blur(${((1 - clamp(np)) * 8).toFixed(2)}px)` : 'none';
+      }
+    }
   }
-  const pr = Math.sin(Math.PI * lin(t, 22.95, 23.15));
-  bReject.style.transform = `scale(${(1 - .05 * pr).toFixed(4)})`;
-  bReject.style.boxShadow = t > 22.3 && t < 23.2 ? `0 0 0 ${(4 * pres(t, 22.4, 23.05, .3, .2)).toFixed(2)}px rgba(185,140,255,.55)` : 'none';
-
-  // V2 state
-  const em2 = (t >= S.s4 && t < S.s5) ? typed('ada@example.com', t, 37.1, 37.55) : t >= S.s5 + .3 ? typed('ada@example.com', t, 50.1, 50.35) : '';
-  setVal(v2email, em2);
-  focusRing(v2email, pres(t, 37.0, 37.7, .3, .3) + pres(t, 50.05, 50.45, .3, .3), 'rgba(90,169,255,.45)');
-  v2b.checked = (t >= 43.1 && t < S.s5) || t >= 50.8;
-  const press2 = Math.sin(Math.PI * lin(t, 46.3, 46.55)) + Math.sin(Math.PI * lin(t, 51.2, 51.45));
-  v2cont.style.transform = `scale(${(1 - .03 * press2).toFixed(4)})`;
-}
-
-function drawOverlay(t) {
+  // page state
+  const vals = new Map();
+  for (const x of TL.fills) {
+    const v = t < x.a || t >= x.until ? null : x.text.slice(0, Math.round(x.text.length * lin(t, x.a, x.b)));
+    if (!vals.has(x.at) || v != null) vals.set(x.at, v);
+  }
+  for (const [at, v] of vals) { const n = nodeOf(at); const want = v || ''; if (n.value !== want) n.value = want; }
+  const chk = new Map();
+  for (const x of TL.checks) chk.set(x.at, (chk.get(x.at) || false) || (t >= x.t && t < x.until));
+  for (const [at, v] of chk) nodeOf(at).checked = v;
+  const prs = new Map();
+  for (const x of TL.press) prs.set(x.at, Math.max(prs.get(x.at) || 0, Math.sin(Math.PI * lin(t, x.t, x.t + .24))));
+  for (const [at, v] of prs) nodeOf(at).style.transform = `scale(${(1 - .05 * v).toFixed(4)})`;
+  // boxes
+  for (const b of TL.boxes) {
+    const p = pres(t, b.t[0], b.t[1], .4, .3);
+    if (p <= .002) { b.e.style.visibility = 'hidden'; continue; }
+    const r = grow(SR(b.at), b.pad);
+    setBox(b.e, { x: r.x - CO.x, y: r.y - CO.y, w: r.w, h: r.h }, { col: b.col, dashed: b.dashed,
+      fill: b.dashed ? `${b.col}12` : `${b.col}14`, glow: b.dashed ? 0 : 4, p });
+  }
   // cursor
-  const [cx, cy] = trackN(t, CURSOR, .55);
-  const cvis = pres(t, 4.8, 9.4, .3, .3) + pres(t, 11.35, 16.3, .3, .3) + pres(t, 22.1, 27.0, .3, .3) + pres(t, 33.0, 47.4, .3, .3) + pres(t, 49.35, 52.2, .3, .3);
-  cursor.style.left = (cx - 5) + 'px'; cursor.style.top = (cy - 3) + 'px';
-  cursor.style.opacity = clamp(cvis).toFixed(3);
-  let press = 0;
-  for (const r of RIPPLES) press = Math.max(press, Math.sin(Math.PI * lin(t, r.t - .06, r.t + .12)));
-  cursor.style.transform = `scale(${(1 - .14 * press).toFixed(3)})`;
-  const hp = pres(t, 22.15, 23.25, .35, .3) * clamp(cvis);
-  halo.style.left = (cx - 32) + 'px'; halo.style.top = (cy - 32) + 'px'; halo.style.opacity = hp.toFixed(3);
-  for (const r of RIPPLES) {
-    const p = lin(t, r.t, r.t + .65);
-    if (p <= 0 || p >= 1) { r.e.style.visibility = 'hidden'; continue; }
-    const e = 1 - Math.pow(1 - p, 3), rad = 6 + 34 * e;
-    r.e.style.visibility = 'visible';
-    r.e.style.left = (r.at[0] - rad) + 'px'; r.e.style.top = (r.at[1] - rad) + 'px';
-    r.e.style.width = r.e.style.height = 2 * rad + 'px';
-    r.e.style.borderColor = r.color; r.e.style.opacity = (.85 * (1 - p)).toFixed(3);
+  const [cx, cy] = toCO(trackN(t, TL.curKeys, .5));
+  let cv = 0;
+  for (const [a, b] of TL.curOn) cv = Math.max(cv, pres(t, a, b, .25, .25));
+  cursor.style.left = (cx - 6) + 'px'; cursor.style.top = (cy - 4) + 'px';
+  cursor.style.opacity = clamp(cv).toFixed(3);
+  let push = 0;
+  for (const c of TL.clicks) push = Math.max(push, Math.sin(Math.PI * lin(t, c.t - .06, c.t + .12)));
+  cursor.style.transform = `scale(${(1 - .14 * push).toFixed(3)})`;
+  let hp = 0;
+  for (const [a, b] of TL.halo) hp = Math.max(hp, pres(t, a, b, .3, .3));
+  halo.style.left = (cx - 42) + 'px'; halo.style.top = (cy - 42) + 'px'; halo.style.opacity = (hp * clamp(cv)).toFixed(3);
+  for (const c of TL.clicks) {
+    const p = lin(t, c.t, c.t + .65);
+    if (p <= 0 || p >= 1) { c.e.style.visibility = 'hidden'; continue; }
+    const e = 1 - Math.pow(1 - p, 3), rad = 8 + 40 * e;
+    const [x, y] = toCO(c.p);
+    c.e.style.visibility = 'inherit';
+    c.e.style.left = (x - rad) + 'px'; c.e.style.top = (y - rad) + 'px';
+    c.e.style.width = c.e.style.height = 2 * rad + 'px';
+    c.e.style.borderColor = c.col; c.e.style.opacity = (.9 * (1 - p)).toFixed(3);
   }
-
-  // S2: the banner swallows the click
-  place(H.block, R.v1email.x + 150, R.v1email.y - 64, pres(t, 12.4, 15.0, .4, .3), { dy: 10, blur: 6 });
-  const f30 = lin(t, 12.6, 14.55);
-  drawTimer(H.t30, R.v1email.x + 150, R.v1email.y - 118, pres(t, 12.55, 15.0, .4, .3), f30,
-    f30 < 1 ? `Playwright retries the click · ${Math.round(30 * f30)} s` : 'Timeout 30000ms exceeded');
-
-  // S3: mendwright handles the banner
-  place(H.bchip, R.card.x + 8, R.card.y - 50, pres(t, 22.2, 23.15, .4, .3), { dy: 10, blur: 6 });
-
-  // S4: the selectors leave the page and land on the code
-  const chipsAt = [R.v1email, R.v1chkL, R.v1cont];
-  ['email', 'terms', 'cont'].forEach((k, i) => {
-    const c = H.selChips[i], tk = selTok[k];
-    const t0 = 29.55 + i * .12, tRed = 31.0 + i * .08, tFly = 31.95 + i * .1;
-    const from = [chipsAt[i].x + chipsAt[i].w + 16, chipsAt[i].cy - 16];
-    if (k === 'terms') from[0] = chipsAt[i].x + chipsAt[i].w + 16;
-    const ly = lineY(tk.line, t);
-    const to = [ED.x + 1 + tk.dx - 7 - CO.x, ED.y + 1 + 62 + ly + 3 - CO.y];  // tk.dx already includes the gutter
-    const fp = spring(t - tFly, .6);
-    c.style.left = lerp(from[0], to[0], fp) + 'px'; c.style.top = lerp(from[1], to[1], fp) + 'px';
-    const red = clamp(spring(t - tRed, .35));
-    c.style.background = `rgba(${Math.round(lerp(90, 255, red))},${Math.round(lerp(169, 107, red))},${Math.round(lerp(255, 107, red))},.92)`;
-    c.style.color = '#0b0f16';
-    c.style.textDecoration = red > .5 ? 'line-through 2px rgba(11,15,22,.7)' : 'none';
-    mat(c, pres(t, t0, tFly + .72, .4, .25), { dy: 8, s0: .85, blur: 6 });
-  });
-
-  // ghosts, repairs and HUDs
-  const G = [
-    { i: 0, old: R.v1email, neu: R.v2email, tIn: 33.6, tTimer: [33.75, 35.0], tFix: 35.3, tOut: 37.6, col: C.blue, pad: 6 },
-    { i: 1, old: R.v1chkL, neu: R.v2b, tIn: 38.15, tTimer: [38.3, 39.4], tFix: 41.3, tOut: 43.55, col: C.purple, pad: 7 },
-    { i: 2, old: R.v1cont, neu: R.v2cont, tIn: 43.95, tTimer: [44.05, 44.8], tFix: 44.95, tOut: 46.8, col: C.blue, pad: 6 },
-  ];
-  for (const g of G) {
-    const p = pres(t, g.tIn, g.tOut, .4, .3);
-    const mp = spring(t - g.tFix, .55, .82);
-    const r = rectLerp(grow(g.old, g.pad), grow(g.neu, g.pad), mp);
-    const fixed = t >= g.tFix;
-    setBox(H.ghosts[g.i], r, { col: fixed ? g.col : C.red, dashed: !fixed, fill: fixed ? `${g.col}12` : 'rgba(255,107,107,.07)', glow: fixed ? 4 : 0, p });
-    const lp = pres(t, g.tIn + .1, g.tFix - .05, .4, .25);
-    place(H.ghostLbl[g.i], g.old.x - g.pad, g.old.y - g.pad - 34, lp, { dy: 8, blur: 5 });
-    const [a, b] = g.tTimer, f = lin(t, a + .1, b - .1);
-    drawTimer(H.t10[g.i], g.old.x + g.old.w + 24, g.old.cy - 22, pres(t, a, b + .1, .35, .25), f,
-      `waiting for ${['#email', '#accept-terms', '#continue'][g.i]} · ${Math.round(10 * f)} s of 10`);
-  }
-  // amber candidates for the checkbox
-  [R.v2a, R.v2b].forEach((r, i) => setBox(H.amber[i], grow(r, 6), { col: C.amber, dashed: true, fill: 'rgba(242,193,78,.07)', p: pres(t, 39.5 + i * .08, 41.35, .4, .3) }));
-  drawHud(H.hudE, t, 590, R.v2email.y - 40, 35.1, 37.45);
-  drawHud(H.hudT, t, 590, R.v2a.y - 92, 39.45, 43.4);
-  drawHud(H.hudC, t, 590, R.v2cont.y - 120, 44.9, 46.8);
-
-  // S5: saved fixes
-  [[R.v2email, 50.0], [R.v2b, 50.75], [R.v2cont, 51.15]].forEach(([r, tt], i) => {
-    const p = pres(t, tt, 52.6, .35, .3);
-    setBox(H.savedBox[i], grow(r, 6), { col: C.green, fill: 'rgba(63,212,122,.07)', glow: 3, p });
-    place(H.saved[i], r.x + r.w + 18, r.cy - 14, p, { dx: -10, dy: 0, blur: 5 });
-  });
 }
 
-function drawHud(hd, t, x, y, tIn, tOut) {
-  place(hd.h, x, y, pres(t, tIn, tOut, .45, .3), { dx: 24, dy: 0, s0: .97, blur: 12, origin: '0 50%' });
-  for (const part of hd.parts) {
-    const p = spring(t - part.t, .38);
-    part.e.style.opacity = clamp(p).toFixed(3);
-    part.e.style.transform = `translateY(${((1 - p) * 6).toFixed(2)}px)`;
-    if (part.xp != null) part.e.textContent = typed(part.xp, t, part.t, part.t1) || ' ';
-    if (part.shimmer) {
-      const s = part.e.firstChild, q = lin(t, part.t, part.t1);
-      s.style.left = (-40 + 140 * ((q * 2.2) % 1)) + '%';
-      part.e.style.opacity = (clamp(p) * (1 - lin(t, part.t1, part.t1 + .2))).toFixed(3);
+// ---------- the editor ----------
+const TOKTXT = { broken: '#ffb0b0', mem: '#9ccbff', ai: '#d4b2ff', saved: '#8ce8b0' };   // a token's text, tinted by its state
+function drawEditor(t) {
+  const blk = blockAt(t);
+  for (const o of ROWS) {
+    const b = o.b;
+    const p = pres(t, b.t0, b.t1, .4, .3) * (o.r.appear != null ? spring(t - o.r.appear, .3) : 1);
+    if (p <= .002) { o.ln.style.visibility = 'hidden'; continue; }
+    o.ln.style.visibility = 'inherit';
+    o.ln.style.opacity = clamp(p).toFixed(3);
+    o.ln.style.top = (LAYOUT.ROW0 + rowIdx(o, t) * LH) + 'px';
+    if (Array.isArray(o.r.n)) { let n = ''; for (const [tt, v] of o.r.n) if (t >= tt) n = v; if (o.g.textContent !== String(n)) o.g.textContent = n; }
+    if (o.r.type) {
+      const n = Math.round(o.len * lin(t, o.r.type[0], o.r.type[1]));
+      o.cw.style.width = (n * CW + 1).toFixed(1) + 'px';
+    }
+    o.ln.style.background = o.r.tint ? `rgba(185,140,255,${(.16 * pres(t, o.r.tint[0], o.r.tint[1], .4, .9)).toFixed(3)})` : 'transparent';
+    o.ln.style.borderRadius = '10px';
+    // the result of the line
+    let m = null;
+    for (const mk of b.marks) if (mk[1] === o.r.id && t >= mk[0] && t < mk[4]) m = mk;
+    if (!m) o.st.style.opacity = 0;
+    else {
+      o.st.textContent = m[2]; o.st.style.color = m[3];
+      o.st.style.opacity = clamp(pres(t, m[0], m[4] - .15, .3, .25)).toFixed(3);
+      o.st.style.transform = `scale(${lerp(.4, 1, spring(t - m[0], .36, .55)).toFixed(3)})`;
+    }
+    // selector tokens: red while broken, then the colour of the repair
+    for (const tok of o.toks) {
+      const ks = b.tok[tok.dataset.k] || [];
+      let st = null, t0 = 0;
+      for (const [tt, s] of ks) if (t >= tt) { st = s; t0 = tt; }
+      const col = { broken: C.red, mem: C.blue, ai: C.purple, saved: C.green }[st];
+      if (!col) { tok.style.textDecoration = 'none'; tok.style.background = 'transparent'; tok.style.color = ''; continue; }
+      tok.style.textDecoration = `underline ${st === 'broken' ? 'wavy' : 'solid'} ${col}`;
+      tok.style.textUnderlineOffset = '7px'; tok.style.textDecorationThickness = st === 'broken' ? '2px' : '3px';
+      tok.style.textDecorationSkipInk = 'none';
+      tok.style.color = TOKTXT[st];
+      tok.style.background = `${col}${Math.round(0x40 * clamp(spring(t - t0, .4))).toString(16).padStart(2, '0')}`;
+    }
+  }
+  // the current line
+  if (blk && blk.hl.length) {
+    const ys = blk.hl.map(([tt, id]) => [tt, LAYOUT.ROW0 + rowIdx(blk.rowEls[id], t) * LH]);
+    hl.style.top = track(t, ys, .3) + 'px';
+    hl.style.opacity = (clamp(track(t, blk.hl.map(([tt, , on]) => [tt, on]), .3)) * pres(t, blk.t0, blk.t1, .3, .3)).toFixed(3);
+  } else hl.style.opacity = 0;
+  // header badge (clip A)
+  for (const x of TL.badges) {
+    const nx = TL.badges[TL.badges.indexOf(x) + 1];
+    mat(x.e, pres(t, x.t, nx ? nx.t : 1e9, .35, .25), { dy: 0, dx: 10, s0: .94, blur: 4 });
+  }
+}
+
+// ---------- the run panel ----------
+function buildRuns() {
+  for (const r of TL.runs) {
+    r.e = el('div', 'rf', null, term);
+    term.insertBefore(r.e, VEIL.run);
+    if (r.diagram) r.dg = buildDiagram(r.diagram, r.e);
+    if (r.cmd) r.cmdE = el('div', 'cmd mono', esc(r.cmd[1]), r.e);
+    if (r.prev) r.prevE = el('div', 'prev', esc(r.prev[1]), r.e);
+    if (r.keys) {
+      const row = el('div', 'crow', null, r.e);
+      r.clockE = el('div', 'clock mono', '0.00 s', row);
+      r.speedE = el('div', 'speed', '', row);
+      r.segs = [];
+      for (let i = 1; i < r.keys.length; i++) {
+        const [a, x] = r.keys[i - 1], [b, y] = r.keys[i];
+        const rate = (y - x) / (b - a);
+        if (rate > 1.5) r.segs.push({ a, b, n: Math.round(rate) });
+      }
+    }
+    if (r.stamp) {
+      const col = { ok: C.green, bad: C.red, stop: C.amber }[r.stamp.kind];
+      const parts = r.stamp.html.split(' · ');
+      r.stampE = el('div', 'stamp', `<span style="color:${col}">${parts[0]}</span>${parts.length > 1 ? `<span style="color:var(--ink)"> · ${parts.slice(1).join(' · ')}</span>` : ''}`, r.e);
+      // too long for one line: the outcome on the first, the detail on the second
+      if (parts.length > 1 && r.stampE.getBoundingClientRect().height > 50)
+        r.stampE.innerHTML = `<span style="color:${col}">${parts[0]}</span><span class="sd">${parts.slice(1).join(' · ')}</span>`;
+    }
+    if (r.receipts.length) {
+      const box_ = el('div', 'receipts', null, r.e);
+      r.recE = r.receipts.map(x => el('div', 'receipt mono' + (x.dim ? ' dim' : ''), esc(x.text), box_));
     }
   }
 }
+function buildDiagram(dg, parent) {
+  const w = el('div', 'diagram', null, parent);
+  dg.rowEls = dg.rows.map(row => {
+    const e = el('div', 'drow', `<span class="lb">${esc(row.lb)}</span>`, w);
+    const chips = row.chips.map((c, i) => {
+      if (i) el('span', 'darr', '→', e);
+      return { name: c, e: el('span', 'dchip', esc(c), e) };
+    });
+    return { row, e, chips };
+  });
+  return w;
+}
+function drawDiagram(dg, t) {
+  dg.rowEls.forEach(({ row, e, chips }) => {
+    mat(e, spring(t - row.t, .4), { dy: 8, blur: 4, s0: .98 });
+    const tone = row.tone === 'amber' ? C.amber : C.grey;
+    let lit = null, done = [];
+    for (const [tt, name] of dg.lit) if (t >= tt) { if (lit) done.push(lit); lit = name; }
+    if (dg.done != null && t >= dg.done) { if (lit) done.push(lit); lit = null; }
+    chips.forEach(c => {
+      const on = c.name === lit, was = done.includes(c.name);
+      const warn = on && dg.warn && c.name === dg.warn;
+      const col = warn ? C.amber : on ? (row.tone === 'amber' ? C.amber : '#eef2f7') : was ? C.green : tone;
+      c.e.style.color = on && !warn && row.tone === 'amber' ? '#1b1405' : warn ? '#1b1405' : col;
+      c.e.style.background = on ? (row.tone === 'amber' || warn ? col : 'rgba(255,255,255,.14)') : 'rgba(255,255,255,.04)';
+      c.e.style.borderColor = on ? col : was ? `${C.green}88` : 'rgba(255,255,255,.12)';
+    });
+  });
+}
+function drawRuns(t) {
+  for (const r of TL.runs) {
+    const p = pres(t, r.t0, r.t1, .35, .3);
+    mat(r.e, p, { dy: 0, blur: 6, s0: 1 });
+    if (p <= .002) continue;
+    if (r.dg) drawDiagram(r.diagram, t);
+    if (r.cmdE) mat(r.cmdE, spring(t - r.cmd[0], .35), { dy: 6, blur: 4, s0: 1 });
+    if (r.prevE) mat(r.prevE, spring(t - r.prev[0], .35), { dy: 6, blur: 4, s0: 1 });
+    if (r.clockE) {
+      const v = pw(r.keys, t);
+      r.clockE.textContent = secs(v) + ' s';
+      mat(r.clockE.parentNode, spring(t - r.keys[0][0], .35), { dy: 6, blur: 4, s0: 1 });
+      let col = '#eef2f7';
+      for (const [tt, c] of (r.clockCol || [])) if (t >= tt) col = c;
+      r.clockE.style.color = col;
+      let sp = 0, seg = null;
+      for (const s of r.segs) { const q = pres(t, s.a - .05, s.b, .2, .2); if (q > sp) { sp = q; seg = s; } }
+      if (seg) r.speedE.textContent = `▶▶ sped up ×${seg.n}`;
+      r.speedE.style.opacity = clamp(sp).toFixed(3);
+    }
+    if (r.stampE) {
+      const q = spring(t - r.stamp.t, .38, .7);
+      mat(r.stampE, clamp(spring(t - r.stamp.t, .3)), { dy: 0, s0: .9, blur: 6 });
+      if (q > .002) r.stampE.style.transform = `scale(${lerp(.9, 1, q).toFixed(4)})`;
+      r.stampE.style.transformOrigin = '0 50%';
+    }
+    (r.recE || []).forEach((e, i) => mat(e, spring(t - r.receipts[i].t, .35), { dy: 8, blur: 4, s0: 1 }));
+  }
+}
 
+// ---------- annotations: callouts, tags, leaders, keycaps, page stamps ----------
+const RING = `<svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="11" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="3.5"/><circle class="arc" cx="15" cy="15" r="11" fill="none" stroke="${C.amber}" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="69.12" stroke-dashoffset="69.12" transform="rotate(-90 15 15)"/></svg>`;
+function buildAnn() {
+  const inner = { x: BR.x + 16, y: CO.y + 12, r: BR.x + BR.w - 16, b: BR.y + BR.h - 12 };
+  for (const c of TL.callouts) {
+    c.e = el('div', 'callout', null, ann);
+    c.sets.forEach(s => {
+      const ic = s.ic === 'ring' ? `<span class="ic">${RING}</span>` : s.ic ? `<span class="ic" style="color:${s.col || '#fff'}">${s.ic}</span>` : '';
+      // a sub only ever breaks between its " · " parts
+      const sub = s.s == null ? '' : s.mono ? esc(s.s) : s.s.split(' · ').map((x, i, a) => `<span style="white-space:nowrap">${esc(x)}${i < a.length - 1 ? ' ·' : ''}</span>`).join(' ');
+      s.e = el('div', 'set', `<div class="h">${ic}<span>${esc(s.h)}</span></div>${s.s != null ? `<div class="s${s.mono ? ' mono' : ''}">${sub}</div>` : ''}${s.shimmer ? '<div class="shimmer"><i></i></div>' : ''}`, c.e);
+      if (!s.ic) $('.h', s.e).style.gap = '0';
+      if (s.ic === 'ring') s.arc = $('.arc', s.e);
+      if (s.mono) s.sub = $('.s', s.e);
+      s.shim = $('.shimmer', s.e);
+      // the widths a set needs: its headline on one line, and its sub
+      const h = $('.h', s.e);
+      h.classList.add('one'); h.style.width = 'max-content';
+      s.hw = Math.ceil(h.getBoundingClientRect().width);
+      h.classList.remove('one'); h.style.width = '';
+      s.w = Math.ceil(s.e.getBoundingClientRect().width) + 36;
+      s.hgt = Math.ceil(s.e.getBoundingClientRect().height) + 32;
+    });
+    // as wide as the widest set needs, up to 420: a headline that fits on one line at that
+    // width stays on one line, so the box keeps its height from set to set
+    c.W = Math.min(420, Math.max(...c.sets.map(s => Math.max(s.w, s.hw + 36))));
+    c.sets.forEach(s => {
+      s.e.style.width = (c.W - 36) + 'px';
+      if (s.hw <= c.W - 36) $('.h', s.e).classList.add('one');
+      s.hgt = Math.ceil(s.e.getBoundingClientRect().height) + 32;
+    });
+    const T = SR(c.at);
+    const H0 = Math.max(...c.sets.map(s => s.hgt));
+    const freeRight = inner.r - (T.x + T.w + 44);
+    let x, y, side;
+    if (c.place === 'below-of') {
+      const A = SR(c.of);
+      x = A.x + A.w / 2 - c.W / 2; y = A.y + A.h + 22; side = 'below';
+    } else if (c.place === 'right' || (c.place === 'auto' && freeRight >= 380)) {
+      x = T.x + T.w + 44; y = T.y + T.h / 2 - c.sets[0].hgt / 2; side = 'right';
+    } else if (inner.b - (T.y + T.h + 24) >= H0) {
+      x = T.x; y = T.y + T.h + 24; side = 'below';
+    } else { x = T.x; y = T.y - 24 - H0; side = 'above'; }
+    x = clamp(x, inner.x, inner.r - c.W); y = clamp(y, inner.y, inner.b - H0);
+    Object.assign(c, { x, y, side, T });
+    c.e.style.left = x + 'px'; c.e.style.top = y + 'px'; c.e.style.width = c.W + 'px';
+    if (c.leader != null) {
+      c.line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      annSvg.appendChild(c.line);
+      const col = c.sets.find(s => s.t >= c.leader - .01) || c.sets[c.sets.length - 1];
+      c.lineCol = col.col || C.blue;
+    }
+  }
+  for (const g of TL.tags) {
+    const col = g.col;
+    g.e = el('div', 'tag', g.html, ann, g.solid
+      ? `background:${col};color:${col === C.green ? '#04210f' : col === C.red ? '#2a0606' : '#0b1220'}`
+      : `background:rgba(14,18,27,.92);border:1.5px solid ${col}99;color:#eef2f7`);
+    const w = g.e.getBoundingClientRect().width, h = g.e.getBoundingClientRect().height;
+    const T = SR(g.at, g.t[0]), pad = g.pad != null ? g.pad : 7;
+    const zr = g.zone === 'code' ? ED.x + ED.w - 12 : inner.r;
+    // right of the element (and of col0 / clear: a column or a popup card it must clear),
+    // else below it; 'below-of' sits under another element (a popup card), centred on the
+    // target; 'left' sits left of the element (or of clear), dy moves it off an input
+    let x = T.x + T.w + pad + 14, y = T.y + T.h / 2 - h / 2 + (g.dy || 0);
+    if (g.col0) { const K = SR(g.col0); x = Math.max(x, K.x + K.w + 18); }
+    if (g.clear && g.place === 'right') { const K = SR(g.clear); x = Math.max(x, K.x + K.w + 14); }
+    if (g.place === 'below' || (g.place === 'right' && x + w > zr)) { x = g.align === 'center' ? T.x + T.w / 2 - w / 2 : T.x; y = T.y + T.h + pad + 10; g.side = 'below'; }
+    if (g.place === 'below-of') {
+      const K = SR(g.of);
+      x = T.x + T.w / 2 - w / 2; y = K.y + K.h + 12;
+      // elbow 'right': under the card's right edge; its leader runs up outside the card
+      if (g.elbow === 'right') { g.ex = K.x + K.w + 24; x = g.ex + 48 - w; }
+    }
+    if (g.place === 'left') { x = (g.clear ? SR(g.clear).x : T.x - pad) - 14 - w; }
+    if (g.place === 'above') { x = T.x; y = T.y - pad - 10 - h; }
+    g.side = g.side || g.place;
+    g.x = x; g.y = y; g.w = w; g.h = h; g.T = grow(T, pad);
+    g.e.style.left = x + 'px'; g.e.style.top = y + 'px';
+    if (g.leader) {    // a line from the tag to the element's box, in the tag's colour
+      g.line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      annSvg.appendChild(g.line);
+      const B = g.T, ly = clamp(y + h / 2, B.y + 10, B.y + B.h - 10);
+      if (g.ex != null) g.pts = [[g.ex, y], [g.ex, B.y + B.h / 2], [B.x + B.w, B.y + B.h / 2]];
+      else if (g.side === 'below-of') g.pts = [[x + w / 2, y], [x + w / 2, B.y + B.h]];
+      else g.pts = g.side === 'left' ? [[x + w, ly], [B.x, ly]] : [[x, ly], [B.x + B.w, ly]];
+      g.line.setAttribute('points', g.pts.map(p => p.map(v => v.toFixed(1)).join(',')).join(' '));
+      g.line.setAttribute('fill', 'none'); g.line.setAttribute('stroke', col); g.line.setAttribute('stroke-width', '2.5');
+      g.line.setAttribute('stroke-linejoin', 'round');
+    }
+  }
+  for (const k of TL.keycaps) {
+    // above the popup card's top-right corner, right-aligned with it, clear of the page form
+    k.e = el('div', 'keycap mono', esc(k.text), ann);
+    const A = SR(k.at), w = k.e.getBoundingClientRect().width, h = k.e.getBoundingClientRect().height;
+    k.x = A.x + A.w - w; k.y = A.y - h - 12; k.w = w; k.h = h;
+    k.e.style.left = k.x + 'px'; k.e.style.top = k.y + 'px';
+  }
+  for (const s of TL.pstamps) {
+    const col = { ok: C.green, bad: C.red, stop: C.amber }[s.kind];
+    s.e = el('div', 'pstamp', `<span style="color:${col}">${s.html}</span>`, ann);
+    const f = FR[s.frame];
+    s.e.style.left = (CO.x + 16) + 'px';
+    s.e.style.top = (BR.y + BR.h - 24 - s.e.getBoundingClientRect().height) + 'px';
+  }
+  for (const b of TL.badges) b.e = el('div', 'badge', `<span class="d" style="background:${b.col}"></span>${b.html}`, edHead,
+    `background:${b.col}22;border:1px solid ${b.col}66;color:${b.col === C.grey ? '#dfe6ee' : b.col}`);
+}
+function annDim(zone, t) { return 1 - .45 * veilAt(zone, t); }
+function drawAnn(t) {
+  for (const c of TL.callouts) {
+    const p = pres(t, c.t[0], c.t[1], .4, .3);
+    if (p <= .002) { c.e.style.visibility = 'hidden'; if (c.line) c.line.style.opacity = 0; continue; }
+    mat(c.e, p, { dx: c.side === 'right' ? 18 : 0, dy: c.side === 'right' ? 0 : 14, s0: .96, blur: 10 });
+    c.e.style.opacity = (clamp(p) * annDim(c.zone, t)).toFixed(3);
+    c.e.style.height = track(t, c.sets.map((s, i) => [i ? s.t : c.t[0], s.hgt]), .35) + 'px';
+    c.sets.forEach((s, i) => {
+      const nx = c.sets[i + 1];
+      const q = pres(t, i ? s.t : c.t[0] - 1, nx ? nx.t - .05 : 1e9, .32, .18);
+      s.e.style.opacity = clamp(q).toFixed(3);
+      s.e.style.transform = `translateY(${((1 - clamp(spring(t - s.t, .32))) * (i ? 8 : 0)).toFixed(2)}px)`;
+      s.e.style.visibility = q <= .002 ? 'hidden' : 'inherit';
+      if (s.arc) s.arc.setAttribute('stroke-dashoffset', (69.12 * (1 - lin(t, s.ring[0], s.ring[1]))).toFixed(2));
+      if (s.sub && s.typed) s.sub.textContent = s.s.slice(0, Math.round(s.s.length * lin(t, s.typed[0], s.typed[1]))) || ' ';
+      if (s.shim) {
+        const sh = s.shim.firstChild, qq = lin(t, s.shimmer[0], s.shimmer[1]);
+        sh.style.left = (-40 + 140 * ((qq * 2.2) % 1)) + '%';
+        s.shim.style.opacity = (1 - lin(t, s.shimmer[1], s.shimmer[1] + .2)).toFixed(3);
+      }
+    });
+    if (c.line) {
+      // the leader: from the callout's near edge to the target's box, once the element is found
+      const T = grow(c.T, 7), h = parseFloat(c.e.style.height);
+      let x1, y1, x2, y2;
+      if (c.side === 'right') { x1 = c.x; y1 = clamp(T.y + T.h / 2, c.y + 18, c.y + h - 18); x2 = T.x + T.w; y2 = T.y + T.h / 2; }
+      else if (c.side === 'below') { x1 = clamp(T.x + T.w / 2, c.x + 24, c.x + c.W - 24); y1 = c.y; x2 = x1; y2 = T.y + T.h; }
+      else { x1 = clamp(T.x + T.w / 2, c.x + 24, c.x + c.W - 24); y1 = c.y + h; x2 = x1; y2 = T.y; }
+      const L = Math.hypot(x2 - x1, y2 - y1), q = clamp(spring(t - c.leader, .35)) * (1 - clamp(spring(t - c.t[1], .3)));
+      Object.entries({ x1, y1, x2, y2 }).forEach(([k, v]) => c.line.setAttribute(k, v.toFixed(1)));
+      c.line.setAttribute('stroke', c.lineCol); c.line.setAttribute('stroke-width', '2');
+      c.line.setAttribute('stroke-dasharray', L.toFixed(1)); c.line.setAttribute('stroke-dashoffset', (L * (1 - q)).toFixed(1));
+      c.line.style.opacity = (t >= c.leader ? .7 * annDim(c.zone, t) : 0).toFixed(3);
+    }
+  }
+  for (const g of TL.tags) {
+    const p = pres(t, g.t[0], g.t[1], .35, .3);
+    const vert = g.side === 'below' || g.side === 'below-of';
+    mat(g.e, p, { dx: vert ? 0 : g.side === 'left' ? 12 : -12, dy: vert ? -8 : 0, s0: .9, blur: 6 });
+    if (p > .002) g.e.style.opacity = (clamp(p) * annDim(g.zone, t)).toFixed(3);
+    if (g.line) g.line.style.opacity = (.8 * clamp(p) * annDim(g.zone, t)).toFixed(3);
+  }
+  for (const k of TL.keycaps) {
+    const p = pres(t, k.t[0], k.t[1], .3, .3);
+    mat(k.e, p, { dy: 10, s0: .9, blur: 4 });
+    const pr = Math.sin(Math.PI * lin(t, k.t[0] + .35, k.t[0] + .6));
+    if (p > .002) k.e.style.transform += ` translateY(${(3 * pr).toFixed(2)}px)`;
+  }
+  for (const s of TL.pstamps) mat(s.e, pres(t, s.t[0], s.t[1], .35, .3), { dy: 14, s0: .92, blur: 8 });
+}
+
+// ---------- focus ----------
+function zoneOn(zone, z) { return z === 'all' || z.split('+').includes(zone); }
+function veilAt(zone, t) {
+  if (zone === 'none') return 0;
+  return clamp(track(t, TL.focus.map(([tt, z]) => [tt, zoneOn(zone, z) ? 0 : 1]), .35));
+}
+function drawFocus(t) {
+  for (const z of ['code', 'run', 'page']) VEIL[z].style.opacity = veilAt(z, t).toFixed(3);
+}
+
+// ---------- captions ----------
 function drawCaps(t) {
-  for (const c of capEls) mat(c.e, pres(t, c.a, c.b, .45, .3), { dy: 12, blur: 8, s0: .99 });
+  for (const c of TL.caps) mat(c.e, pres(t, c.a, c.b, .4, .28), { dy: 10, blur: 8, s0: .99 });
 }
 
-function drawCards(t) {
-  const e0 = S.end + .5;
-  mat(eWm, spring(t - e0, .6), { dy: 0, s0: .94, blur: 22 });
-  featRows.forEach((r, i) => mat(r, spring(t - (e0 + .7 + i * .22), .5), { dy: 16, blur: 8 }));
-  mat(ePills, spring(t - (e0 + 1.85), .5), { dy: 14, blur: 8 });
-  mat(eRepo, spring(t - (e0 + 2.2), .5), { dy: 10, blur: 6 });
+// ---------- cards ----------
+let TC = {};
+function buildTitle() {
+  const T_OLD = JSON.stringify(SCRIPT[0][1]), T_NEU = JSON.stringify(XP.email);
+  const e = el('div', 'card', `<div class="wm"><b>mendwright</b></div><div class="tsub">Playwright &amp; Selenium selectors that repair themselves.</div>
+    <div class="tcode mono"><span class="k-obj">page</span><span class="k-p">.</span><span class="k-fn">click</span><span class="k-p">(</span><span class="old">${esc(T_OLD)}</span><span class="neu">${esc(T_NEU)}</span><span class="k-p">)</span><span class="ok">✓</span></div>
+    <div class="tnote"><div style="color:${C.red}">after a redesign: no match</div><div style="color:${C.blue}">◆ found at run time, from memory · no AI</div></div>`, document.body);
+  TC = { e, wm: e.children[0], sub: e.children[1], code: e.children[2], note: e.children[3], old: $('.old', e), neu: $('.neu', e), ok: $('.ok', e),
+    n1: e.children[3].children[0], n2: e.children[3].children[1], lo: T_OLD.length, ln: T_NEU.length };
+}
+function drawTitle(t) {
+  const { t0, t1 } = TL.title;
+  const out = clamp(spring(t - (t1 - .4), .3));
+  if (t > t1 + .4) { TC.e.style.visibility = 'hidden'; return; }
+  TC.e.style.visibility = 'inherit';
+  TC.e.style.opacity = (1 - out).toFixed(3);
+  TC.e.style.filter = out > .01 ? `blur(${(out * 16).toFixed(2)}px)` : 'none';
+  TC.e.style.transform = `scale(${lerp(1, .97, out).toFixed(4)})`;
+  const cw = CW * 40 / 24;
+  const strike = clamp(spring(t - .8, .25)), gone = clamp(spring(t - 1.1, .3));
+  TC.old.style.color = strike > .02 ? `rgb(${Math.round(lerp(165, 255, strike))},${Math.round(lerp(214, 107, strike))},${Math.round(lerp(255, 107, strike))})` : '#a5d6ff';
+  TC.old.style.textDecoration = strike > .5 ? `line-through 3px ${C.red}` : `underline wavy ${C.red}`;
+  TC.old.style.textDecorationThickness = strike > .5 ? '3px' : '2px';
+  TC.old.style.width = (TC.lo * cw * (1 - gone)).toFixed(1) + 'px';
+  TC.old.style.opacity = (1 - gone).toFixed(3);
+  TC.neu.style.width = (Math.round(TC.ln * lin(t, 1.2, 1.7)) * cw).toFixed(1) + 'px';
+  TC.ok.style.opacity = clamp(spring(t - 1.9, .3)).toFixed(3);
+  TC.ok.style.transform = `scale(${lerp(.3, 1, spring(t - 1.9, .36, .55)).toFixed(3)})`;
+  const sw = clamp(spring(t - 2.2, .4));
+  TC.n1.style.opacity = (1 - sw).toFixed(3); TC.n2.style.opacity = sw.toFixed(3);
+  TC.n2.style.transform = `translateY(${((1 - sw) * 8).toFixed(2)}px)`;
+}
+let EC = {};
+function buildEnd() {
+  const e = el('div', 'card', `<div class="wm" style="font-size:112px"><b>mendwright</b></div>
+<div class="feat">
+ <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Repairs from memory first. No AI.</div>
+ <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
+ <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
+ <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners, popups, steps in any order.</div>
+</div>
+<div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>mendwright model install</div></div>
+<div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
+  EC = { e, wm: e.children[0], feats: [...e.children[1].children], pills: e.children[2], repo: e.children[3] };
+}
+function drawEnd(t) {
+  const t0 = TL.end.t0;
+  if (t < t0 - .1) { EC.e.style.visibility = 'hidden'; return; }
+  EC.e.style.visibility = 'inherit';
+  mat(EC.wm, spring(t - t0, .6), { dy: 0, s0: .94, blur: 22 });
+  EC.feats.forEach((r, i) => mat(r, spring(t - (t0 + .5 + i * .4), .5), { dy: 16, blur: 8 }));
+  mat(EC.pills, spring(t - (t0 + 2.3), .5), { dy: 14, blur: 8 });
+  mat(EC.repo, spring(t - (t0 + 2.7), .5), { dy: 10, blur: 6 });
+}
+let CT = null, ES = null;
+function buildClipTitle() {
+  const c = TL.ctitle;
+  CT = el('div', 'card', `<div class="plate"><div class="ctitle">${c.title}</div><div class="capi mono">${esc(c.api)}</div></div>`, document.body);
+}
+function buildEndStrip() {
+  ES = el('div', 'card estrip', `<div class="plate"><div class="wm"><b>mendwright</b></div><div class="pi mono"><span style="color:var(--ink3)">$ </span>pip install mendwright</div></div>`, document.body);
 }
 
-const drawStory = render;   // a top-level function is window.render: keep the original
-window.render = t => { SS = 1 / K; drawStory(t / K); };
+// ---------- layout checks: nothing cropped, nothing overlapping ----------
+const PROBLEMS = [];
+function checkFits() {
+  const fits = (r, z, what) => {
+    if (r.x < z.x - .5 || r.y < z.y - .5 || r.x + r.w > z.x + z.w + .5 || r.y + r.h > z.y + z.h + .5) PROBLEMS.push(what + ' is cropped: ' + JSON.stringify([r.x, r.y, r.w, r.h].map(Math.round)));
+  };
+  const BRZ = { x: BR.x, y: CO.y, w: BR.w, h: CO.h };
+  for (const c of TL.callouts) {
+    fits({ x: c.x, y: c.y, w: c.W, h: Math.max(...c.sets.map(s => s.hgt)) }, BRZ, 'callout ' + c.sets[0].h);
+    c.sets.forEach(s => { if (s.e.scrollWidth > c.W - 36 + 1) PROBLEMS.push('callout text too wide: ' + s.h + ' / ' + (s.s || '')); });
+    const T = grow(c.T, 7), H = Math.max(...c.sets.map(s => s.hgt));
+    if (c.x < T.x + T.w && c.x + c.W > T.x && c.y < T.y + T.h && c.y + H > T.y) PROBLEMS.push('callout covers its target: ' + c.sets[0].h);
+  }
+  for (const g of TL.tags) {
+    fits({ x: g.x, y: g.y, w: g.w, h: g.h }, g.zone === 'code' ? ED : BRZ, 'tag ' + g.html.replace(/<[^>]+>/g, ''));
+    const what = 'tag ' + g.html.replace(/<[^>]+>/g, '');
+    const hit = r => g.x < r.x + r.w && g.x + g.w > r.x && g.y < r.y + r.h && g.y + g.h > r.y;
+    if (g.zone === 'code') for (const o of ROWS) {     // a code tag never covers the text of a line that shows meanwhile
+      if (!(o.b.t0 < g.t[1] && o.b.t1 > g.t[0]) || (o.r.appear != null && o.r.appear >= g.t[1])) continue;
+      let idx = o.at[0][1];
+      for (const [tt, i] of o.at) if (g.t[0] >= tt) idx = i;
+      const y = ED.y + LAYOUT.HEAD + LAYOUT.ROW0 + idx * LH;
+      const txt = o.cw.textContent, lead = txt.length - txt.trimStart().length;       // only its indent may be covered
+      const x0 = ED.x + 58 + lead * CW, x1 = ED.x + 58 + txt.trimEnd().length * CW;
+      if (g.y < y + LH - 8 && g.y + g.h > y + 8 && g.x < x1 && g.x + g.w > x0) PROBLEMS.push('code tag covers row ' + o.r.id);
+    }
+    if (g.zone === 'page') {
+      const f = frameOf(g.at);
+      // never over its own element: it labels it, from beside it
+      if (hit(g.T)) PROBLEMS.push(what + ' covers the element it labels');
+      // never over the popup card while the popup is up
+      if (f.popCard && f.pop.some(([a, b]) => a < g.t[1] && b > g.t[0]) && hit(toStage(f, rectOf(f.popCard)))) PROBLEMS.push(what + ' overlaps the popup card');
+      // never over an input of its page
+      for (const n of f.doc.querySelectorAll('input, button')) {
+        if (n === nodeOf(g.at) || n.closest('label') === nodeOf(g.at) || nodeOf(g.at).contains(n)) continue;
+        if (n.type === 'checkbox' || f.popCard && f.popCard.contains(n) && !f.pop.some(([a, b]) => a < g.t[1] && b > g.t[0])) continue;
+        if (hit(toStage(f, rectOf(n)))) PROBLEMS.push(what + ' covers an input: over ' + (n.textContent || n.name || n.id).trim());
+      }
+      // never under a callout that shows at the same time
+      for (const c of TL.callouts) if (c.t[0] < g.t[1] && c.t[1] > g.t[0] && hit({ x: c.x, y: c.y, w: c.W, h: Math.max(...c.sets.map(s => s.hgt)) })) PROBLEMS.push(what + ' overlaps the callout ' + c.sets[0].h);
+    }
+  }
+  for (const k of TL.keycaps) {     // a keycap is clear of the page's inputs
+    const f = frameOf(k.at);
+    for (const n of f.doc.querySelectorAll('input, button')) {
+      const r = grow(toStage(f, rectOf(n)), 10);
+      if (k.x < r.x + r.w && k.x + k.w > r.x && k.y < r.y + r.h && k.y + k.h > r.y) PROBLEMS.push('keycap ' + k.text + ' touches an input: ' + (n.textContent || n.name || n.id).trim());
+    }
+  }
+  for (const r of TL.runs) {
+    const kids = [...r.e.querySelectorAll('.cmd, .prev, .crow, .stamp, .receipt, .drow')];
+    const H = Math.max(...kids.map(k => k.getBoundingClientRect().bottom)) - r.e.getBoundingClientRect().top, top = 56;
+    if (top + H > TERM.h - 12) PROBLEMS.push('run panel overflows by ' + Math.round(top + H - TERM.h + 4) + 'px at ' + r.t0);
+    if (r.e.scrollWidth > r.e.clientWidth + 1) PROBLEMS.push('run panel too wide at ' + r.t0);
+    if (r.dg) r.diagram.rowEls.forEach(x => { if (x.e.scrollWidth > x.e.clientWidth + 1 || x.e.getBoundingClientRect().right > TERM.x + TERM.w - 20) PROBLEMS.push('diagram row too wide: ' + x.row.lb); });
+    if (r.stampE && r.stampE.getBoundingClientRect().height > 44 * 2 + 1) PROBLEMS.push('stamp takes more than 2 lines: ' + r.stamp.html);
+  }
+  for (const o of ROWS) if (o.len > 37) PROBLEMS.push('code row longer than 37 chars: ' + o.ln.textContent);
+  for (const o of ROWS) { const w = o.len * CW; if (58 + w > ED.w - 44) PROBLEMS.push('code row does not fit: ' + o.ln.querySelector('.cw').textContent); }
+  for (const c of TL.caps) {
+    const txt = c.e.textContent;
+    if (txt.length > 48) PROBLEMS.push('caption longer than 48 chars: ' + txt);
+    const rg = document.createRange(); rg.selectNodeContents(c.e);
+    c.w = rg.getBoundingClientRect().width;
+    if (c.w > 1920 - 2 * 80) PROBLEMS.push('caption too wide: ' + txt);
+  }
+}
+
+// ---------- audit (spec 2.6, 2.7): returns the violations ----------
+window.audit = function audit() {
+  const out = PROBLEMS.slice();
+  const plain = h => h.replace(/<[^>]+>/g, '');
+  const inMontage = t => TL.montage.some(([a, b]) => t >= a - .01 && t < b);
+  // new text elements, with what kind they are
+  const texts = [];
+  for (const c of TL.caps) texts.push({ t: c.a, kind: 'caption', what: plain(c.html) });
+  const seenTag = [];
+  for (const g of TL.tags) {
+    const txt = plain(g.html);
+    const repeat = seenTag.some(s => s.txt === txt && s.t1 > g.t[0]);     // the same label again, while the first shows
+    seenTag.push({ txt, t1: g.t[1] });
+    if (!repeat) texts.push({ t: g.t[0], kind: 'tag', what: txt });
+  }
+  for (const c of TL.callouts) c.sets.forEach(s => texts.push({ t: s.t, kind: 'callout', what: s.h, result: !!s.result }));
+  for (const r of TL.runs) {
+    if (r.stamp) texts.push({ t: r.stamp.t, kind: 'stamp', what: plain(r.stamp.html), result: true, bad: r.stamp.kind !== 'ok' });
+    // a receipt shown with its stamp is part of that one result
+    for (const x of r.receipts) texts.push({ t: x.t, kind: 'receipt', what: x.text, partOf: !!r.stamp && Math.abs(x.t - r.stamp.t) < .01 });
+  }
+  for (const s of TL.pstamps) texts.push({ t: s.t[0], kind: 'stamp', what: plain(s.html), result: true });
+  for (const k of TL.keycaps) texts.push({ t: k.t[0], kind: 'keycap', what: k.text, partOf: true });
+  texts.sort((a, b) => a.t - b.t);
+  const f = x => x.toFixed(2);
+  // at most one new text element per 1.2 s (a keycap shows with its callout)
+  const counted = texts.filter(x => !x.partOf);
+  for (let i = 1; i < counted.length; i++) {
+    const a = counted[i - 1], b = counted[i];
+    if (b.t - a.t < 1.2 - 1e-6) out.push(`two text onsets ${f(b.t - a.t)} s apart: ${a.kind} "${a.what}" at ${f(a.t)}, ${b.kind} "${b.what}" at ${f(b.t)}`);
+  }
+  // caption durations, overlaps, and changes away from clicks and other text onsets
+  const caps = TL.caps.slice().sort((a, b) => a.a - b.a);
+  caps.forEach((c, i) => {
+    const words = plain(c.html).split(/\s+/).filter(Boolean).length;
+    const need = Math.max(2.5, words / 2.5 + 1);
+    if (c.b - c.a < need - 1e-6) out.push(`caption "${plain(c.html)}" shows ${f(c.b - c.a)} s, needs ${f(need)}`);
+    if (i && caps[i - 1].b > c.a + 1e-6) out.push(`captions overlap at ${f(c.a)}`);
+    for (const edge of [c.a, c.b]) {
+      for (const k of TL.clicks) if (Math.abs(k.t - edge) < .6 - 1e-6) out.push(`caption "${plain(c.html)}" changes at ${f(edge)}, ${f(Math.abs(k.t - edge))} s from a click at ${f(k.t)}`);
+      for (const x of texts) if (x.kind !== 'caption' && Math.abs(x.t - edge) < .6 - 1e-6) out.push(`caption "${plain(c.html)}" changes at ${f(edge)}, ${f(Math.abs(x.t - edge))} s from ${x.kind} "${x.what}" at ${f(x.t)}`);
+    }
+  });
+  // after a result: no new text (captions narrate it; receipts are part of it) for 2.5 s, 1.2 s in the montage
+  for (const r of texts.filter(x => x.result)) {
+    const hold = inMontage(r.t) ? 1.2 : 2.5;
+    for (const x of texts) if (x !== r && x.kind !== 'caption' && x.kind !== 'receipt' && x.t > r.t + 1e-6 && x.t < r.t + hold - 1e-6)
+      out.push(`${x.kind} "${x.what}" at ${f(x.t)} breaks the ${hold} s hold after "${r.what}" at ${f(r.t)}`);
+  }
+  // failures are held no longer than 2.5 s: something moves on by then
+  for (const r of texts.filter(x => x.bad)) {
+    const next = [...TL.focus.map(x => x[0]), ...texts.map(x => x.t), ...TL.clicks.map(x => x.t)].filter(x => x > r.t + 1e-6).sort((a, b) => a - b)[0];
+    if (next == null || next - r.t > 2.5 + 1e-6) out.push(`failure "${r.what}" at ${f(r.t)} is held ${next == null ? 'to the end' : f(next - r.t) + ' s'}`);
+  }
+  return out;
+};
+
+// ---------- per-frame drawing ----------
+function render(rt) {
+  if (!window.ready && !window.__building) return;
+  g1.style.transform = `translate(${Math.sin(rt * .21) * 60}px,${Math.cos(rt * .17) * 40}px)`;
+  g2.style.transform = `translate(${Math.cos(rt * .19) * 70}px,${Math.sin(rt * .23) * 50}px)`;
+  // story time: in a clip, the title holds TL.lead s before the story starts
+  const t = TL.lead ? Math.max(0, rt - TL.lead) : rt;
+  // the stage: in after the hook (main), out for the end card
+  const sp = spring(t - TL.stageIn, .6) * (1 - spring(t - TL.stageOut, .5));
+  stage.style.opacity = clamp(sp).toFixed(3);
+  stage.style.filter = sp < .995 ? `blur(${((1 - clamp(sp)) * 14).toFixed(2)}px)` : 'none';
+  stage.style.transform = `scale(${lerp(.985, 1, clamp(sp)).toFixed(4)})`;
+  stage.style.visibility = sp < .002 ? 'hidden' : 'visible';
+  band.style.opacity = clamp(sp).toFixed(3);
+  if (sp >= .002) {
+    drawFocus(t);
+    drawEditor(t);
+    drawRuns(t);
+    drawBrowser(t);
+    drawAnn(t);
+  }
+  // clip title (70%) and end strip (80%): the stage veiled on top of every panel's veil, no
+  // blur; the title and the strip sit on a solid plate
+  let sv = 0;
+  if (TL.ctitle) { const p = pres(rt, -1, TL.ctitle.t1 + TL.lead, .3, .35); sv = Math.max(sv, .875 * p); mat(CT, p, { dy: 0, s0: .97, blur: 0 }); }
+  if (TL.estrip) { const p = spring(t - TL.estrip.t0, .45); sv = Math.max(sv, p); mat(ES, p, { dy: 16, s0: .97, blur: 0 }); }
+  sveil.style.opacity = clamp(sv).toFixed(3);
+  drawCaps(t);
+  if (TL.title) drawTitle(t);
+  if (TL.end) drawEnd(t);
+}
+window.render = render;
 window.ready = false;
-window.addEventListener('load', () => { measure(); window.render(0); window.ready = true; });
+
+// ---------- cuts ----------
+function cutMain() {
+  hookCard(0, 4.2);
+  TL.stageIn = 4.2;
+  mainStory();
+  let t = montageCookies(48.4);
+  t = montagePopup(t);
+  t = window.montageSteps(t);
+  focus(48.4, 'page');
+  endCard(61.4, 69.0);
+  TL.stageOut = 61.4;
+  TL.dur = 69.0;
+}
+window.CUTS = { main: cutMain };
+function defineCut() {
+  const f = window.CUTS[CUT];
+  if (!f) throw new Error('unknown cut ' + CUT);
+  f();
+  // DURATION and BEATS are in real seconds of the cut (a clip's story starts TL.lead late)
+  window.DURATION = TL.dur + TL.lead;
+  window.LEAD = TL.lead;
+  window.BEATS = TL.beats.map(b => ({ t: +(b.t + (b.real ? 0 : TL.lead)).toFixed(3), name: b.name })).sort((a, b) => a.t - b.t);
+  makeFrames();
+}
+window.defineCut = defineCut;
+window.addEventListener('load', async () => {
+  // every face the cut uses, loaded before anything is measured
+  const loads = [];
+  for (const w of [400, 500, 600, 650, 700]) loads.push(document.fonts.load(`${w} 32px Inter`), document.fonts.load(`${w} 24px "Cascadia Code"`));
+  for (const f of TL.frames) for (const w of [400, 600, 700]) loads.push(f.ifr.contentDocument.fonts.load(`${w} 16px Inter`));
+  await Promise.all(loads).catch(() => {});
+  await document.fonts.ready;
+  for (const f of TL.frames) await f.ifr.contentDocument.fonts.ready;
+  window.__building = true;
+  measure();
+  render(0);
+  window.ready = true;
+});

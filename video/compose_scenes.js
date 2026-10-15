@@ -1,440 +1,251 @@
-// The later acts, declared as data and drawn by one engine on top of compose.js.
-// Act 6  dismiss=True on a popup nobody registered.
-// Act 7  popups that need judgement: an upsell, a "Dismiss to cancel" prompt, a ZIP re-entry.
-// Act 8  steps in any order (heal.step / run_steps).
-// Act 9  Selenium.
-// Every log line, outcome and timing shown comes from D (real runs); see render.py.
+// Clips A, B, C: cookie banners, popups, and a popup where declining isn't safe.
+// Each is a cut of the same composition (window.CUT). Every log fragment, outcome, time and
+// argument shown comes from D (the real runs in the capture JSON); see render.py.
+// Times are story seconds: the clip's title holds LEAD s longer, so the cut is LEAD longer.
 'use strict';
-
-// ---------- engine ----------
-const SCENES = [];
-const CARD_LEN = 1.9;                               // an act's title card, in story seconds
-const actLayer = el('div', '', null, document.body, 'position:absolute;inset:0;pointer-events:none;z-index:3');
-
-function sceneStatus(t, kind, text, tout) {
-  const col = kind === 'ok' ? C.green : kind === 'bad' ? C.amber : C.blue;
-  const ic = kind === 'ok' ? '✓' : kind === 'bad' ? '⊘' : '';
-  const e = el('div', '', `${kind === 'run' ? `<span class="spin" style="width:14px;height:14px;border-radius:50%;border:2.5px solid rgba(90,169,255,.25);border-top-color:${C.blue}"></span>` : `<span style="font-size:18px">${ic}</span>`}${text}`, stage, `background:${col}1f;border:1px solid ${col}55;color:${kind === 'run' ? '#cfe3ff' : col}`);
-  e.id = 'status';
-  statusEls.push({ t, tout, kind, e, spin: $('.spin', e) });
-}
-
-function scene(def) {
-  const sc = Object.assign({ font: 16.5, lh: LH, url: 'northwind.example/checkout', marks: [], hl: [], clicks: [], fills: [],
-    boxes: [], chips: [], timers: [], halo: [], cursor: null, run: [], caps: [], status: [], inserts: {} }, def);
-  sc.body = sc.t0 + (sc.title ? CARD_LEN : 0);
-  sc.lineEls = sc.lines.map((html, i) => {
-    const ln = el('div', 'ln mono', `<span class="g"></span><span class="c"><span class="cw">${html}</span></span><span class="st"></span>`, code, `font-size:${sc.font}px;height:${sc.lh}px`);
-    return { root: ln, g: $('.g', ln), cw: $('.cw', ln), st: $('.st', ln), i };
-  });
-  sc.frames = (sc.frames || []).map(f => Object.assign({ e: el('iframe', '', null, content) }, f));
-  sc.frames.forEach(f => { f.e.srcdoc = f.html; });
-  for (const [g0, g1, ents] of (sc.runGroups || [[sc.body, sc.t1, sc.run]])) {
-    const g = el('div', 'grp mono', null, tbody);
-    groupEls.push({ t0: g0, t1: g1, g, ents: ents.map(([t, cls, html]) => ({ t, e: el('div', 'ent ' + cls, html, g) })) });
-  }
-  sc.caps.forEach(([a, b, h]) => capEls.push({ a, b, e: el('div', 'cap', h, document.body) }));
-  sc.status.forEach(s => sceneStatus(...s));
-  if (sc.title) {
-    sc.card = el('div', '', `<div style="font-size:16px;letter-spacing:.16em;text-transform:uppercase;color:${sc.title.col || C.purple};font-weight:700">${sc.title.kicker || ''}</div>
-      <div style="font-size:64px;font-weight:700;letter-spacing:-.025em;margin-top:14px">${sc.title.text}</div>
-      <div class="mono" style="font-size:24px;color:var(--ink2);margin-top:18px">${sc.title.sub || ''}</div>`, actLayer,
-      'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(6,8,13,.72);backdrop-filter:blur(14px);visibility:hidden');
-  }
-  sc.boxEls = sc.boxes.map(() => box());
-  sc.chipEls = sc.chips.map(c => chip(c.html, c.style || ''));
-  sc.timerEls = sc.timers.map(tm => timer(tm.col || C.amber));
-  if (sc.hud) sc.hudEl = hud(sc.hud.rows);
-  SCENES.push(sc);
-  return sc;
-}
-
-// 'frame:css' -> the frame and the selector; the first frame by default
-function ref(sc, s) {
-  const i = s.indexOf(':');
-  if (i > 0 && sc.frames.some(f => f.id === s.slice(0, i))) return [sc.frames.find(f => f.id === s.slice(0, i)), s.slice(i + 1)];
-  return [sc.frames[0], s];
-}
-function measureScenes() {
-  for (const sc of SCENES) {
-    for (const f of sc.frames) {
-      f.doc = f.e.contentDocument;
-      f.doc.documentElement.style.overflow = 'hidden';
-      if (f.popup) { f.pop = f.doc.querySelector(f.popup); f.popCard = f.pop.firstElementChild; f.popCard.style.willChange = 'transform,opacity,filter'; }
-    }
-    sc.R = {};
-    sc.N = {};
-    const want = new Set();
-    const add = s => { if (typeof s === 'string') want.add(s); };
-    (sc.cursor || []).forEach(k => add(k[1]));
-    sc.clicks.forEach(k => add(k[1]));
-    sc.fills.forEach(k => add(k[2]));
-    sc.boxes.forEach(b => add(b.at));
-    sc.chips.forEach(c => add(c.at));
-    sc.timers.forEach(tm => add(tm.at));
-    (sc.press || []).forEach(k => add(k[1]));
-    (sc.checks || []).forEach(k => add(k[1]));
-    for (const s of want) {
-      const [f, css] = ref(sc, s);
-      const n = f.doc.querySelector(css);
-      if (!n) throw new Error('scene selector not found: ' + s);
-      sc.N[s] = n;
-      sc.R[s] = rectOf(n);
-    }
-    const pt = (at, dx = 0, dy = 0) => {
-      if (Array.isArray(at)) return at;
-      const r = sc.R[at];
-      return [(r.w > 260 ? r.x + 80 : r.cx) + dx, r.cy + dy];
-    };
-    sc.pt = pt;
-    if (sc.cursor) sc.cursorKeys = [[0, [760, 540]], ...sc.cursor.map(([t, at, dx, dy]) => [t, pt(at, dx, dy)])];
-    sc.clicks.forEach(([t, at, col]) => ripple(t, pt(at), col));
-  }
-}
-
-function sLineY(sc, i, t) {
-  let y = i;
-  for (const [tt, at] of Object.entries(sc.inserts)) if (i >= at) y += spring(t - +tt, .5) - 1;   // lines after an insert start one up
-  return 14 + y * sc.lh;
-}
-
-function drawScene(sc, t) {
-  const live = t > sc.t0 - .7 && t < sc.t1 + 1.2;
-  const out = spring(t - sc.t1, .4);
-  // title card
-  if (sc.card) mat(sc.card, pres(t, sc.t0, sc.t0 + CARD_LEN - .25, .5, .4), { dy: 0, s0: 1.03, blur: 16 });
-  // editor lines
-  sc.lineEls.forEach(L => {
-    const ins = sc.inserts && Object.entries(sc.inserts).find(([, at]) => at === L.i && sc.insertLine === L.i);
-    let p = spring(t - (sc.body - .1 + L.i * .06), .45) * (1 - out);
-    if (sc.insertLine === L.i) p *= spring(t - sc.insertAt, .4);
-    L.root.style.visibility = (!live || p <= .002) ? 'hidden' : 'visible';
-    if (!live) return;
-    L.root.style.top = sLineY(sc, L.i, t) + 'px';
-    L.root.style.opacity = clamp(p).toFixed(3);
-    L.root.style.transform = `translateY(${((1 - clamp(p)) * 8).toFixed(2)}px)`;
-    L.g.textContent = String(L.i + 1 - (sc.insertLine != null && L.i > sc.insertLine && t < sc.insertAt ? 1 : 0));
-    if (sc.insertLine === L.i) {
-      const n = Math.round(L.cw.textContent.length * lin(t, sc.insertAt + .2, sc.insertAt + 1.1));
-      L.cw.style.display = 'inline-block'; L.cw.style.overflow = 'hidden'; L.cw.style.verticalAlign = 'bottom';
-      L.cw.style.width = (n * CW * sc.font / 18).toFixed(1) + 'px';
-      L.root.style.background = `rgba(185,140,255,${(.14 * pres(t, sc.insertAt, sc.insertAt + 1.8, .4, .9)).toFixed(3)})`;
-      L.root.style.borderRadius = '8px';
-    }
-    let m = null;
-    for (const mk of sc.marks) if (mk[1] === L.i && t >= mk[0] && t < (mk[4] || sc.t1)) m = mk;
-    if (!m) L.st.style.opacity = 0;
-    else {
-      L.st.textContent = m[2]; L.st.style.color = m[3];
-      L.st.style.opacity = clamp(pres(t, m[0], (m[4] || sc.t1) - .15, .36, .25)).toFixed(3);
-      L.st.style.transform = `scale(${lerp(.4, 1, spring(t - m[0], .36, .55)).toFixed(3)})`;
-    }
-  });
-  if (sc.layout) {
-    // a taller editor for this act, and a shorter run panel under it
-    const k = live ? clamp(pres(t, sc.t0 + .8, sc.t1, .55, .45)) : 0;
-    ed.style.height = lerp(ED.h, sc.layout.edH, k).toFixed(1) + 'px';
-    term.style.top = lerp(TERM.y, sc.layout.termTop, k).toFixed(1) + 'px';
-    term.style.height = lerp(TERM.h, sc.layout.termH, k).toFixed(1) + 'px';
-  }
-  if (!live) {
-    sc.frames.forEach(f => mat(f.e, 0));
-    [...sc.boxEls, ...sc.chipEls, ...sc.timerEls.map(x => x.e), sc.hudEl && sc.hudEl.h].forEach(e => { if (e) e.style.visibility = 'hidden'; });
-    return false;
-  }
-  // current line
-  if (sc.hl.length && t >= sc.body) {
-    hl.style.top = track(t, sc.hl.map(([tt, i]) => [tt, sLineY(sc, i, t)]), .32) + 'px';
-    hl.style.opacity = (clamp(track(t, sc.hl.map(([tt, , o]) => [tt, o]), .3)) * (1 - out)).toFixed(3);
-    const bad = sc.hlBad && t >= sc.hlBad[0] && t < sc.hlBad[1];
-    hl.style.background = bad ? 'rgba(242,193,78,.13)' : 'rgba(90,169,255,.12)';
-    hl.style.boxShadow = bad ? 'inset 0 0 0 1px rgba(242,193,78,.45)' : 'inset 0 0 0 1px rgba(90,169,255,.28)';
-  } else if (t >= sc.t0) { hl.style.opacity = 0; }
-  // pages
-  sc.frames.forEach(f => {
-    const p = pres(t, f.in != null ? f.in : sc.body - .3, f.out != null ? f.out : sc.t1, .5, .45);
-    const dip = (f.reloads || []).reduce((d, r) => Math.max(d, Math.sin(Math.PI * lin(t, r, r + .45)) * .3), 0);
-    mat(f.e, p * (1 - dip), { dy: 0, s0: 1.015, blur: 10 });
-    if (f.pop) {
-      let np = 0;
-      for (const [a, b] of f.popTimes) np = Math.max(np, pres(t, a, b == null ? 1e9 : b, .55, .45));
-      if (np <= .002) f.pop.style.visibility = 'hidden';
-      else {
-        f.pop.style.visibility = 'visible'; f.pop.style.opacity = clamp(np).toFixed(3);
-        f.popCard.style.transform = `translateY(${((1 - np) * 46).toFixed(2)}px) scale(${lerp(.94, 1, np).toFixed(4)})`;
-        f.popCard.style.filter = np < .995 ? `blur(${((1 - clamp(np)) * 10).toFixed(2)}px)` : 'none';
-      }
-    }
-  });
-  for (const r of (sc.reloadsAll || [])) if (t >= r && t < r + 1) { prog.style.width = (easeIO(lin(t, r, r + .5)) * 100) + '%'; prog.style.opacity = 1 - lin(t, r + .55, r + .9); }
-  if (t >= sc.t0) $('.url', br).innerHTML = `<span class="lock"></span>${sc.urlAt ? sc.urlAt(t) : sc.url}`;
-  // typing into fields, checking boxes, pressing buttons
-  sc.fills.forEach(([a, b, at, text, clear]) => {
-    const n = sc.N[at];
-    const v = t < a ? '' : text.slice(0, Math.round(text.length * lin(t, a, b)));
-    const val = clear != null && t >= clear ? '' : v;
-    if (n.value !== val) n.value = val;
-  });
-  (sc.checks || []).forEach(([tt, at, until]) => { sc.N[at].checked = t >= tt && t < (until || 1e9); });
-  (sc.press || []).forEach(([tt, at]) => { sc.N[at].style.transform = `scale(${(1 - .05 * Math.sin(Math.PI * lin(t, tt, tt + .22))).toFixed(4)})`; });
-  // cursor
-  if (sc.cursorKeys && t >= sc.body - .3) {
-    const [cx, cy] = trackN(t, sc.cursorKeys, .55);
-    const cv = pres(t, sc.cursorOn[0], sc.cursorOn[1], .3, .3);
-    cursor.style.left = (cx - 5) + 'px'; cursor.style.top = (cy - 3) + 'px';
-    cursor.style.opacity = clamp(cv).toFixed(3);
-    let hp = 0;
-    for (const [a, b] of sc.halo) hp = Math.max(hp, pres(t, a, b, .35, .3));
-    halo.style.left = (cx - 32) + 'px'; halo.style.top = (cy - 32) + 'px'; halo.style.opacity = (hp * clamp(cv)).toFixed(3);
-  }
-  // boxes, chips, timers, HUD
-  sc.boxes.forEach((b, i) => setBox(sc.boxEls[i], grow(sc.R[b.at], b.pad || 6), { col: b.col, dashed: !!b.dashed,
-    fill: b.fill || `${b.col}12`, glow: b.dashed ? 0 : 4, p: pres(t, b.t[0], b.t[1], .4, .3) }));
-  sc.chips.forEach((c, i) => {
-    const r = Array.isArray(c.at) ? { x: c.at[0], y: c.at[1], w: 0, h: 0, cy: c.at[1] } : sc.R[c.at];
-    const [x, y] = c.place === 'above' ? [r.x, r.y - 36] : c.place === 'below' ? [r.x, r.y + r.h + 10] : [r.x + r.w + 16, r.cy - 15];
-    place(sc.chipEls[i], x + (c.dx || 0), y + (c.dy || 0), pres(t, c.t[0], c.t[1], .4, .3), { dy: 8, blur: 5 });
-  });
-  sc.timers.forEach((tm, i) => {
-    const r = sc.R[tm.at], f = lin(t, tm.t[0] + .1, tm.t[1] - .1);
-    drawTimer(sc.timerEls[i], r.x + r.w + 20, r.cy - 22, pres(t, tm.t[0], tm.t[1] + .1, .35, .25), f, tm.text(f));
-  });
-  if (sc.hud) drawHud(sc.hudEl, t, sc.hud.x, sc.hud.y, sc.hud.t[0], sc.hud.t[1]);
-  return true;
-}
-
-function drawScenes(t) {
-  // the run chip: Selenium in its act, hidden before
-  const sel = SCENES.find(s => s.runChip === 'sel');
-  const selOn = sel ? pres(t, sel.t0 + .2, S.end, .4, .4) : 0;
-  mat(runSel, selOn, { dy: -10, blur: 6 });
-  if (!SCENES.length || t < S.s6 - .7) {
-    for (const sc of SCENES) drawScene(sc, t);
-    return;
-  }
-  // the earlier acts leave: their script, their pages
-  const gone = spring(t - S.s6, .45);
-  for (const id of Object.keys(lineEls)) {
-    const L = lineEls[id];
-    L.root.style.opacity = ((+L.root.style.opacity || (id === 'L0' ? 0 : 1)) * (1 - gone)).toFixed(3);
-  }
-  mat(f1, 0);
-  f2.style.opacity = (+f2.style.opacity * (1 - gone)).toFixed(3);
-  for (const sc of SCENES) drawScene(sc, t);
-  if (sel) runMw.style.opacity = (+runMw.style.opacity * (1 - selOn)).toFixed(3);
-}
-const runSel = el('div', '', `<span class="d" style="background:${C.blue};box-shadow:0 0 12px ${C.blue}"></span>Selenium <span style="color:var(--ink3);font-weight:500">+</span> <span style="color:#d9c4ff">mendwright</span>`, stage); runSel.id = 'run';
-runSel.style.visibility = 'hidden';            // shown only in its act (drawScenes)
-
-// ---------- helpers for the definitions ----------
-const sx = s => `${(+s).toFixed(2)} s`;
-const logRow = (ic, text) => `<span class="i">${ic}</span><span class="tag-log">log</span>${esc(text)}`;
-const msgOf = l => l.replace(/^(INFO|WARNING|ERROR) /, '');
-const KW = s => `<span class="k-fn">${s}</span>`;
-
-// ---------- act 6: a popup nobody registered ----------
-{
-  const F1 = D.F.F1, st = Object.fromEntries(F1.steps.map(s => [s.step, s]));
-  const t0 = S.s6, b = t0 + CARD_LEN;
-  scene({
-    t0, t1: S.s7, title: { kicker: 'New in 0.7.0', text: 'Popups nobody registered', sub: 'mendwright.open(page, dismiss=True)' },
-    lines: [
-      O_('page') + ' ' + P_('=') + ' <span class="k-mw">mendwright</span>' + P_('.') + F_('open') + P_('(') + O_('page') + P_(', ') + O_('dismiss') + P_('=') + KW('True') + P_(').') + O_('page'),
-      O_('page') + P_('.') + F_('goto') + P_('(') + Str('"https://northwind.example/checkout"') + P_(')'),
-      O_('page') + P_('.') + F_('click') + P_('(') + Str('"#email"') + P_(')'),
-      O_('page') + P_('.') + F_('click') + P_('(') + Str('"#continue"') + P_(')'),
-    ],
-    frames: [{ id: 'nl', html: D.F.pages.v2_nl, popup: '#nl', popTimes: [[b + .9, b + 6.2]], in: b - .3 }],
-    hl: [[b, 1, 0], [b + 1.4, 1, 1], [b + 2.0, 2, 1], [b + 7.6, 3, 1], [b + 8.5, 3, 0]],
-    marks: [[b + 1.7, 1, '✓', C.green], [b + 7.3, 2, '✓', C.green], [b + 8.2, 3, '✓', C.green]],
-    cursorOn: [b + 1.8, b + 9.2],
-    cursor: [[b + 2.0, 'nl:input[name=email]'], [b + 5.1, 'nl:.nl-no', -6, 4], [b + 6.8, 'nl:input[name=email]'], [b + 7.6, 'nl:.btn-x82hd', 60, 2]],
-    clicks: [[b + 2.7, 'nl:input[name=email]', C.red], [b + 5.8, 'nl:.nl-no', C.purple], [b + 7.3, 'nl:input[name=email]', '#fff'], [b + 8.1, 'nl:.btn-x82hd', '#fff']],
-    press: [[b + 5.8, 'nl:.nl-no']],
-    halo: [[b + 5.0, b + 6.1]],
-    boxes: [{ at: 'nl:.nl-yes', col: C.red, dashed: true, t: [b + 3.6, b + 6.1], pad: 5 }],
-    chips: [
-      { at: 'nl:.nl-yes', html: 'never clicks this', place: 'above', dx: 300, style: `background:${C.red};color:#2a0606;font-size:13.5px;padding:3px 9px`, t: [b + 3.7, b + 6.1] },
-      { at: 'nl:#nl > div', html: '<span class="mono" style="font-size:15px">esc</span>', place: 'above', dx: 196, style: 'background:rgba(14,18,27,.9);border:1px solid rgba(255,255,255,.25);color:#fff;padding:6px 12px;border-radius:8px', t: [b + 3.9, b + 4.5] },
-    ],
-    hud: { x: 600, y: 14, t: [b + 3.0, b + 9.4], rows: [
-      { ic: '⊘', col: C.amber, html: '<b>A popup is in the way</b> <span class="sub">“Get 10% off your first order”</span>', t: b + 3.0 },
-      { ic: '1', col: '#8b949e', html: 'Escape <span class="sub">· still there</span>', t: b + 4.5 },
-      { ic: '2', col: C.green, html: '“No thanks” <span class="sub">· gone</span>', t: b + 6.1 },
-      { ic: '✕', col: C.red, html: 'Never “Sign up”, never types, never accepts', t: b + 6.7 },
-    ] },
-    run: [
-      [b + 1.3, 'cmd', '$ python checkout.py'],
-      [b + 1.7, 'ok', okRow('page.goto(".../checkout")', sx(st.goto.seconds))],
-      [b + 6.2, 'log', logRow('▸', msgOf(st['#email'].log.find(l => /popup/.test(l))))],
-      [b + 7.3, 'ok', okRow('page.click("#email")', sx(st['#email'].seconds))],
-      [b + 8.2, 'ok', okRow('page.click("#continue")', sx(st['#continue'].seconds))],
-      [b + 8.5, 'sum', `<span style="color:${C.green}">Passed</span> · popup declined, “Sign up” never clicked`],
-    ],
-    caps: [
-      [b - .1, b + 2.9, 'The checkout now shows a popup mendwright was never told about.'],
-      [b + 3.0, S.s7 - .3, '<em>dismiss=True</em>: Escape first. Still there? Then “No thanks”. <s>Never “Sign up”.</s>'],
-    ],
-    status: [[b + 1.3, 'run', 'Running', b + 8.6], [b + 8.6, 'ok', 'Passed · popup declined', S.s7 - .2]],
-  });
-}
-
-// ---------- act 7: popups that need judgement ----------
 const SM = D.SM;
-const L_open = O_('heal') + ' ' + P_('=') + ' <span class="k-mw">mendwright</span>' + P_('.') + F_('open') + P_('(') + O_('page') + P_(', ') + O_('dismiss') + P_('=') + KW('True') + P_(')');
-const L_click = O_('heal') + P_('.') + O_('page') + P_('.') + F_('click') + P_('(') + Str('"input[name=email]"') + P_(')');
-const L_intr = (k, s, extra) => O_('heal') + P_('.') + F_('interrupt') + P_('(') + Str(`"${k}"`) + P_(', ') + Str(`"${s}"`) + (extra || '') + P_(')');
-{
-  // 7a: the upsell
-  const u = SM.upsell, t0 = S.s7, b = t0 + CARD_LEN;
-  scene({
-    t0, t1: S.s7b, title: { kicker: 'dismiss=True', text: 'Popups that need judgement', sub: 'what it clicks, and what it won’t', col: C.amber },
-    lines: [L_open, L_click],
-    frames: [{ id: 'u', html: SM.pages.upsell, popup: '#pop', popTimes: [[b + .4, b + 4.5]], in: b - .3 }],
-    hl: [[b, 1, 0], [b + 1.0, 1, 1], [b + 6.1, 1, 0]],
-    marks: [[b + 5.6, 1, '✓', C.green]],
-    cursorOn: [b + .9, b + 6.6],
-    cursor: [[b + 1.0, 'u:input[name=email]'], [b + 3.6, 'u:#pop button:nth-of-type(2)', -6, 4], [b + 5.0, 'u:input[name=email]']],
-    clicks: [[b + 1.7, 'u:input[name=email]', C.red], [b + 4.3, 'u:#pop button:nth-of-type(2)', C.purple], [b + 5.6, 'u:input[name=email]', '#fff']],
-    press: [[b + 4.3, 'u:#pop button:nth-of-type(2)']],
-    halo: [[b + 3.5, b + 4.6]],
-    boxes: [{ at: 'u:#pop button:nth-of-type(1)', col: C.red, dashed: true, t: [b + 2.2, b + 4.5], pad: 5 }],
-    chips: [{ at: 'u:#pop button:nth-of-type(1)', html: 'costs money: never', place: 'above', dx: 290, style: `background:${C.red};color:#2a0606;font-size:13.5px;padding:3px 9px`, t: [b + 2.3, b + 4.5] }],
-    hud: { x: 600, y: 14, t: [b + 2.0, b + 6.8], rows: [
-      { ic: '⊘', col: C.amber, html: '<b>A popup is in the way</b> <span class="sub">“Skip the queue?”</span>', t: b + 2.0 },
-      { ic: '✕', col: C.red, html: '“Skip the line – $9.99” <span class="sub">· a price: never clicked</span>', t: b + 2.6 },
-      { ic: '✓', col: C.green, html: '“No thanks” <span class="sub">· clicked, popup gone</span>', t: b + 4.6 },
-    ] },
-    run: [
-      [b + .9, 'cmd', '$ python checkout.py'],
-      [b + 4.6, 'log', logRow('▸', msgOf(u.log.find(l => /popup/.test(l))))],
-      [b + 5.6, 'ok', okRow('heal.page.click(...)', sx(u.seconds))],
-      [b + 5.9, 'sum', `<span style="color:${C.green}">Passed</span> · clicked: ${esc(u.page.clicked.map(c => '“' + c + '”').join(', '))}`],
-    ],
-    caps: [[b + .2, S.s7b - .3, 'A paid “Skip the line” is <s>never clicked</s>. <u>“No thanks” is.</u>']],
-    status: [[b + .9, 'run', 'Running', b + 5.9], [b + 5.9, 'ok', 'Passed', S.s7b - .2]],
-  });
-}
-{
-  // 7b: "Dismiss to cancel" - left alone; then the script says what it wants
-  const a = SM.order_alone, r = SM.order_registered, t0 = S.s7b, b = t0, ins = t0 + 6.0, b2 = ins + 1.6;
-  scene({
-    t0, t1: S.s7c,
-    lines: [L_open, O_('heal') + P_('.') + F_('interrupt') + P_('(') + Str('"order"') + P_(', ') + Str(`'text="Continue with order"'`) + P_(')'), L_click],
-    insertLine: 1, insertAt: ins, inserts: { [ins]: 1 },
-    frames: [{ id: 'o', html: SM.pages.order, popup: '#pop', popTimes: [[b + .6, b2 + 1.6], [ins + .9, b2 + 1.6]], in: b - .3, reloads: [ins + .5] }],
-    reloadsAll: [ins + .5],
-    hl: [[b, 2, 0], [b + 1.2, 2, 1], [b + 5.0, 2, 0], [b2, 2, 1], [b2 + 3.0, 2, 0]],
-    hlBad: [b + 3.9, ins],
-    marks: [[b + 3.9, 2, '⊘', C.amber, ins], [b2 + 2.6, 2, '✓', C.green]],
-    cursorOn: [b + 1.1, b2 + 3.4],
-    cursor: [[b + 1.2, 'o:input[name=email]'], [b + 4.6, [760, 560]], [b2 + .3, 'o:#pop button:nth-of-type(1)', 0, 4], [b2 + 2.0, 'o:input[name=email]']],
-    clicks: [[b + 1.8, 'o:input[name=email]', C.red], [b2 + 1.0, 'o:#pop button:nth-of-type(1)', C.purple], [b2 + 2.6, 'o:input[name=email]', '#fff']],
-    press: [[b2 + 1.0, 'o:#pop button:nth-of-type(1)']],
-    halo: [[b2 + .2, b2 + 1.3]],
-    boxes: [
-      { at: 'o:#pop > div > div:nth-of-type(2)', col: C.amber, dashed: true, t: [b + 2.6, b + 5.6], pad: 4 },
-      { at: 'o:#pop button:nth-of-type(2)', col: C.red, dashed: true, t: [b + 2.9, b + 5.6], pad: 4 },
-    ],
-    chips: [{ at: 'o:#pop button:nth-of-type(2)', html: 'cancels the order: never', place: 'below', dx: 120, style: `background:${C.red};color:#2a0606;font-size:13.5px;padding:3px 9px`, t: [b + 3.0, b + 5.6] }],
-    hud: { x: 600, y: 14, t: [b + 2.2, b + 5.8], rows: [
-      { ic: '⊘', col: C.amber, html: '<b>A popup is in the way</b> <span class="sub">“Your order is on hold”</span>', t: b + 2.2 },
-      { ic: '!', col: C.amber, html: 'Its text says “Dismiss” cancels the order', t: b + 2.8 },
-      { ic: '✓', col: C.green, html: 'Left alone: <b>nothing clicked</b>, it stops and says why', t: b + 3.6 },
-    ] },
-    run: [
-      [b + 1.1, 'cmd', '$ python checkout.py'],
-      [b + 3.8, 'log', logRow('⊘', msgOf(a.log.find(l => /popup/.test(l))))],
-      [ins + 1.4, 'cmd', '$ python checkout.py   # with the interrupt line'],
-      [b2 + 1.1, 'log', logRow('▸', msgOf(r.log.find(l => /interruption/.test(l))))],
-      [b2 + 2.6, 'ok', okRow('heal.page.click(...)', sx(r.seconds))],
-      [b2 + 2.9, 'sum', `<span style="color:${C.green}">Passed</span> · clicked: ${esc(r.page.clicked.map(c => '“' + c + '”').join(', '))}`],
-    ],
-    caps: [
-      [b + .4, ins - .1, 'Here “Dismiss” would cancel the order. So it <u>clicks nothing</u>, stops, and says why.'],
-      [ins, S.s7c - .3, 'You decide with <em>one line</em>. The order goes on, and “Dismiss” is never clicked.'],
-    ],
-    status: [[b + 1.1, 'run', 'Running', b + 3.9], [b + 3.9, 'bad', 'Stopped · popup left alone', ins + .2],
-      [b2 - .2, 'run', 'Running', b2 + 2.9], [b2 + 2.9, 'ok', 'Passed · order continued', S.s7c - .2]],
-  });
-}
-{
-  // 7c: re-enter a detail: two registered interruptions fill it in mid-step
-  const z = SM.zip_registered, t0 = S.s7c, b = t0;
-  const zl = z.log.filter(l => /interruption/.test(l));
-  scene({
-    t0, t1: S.s8, font: 15, lh: 34,
-    lines: [L_open, L_intr('zip', '#zip', P_(', ') + O_('action') + P_('=') + Str('"fill"') + P_(', ') + O_('args') + P_('=(') + Str('"10115"') + P_(',)')),
-      L_intr('zip_ok', '#zip-ok'), L_click],
-    frames: [{ id: 'z', html: SM.pages.zip, popup: '#pop', popTimes: [[b + .8, b + 5.2]], in: b - .3 }],
-    hl: [[b, 3, 0], [b + 1.6, 3, 1], [b + 2.6, 1, 1], [b + 4.4, 2, 1], [b + 5.4, 3, 1], [b + 6.6, 3, 0]],
-    marks: [[b + 3.6, 1, '✓', C.green], [b + 5.0, 2, '✓', C.green], [b + 6.2, 3, '✓', C.green]],
-    cursorOn: [b + 1.5, b + 7.0],
-    cursor: [[b + 1.6, 'z:input[name=email]'], [b + 2.6, 'z:#zip', -40, 2], [b + 4.4, 'z:#zip-ok', 0, 4], [b + 5.6, 'z:input[name=email]']],
-    clicks: [[b + 2.9, 'z:#zip', C.purple], [b + 4.9, 'z:#zip-ok', C.purple], [b + 6.2, 'z:input[name=email]', '#fff']],
-    press: [[b + 4.9, 'z:#zip-ok']],
-    halo: [[b + 2.5, b + 5.1]],
-    fills: [[b + 3.0, b + 3.6, 'z:#zip', z.page.zip || '10115']],
-    boxes: [{ at: 'z:#zip', col: C.blue, t: [b + 2.7, b + 5.1], pad: 4 }],
-    hud: { x: 600, y: 14, t: [b + 2.2, b + 6.9], rows: [
-      { ic: '▸', col: C.blue, html: '<b>“Confirm your ZIP code”</b> <span class="sub">registered as two steps</span>', t: b + 2.2 },
-      { ic: '1', col: C.green, html: 'fill <span class="mono">#zip</span> with 10115', t: b + 3.6 },
-      { ic: '2', col: C.green, html: 'click <span class="mono">#zip-ok</span> · popup gone', t: b + 5.0 },
-    ] },
-    run: [
-      [b + 1.5, 'cmd', '$ python checkout.py'],
-      [b + 3.6, 'log', logRow('▸', msgOf(zl[0]))],
-      [b + 5.0, 'log', logRow('▸', msgOf(zl[1]))],
-      [b + 6.2, 'ok', okRow('heal.page.click(...)', sx(z.seconds))],
-      [b + 6.5, 'sum', `<span style="color:${C.green}">Passed</span> · ZIP re-entered mid-step`],
-    ],
-    caps: [
-      [b + .5, b + 2.5, 'Mid-checkout, the site asks you to re-enter your ZIP code.'],
-      [b + 2.6, S.s8 - .3, 'Register the answer once. mendwright <u>fills it in whenever it pops up</u>.'],
-    ],
-    status: [[b + 1.5, 'run', 'Running', b + 6.5], [b + 6.5, 'ok', 'Passed', S.s8 - .2]],
-  });
+const quoteLabel = s => '“' + s + '”';
+const sameScript = (a, b) => JSON.stringify([a.open_kwargs, a.click, a.click_kwargs]) === JSON.stringify([b.open_kwargs, b.click, b.click_kwargs]);
+
+// ---------- clip A: cookie banners ----------
+function cutA() {
+  const B = D.B, Cr = D.Crun, SEL = D.SEL;
+  if (!D.B_banner_up_after || D.C_banner_up_after || !D.C_ok) throw new Error('banner runs: wrong outcomes');
+  if (!B.error.includes('intercepts pointer events')) throw new Error('B: the banner did not take the click');
+  clipTitle(1.6, 'Cookie banners', 'cookies="reject"');
+  const T = { fail: 8.8, code: 11.2, rerun: 14.4, sel: 20.6, end: 27.0 };
+  frame({ id: 'a1', html: D.pages.v1, t: [-1, T.sel], popup: '#cc-wrap', pop: [[2.0, T.rerun + .1], [T.rerun + .35, 16.6]], reloads: [T.rerun] });
+  reload(T.rerun);
+  url(0, 'northwind.example/checkout');
+  const sr = scriptRows();
+  const blk = codeBlock({ t0: 0, t1: T.sel, rows: [
+    ...openRows('page', { cookies: 'reject' }, 'page').map((r, i) => Object.assign(r, { at: [[0, i]], appear: 11.4 + i * .5, type: [11.4 + i * .5, 11.9 + i * .5], tint: [11.4, 13.6] })),
+    ...sr.map((html, i) => ({ id: 'L' + (i + 1), html, n: [[0, i + 1], [11.3, i + 2]], at: [[0, i], [11.3, i + 2]] }))] });
+  badge(0, 'plain Playwright', C.grey);
+  badge(T.code, 'Playwright + mendwright', C.purple);
+  badge(T.sel, 'Selenium + mendwright', C.purple);
+  // the site adds a banner; plain Playwright's click lands on it, for 30 s
+  focus(1.6, 'page');
+  cap(1.8, 5.2, 'The site adds a cookie banner.');
+  beat(3.4, 'A banner rises');
+  const keys1 = [[5.8, 0], [8.4, B.seconds]];
+  const s30 = Math.round(B.seconds);
+  // the receipt: the line of the real traceback that names the exception
+  const tline = `${B.error_type}: ${B.error.split('\n')[0]}`;
+  run({ t0: 5.0, t1: T.code, cmd: [5.2, '$ python checkout.py'], keys: keys1, clockCol: [[8.4, C.red]],
+    stamp: { t: T.fail, kind: 'bad', html: `✕ Failed after ${s30} s` },
+    receipts: [{ t: T.fail, text: verbatim(B.error_line, tline) }] });
+  blk.hl.push([0, 'L1', 0], [5.2, 'L1', 1], [T.code, 'L1', 0]);
+  blk.marks.push([T.fail, 'L1', '✕', C.red, T.code]);
+  curOn(5.25, 7.0); cur(5.2, 'a1:#email', -60, 4);
+  [5.8, 6.2, 6.6].forEach(t => click(t, 'a1:#email', C.red));
+  // the speed badge by the clock says it is sped up; the callout says only what happens
+  speedOf(keys1, 5.8, 8.4);
+  callout({ at: 'a1:#email', place: 'below-of', of: 'a1:#cc-wrap > div', t: [6.4, T.code], sets: [
+    { t: 6.4, ic: '⊘', col: C.red, h: 'The banner takes the click', s: `Playwright retries for ${s30} s` }] });
+  beat(7.2, 'A the banner takes the click');
+  cap(7.6, 11.0, 'Plain Playwright <s>can’t click through it</s>.');
+  focus(T.fail, 'run');
+  beat(9.8, 'A failed after 30 s');
+  // one line
+  focus(T.code, 'code');
+  cap(11.4, 14.4, 'Add one line: <em>cookies="reject"</em>.');
+  beat(13.2, 'A one line');
+  // the rerun: mendwright rejects the banner, then the script carries on
+  focus(T.rerun, 'page');
+  const c = Cr.steps, cs = [0];
+  c.forEach(x => cs.push(cs[cs.length - 1] + x));
+  const kC = [[14.6, 0], [16.4, Cr.log_at[0]], [17.0, cs[1]], [17.2, cs[2]], [17.4, cs[3]], [17.8, cs[4]], [18.0, Cr.seconds]];
+  run({ t0: T.rerun, t1: T.sel, cmd: [14.5, '$ python checkout.py'], keys: kC,
+    stamp: { t: 18.0, kind: 'ok', html: '✓ Passed · banner rejected' },
+    receipts: [{ t: 18.0, text: verbatim(Cr.log[0], Cr.log[0]) }] });
+  const reject = 'a1:#cc-wrap button';
+  cap(14.6, 18.6, 'It <em>rejects the banner</em>, then carries on.');
+  callout({ at: 'a1:#email', place: 'below-of', of: 'a1:#cc-wrap > div', t: [15.8, 16.7], sets: [
+    { t: 15.8, ic: '▸', col: C.purple, h: 'Cookie banner in the way', s: `mendwright clicks ${quoteLabel('Reject all')}` }] });
+  curOn(15.85, 18.0); cur(15.8, reject, -10, 4); haloOn(15.85, 16.7);
+  click(16.4, reject, C.purple); press(16.4, reject);
+  beat(16.2, 'A mendwright rejects the banner');
+  cur(16.6, 'a1:#email', -60, 4); click(17.0, 'a1:#email', C.white); fill(17.05, 17.25, 'a1:#email', 'ada@example.com', T.sel);
+  cur(17.05, 'a1:#accept-terms', 2, 3); click(17.4, 'a1:#accept-terms', C.white); check(17.4, 'a1:#accept-terms', T.sel);
+  cur(17.45, 'a1:#continue', -40, 4); click(17.8, 'a1:#continue', C.white); press(17.8, 'a1:#continue');
+  blk.hl.push([14.6, 'L1', 1], [17.1, 'L2', 1], [17.3, 'L3', 1], [17.6, 'L4', 1], [18.0, 'L4', 0]);
+  blk.marks.push([17.0, 'L1', '✓', C.green, T.sel], [17.2, 'L2', '✓', C.green, T.sel], [17.4, 'L3', '✓', C.green, T.sel], [17.8, 'L4', '✓', C.green, T.sel]);
+  focus(18.0, 'run');
+  beat(19.4, 'A passed, banner rejected');
+  // the same on Selenium
+  if (SEL.banner_up_after || !SEL.terms_checked || SEL.mendwright.some(s => !s.ok)) throw new Error('Selenium: wrong outcome');
+  frame({ id: 's1', html: D.pages.v1, t: [T.sel, T.end + 3], popup: '#cc-wrap', pop: [[T.sel - 1, 22.8]] });
+  const sblk = codeBlock({ t0: T.sel, t1: T.end + 3, rows: [
+    ...openRows('driver', { cookies: 'reject' }, 'driver'),
+    { id: 'f1', n: 2, html: O_('driver') + P_('.') + F_('find_element') + P_('(') },
+    { id: 'f2', n: '', html: IND(4) + O_('By') + P_('.') + O_('ID') + P_(', ') + Str(JSON.stringify(SEL.mendwright[0].value)) + P_(').') + F_('click') + P_('()') },
+    { id: 'more', n: '', html: `<span class="k-fold">⋯ ${SEL.mendwright.length - 1} more steps</span>` }] });
+  focus(T.sel, 'code');
+  cap(20.8, 25.0, 'Same on Selenium: one line, same result.');
+  const sm = SEL.mendwright.map(s => s.seconds), ss = [0];
+  sm.forEach(x => ss.push(ss[ss.length - 1] + x));
+  const kS = [[22.4, 0], [23.2, ss[1]], [23.6, ss[2]], [24.0, ss[3]], [24.4, SEL.mendwright_seconds]];
+  // plain Selenium's failure is the previous run; the receipt under the stamp is this run's
+  run({ t0: T.sel, t1: T.end + 3, cmd: [20.8, '$ python checkout.py'],
+    prev: [22.0, `plain Selenium · ${verbatim(SEL.plain_line, SEL.plain_type)}`], keys: kS,
+    stamp: { t: 24.4, kind: 'ok', html: '✓ Passed · banner rejected' },
+    receipts: [{ t: 24.4, text: verbatim(SEL.log, SEL.log) }] });
+  focus(22.2, 'page');
+  curOn(22.25, 24.2); cur(22.2, 's1:#cc-wrap button', -10, 4); haloOn(22.25, 22.9);
+  click(22.6, 's1:#cc-wrap button', C.purple); press(22.6, 's1:#cc-wrap button');
+  cur(22.85, 's1:#email', -60, 4); click(23.2, 's1:#email', C.white);
+  cur(23.25, 's1:#accept-terms', 2, 3); click(23.6, 's1:#accept-terms', C.white); check(23.6, 's1:#accept-terms');
+  cur(23.65, 's1:#continue', -40, 4); click(24.0, 's1:#continue', C.white); press(24.0, 's1:#continue');
+  sblk.hl.push([22.4, 'f1', 1], [23.4, 'more', 1], [24.4, 'more', 0]);
+  sblk.marks.push([23.2, 'f1', '✓', C.green, T.end + 3], [24.0, 'more', '✓', C.green, T.end + 3]);
+  beat(23.0, 'A Selenium: banner rejected');
+  focus(24.4, 'run');
+  beat(25.8, 'A Selenium passed');
+  endStrip(T.end);
 }
 
-// ---------- act 8: steps in any order (built when the real run exists) ----------
-if (D.ST && window.stepsAct) window.stepsAct();
-
-// ---------- act 9: Selenium ----------
-{
-  const SELd = D.SEL, sm = SELd.mendwright, t0 = S.s9, b = t0 + CARD_LEN;
-  scene({
-    t0, t1: S.end, runChip: 'sel', title: { kicker: 'Same API', text: 'Selenium too', sub: 'mendwright.open(driver).driver', col: C.blue },
-    lines: [
-      O_('driver') + ' ' + P_('=') + ' <span class="k-mw">mendwright</span>' + P_('.') + F_('open') + P_('(') + O_('driver') + P_(', ') + O_('cookies') + P_('=') + Str('"reject"') + P_(').') + O_('driver'),
-      O_('driver') + P_('.') + F_('find_element') + P_('(') + O_('By') + P_('.') + O_('ID') + P_(', ') + Str('"email"') + P_(').') + F_('click') + P_('()'),
-      O_('driver') + P_('.') + F_('find_element') + P_('(') + O_('By') + P_('.') + O_('ID') + P_(', ') + Str('"accept-terms"') + P_(').') + F_('click') + P_('()'),
-      O_('driver') + P_('.') + F_('find_element') + P_('(') + O_('By') + P_('.') + O_('ID') + P_(', ') + Str('"continue"') + P_(').') + F_('click') + P_('()'),
-    ],
-    frames: [{ id: 's', html: D.pages.v1, popup: '#cc-wrap', popTimes: [[b - .4, b + 3.4]], in: b - .3 }],
-    hl: [[b, 1, 0], [b + 1.4, 1, 1], [b + 4.0, 2, 1], [b + 4.8, 3, 1], [b + 5.7, 3, 0]],
-    marks: [[b + 3.8, 1, '✓', C.green], [b + 4.6, 2, '✓', C.green], [b + 5.4, 3, '✓', C.green]],
-    cursorOn: [b + 1.3, b + 6.2],
-    cursor: [[b + 1.4, 's:#email'], [b + 2.4, 's:#cc-wrap button', -10, 4], [b + 3.4, 's:#email'], [b + 4.0, 's:#accept-terms'], [b + 4.8, 's:#continue', -30, 4]],
-    clicks: [[b + 1.9, 's:#email', C.red], [b + 3.1, 's:#cc-wrap button', C.purple], [b + 3.8, 's:#email', '#fff'], [b + 4.6, 's:#accept-terms', '#fff'], [b + 5.4, 's:#continue', '#fff']],
-    press: [[b + 3.1, 's:#cc-wrap button'], [b + 5.4, 's:#continue']],
-    checks: [[b + 4.6, 's:#accept-terms']],
-    halo: [[b + 2.3, b + 3.4]],
-    chips: [
-      { at: 's:#email', html: `<span style="color:${C.red}">⊘</span>&nbsp; plain Selenium: element click intercepted`, place: 'above', dx: 120, style: `background:rgba(14,18,27,.9);border:1px solid ${C.red}66;color:#ffd3d3;font-size:15px;padding:8px 13px;border-radius:11px`, t: [b + .2, b + 1.4] },
-      { at: 's:#cc-wrap > div', html: '▸ cookie banner in the way · clicking “Reject all”', place: 'above', style: `background:${C.amber};color:#1b1405;font-size:15.5px`, t: [b + 1.9, b + 3.3] },
-    ],
-    run: [
-      [b - .1, 'cmd', '# plain Selenium, same page'],
-      [b + .1, 'err', `<b>${esc(SELd.plain_type)}</b>: ${esc(SELd.plain_msg)}`],
-      [b + 3.2, 'log', logRow('▸', SELd.log)],
-      [b + 3.8, 'ok', okRow('find_element(By.ID, "email").click()', sx(sm[0].seconds))],
-      [b + 4.6, 'ok', okRow('find_element(By.ID, "accept-terms").click()', sx(sm[1].seconds))],
-      [b + 5.4, 'ok', okRow('find_element(By.ID, "continue").click()', sx(sm[2].seconds))],
-    ],
-    caps: [[b - .1, S.end - .3, 'Same on Selenium: <s>find_element(...).click() died on the banner.</s> <u>Now it’s rejected first.</u>']],
-    status: [[b + 1.3, 'run', 'Running', b + 5.7], [b + 5.7, 'ok', 'Passed · banner rejected', S.end - .2]],
-  });
+// ---------- clip B: popups you didn't plan for ----------
+// Both popups run the same two lines, on a fresh store (nothing remembered):
+//   heal = mendwright.open(page, dismiss=True)
+//   heal.page.click("input[name=email]")
+function cutB() {
+  const F1 = D.F.F1, u = SM.upsell, em = F1.steps[0];
+  if (F1.steps.length !== 1 || !em.ok || F1.popup_up_after || F1.sign_up !== 'never clicked') throw new Error('F1: wrong outcome');
+  if (!F1.store_fresh) throw new Error('F1: the newsletter run did not start from a fresh store');
+  if (!sameScript(F1, u)) throw new Error('clip B: the two popup runs ran different scripts');
+  if (!u.ok || u.page.clicked.length !== 1) throw new Error('upsell: wrong outcome');
+  clipTitle(1.6, 'Popups you didn’t plan for', 'dismiss=True');
+  const T = { up: 14.3, end: 20.8 };
+  frame({ id: 'nl', html: D.F.pages.v2_nl, t: [-1, T.up], popup: '#nl', pop: [[1.8, 9.8]] });
+  url(0, 'northwind.example/checkout');
+  // one script for both halves
+  const blk = codeBlock({ t0: 0, t1: T.end + 3, rows: [...openRows('heal', F1.open_kwargs), ...clickRows(F1.click, F1.click_kwargs, 2)] });
+  const field = 'input[name=email]';
+  if (F1.click !== field) throw new Error('F1: the script clicks ' + F1.click);
+  focus(1.6, 'page');
+  cap(1.8, 5.8, 'A popup mendwright was never told about.');
+  beat(3.0, 'B a popup nobody registered');
+  const di = em.log.findIndex(l => /dismissed a popup/.test(l));
+  const kF = [[3.0, 0], [9.6, em.log_at[di]], [10.8, F1.seconds]];
+  run({ t0: 2.8, t1: T.up, cmd: [2.9, '$ python checkout.py'], keys: kF,
+    stamp: { t: 11.8, kind: 'ok', html: `✓ Passed · ${quoteLabel('Sign up')} never clicked` },
+    receipts: [{ t: 11.8, text: elide(msgOf(em.log[di]), 'dismissed a popup', 'with “No thanks”, after Escape did not close it') }] });
+  blk.hl.push([0, 'c1', 0], [3.0, 'c1', 1], [11.8, 'c1', 0]);
+  blk.marks.push([10.8, 'c1', '✓', C.green, T.up]);
+  curOn(3.3, 4.2); cur(3.2, 'nl:' + field, -90, 4);
+  click(3.8, 'nl:' + field, C.red);
+  const card = 'nl:#nl > div';
+  callout({ at: card, place: 'below-of', of: card, t: [4.6, 10.6], sets: [
+    { t: 4.6, ic: '⊘', col: C.amber, h: 'A popup is in the way', s: '1 · Escape' },
+    { t: 7.2, ic: '⊘', col: C.amber, h: 'A popup is in the way', s: '1 · Escape: still there' },
+    { t: 9.6, ic: '⊘', col: C.amber, h: 'A popup is in the way', s: '2 · “No thanks”' }] });
+  keycap({ at: card, text: 'esc', t: [4.6, 6.6] });
+  beat(5.4, 'B Escape first');
+  cap(6.0, 10.2, 'Escape first. Then “No thanks”. <s>Never “Sign up”.</s>');
+  box({ at: 'nl:.nl-yes', col: C.red, dashed: true, t: [8.4, 9.8], pad: 6 });
+  tag({ at: 'nl:.nl-yes', html: 'never', col: C.red, solid: true, t: [8.4, 9.8], clear: card, leader: true, pad: 6 });
+  beat(8.9, 'B never Sign up');
+  curOn(9.0, 11.3); cur(8.95, 'nl:.nl-no', -8, 4); haloOn(9.0, 9.9);
+  click(9.6, 'nl:.nl-no', C.purple); press(9.6, 'nl:.nl-no');
+  cur(10.3, 'nl:' + field, -90, 4); click(10.8, 'nl:' + field, C.white);
+  focus(11.8, 'run');
+  beat(13.0, 'B passed, never Sign up');
+  // the upsell: a paid button is never clicked (the same script, run again)
+  const ud = u.log.findIndex(l => /dismissed a popup/.test(l));
+  frame({ id: 'u', html: SM.pages.upsell, t: [T.up, T.end + 3], popup: '#pop', pop: [[T.up + .2, 17.2]] });
+  focus(T.up, 'page');
+  cap(14.5, 18.8, 'A paid “Skip the line”? <s>Never.</s> <u>“No thanks”.</u>');
+  beat(15.2, 'B upsell popup');
+  const kU = [[14.6, 0], [17.0, u.log_at[ud]], [17.6, u.seconds]];
+  run({ t0: T.up, t1: T.end + 3, cmd: [14.4, '$ python checkout.py'], keys: kU,
+    stamp: { t: 18.2, kind: 'ok', html: `✓ Passed · clicked ${quoteLabel(u.page.clicked[0])}` } });
+  const paid = 'u:#pop button:nth-of-type(1)', no = 'u:#pop button:nth-of-type(2)', ucard = 'u:#pop > div';
+  box({ at: paid, col: C.red, dashed: true, t: [15.7, 17.2], pad: 6 });
+  // under the popup card, off its right edge; the leader runs up outside the card to the
+  // paid button, so it never points at "No thanks"
+  tag({ at: paid, html: 'costs money · never', col: C.red, solid: true, t: [15.7, 17.2], place: 'below-of', of: ucard, elbow: 'right', leader: true, pad: 6 });
+  beat(16.3, 'B costs money: never');
+  curOn(16.45, 17.9); cur(16.4, no, -8, 4); haloOn(16.45, 17.3);
+  click(17.0, no, C.purple); press(17.0, no);
+  cur(17.25, 'u:' + field, -90, 4); click(17.6, 'u:' + field, C.white);
+  blk.hl.push([T.up, 'c1', 0], [14.6, 'c1', 1], [18.2, 'c1', 0]);
+  blk.marks.push([17.6, 'c1', '✓', C.green, T.end + 3]);
+  focus(18.2, 'run');
+  beat(19.4, 'B clicked No thanks');
+  endStrip(T.end);
 }
 
-window.measureScenes = measureScenes;
-window.drawScenes = drawScenes;
+// ---------- clip C: when declining isn't safe ----------
+function cutC() {
+  const a = SM.order_alone, r = SM.order_registered;
+  if (a.ok || a.page.clicked.length || a.page.cancelled || !a.page.popup_up) throw new Error('order_alone: mendwright clicked something');
+  if (!r.ok || r.page.clicked[0] !== 'Continue with order' || r.page.cancelled) throw new Error('order_registered: wrong outcome');
+  if (!sameScript(a, r)) throw new Error('clip C: the two runs ran different scripts besides the interrupt');
+  clipTitle(1.6, 'When declining isn’t safe', 'heal.interrupt()');
+  const T = { code: 10.2, rerun: 13.4, end: 18.8 };
+  frame({ id: 'o', html: SM.pages.order, t: [-1, T.end + 3], popup: '#pop', pop: [[1.8, 15.0]], reloads: [T.rerun] });
+  reload(T.rerun);
+  url(0, 'northwind.example/checkout');
+  const [ik, isel] = r.interrupts[0];
+  const cr = clickRows(a.click, a.click_kwargs, [[0, 2], [10.3, 3]]);
+  cr.forEach((x, i) => { x.at = [[0, 2 + i], [10.3, 4 + i]]; });
+  const blk = codeBlock({ t0: 0, t1: T.end + 3, rows: [
+    ...openRows('heal', a.open_kwargs),
+    { id: 'i1', n: 2, html: O_('heal') + P_('.') + F_('interrupt') + P_('(') + Str(JSON.stringify(ik)) + P_(','), at: [[0, 2]], appear: 10.4, type: [10.4, 10.9], tint: [10.4, 12.8] },
+    { id: 'i2', n: '', html: IND(4) + Str("'" + isel + "'") + P_(')'), at: [[0, 3]], appear: 10.9, type: [10.9, 11.6], tint: [10.4, 12.8] },
+    ...cr] });
+  // before and after, as in clip A: the header says which script runs
+  badge(0, 'without interrupt', C.grey);
+  badge(T.code, 'with interrupt', C.purple);
+  // "Dismiss" would cancel the order: mendwright clicks nothing and stops
+  focus(1.6, 'page');
+  cap(1.8, 5.4, 'Here “Dismiss” would cancel the order.');
+  const dismiss = 'o:#pop button:nth-of-type(2)', cont = 'o:#pop button:nth-of-type(1)', ocard = 'o:#pop > div';
+  // on Dismiss for as long as the popup is up; the label sits under the popup card
+  box({ at: dismiss, col: C.red, dashed: true, t: [3.0, 15.0], pad: 5 });
+  tag({ at: dismiss, html: 'cancels the order · never', col: C.red, solid: true, t: [3.0, 15.0], place: 'below-of', of: ocard, pad: 5 });
+  beat(3.8, 'C Dismiss cancels the order');
+  curOn(4.0, 4.8); cur(3.9, 'o:input[name=email]', -90, 4);
+  click(4.4, 'o:input[name=email]', C.red);
+  const dl = a.log.findIndex(l => /could not dismiss/.test(l));
+  const kA = [[4.4, 0], [5.0, a.log_at[dl]], [6.6, a.seconds]];
+  run({ t0: 1.6, t1: T.code, cmd: [2.0, '$ python checkout.py'], keys: kA, clockCol: [[6.6, C.amber]],
+    stamp: { t: 6.8, kind: 'stop', html: '⊘ Stopped · nothing clicked' },
+    receipts: [{ t: 6.8, text: verbatim(a.error_line, `${a.error_type}: ${a.error}`) },
+      { t: 8.0, text: elide(msgOf(a.log[dl]), 'Register the button that closes it with heal.interrupt(', ')').replace(' … )', '…)') }] });
+  blk.hl.push([0, 'c1', 0], [4.4, 'c1', 1], [T.code, 'c1', 0]);
+  blk.marks.push([6.8, 'c1', '⊘', C.amber, T.code]);
+  cap(5.6, 9.2, 'So it <b>clicks nothing</b> and stops.');
+  focus(6.8, 'run');
+  beat(7.4, 'C stopped, nothing clicked');
+  beat(9.0, 'C register it with interrupt');
+  // you decide, with one line; heal.page (the page the script acts on) is your page
+  focus(T.code, 'code');
+  cap(10.4, 13.4, 'You decide, with <em>one line</em>.');
+  tag({ at: 'code:c1', zone: 'code', place: 'below', html: '↑ is your page', col: C.purple, t: [11.8, 13.4], pad: 0 });
+  beat(12.4, 'C one interrupt line');
+  // the rerun: mendwright clicks the registered button
+  focus(T.rerun, 'page');
+  const hi = r.log.findIndex(l => /handled interruption/.test(l));
+  const kR = [[13.8, 0], [14.8, r.log_at[hi]], [15.6, r.seconds]];
+  run({ t0: T.rerun, t1: T.end + 3, cmd: [13.5, '$ python checkout.py'], keys: kR,
+    stamp: { t: 16.2, kind: 'ok', html: `✓ Passed · clicked ${quoteLabel(r.page.clicked[0])}` },
+    receipts: [{ t: 16.2, text: verbatim(msgOf(r.log[hi]), msgOf(r.log[hi]).replace(/^mendwright: /, '')) }] });
+  cap(14.0, 18.6, 'The order goes on. “Dismiss” is never clicked.');
+  // the purple cursor comes from above the popup straight down onto "Continue with order"
+  curOn(13.9, 16.0); cur(13.6, ocard, 0, -60, 'top'); cur(14.2, cont, 0, 4); haloOn(13.9, 15.1);
+  click(14.8, cont, C.purple); press(14.8, cont);
+  cur(15.2, 'o:input[name=email]', -90, 4); click(15.6, 'o:input[name=email]', C.white);
+  beat(14.6, 'C mendwright clicks Continue');
+  blk.hl.push([13.6, 'c1', 1], [16.2, 'c1', 0]);
+  blk.marks.push([15.6, 'c1', '✓', C.green, T.end + 3]);
+  focus(16.2, 'run');
+  beat(17.4, 'C passed, order continued');
+  endStrip(T.end);
+}
+
+window.CUTS.A = cutA;
+window.CUTS.B = cutB;
+window.CUTS.C = cutC;
+defineCut();

@@ -1,8 +1,9 @@
 name: Render video
 
-# Renders the explainer video in video/ on GitHub's runners: the frames are split across
-# parallel jobs, then joined without re-encoding. The video is the "mendwright-explainer"
-# artifact of the run, with a few stills for a quick look.
+# Renders the five cuts of the explainer in video/ on GitHub's runners: the main video
+# (README hero) and the clips A-D that sit next to their docs sections. Each cut's frames
+# are split across parallel jobs, then joined without re-encoding. render.py audits each
+# cut's timeline and layout before it draws a frame, and stops on any finding.
 
 on:
   push:
@@ -22,17 +23,28 @@ defaults:
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  SEGMENTS: "10"
 
 jobs:
   render:
-    name: render ${{ matrix.seg }}
+    name: render ${{ matrix.cut }} ${{ matrix.seg }}/${{ matrix.n }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: true
       matrix:
-        seg: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        include:
+          - { cut: main, seg: 0, n: 4 }
+          - { cut: main, seg: 1, n: 4 }
+          - { cut: main, seg: 2, n: 4 }
+          - { cut: main, seg: 3, n: 4 }
+          - { cut: A, seg: 0, n: 2 }
+          - { cut: A, seg: 1, n: 2 }
+          - { cut: B, seg: 0, n: 2 }
+          - { cut: B, seg: 1, n: 2 }
+          - { cut: C, seg: 0, n: 2 }
+          - { cut: C, seg: 1, n: 2 }
+          - { cut: D, seg: 0, n: 2 }
+          - { cut: D, seg: 1, n: 2 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -49,19 +61,19 @@ jobs:
         run: |
           python -m pip install playwright==1.53.0
           python -m playwright install --with-deps chromium
-      - name: Render part ${{ matrix.seg }} of ${{ env.SEGMENTS }}
-        run: python video/render.py --video "seg-${{ matrix.seg }}.mp4" --segment ${{ matrix.seg }} "$SEGMENTS"
+      - name: Render cut ${{ matrix.cut }}, part ${{ matrix.seg }} of ${{ matrix.n }}
+        run: python video/render.py --cut ${{ matrix.cut }} --video "seg-${{ matrix.cut }}-${{ matrix.seg }}.mp4" --segment ${{ matrix.seg }} ${{ matrix.n }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: seg-${{ matrix.seg }}
-          path: seg-${{ matrix.seg }}.mp4
+          name: seg-${{ matrix.cut }}-${{ matrix.seg }}
+          path: seg-${{ matrix.cut }}-${{ matrix.seg }}.mp4
           retention-days: 3
           if-no-files-found: error
 
   join:
     needs: render
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: ffmpeg
         run: |
@@ -72,30 +84,40 @@ jobs:
           pattern: seg-*
           merge-multiple: true
           path: segs
-      - name: Join the parts
+      - name: Join the parts of each cut
         run: |
-          for i in $(seq 0 $((SEGMENTS - 1))); do echo "file 'segs/seg-$i.mp4'"; done > list.txt
-          ffmpeg -y -loglevel error -f concat -safe 0 -i list.txt -c copy -movflags +faststart mendwright-explainer.mp4
-          ffprobe -v error -count_frames -show_entries format=duration,size:stream=nb_read_frames -of compact mendwright-explainer.mp4
-          dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 mendwright-explainer.mp4)
-          # GitHub plays videos up to 10 MB in a README: a smaller copy for that, same frames.
+          join() {   # cut, parts, output
+            for i in $(seq 0 $(($2 - 1))); do echo "file 'segs/seg-$1-$i.mp4'"; done > "list-$1.txt"
+            ffmpeg -y -loglevel error -f concat -safe 0 -i "list-$1.txt" -c copy -movflags +faststart "$3"
+            ffprobe -v error -count_frames -show_entries format=duration,size:stream=nb_read_frames -of compact "$3"
+          }
+          join main 4 mendwright-main.mp4
+          join A 2 clip-cookies.mp4
+          join B 2 clip-popups.mp4
+          join C 2 clip-interrupt.mp4
+          join D 2 clip-steps.mp4
+          # GitHub plays videos up to 10 MB in a README: a smaller copy of the main cut, same frames.
           for crf in 23 25 27 29; do
-            ffmpeg -y -loglevel error -i mendwright-explainer.mp4 -c:v libx264 -preset slow -tune animation \
-              -crf "$crf" -pix_fmt yuv420p -profile:v high -movflags +faststart mendwright-explainer-web.mp4
-            size=$(stat -c %s mendwright-explainer-web.mp4)
+            ffmpeg -y -loglevel error -i mendwright-main.mp4 -c:v libx264 -preset slow -tune animation \
+              -crf "$crf" -pix_fmt yuv420p -profile:v high -movflags +faststart mendwright-main-web.mp4
+            size=$(stat -c %s mendwright-main-web.mp4)
             echo "web copy at crf $crf: $size bytes"
             [ "$size" -le 9800000 ] && break
           done
-          for f in 0.02 0.15 0.25 0.38 0.5 0.62 0.75 0.88 0.99; do
-            t=$(python3 -c "print(round($dur * $f, 2))")
-            ffmpeg -y -loglevel error -ss "$t" -i mendwright-explainer.mp4 -frames:v 1 "still-$f.png"
+          ffmpeg -y -loglevel error -ss 0 -i mendwright-main.mp4 -frames:v 1 poster-main.png
+          for f in clip-*.mp4; do
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            t=$(python3 -c "print(round($dur * 0.5, 2))")
+            ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 "still-${f%.mp4}.png"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: mendwright-explainer
           path: |
-            mendwright-explainer.mp4
-            mendwright-explainer-web.mp4
+            mendwright-main.mp4
+            mendwright-main-web.mp4
+            clip-*.mp4
+            poster-main.png
             still-*.png
           retention-days: 30
           if-no-files-found: error

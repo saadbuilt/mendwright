@@ -1,0 +1,1 @@
+A real run on a made-up shop: the site redeploys and breaks all three selectors. mendwright finds two again from memory and one with its 1 GB local model, checks each on the page and saves them; the next run takes 0.28 s.
