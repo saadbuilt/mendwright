@@ -148,6 +148,42 @@ function choose(choice) {
 </script>""", 'onetrust')
 
 
+_PRICE = page('<p>Consent: <span id="consent">none</span></p>'
+              '<p>Price: <span id="price" data-currency="USD">$10.00</span></p>'
+              + _SCRIPT + _BANNER, 'price')
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('read', ['page.text_content', 'locator.inner_text',
+                                  'page.get_attribute', 'cookies='])
+def test_a_read_handles_a_cookie_banner_over_the_page_first(tab, store_file, stub_provider,
+                                                            read):
+    # Playwright runs no overlay handler before a read, and its handlers stay out of the
+    # lookup's scroll, so the read handles the banner itself, as an action does, and logs
+    # it before its own key. A banner left up would cover page.mouse, a screenshot or a
+    # scraper's next read.
+    tab.load(_ONETRUST if read == 'cookies=' else _PRICE)
+    heal = _open(tab, stub_provider(None), store_file,
+                 cookies='reject' if read == 'cookies=' else None)
+    if read != 'cookies=':
+        heal.interrupt('cookies', '#cookie-accept')
+
+    if read == 'page.text_content':
+        value, key = heal.page.text_content('#price'), '#price'
+    elif read == 'locator.inner_text':
+        value, key = _step(heal, 'price', '#price').inner_text(), 'price'
+    elif read == 'page.get_attribute':
+        value, key = heal.page.get_attribute('#price', 'data-currency'), '#price'
+    else:
+        value, key = heal.page.get_attribute('#email', 'type'), '#email'
+
+    assert value == {'page.get_attribute': 'USD', 'cookies=': 'email'}.get(read, '$10.00')
+    banner = 'cookie_banner' if read == 'cookies=' else 'cookies'
+    assert tab.text('#consent') == ('rejected' if read == 'cookies=' else 'accepted')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [(banner, key)]
+    assert _flow_events(store_file) == [('flow.interrupt', banner, key)]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_the_cookies_preset_on_a_onetrust_banner(tab, store_file, stub_provider, choice, outcome):
     tab.load(_ONETRUST)

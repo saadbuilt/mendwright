@@ -64,8 +64,9 @@ from .fingerprint import valid as valid_fingerprint
 from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import _dismiss_choice
-from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
-                     HealEvent, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _cookie_preset,
+from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, LOCATOR_READS,
+                     ActionProxy, Healer, HealEvent, Role, Selector, _IN_RUN, _NOT_FOLLOWED,
+                     _cookie_preset,
                      _healed_target_error, _join_overlay, _leave_overlay, _locator_args,
                      _overlay_locator, _overlay_options, _overlay_owner, _raised_by_run,
                      _removable, _reraise, _setup, latest_success)
@@ -893,6 +894,11 @@ class AsyncHealer:
         await self._interrupt_for_action(key, budget, timeout_ms, poll_ms)
         return budget
 
+    def _handles_reads(self):
+        """Healer._handles_reads() for this healer: on async Playwright, the reads of its
+        proxies handle the registered interruptions first, as on the sync healer."""
+        return isinstance(self._driver, AsyncPlaywrightDriver)
+
     async def _await_runs(self, budget, poll_ms):
         """Healer._await_runs(), awaited: wait for the run= functions of this healer that
         run in another context, then raise what one of them raised for the step of budget
@@ -1308,7 +1314,8 @@ class AsyncActionProxy:
     ``await heal.locator(...).inner_text()`` resolves first.
 
     Interruptions are handled before an action and after an interception error, as on
-    ActionProxy, and so are popups with open(dismiss=True). A skipped step (.present is
+    ActionProxy, and so are popups with open(dismiss=True). Interruptions are handled
+    before a read of the Locator too (LOCATOR_READS). A skipped step (.present is
     False once resolved) does nothing. With expect_value=, a read of an element found
     through a heal is checked as on ActionProxy."""
 
@@ -1495,18 +1502,24 @@ class AsyncActionProxy:
 
     def __getattr__(self, name: str) -> Any:
         # Reads and anything else not in ACTIONS go to the native Locator. Before the
-        # proxy is resolved, a method call resolves it first.
+        # proxy is resolved, a method call resolves it first. A Locator's reads handle
+        # interruptions first, as on ActionProxy.
         native = self.__dict__.get('_native', _UNRESOLVED)
         if native is not _UNRESOLVED:
             if not self.__dict__.get('_present', True) and not name.startswith('__'):
                 raise AttributeError(absent_message(self._key))
             attr = getattr(native, name)
-            if (name not in VALUE_READS or self.__dict__.get('_expect') is None
-                    or self.__dict__.get('_healed') is None or not callable(attr)):
+            checked = (name in VALUE_READS and self.__dict__.get('_expect') is not None
+                       and self.__dict__.get('_healed') is not None)
+            handles = name in LOCATOR_READS and self._healer._handles_reads()
+            if not callable(attr) or not (checked or handles):
                 return attr
 
             async def read(*args, **kwargs):
-                return await self._checked(name, args, await _awaited(attr(*args, **kwargs)))
+                if handles:
+                    await self._before_read()
+                value = await _awaited(attr(*args, **kwargs))
+                return await self._checked(name, args, value) if checked else value
             read.__name__ = name
             return read
         if name.startswith('_'):
@@ -1522,11 +1535,19 @@ class AsyncActionProxy:
                     'mendwright: ' + name + ' is not a method of the native Locator. Await '
                     'the proxy first, then read it: box = await heal.locator(...); box.'
                     + name)
+            if name in LOCATOR_READS and self._healer._handles_reads():
+                await self._before_read()
             value = await _awaited(attr(*args, **kwargs))
             return await self._checked(name, args, value) if name in VALUE_READS else value
 
         deferred.__name__ = name
         return deferred
+
+    async def _before_read(self):
+        """ActionProxy._before_read(), awaited: handle the registered interruptions the
+        page shows before a read of the Locator (LOCATOR_READS), as before an action."""
+        __tracebackhide__ = True
+        await self._healer._before_action(self._key, self._plan[4], self._plan[5])
 
     async def _checked(self, verb, args, value):
         """value, read with verb(*args), through AsyncHealer._check_value()."""

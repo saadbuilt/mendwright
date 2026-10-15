@@ -356,6 +356,31 @@ def test_a_banner_that_covers_the_form_is_handled_before_the_action(side, tmp_pa
     assert provider.bundles == []
 
 
+@pytest.mark.parametrize('through', ['locator', 'page'])
+def test_a_read_handles_a_banner_over_the_page_first(side, tmp_path, caplog, stub_provider,
+                                                     through):
+    # Playwright runs no overlay handler before a read, and its handlers stay out of the
+    # lookup, so the read handles what the page shows itself, as an action does: a banner
+    # left up would cover page.mouse, a screenshot or a scraper's next read. On the async
+    # side, through the page, the read resolves the proxy first.
+    page = _page(BANNER + SIGNUP)
+    heal = side.open(page, provider=stub_provider('//never'), store_path=_store(tmp_path))
+    heal.interrupt('cookies', '#cookie-accept')
+
+    if through == 'locator':
+        key, value = 'email', side.step('email', '#email', 'get_attribute', 'name')
+    else:
+        key, value = '#email', side.act(heal.page, 'get_attribute', '#email', 'name')
+
+    assert value == 'email' and page.by_id('banner') is None
+    assert [(s, v) for s, v, _ in page.actions] == [('css=#cookie-accept', 'click')]
+    assert "mendwright: handled interruption 'cookies' before " + repr(key) in _lines(
+        caplog, logging.WARNING)
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', key)]
+    assert [(e['event'], e['key'], e['before']) for e in _events(tmp_path)] == [
+        ('flow.interrupt', 'cookies', key)]
+
+
 def test_a_banner_that_hides_the_element_is_handled_on_a_miss_before_any_heal(side, tmp_path,
                                                                               stub_provider):
     hidden = SIGNUP.replace('<form>', '<form id="form" style="display: none">')

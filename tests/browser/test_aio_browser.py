@@ -393,6 +393,36 @@ def test_flow_a_banner_that_now_opens_first(engine, tmp_path):
     assert provider.bundles == []
 
 
+@pytest.mark.parametrize('read', ['page.text_content', 'locator.inner_text',
+                                  'page.get_attribute', 'cookies='])
+def test_flow_a_read_handles_a_cookie_banner_over_the_page_first(engine, tmp_path, read):
+    # As on the sync healer: the read handles the banner itself, as an action does, and logs
+    # it before its own key. The healer's lock keeps Playwright's handler out of the lookup.
+    async def main():
+        page = await engine.page(_ONETRUST if read == 'cookies=' else _SIGNUP + _COOKIE_BANNER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300,
+                                             cookies='reject' if read == 'cookies=' else None)
+            if read != 'cookies=':
+                heal.interrupt('cookies', '#cookie-accept')
+            if read == 'page.text_content':
+                value, key = await heal.page.text_content('#create'), '#create'
+            elif read == 'locator.inner_text':
+                value, key = await heal.locator('create', '#create').inner_text(), 'create'
+            else:
+                value, key = await heal.page.get_attribute('#create', 'type'), '#create'
+            return heal, value, key, await page.text_content('#consent')
+        finally:
+            await _close(page)
+
+    heal, value, key, consent = engine.run(main())
+    assert value == ('button' if read in ('page.get_attribute', 'cookies=') else 'Create account')
+    assert consent == ('rejected' if read == 'cookies=' else 'accepted')
+    banner = 'cookie_banner' if read == 'cookies=' else 'cookies'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [(banner, key)]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
     async def main():
