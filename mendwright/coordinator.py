@@ -112,8 +112,8 @@ def nonempty_searched(selector_key, count, fragment):
 
 
 def repr_key(selector_key):
-    """A key as the list messages quote it."""
-    return "'" + str(selector_key) + "'"
+    """A key as the list messages quote it, with its control characters as ?."""
+    return "'" + _lists._printable(str(selector_key)) + "'"
 
 
 def _place(label, container):

@@ -498,6 +498,28 @@ def test_a_key_that_needs_quotes_is_quoted_for_the_shell(tmp_path, make_page):
     assert 'mendwright lists accept "my cart" ' in str(info.value)
 
 
+def test_a_key_with_a_control_character_is_never_printed_raw(tmp_path, make_page, capsys):
+    from mendwright import cli
+    key = 'cart\x1b[31m\x9b'
+    page = _shop(make_page)
+    heal = _open(page, tmp_path)
+    heal.locator_all(key, '.cart-item', nonempty=True)
+    page.set_html(cart(True, row='cart-row'))
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator_all(key, '.cart-item', nonempty=True)
+    message = str(info.value)
+    pid = _rows(tmp_path, key)[ROWS]['proposal']['id']
+    note = r" (put the key 'cart\x1b[31m\x9b' in quotes for your shell)"
+    assert "'cart?[31m?' matched 3 elements" in message
+    assert 'Accept it with: mendwright lists accept KEY ' + pid + _flag(tmp_path) + note in message
+    assert cli.main(['lists', '--store', str(tmp_path / 'o.json')]) == 0
+    out = capsys.readouterr().out
+    assert '  accept   mendwright lists accept KEY ' + pid + _flag(tmp_path) + note in out
+    # The no-match line before it is 0.8.0's, and names the key as the code passed it.
+    for text in (message.split('\n  -> ', 1)[1], out):
+        assert not lists._CONTROL.search(text.replace('\n', ''))
+
+
 # --- refusals ------------------------------------------------------------------------------------
 
 def _searched(fragment, had='3 elements'):

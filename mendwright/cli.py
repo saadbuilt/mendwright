@@ -407,17 +407,21 @@ _PLAIN_KEY = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123
 
 def command_key(key):
     """(word, note): key as a command a message prints puts it for a shell. As it is when
-    it has only letters, digits, _ . and -; else in double quotes when it has no ", `, $ or
-    backslash; else in single quotes when it has no '; else KEY, with note saying to quote
-    the key (note is '' otherwise)."""
+    it has only letters, digits, _ . and -; else in double quotes when it has no ", `, $,
+    backslash or control character; else in single quotes when it has no ' or control
+    character; else KEY, with note saying to quote the key (note is '' otherwise). The note
+    shows the key with repr() and its control characters as ?, so no escape sequence
+    reaches a terminal."""
+    from .lists import _CONTROL, _printable
     text = str(key)
     if text and set(text) <= _PLAIN_KEY:
         return text, ''
-    if not any(ch in text for ch in '"`$\\'):
+    control = bool(_CONTROL.search(text))
+    if not control and not any(ch in text for ch in '"`$\\'):
         return '"' + text + '"', ''
-    if "'" not in text:
+    if not control and "'" not in text:
         return "'" + text + "'", ''
-    return 'KEY', ' (put the key ' + repr(text) + ' in quotes for your shell)'
+    return 'KEY', ' (put the key ' + _printable(repr(text)) + ' in quotes for your shell)'
 
 
 def _read_store(path):
@@ -933,7 +937,7 @@ def _lists_edit(args, path, action):
     evidence = done.row.get('proposal') if isinstance(done.row.get('proposal'), dict) else {}
     shown = repr(done.key) + (' (' + done.id + ')' if done.id else '')
     if action == 'reject':
-        _out('Rejected the list heal of ' + shown + ': ' + done.xpath + ". mendwright won't "
+        _out('Rejected the list heal of ' + shown + ': ' + _printable(done.xpath) + ". mendwright won't "
              'propose it, or another selector for the same elements, again.')
         return 0
     try:
@@ -947,7 +951,7 @@ def _lists_edit(args, path, action):
         what = (' (' + str(evidence['count']) + ' ' + (role if isinstance(role, str) and role
                                                        else 'list') + ' elements'
                 + (' under ' + repr(_printable(now['label'])) if now.get('label') else '') + ')')
-    _out('Accepted the list heal of ' + shown + ': ' + done.xpath + what + '.')
+    _out('Accepted the list heal of ' + shown + ': ' + _printable(done.xpath) + what + '.')
     _out("mendwright doesn't use it until it is in your code. Write it there with: mendwright "
          'fix --apply' + store_flag(path))
     if done.superseded:
