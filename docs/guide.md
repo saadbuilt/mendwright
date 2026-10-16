@@ -501,6 +501,9 @@ The client sends it the same redacted page bundle a direct provider gets, with t
 The worker allows 3 `/heal` requests per selector key and 60 requests in all per hour, keeps an audit trail in KV, and records outcomes from `/heal/outcome`.
 Outcome reports count toward the 60, and a re-prompt after a rejected proposal is a second `/heal` request.
 Its reply is treated like any model reply, so every local check still runs on the client.
+List heals need the worker of 0.8.0 or later: the client sends it the page's repeated groups, and a 0.7.0 worker reads none of them, so with it a list never heals.
+The heal fails closed, with `AttentionRequired`, and no element is picked.
+Redeploy `examples/heal_gateway.mjs` when you upgrade the client.
 
 Setup, from [examples/wrangler.toml](../examples/wrangler.toml):
 
