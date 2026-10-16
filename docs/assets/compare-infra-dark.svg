@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="444" viewBox="0 0 800 444" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title id="title">Download before the first heal, including services</title>
-<desc id="desc">Bar chart. mendwright: 5.41 MB; Healenium-Web: 512.3 MB; Healenium-Proxy for Python: 2215.7 MB.</desc>
+<desc id="desc">Bar chart. mendwright: 5.44 MB; Healenium-Web: 512.3 MB; Healenium-Proxy for Python: 2215.7 MB.</desc>
 <rect x="0.5" y="0.5" width="799" height="443" rx="12" fill="#1a1a19" stroke="#ffffff" stroke-opacity="0.1"/>
 <text x="24" y="42" font-size="18" font-weight="600" fill="#ffffff">Download before the first heal, including services</text>
 <text x="24" y="66" font-size="13" fill="#c3c2b7">Compressed sizes for Linux x86_64. Docker totals are upper bounds.</text>
@@ -11,8 +11,8 @@
 <text x="24" y="128" font-size="13"><tspan font-weight="600" fill="#ffffff">mendwright</tspan><tspan dx="8" fill="#c3c2b7">2 wheels: mendwright and lxml</tspan></text>
 <line x1="24" y1="135" x2="24" y2="159" stroke="#898781" stroke-width="1"/>
 <path class="bar" d="M24 138H25A1 1 0 0 1 26 139V155A1 1 0 0 1 25 156H24z" fill="#3987e5"/>
-<text x="34" y="151.5" font-size="13" font-weight="600" fill="#ffffff">5.41 MB</text>
-<text x="24" y="173" font-size="12" fill="#c3c2b7">mendwright 0.30 MB + lxml 5.11 MB (wheel files)</text>
+<text x="34" y="151.5" font-size="13" font-weight="600" fill="#ffffff">5.44 MB</text>
+<text x="24" y="173" font-size="12" fill="#c3c2b7">mendwright 0.33 MB + lxml 5.11 MB (wheel files)</text>
 <text x="24" y="209" font-size="13"><tspan font-weight="600" fill="#ffffff">Healenium-Web</tspan><tspan dx="8" fill="#c3c2b7">3 Docker images</tspan></text>
 <line x1="24" y1="216" x2="24" y2="240" stroke="#898781" stroke-width="1"/>
 <path class="bar" d="M24 219H173.06A4 4 0 0 1 177.06 223V233A4 4 0 0 1 173.06 237H24z" fill="#3987e5"/>

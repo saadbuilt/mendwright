@@ -1429,6 +1429,7 @@ Which keys it changes:
 - Never a key marked destructive, a heal inside an iframe, or a key whose selectors came only from a seed file.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - Never a key with a heal of a list, saved with `"list": true` by builds of 0.8.0 before its release: mendwright no longer heals lists (see [Lists](#lists)), and such a heal can be another list. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
+- Never a key that `heal.locator_all()` looks up as a list when its heal is of one element, from `heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key: written into the list call, it would make the list that one element. The reason names the healed selector.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
 
 Which strings it changes:
