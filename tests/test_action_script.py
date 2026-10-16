@@ -237,6 +237,7 @@ class World:
                     confirmed('accept_terms', TERMS))
         self.steps = {}
         self.actions = {}
+        self.after_download = None
 
     # the workspace and the server
 
@@ -347,6 +348,8 @@ class World:
             later['MW_FOUND'] = found['found']
             if found['found'] == 'true':
                 shutil.copytree(str(self.uploaded), str(self.temp / 'artifact'))
+                if self.after_download:
+                    self.after_download(self.temp / 'artifact')
         code, fix = step('fix', **later)
         if code or fix.get('ok') != 'true' or until == 'fix':
             return self.steps
@@ -471,8 +474,8 @@ def test_pull_request_is_skipped_unless_it_is_a_dry_run(world):
     assert world.remote_sha('mendwright/fix/main') is None
     assert git(world.ws, 'status', '--porcelain') == ''
     assert world.summary().startswith('## mendwright\n\nDry run: this is what mendwright would '
-                                      'write back.\n\n### mendwright fix\n\n#### Selectors to write '
-                                      'back (1, dry run)')
+                                      'write back.\n\nThe tests of this run: success.\n\n### '
+                                      'mendwright fix\n\n#### Selectors to write back (1, dry run)')
 
 
 def test_a_tag_is_skipped(world):
@@ -735,6 +738,30 @@ def test_a_store_that_is_a_link_is_not_read(world, tmp_path):
     assert notices(world, 'fix', 'error') == [
         'mendwright: the store or journal in the artifact is a link or points outside it, so it '
         'was not read.']
+
+
+def test_a_store_whose_real_path_is_outside_the_artifact_is_not_read(world, tmp_path):
+    winapi = pytest.importorskip('_winapi')
+    if not hasattr(winapi, 'CreateJunction'):
+        pytest.skip('directory junctions are Windows only')
+    outside = tmp_path / 'outside'
+    shutil.copytree(str(world.uploaded / '.mendwright'), str(outside))
+
+    def junction(artifact):
+        shutil.rmtree(str(artifact / '.mendwright'))
+        winapi.CreateJunction(str(outside), str(artifact / '.mendwright'))
+
+    world.after_download = junction
+    try:
+        world.run()
+    finally:
+        link = world.temp / 'artifact' / '.mendwright'
+        if os.path.lexists(str(link)):
+            os.rmdir(str(link))                 # removes the junction, not its target
+    assert notices(world, 'fix', 'error') == [
+        'mendwright: the store or journal in the artifact is a link or points outside it, so it '
+        'was not read.']
+    assert world.remote_sha('mendwright/fix/main') is None
 
 
 def test_store_and_journal_over_the_size_limits_are_not_read(world):

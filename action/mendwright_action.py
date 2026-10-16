@@ -1196,6 +1196,9 @@ class Publish:
         text = '## mendwright\n\n' + line + '\n'
         for note in self.notes:
             text += '\n' + note + '\n'
+        tests = action.input('tests-result').strip()
+        if tests:
+            text += '\nThe tests of this run: ' + tests + '.\n'
         if self.untracked:
             text += ('\nWritten but not tracked by git, so not in the pull request: '
                      + ', '.join(md_code(p) for p in self.untracked[:MAX_UNTRACKED]) + '.\n')
