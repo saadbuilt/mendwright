@@ -246,7 +246,7 @@ def test_fix_lists_a_csharp_verbatim_string_instead_of_escaping_it(root, capsys)
 # Pages with the attribute values css_string() has to escape: quotes, a backslash, a line
 # break, a carriage return and a form feed, and containers that tell twin elements apart.
 _ESCAPES = """<div id="shop"><ul class="items">
-<li><button aria-label='Say "hi"'>A</button></li><li><button title="a\b">B</button></li></ul>
+<li><button aria-label='Say "hi"'>A</button></li><li><button title="a\\b">B</button></li></ul>
 <section class="panel"><button>Buy</button></section><section class="other"><button>Buy</button></section>
 <label for="line&#10;break">L</label><input placeholder="x&#13;y"><input name="f&#12;g">
 <p data-qa="q1"><span>One</span></p><p data-qa="q2"><span>One</span></p></div>"""
