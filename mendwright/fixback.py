@@ -38,7 +38,9 @@ import ast
 import codecs
 import difflib
 import fnmatch
+import hashlib
 import io
+import json
 import os
 import re
 import stat
@@ -47,6 +49,7 @@ import time
 import tokenize
 from dataclasses import dataclass, field
 
+from . import _md
 from .selectors import CSS, XPATH, check_syntax, classify, normalize
 
 # Folders that never hold your code. A folder is skipped by name, at any depth. .github holds
@@ -1180,3 +1183,259 @@ def format_lines(result, *, apply):
 def _quote_list(items):
     return ', '.join(repr(i) for i in items)
 
+
+# --- machine output: JSON and Markdown ---------------------------------------------------
+
+# What each code in left_alone() stands for, as the Markdown lists it after the key or path.
+CODES = {
+    'destructive': 'is marked destructive, so its heals are never written',
+    'iframe': 'was healed inside an iframe, which a selector in your code does not reach',
+    'not_a_selector': 'has a healed selector mendwright could not have saved',
+    'seed_only': 'has no selector from your code to replace',
+    'list_and_element': 'has a list heal and a one-element heal under the same key',
+    'list_heal': 'has a heal of a list, which mendwright no longer uses',
+    'list_key': 'is looked up as a list, and its heal is of one element',
+    'bare_word': 'has a bare word as its old selector',
+    'driver_by': 'comes from a `By` that cannot run the healed XPath',
+    'unconfirmed': 'its heal was never confirmed',
+    'quarantined': 'its newest heal was quarantined',
+    'ambiguous': 'holds a string that belongs to more than one key',
+    'not_python': 'could not be read as Python',
+    'css_only': 'passes the selector where only CSS runs',
+    'no_escape': 'needs escapes mendwright does not know for this kind of file',
+    'flow_selector': 'passes the old selector to `heal.interrupt()` or `heal.step(when=)`, which '
+                     'mendwright never rewrites',
+    'already_in_code': 'your code already has the healed selector',
+    'not_found': 'no string equal to the old selector was found',
+}
+# A role shown as it is in the Markdown; any other role is shown in a code span.
+_ROLE_WORD = re.compile(r'[a-z]+(?:-[a-z]+)*')
+_MORE = 'Run mendwright fix with this store to see them all.'
+
+
+def _slashes(path):
+    return path.replace(os.sep, '/') if isinstance(path, str) else path
+
+
+def _str(value):
+    return value if isinstance(value, str) else None
+
+
+def _latest_event(events, name, key, xpath):
+    found = None
+    for event in events or ():
+        if (isinstance(event, dict) and event.get('event') == name and event.get('key') == key
+                and event.get('xpath') == xpath):
+            found = event
+    return found
+
+
+def _found_by(events, fix):
+    """How the heal was found, from the latest heal.applied for it, or None."""
+    event = _latest_event(events, 'heal.applied', fix.key, fix.new)
+    if event is None:
+        return None
+    source, provider = event.get('source'), event.get('provider')
+    if 'fingerprint' in (source, provider):
+        tier = 'fingerprint'
+    elif source in ('intent', 'frame'):
+        tier = source
+    else:
+        tier = 'model'
+    return {'tier': tier, 'provider': _str(provider), 'model': _str(event.get('model')),
+            'at': _str(event.get('ts'))}
+
+
+def _confirmed_by(events, fix):
+    """What confirmed the heal, from the canary that decides it (see _canary_state), or
+    None when it is not confirmed. by and test are None for a canary from before 0.9.0."""
+    event = _latest_event(events, 'heal.canary', fix.key, fix.new)
+    if event is None or event.get('success') is not True:
+        return None
+    return {'by': _str(event.get('by')), 'test': _str(event.get('test')),
+            'at': _str(event.get('ts'))}
+
+
+def plan_hash(replacements):
+    """The SHA-256 (hex) of what the replacements write where: each one's path, old selector,
+    new selector and keys, sorted. Line numbers and quoting are left out, so an unrelated edit
+    that moves a line keeps the hash, and one more copy of an old selector changes it.
+    ``replacements`` are the dicts of to_json()."""
+    rows = sorted([r['path'], r['selector'], r['new'], sorted(r['keys'])] for r in replacements)
+    text = json.dumps(rows, separators=(',', ':'), ensure_ascii=True)
+    return hashlib.sha256(text.encode('ascii')).hexdigest()
+
+
+def to_json(result, *, apply, store_path, journal_path, events):
+    """The `mendwright fix --format json` document for a FixResult (schema 1). events are
+    the journal's (None when there is no journal)."""
+    from . import __version__
+    plan = result.plan
+    replacements = [{'path': _slashes(r.path), 'line': r.line, 'keys': list(r.keys),
+                     'selector': r.selector, 'new': plan.new_for.get(r.selector),
+                     'was': r.was, 'now': r.now}
+                    for change in result.changes for r in change.replacements]
+    fixed = {k for r in replacements for k in r['keys']}
+    written_back = []
+    for fix in plan.fixes:
+        if fix.key not in fixed:
+            continue
+        written_back.append({
+            'key': fix.key, 'role': fix.role, 'old': list(fix.old), 'now': fix.written(),
+            'xpath': fix.new, 'css': fix.css, 'confirmed': fix.confirmed,
+            'found_by': _found_by(events, fix), 'confirmed_by': _confirmed_by(events, fix),
+            'places': [{'path': r['path'], 'line': r['line']} for r in replacements
+                       if fix.key in r['keys']]})
+    left = [dict(item, path=_slashes(item['path'])) for item in left_alone(result)]
+    return {
+        'schema': 1,
+        'mendwright': __version__,
+        'store': os.path.abspath(store_path),
+        'journal': {'path': os.path.abspath(journal_path), 'exists': events is not None},
+        'applied': bool(apply),
+        'scanned': result.scanned,
+        'plan': plan_hash(replacements),
+        'written_back': written_back,
+        'replacements': replacements,
+        'left_alone': left,
+        'files': [{'path': _slashes(c.shown), 'replacements': len(c.replacements),
+                   'written': c.shown in result.written} for c in result.changes],
+        'errors': [str(e) for e in result.errors],
+    }
+
+
+def _md_found(found, code):
+    if not isinstance(found, dict):
+        return 'unknown (no heal.applied in journal.jsonl)'
+    tier = found.get('tier')
+    if tier == 'fingerprint':
+        return 'fingerprint (no model)'
+    if tier == 'intent':
+        return 'model, from intent='
+    if tier == 'frame':
+        return 'inside an iframe'
+    named = [code(v) for v in (found.get('provider'), found.get('model'))
+             if isinstance(v, str) and v]
+    return 'model: ' + ', '.join(named) if named else 'model'
+
+
+def _md_confirmed(confirmed, code):
+    if not isinstance(confirmed, dict):
+        return '**not confirmed**'
+    by = confirmed.get('by')
+    if by == 'test':
+        test = confirmed.get('test')
+        return 'passing test ' + code(test) if isinstance(test, str) and test else 'passing test'
+    shown = {'expect': '`expect=` on an action', 'expect_value': '`expect_value=` on a read',
+             'confirm': '`confirm(True)`'}
+    if by in shown:
+        return shown[by]
+    if by is None:
+        return 'a check before mendwright 0.9.0, which did not record which'
+    return code(by)
+
+
+def _md_row(item, prefix):
+    def code(text):
+        return _md.code(text, table=True)
+
+    key = code(item.get('key'))
+    role = item.get('role')
+    if isinstance(role, str) and _ROLE_WORD.fullmatch(role):
+        key += ' (' + role + ')'
+    elif role:
+        key += ' (' + code(role) + ')'
+    places = item.get('places') or []
+    where = ', '.join(code(prefix + str(p.get('path')) + ':' + str(p.get('line')))
+                      for p in places[:3])
+    if len(places) > 3:
+        where += ' and ' + str(len(places) - 3) + ' more'
+    cells = [key, ', '.join(code(s) for s in item.get('old') or []),
+             ', '.join(code(s) for s in item.get('now') or []),
+             _md_found(item.get('found_by'), code), _md_confirmed(item.get('confirmed_by'), code),
+             where]
+    return '| ' + ' | '.join(cells) + ' |'
+
+
+def _md_item(item, prefix):
+    """(the list line, the lines of its <details> block) for one item of left_alone. The
+    block ends with a blank line, so the next item is not read as part of its HTML."""
+    if item.get('key') is not None:
+        subject = _md.code(item['key'])
+    elif item.get('path') is not None:
+        line = item.get('line')
+        subject = _md.code(prefix + str(item['path']) + (':' + str(line) if line else ''))
+    else:
+        subject = 'mendwright fix'
+    phrase = CODES.get(item.get('code'), 'was left alone')
+    why = ['  <details><summary>Why</summary>', '']
+    why += [('  ' + line) if line else '' for line in _md.fence(item.get('text') or '').split('\n')]
+    why += ['', '  </details>', '']
+    return '- ' + subject + ': ' + phrase + '.', why
+
+
+def render_markdown(data, *, heading='##', limit=54000, path_prefix=''):
+    """The Markdown for a to_json() document: a table of the selectors written back and a
+    list of what was left alone, at most ``limit`` characters. Every value from the store,
+    the journal or the source files is in a code span or a fenced block (mendwright._md).
+    path_prefix goes before every path, such as the working directory under the repository
+    root. Over the limit, the <details> blocks go first, then items of "Left alone", then
+    rows of the table, and a list that was cut ends with a line that says how many are not
+    shown."""
+    sub = heading + '#'
+    written = list(data.get('written_back') or [])
+    left = list(data.get('left_alone') or [])
+    head = [heading + ' mendwright fix', '']
+    if written:
+        title = ('Selectors written back (' + str(len(written)) + ')' if data.get('applied')
+                 else 'Selectors to write back (' + str(len(written)) + ', dry run)')
+        head += [sub + ' ' + title, '', '| Key | Was | Now | Found by | Confirmed by | Where |',
+                 '| --- | --- | --- | --- | --- | --- |']
+    else:
+        head += ['Nothing to write back.']
+    rows = [_md_row(item, path_prefix) for item in written]
+    items = [_md_item(item, path_prefix) for item in left]
+
+    def more(n):
+        return '…and ' + str(n) + ' more. ' + _MORE
+
+    def build(n_rows, n_items, details):
+        lines = head + rows[:n_rows]
+        if n_rows < len(rows):
+            lines += ['', more(len(rows) - n_rows)]
+        if items:
+            lines += ['', sub + ' Left alone (' + str(len(items)) + ')', '']
+            for short, why in items[:n_items]:
+                lines.append(short)
+                if details:
+                    lines += why
+            if n_items < len(items):
+                if lines[-1]:
+                    lines.append('')
+                lines.append(more(len(items) - n_items))
+        while lines and not lines[-1]:
+            lines.pop()
+        return '\n'.join(lines) + '\n'
+
+    def most(fits, top):
+        """The largest n in 0..top for which fits(n), or -1 when none does."""
+        if not fits(0):
+            return -1
+        lo, hi = 0, top
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fits(mid):
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    for details in (True, False):
+        text = build(len(rows), len(items), details)
+        if len(text) <= limit:
+            return text
+    n = most(lambda k: len(build(len(rows), k, False)) <= limit, len(items))
+    if n >= 0:
+        return build(len(rows), n, False)
+    n = most(lambda k: len(build(k, 0, False)) <= limit, len(rows))
+    return build(max(n, 0), 0, False)[:limit]
