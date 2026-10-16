@@ -5,9 +5,11 @@ Each time a list lookup (Healer.locator_all()) matches two or more elements, men
 records a list fingerprint in one round trip (LIST_JS): the fingerprints of up to three of
 the items (the first, the middle and the last, see mendwright.fingerprint), the tags inside
 each one and of its children (its shape), how many items there were, their nearest common
-container (its tag, id, test id, aria-label, classes and role) and how many levels below it
-they sit. A list that matched fewer than two elements is not recorded: nothing repeats in
-it.
+container (its tag, id, test id, aria-label, classes and role), how many levels below it
+they sit, its label (the aria-labelledby or aria-label around it, or else the nearest
+heading before it) and where it sits: short hashes of its container and the elements around
+it, and of the page's other elements and labels. A list that matched fewer than two elements
+is not recorded: nothing repeats in it.
 
 When every selector of a recorded list matches nothing, groups() lists the repeated groups
 of the captured page: two or more elements of the items' role that sit the same number of
@@ -26,8 +28,8 @@ and heals only when all of these hold: the best group scores at least THRESHOLD,
 that shares less than half of its members with it comes within MARGIN, two of the
 recorded items (both, for a list recorded with two) are among its members, every member it
 looked at has a shape at least SHAPE_MIN alike, it is inside the recorded container and the
-recorded items' ancestors with an id when those are still on the page, and an XPath
-without positions matches its members and nothing else.
+recorded items' ancestors with an id when those are still on the page, it is not another
+list, and an XPath without positions matches its members and nothing else.
 
 A recorded item is among the members when one of them shares an id, test id, name, link,
 label or text with it (fingerprint.score's strong) that not every recorded item has, and
@@ -40,17 +42,31 @@ A group of placeholders is neither the answer nor a rival, and is not shown to t
 one whose members have no text where the recorded items had text, such as the skeleton
 cards of a list that is still loading, or that is marked aria-busy="true".
 
+A group that is another list (_elsewhere, _Places) is left out before anything is scored,
+so it is no rival and is never shown to a model: one that, going out from it past markup
+that was not there, sits first in an element that was on the page elsewhere, outside the
+list, when the list was recorded, or one under another label than the list's when that label
+was on the page then or the list's own label still is. So an emptied list, such as a cart
+whose items all moved to Saved for later, is not healed onto the other list that holds them
+now. When every group is another list, find() says so (ListMatch.emptied), naming both
+things that can be: the list is empty at this point, or its selector broke. An emptied list
+can still heal onto another list that holds its items when no heading or label tells the two
+apart and nothing around that other list was on the page, as it is now, when the list was
+recorded.
+
 The XPath then goes through the list gate (client.apply_list): two or more elements of the
 role on the captured page, none inside another, not quarantined for the key, and, on the
 live page, two or more elements of the role with at least one visible. One element is never
 taken for a list.
 
 When find() is not confident, the coordinator asks the model, if there is one, with the
-groups listed (prompt.build_list_prompt); the model may only pick one of them.
+groups listed (prompt.build_list_prompt); the model may only pick one of them, or say that
+none is the list.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -82,7 +98,25 @@ PROMPT_GROUPS = 12   # groups listed for the model
 ITEM_TEXT = 100      # how much of an item's text a group's description shows
 
 CONTAINER_ATTRS = ('id', 'class', 'role', 'aria-label', 'data-testid', 'data-test', 'data-qa')
+_CONTAINER_TESTS = ('data-testid', 'data-test', 'data-qa')
 _UNRENDERED = ('template', 'noscript', 'script', 'style')
+
+# Where the list was: when the list fingerprint is recorded, the elements of the page outside
+# the list's items are read too, at most PLACE_SCAN of them, and kept as short hashes (at most
+# PLACE_KEPT), with those of the list's container and the elements around it apart. Text-level
+# and empty elements, which never hold a list, are left out (_LEAF), and so is what a browser
+# does not render as elements or what holds no HTML (_PRUNED).
+PLACE_SCAN = 10000
+PLACE_KEPT = 1000
+PLACE_LABELS = 200
+_LEAF = frozenset((
+    'a', 'abbr', 'area', 'audio', 'b', 'base', 'bdi', 'bdo', 'br', 'button', 'canvas', 'cite',
+    'code', 'col', 'data', 'dfn', 'em', 'embed', 'hr', 'i', 'iframe', 'img', 'input', 'kbd',
+    'label', 'link', 'map', 'mark', 'meta', 'meter', 'object', 'optgroup', 'option', 'output',
+    'param', 'picture', 'progress', 'q', 's', 'samp', 'select', 'small', 'source', 'span',
+    'strong', 'sub', 'sup', 'textarea', 'time', 'track', 'u', 'var', 'video', 'wbr'))
+_PRUNED = ('template', 'noscript', 'script', 'style', 'svg', 'math')
+_LEAF_JS = '[' + ', '.join("'" + t + "'" for t in sorted(_LEAF)) + ']'
 
 # One round trip: Playwright's locator.evaluate_all() passes the matches as an array, and
 # Selenium runs it with find_elements()' result. null unless two or more elements matched.
@@ -119,7 +153,84 @@ LIST_JS = r"""(els) => {
     }
     container = {tag: box.tagName.toLowerCase(), attrs: attrs};
   }
-  return {count: els.length, depth: depth, items: items, container: container};
+  const name = (e) => e.tagName.toLowerCase();
+  const unread = /^(template|noscript|script|style)$/;
+  const heading = (e) => !unread.test(name(e)) && (/^h[1-6]$/.test(name(e))
+    || (e.getAttribute('role') || '').trim().toLowerCase() === 'heading');
+  const headingIn = (e) => {
+    if (unread.test(name(e))) return null;
+    if (heading(e)) return e;
+    for (let c = e.lastElementChild; c; c = c.previousElementSibling) if (heading(c)) return c;
+    return null;
+  };
+  const named = (e) => {
+    const ids = (e.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    const text = ids.map((i) => e.ownerDocument.getElementById(i)).filter(Boolean)
+      .map((t) => t.textContent).join(' ');
+    if (text.trim()) return text;
+    const own = e.getAttribute('aria-label');
+    return own && own.trim() ? own : null;
+  };
+  let label = '';
+  if (box) {
+    let node = els[0];
+    while (node.parentElement && node.parentElement !== box) node = node.parentElement;
+    let holder = box;
+    search: while (holder) {
+      for (let s = node.previousElementSibling; s; s = s.previousElementSibling) {
+        const h = headingIn(s);
+        if (h) { label = h.textContent; break search; }
+      }
+      if (/^(body|html)$/i.test(holder.tagName)) break;
+      const own = named(holder);
+      if (own) { label = own; break; }
+      node = holder;
+      holder = holder.parentElement;
+    }
+  }
+  const test = (e) => {
+    for (const a of ['data-testid', 'data-test', 'data-qa']) {
+      const v = e.getAttribute(a);
+      if (v !== null) return v;
+    }
+    return '';
+  };
+  const raw = (e) => {
+    const p = e.parentElement;
+    return [name(e), e.getAttribute('id') || '', test(e), e.getAttribute('class') || '',
+            p ? name(p) : '', p ? p.getAttribute('id') || '' : '', p ? test(p) : '',
+            p ? p.getAttribute('class') || '' : ''];
+  };
+  const chain = [], mine = new Set();
+  for (let n = box; n && !/^(body|html)$/i.test(n.tagName); n = n.parentElement) {
+    chain.push(raw(n));
+    mine.add(n);
+  }
+  for (const e of els) for (let n = e.parentElement; n && n !== box; n = n.parentElement) mine.add(n);
+  const prune = /^(template|noscript|script|style|svg|math)$/;
+  const leaf = new Set(""" + _LEAF_JS + r""");
+  const skip = new Set(els), seen = new Set(), others = [], said = new Set();
+  const body = els[0].ownerDocument.body;
+  const stack = body ? Array.from(body.children).reverse() : [];
+  let read = 0, cut = false;
+  while (stack.length) {
+    const e = stack.pop();
+    if (skip.has(e) || prune.test(name(e))) continue;
+    if (heading(e)) said.add(e.textContent);
+    if (!leaf.has(name(e))) {
+      const own = named(e);
+      if (own) said.add(own);
+    }
+    if (!leaf.has(name(e)) && !mine.has(e)) {
+      if (++read > """ + str(PLACE_SCAN) + r""") { cut = true; break; }
+      const r = raw(e), k = r.join('\u0001');
+      if (!seen.has(k)) { seen.add(k); others.push(r); }
+    }
+    for (let i = e.children.length - 1; i >= 0; i--) stack.push(e.children[i]);
+  }
+  const labels = Array.from(said).slice(0, """ + str(PLACE_LABELS) + r""");
+  return {count: els.length, depth: depth, items: items, container: container, label: label,
+          place: {chain: chain, others: others, labels: labels, cut: cut}};
 }"""
 
 # For the live gate: what each match is, and whether it is visible as Playwright counts it (a
@@ -189,7 +300,130 @@ def raw_of_elements(els, labels=None):
     if box is not None and box.tag.lower() not in ('body', 'html'):
         container = {'tag': box.tag.lower(),
                      'attrs': {a: box.get(a) for a in CONTAINER_ATTRS if box.get(a) is not None}}
-    return {'count': len(els), 'depth': depth, 'items': items, 'container': container}
+    return {'count': len(els), 'depth': depth, 'items': items, 'container': container,
+            'label': _label_text(els[0], box) if box is not None else '',
+            'place': _place_raw(els, box)}
+
+
+def _children(el):
+    return [c for c in el if isinstance(c.tag, str)]
+
+
+def _heading(el):
+    tag = el.tag.lower()
+    return tag not in _UNRENDERED and (
+        (len(tag) == 2 and tag[0] == 'h' and tag[1] in '123456')
+        or (el.get('role') or '').strip().lower() == 'heading')
+
+
+def _heading_in(el):
+    """el when it is a heading (h1 to h6, or role="heading"), else the last of its children
+    that is one, else None."""
+    if el.tag.lower() in _UNRENDERED:
+        return None
+    if _heading(el):
+        return el
+    return next((c for c in reversed(_children(el)) if _heading(c)), None)
+
+
+def _named(el):
+    """The text of el's aria-labelledby, or its aria-label, or None."""
+    ids = (el.get('aria-labelledby') or '').split()
+    if ids:
+        root = el.getroottree().getroot()
+        found = [root.xpath('//*[@id=$i]', i=i) for i in ids]
+        text = ' '.join(f[0].text_content() for f in found if f)
+        if text.strip():
+            return text
+    own = el.get('aria-label')
+    return own if own and own.strip() else None
+
+
+def _label_text(first, box):
+    """What LIST_JS reads as the label of a list whose first element is first and whose
+    container is box: going out from the items, the nearest heading before them (one that
+    is, or is a child of, an element before them, inside box or around it), or the
+    aria-labelledby or aria-label of box or an element around it, whichever comes first.
+    '' when there is none."""
+    node = first
+    while node.getparent() is not None and node.getparent() is not box:
+        node = node.getparent()
+    holder = box
+    while holder is not None:
+        for sibling in node.itersiblings(preceding=True):
+            if isinstance(sibling.tag, str):
+                found = _heading_in(sibling)
+                if found is not None:
+                    return found.text_content()
+        if holder.tag.lower() in ('body', 'html'):
+            break
+        own = _named(holder)
+        if own:
+            return own
+        node, holder = holder, holder.getparent()
+    return ''
+
+
+def _test_raw(el):
+    return next((el.get(a) for a in _CONTAINER_TESTS if el.get(a) is not None), '')
+
+
+def _node_raw(el):
+    """[tag, id, test id, class] of el and of its parent, as LIST_JS's raw() reads them."""
+    parent = el.getparent()
+    own = [el.tag.lower(), el.get('id') or '', _test_raw(el), el.get('class') or '']
+    if parent is None or not isinstance(parent.tag, str):
+        return own + ['', '', '', '']
+    return own + [parent.tag.lower(), parent.get('id') or '', _test_raw(parent),
+                  parent.get('class') or '']
+
+
+def _place_raw(els, box):
+    """What LIST_JS reads of where the list is: {'chain': its container and the elements
+    around it, 'others': every other element of the page outside the items and what holds
+    them inside the container (at most PLACE_SCAN, each once), each as _node_raw() gives it,
+    'labels': the text of the headings and the aria-labelledby or aria-label of the other
+    elements of the page outside the items (at most PLACE_LABELS, each once), 'cut': whether
+    there were more elements}."""
+    chain, mine = [], set()
+    node = box
+    while node is not None and isinstance(node.tag, str) and node.tag.lower() not in ('body', 'html'):
+        chain.append(_node_raw(node))
+        mine.add(node)
+        node = node.getparent()
+    for el in els:             # what sits between an item and the container is the list's too
+        node = el.getparent()
+        while node is not None and node is not box:
+            mine.add(node)
+            node = node.getparent()
+    root = els[0].getroottree().getroot()
+    body = root.find('body') if root.tag.lower() == 'html' else None
+    skip, seen, others, said = set(els), set(), [], {}
+    stack = list(reversed(_children(body if body is not None else root)))
+    read, cut = 0, False
+    while stack:
+        el = stack.pop()
+        tag = el.tag.lower()
+        if el in skip or tag in _PRUNED:
+            continue
+        if _heading(el):
+            said.setdefault(el.text_content(), None)
+        if tag not in _LEAF:
+            own = _named(el)
+            if own:
+                said.setdefault(own, None)
+        if tag not in _LEAF and el not in mine:
+            read += 1
+            if read > PLACE_SCAN:
+                cut = True
+                break
+            raw = _node_raw(el)
+            key = '\x01'.join(raw)
+            if key not in seen:
+                seen.add(key)
+                others.append(raw)
+        stack.extend(reversed(_children(el)))
+    return {'chain': chain, 'others': others, 'labels': list(said)[:PLACE_LABELS], 'cut': cut}
 
 
 # --- normalizing ----------------------------------------------------------------------------
@@ -255,7 +489,65 @@ def from_raw(raw):
     container = _node(raw.get('container'))
     if container:
         out['container'] = container
+    if isinstance(raw.get('label'), str):
+        out['label'] = _fp._text(raw['label'])
+    place = _place(raw.get('place'))
+    if place is not None:
+        out['place'] = place
     return out
+
+
+def _sig(raw):
+    """A short hash of an element as _node_raw() reads it: its tag, id (unless a framework
+    generated it), test id and stable classes, and its parent's. Two elements with the same
+    hash look the same to a list fingerprint, where they sit included."""
+    parts = []
+    for tag, ident, test, classes in (raw[:4], raw[4:8]):
+        ident = _fp._norm(ident)[:_fp.VALUE_LIMIT]
+        parts.append(tag.strip().lower() + '#' + ('' if _fp.generated_id(ident) else ident)
+                     + '[' + _fp._norm(test)[:_fp.VALUE_LIMIT] + ']'
+                     + '.'.join(sorted(_fp.stable_classes(classes))))
+    return _hash('<'.join(parts))
+
+
+def _hash(text):
+    return hashlib.blake2s(text.encode('utf-8'), digest_size=4).hexdigest()
+
+
+def _label_key(text):
+    """A label as two are compared: lower case, without digits, as a count in a heading such
+    as "Cart (3)" changes with the list."""
+    return ' '.join(''.join(c for c in text.lower() if not c.isdigit()).split())
+
+
+def _raws(value):
+    if not isinstance(value, list):
+        return None
+    out = []
+    for raw in value:
+        if not (isinstance(raw, list) and len(raw) == 8 and all(isinstance(v, str) for v in raw)):
+            return None
+        out.append(raw)
+    return out
+
+
+def _place(raw):
+    """Where a list was, as stored: {'chain': the hashes (_sig) of its container and of the
+    elements around it, the container first, 'others': those of the other elements of the page
+    then, sorted, at most PLACE_KEPT, 'labels': the hashes of the labels of the page then
+    (_label_key), sorted, 'cut': whether some elements were left out}. None for anything
+    else."""
+    if not isinstance(raw, dict):
+        return None
+    chain, others = _raws(raw.get('chain')), _raws(raw.get('others'))
+    if chain is None or others is None:
+        return None
+    labels = raw.get('labels') if isinstance(raw.get('labels'), list) else []
+    said = {_hash(_label_key(_fp._text(t))) for t in labels[:PLACE_LABELS]
+            if isinstance(t, str) and _label_key(_fp._text(t))}
+    kept = list(dict.fromkeys(_sig(r) for r in others))
+    return {'chain': [_sig(r) for r in chain], 'others': sorted(kept[:PLACE_KEPT]),
+            'labels': sorted(said), 'cut': raw.get('cut') is True or len(kept) > PLACE_KEPT}
 
 
 def of_elements(els, labels=None):
@@ -597,6 +889,143 @@ def _inside(group, holders):
     return all(holder in chain for holder in holders.values())
 
 
+# --- another list ------------------------------------------------------------------------------
+#
+# An emptied list, such as a cart whose items all moved to Saved for later, must not be healed
+# onto the other list that holds its items now. Two things recorded with the list fingerprint
+# tell a group that is another list from the list after a redesign: where the list was on the
+# page (its place), and its label. Each is a plain test, with no closeness scores:
+#
+# - place: going out from each member's parent, the first element that was on the page when
+#   the list was recorded (by _sig) must be the list's container or one around it. One that
+#   was elsewhere then, outside the list, holds another list. A redesign's new markup was not
+#   there, so the test goes on past it. One like both, such as one of two section.panel side
+#   by side, holds the list only under the list's own label.
+# - label: a group under another label (_label_text) than the list's is another list when
+#   that label was on the page when the list was recorded, or the list's own label still is.
+#   A heading renamed with the list says nothing. Digits are left out (_label_key).
+
+def _shown_label(text):
+    return repr(text) if text else 'no heading or label'
+
+
+class _Places:
+    """The place and label tests of one page against one list fingerprint, each element's
+    hash and each group's label read once."""
+
+    def __init__(self, lfp, root):
+        self.root = root
+        self.label = lfp.get('label') if isinstance(lfp.get('label'), str) else None
+        place = lfp.get('place')
+        ok = (isinstance(place, dict) and isinstance(place.get('chain'), list)
+              and isinstance(place.get('others'), list))
+        self.chain = set(place['chain']) if ok else None
+        self.others = set(place['others']) if ok else set()
+        self.said = set(place.get('labels') or ()) if ok else set()
+        self.cut = ok and place.get('cut') is True
+        self._sigs = {}
+        self._labels = {}
+        self._now = None
+
+    def label_of(self, group):
+        key = (group.container, group.members[0])
+        if key not in self._labels:
+            self._labels[key] = _fp._text(_label_text(group.members[0], group.container))
+        return self._labels[key]
+
+    def labelled(self, group):
+        """True when the group has the list's label and it is not empty."""
+        return bool(self.label) and _label_key(self.label_of(group)) == _label_key(self.label)
+
+    def _sig_of(self, el):
+        if el not in self._sigs:
+            self._sigs[el] = _sig(_node_raw(el))
+        return self._sigs[el]
+
+    def _said_now(self):
+        """The labels of the page now (as _label_key gives them): the text of its headings, and
+        the aria-labelledby or aria-label of its other elements."""
+        if self._now is None:
+            self._now = set()
+            for el in _elements(self.root):
+                if el.tag.lower() in _PRUNED:
+                    continue
+                if _heading(el):
+                    self._now.add(_label_key(_fp._text(el.text_content())))
+                if el.tag.lower() not in _LEAF:
+                    own = _named(el)
+                    if own:
+                        self._now.add(_label_key(_fp._text(own)))
+        return self._now
+
+    def by_label(self, group):
+        """Why the group is another list by its label, or '': it is not the list's label, and
+        it was the label of another part of the page when the list was recorded, or the list's
+        own label is still on the page. A label renamed with the list, the old one gone and
+        the new one not there before, says nothing."""
+        if self.label is None or self.chain is None:
+            return ''
+        theirs = self.label_of(group)
+        mine = _label_key(self.label)
+        if _label_key(theirs) == mine:
+            return ''
+        if theirs and _hash(_label_key(theirs)) in self.said:
+            return ('is under ' + repr(theirs) + ', which labelled another part of the page when '
+                    'the list was recorded, and the list was under ' + _shown_label(self.label))
+        if mine and mine in self._said_now():
+            return ('is under ' + _shown_label(theirs) + ', and the list was under '
+                    + repr(self.label) + ', which is still on the page')
+        return ''
+
+    def _up(self, start):
+        """Going out from start, the first element that was on the page when the list was
+        recorded: ('mine', el) for the list's container or one around it, ('other', el) for
+        one elsewhere, ('both', el) for one like each, or ('top', None) for none; and whether
+        markup that was not there came first."""
+        new = False
+        node = start
+        while node is not None and isinstance(node.tag, str) and node.tag.lower() not in ('body', 'html'):
+            if node.tag.lower() not in _LEAF:
+                sig = self._sig_of(node)
+                mine, other = sig in self.chain, sig in self.others
+                if mine or other:
+                    return ('both' if mine and other else 'mine' if mine else 'other'), node, new
+                new = True
+            node = node.getparent()
+        return 'top', None, new
+
+    def by_place(self, group):
+        """Why the group is another list by where it is, or '': from each member's parent,
+        so a group that takes elements from two places is never the list."""
+        if self.chain is None:
+            return ''
+        starts = list(dict.fromkeys(m.getparent() for m in group.members))
+        for start in starts:
+            kind, node, new = self._up(start)
+            if kind == 'other':
+                return ('is inside ' + _summary(node, 0) + ', which was on the page, outside '
+                        'the list, when the list was recorded')
+            if kind == 'both' and not self.labelled(group):
+                return ('is inside ' + _summary(node, 0) + ', and when the list was recorded it '
+                        'was in an element like that one, which was not the only one, with no '
+                        'heading or label to tell them apart')
+            if self.cut and new and not self.labelled(group):
+                return ('is in markup that was not on the page when the list was recorded, and '
+                        'the page was too large then to tell where the list was')
+        return ''
+
+
+def _elsewhere(group, holders, places):
+    """Why the group is not the list but another list, or '' when it may be the list: outside
+    a recorded container that is still on the page, under another label, or in another place
+    (see _Places)."""
+    if holders and not _inside(group, holders):
+        held = next(iter(holders.values()))
+        return ('is outside ' + _summary(held, 0) + ', which held the list and is still on the '
+                'page')
+    return places.by_label(group) or places.by_place(group)
+
+
 def _busy(el):
     return (el.get('aria-busy') or '').strip().lower() == 'true'
 
@@ -628,6 +1057,26 @@ class ListMatch:
     runner_up: float
     reason: str
     groups: list = field(default_factory=list)
+    # Nothing may be taken or shown to a model: every group on the page is another list (see
+    # _elsewhere), or the list fingerprint can't tell one (OLD_FINGERPRINT).
+    emptied: bool = False
+
+
+# What the refusal of a list whose groups are all other lists says: both things it can be.
+EMPTY_OR_BROKEN = ('either the list is empty at this point, or its selector broke and its '
+                   'items are not on the page')
+# A list fingerprint saved before where the list was and its label were recorded can't tell
+# another list from the list, so nothing is healed from it.
+OLD_FINGERPRINT = ('the stored list fingerprint was saved by an earlier build, which did not '
+                   'record where the list was or its label, so another list could not be told '
+                   'from it; it is recorded anew by the next run in which the list matches')
+
+
+def _placed(lfp):
+    """True when the list fingerprint lfp holds where the list was and its label."""
+    place = lfp.get('place')
+    return (isinstance(lfp.get('label'), str) and isinstance(place, dict)
+            and isinstance(place.get('chain'), list) and isinstance(place.get('others'), list))
 
 
 def _fmt(value):
@@ -669,15 +1118,22 @@ def find(lfp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
     if not valid(lfp):
         return ListMatch(None, None, 0, 0.0, 0.0,
                          'the stored list fingerprint is not one this version reads')
+    if not _placed(lfp):
+        return ListMatch(None, None, 0, 0.0, 0.0, OLD_FINGERPRINT, emptied=True)
     try:
         root = lxml.html.fromstring(html)
     except Exception:
         return ListMatch(None, None, 0, 0.0, 0.0, 'the captured page could not be parsed')
     scorer = _Scorer(lfp, root)
-    found = groups(root, role)
     holders = _holders(lfp, root)
-    if holders:
-        found = [g for g in found if _inside(g, holders)]
+    places = _Places(lfp, root)
+    found, others = [], []
+    for group in groups(root, role):
+        why = _elsewhere(group, holders, places)
+        if why:
+            others.append((group, why))     # another list: neither the answer nor shown
+        else:
+            found.append(group)
     texts = any(item.get('text') for item in lfp['items'])
     kept = [g for g in found if not _placeholder(g, texts)]
     if found and not kept:
@@ -686,6 +1142,16 @@ def find(lfp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
                          '(no text where the recorded items had text, or marked '
                          'aria-busy="true"), so the list may still be loading')
     found = kept
+    nearest = max(others, key=lambda pair: scorer.quick(pair[0])) if others else None
+    if not found and nearest:
+        group, why = nearest
+        return ListMatch(None, None, 0, 0.0, 0.0,
+                         'each group of ' + str(role) + ' elements on the page is another list. '
+                         'The one most like the list (' + str(len(group.members)) + ' elements) '
+                         + why + '. So ' + EMPTY_OR_BROKEN, emptied=True)
+    # What a refusal adds when groups were left out as other lists: the one most like the list.
+    left = ('; left out as another list: a group of ' + str(len(nearest[0].members))
+            + ' elements that ' + nearest[1]) if nearest else ''
     if not found:
         return ListMatch(None, None, 0, 0.0, 0.0,
                          'the page has no group of 2 or more ' + str(role) + ' elements that '
@@ -712,7 +1178,7 @@ def find(lfp, html, role, *, threshold=THRESHOLD, margin=MARGIN,
 
     def refuse(reason):
         return ListMatch(None, None, len(best.members), best.score, runner,
-                         reason + _lone(scorer, root, role), prompt)
+                         reason + left + _lone(scorer, root, role), prompt)
 
     if best.score < threshold:
         return refuse('the best group (' + str(len(best.members)) + ' elements) scores '

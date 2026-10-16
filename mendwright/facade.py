@@ -1095,7 +1095,11 @@ class Healer:
         - any other waits up to timeout_ms, handling registered interruptions, and then
           heals: from the list fingerprint with no model call when it finds the items
           confidently, else a model, when one is configured, picks one of the page's
-          repeated groups. The new selector must match two or more elements of the items'
+          repeated groups. A group that is another list, by where the list was or its
+          heading or aria-label when it was recorded, such as Saved for later once a cart
+          is emptied, is never taken or shown to a model (see mendwright.lists); when every
+          group is one, AttentionRequired says the list is empty at this point or its
+          selector broke. The new selector must match two or more elements of the items'
           role, none inside another, with at least one visible on the live page; a list is
           never healed onto one element. A heal gives the new elements, saved like any heal;
           otherwise AttentionRequired says why.

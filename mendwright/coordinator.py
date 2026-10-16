@@ -387,7 +387,9 @@ class HealCoordinator:
         off, and the guard. With fingerprint=True the key's list fingerprint is looked for
         among the page's repeated groups (lists.find). When that is not confident, the
         provider is shown the groups (build_list_bundle) and may pick one by its xpath; any
-        other answer is rejected, and it is asked once more. What either picks goes through
+        other answer is rejected, and it is asked once more. When every group is another list
+        (ListMatch.emptied), it declines with that reason alone and asks no model, which
+        would be shown nothing. What either picks goes through
         the list gate (client.apply_list). Dry run checks and applies nothing, and the rate
         limit counts a provider's attempt as for one element."""
         if meta.get('destructive'):
@@ -420,6 +422,10 @@ class HealCoordinator:
                                                         html, match, started)
             if applied is not None:
                 return applied
+        if match.emptied:
+            # Every group on the page is another list: there is nothing to show a model, and
+            # configuring one would change nothing.
+            return self._decline(selector_key, note)
         if unavailable:
             return self._decline(
                 selector_key, note + ', and no model provider is configured to try instead. '
@@ -491,6 +497,9 @@ class HealCoordinator:
         when dry run declined the heal, or None to go on to the model; note says why the tier
         did not heal."""
         if not match.xpath:
+            if match.emptied:
+                return None, ("the list fingerprint match for '" + selector_key + "' found "
+                              'no list to heal onto: ' + match.reason)
             return None, ("the list fingerprint match for '" + selector_key + "' was not "
                           'confident: ' + match.reason)
         reasoning = ('list fingerprint score ' + format(match.score, '.2f') + ', next best '
