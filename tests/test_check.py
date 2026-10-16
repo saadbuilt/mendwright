@@ -175,6 +175,23 @@ def test_a_page_not_checked_exits_3_and_broken_wins_over_it(make_page, store_dir
     assert code == 1
 
 
+def test_a_redirect_still_checks_the_keys_found_on_the_page_it_went_to(make_page, store_dir,
+                                                                       capsys):
+    login = "<main><a id='orders' href='/orders'>Orders</a></main>"
+    path = record(make_page, store_dir, pages={
+        SHOP + '/login': (login, [('orders', '#orders', 'link')]),
+        SHOP + '/account': (ACCOUNT + "<a id='profile' href='/p'>Profile</a>",
+                            [('orders', '#orders', 'link'), ('profile', '#profile', 'link')])})
+    site = {SHOP + '/account': (login, 200, SHOP + '/login?next=/account')}
+    browser = Browser(make_page, site)
+    code, out, _err = run_check(_args(path, '--format', 'json'), browser, capsys)
+    keys = {k['key']: k for k in json.loads(out)['keys']}
+    assert browser.visited == [SHOP + '/account']
+    assert keys['orders']['verdict'] == 'ok'          # it was found on /login before
+    assert (keys['profile']['verdict'], keys['profile']['detail']) == ('unreachable', 'redirect')
+    assert code == 3
+
+
 def test_an_empty_store_exits_3(tmp_path, make_page, capsys):
     path = tmp_path / 'o.json'
     path.write_text('{"schema": 2, "selectors": {}}', encoding='utf-8')
