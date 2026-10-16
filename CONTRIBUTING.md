@@ -60,6 +60,8 @@ The fixtures in `tests/conftest.py` cover most cases:
 
 Providers take an injected `http=` transport; `tests/test_providers.py` shows the pattern.
 
+`tests/test_lists_emptied.py` holds the acceptance matrix of list lookups whose selectors match nothing: emptied lists (`REFUSE`) and redesigns (`REDESIGN`). It must keep passing as it is, for calls without `nonempty=True`. `tests/test_lists_nonempty_matrix.py` runs the same matrix with `nonempty=True`: every case must raise and return no element, and its outcome table (`REFUSE_PROPOSED`, `REFUSE_STATE`, `REDESIGN_REFUSED`, with `L11`, `L15`, `L18c` and `L20` for the codes of the guide's refusals) says which cases are proposed and which are refused. What must hold whatever you change: no redesign is proposed onto the other list, at least 21 redesigns are proposed, and every emptied list that is proposed says its heading or container is not the same. If a change moves another case, update the table in the same commit and say why in its message. Its golden files in `tests/fixtures/lists_080` are what 0.8.0's code wrote and printed for the same lookups and reports: to make them again, run `scenario_080()` and `report_080()` of that file with 0.8.0's `mendwright` and `tests` first on `sys.path`.
+
 ### Browser suite
 
 ```bash
@@ -130,7 +132,7 @@ The modules:
 - `selectors.py`: `classify()` (XPath, CSS or Playwright engine selector), `check_syntax()`, `normalize()` and `InvalidSelector`.
 - `drivers/`: `base.py` holds the `Driver` protocol, the shared describe and inventory scripts, and the fallback helpers. `registry.py` has `wrap()` and `register_driver()`. The built-in drivers are `playwright_sync.py`, `playwright_async.py` (used by `mendwright.aio`) and `selenium.py`, which handles frames, implicit waits and the verb mapping.
 - `fingerprint.py`: the fingerprint tier. `FINGERPRINT_JS` reads an element in one round trip and `from_raw()` normalizes it; `find()` scores the elements of a captured page against a stored fingerprint and returns a unique XPath only for a confident match.
-- `lists.py`: list fingerprints. `LIST_JS` reads the items of a list in one round trip and `from_raw()` normalizes what it gives. A list is never healed: the list fingerprint only says that the list had items.
+- `lists.py`: list fingerprints. `LIST_JS` reads the items of a list in one round trip and `from_raw()` normalizes what it gives; `LIST_PLACE_JS` also reads its heading and where it sits, for `nonempty=True`. A list is never healed: `find()` looks for a list whose selectors match nothing, and what it finds is only proposed (`HealCoordinator.propose_list()`, `client.list_gate()`, `SelectorStore.propose_list_heal()`), for a person to accept with `mendwright lists`.
 - `values.py`: `expect_value=`. The named checks, `parse_number()` and `parse_money()`, and the text of a refused read.
 - `proxies.py`: `heal.page` and `heal.driver`, the page and driver stand-ins that send selector lookups through `heal.locator()` and everything else to the real object.
 - `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run.
@@ -169,7 +171,8 @@ A driver wraps one live page or session.
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
 | `visible_match(selector, frame_chain=())` | optional | `describe()`'s result for the first visible element of those the selector matches, plus `'visible'`: how many of the matches are visible, counted up to 2. `None` when none is. The WARNING for an interruption or a landmark whose selector matches several elements builds the selectors it suggests from it when exactly one is visible. Without it, or without `'visible'`, the WARNING suggests none. |
 | `handles(selector, frame_chain=())` | optional | A native handle for each element the selector matches, for a list. Without it, `driver_handles()` gives `[handle(selector)]`. |
-| `list_fingerprint(selector, frame_chain=())` | optional | The list fingerprint (see `mendwright/lists.py`) of the elements the selector matches, else `None` for fewer than two. Run `LIST_JS` on the matches and pass the result through `lists.from_raw()`. Without it, no list is recorded, so a list lookup that matches nothing gives `[]` at once. |
+| `list_fingerprint(selector, frame_chain=(), *, place=False)` | optional | The list fingerprint (see `mendwright/lists.py`) of the elements the selector matches, else `None` for fewer than two. Run `LIST_JS` on the matches, or `LIST_PLACE_JS` with `place=True`, and pass the result through `lists.from_raw()`. Without it, no list is recorded, so a list lookup that matches nothing gives `[]` at once. One without `place=` is called as before, and `nonempty=True` can't look for its lists. |
+| `list_items(selector, frame_chain=())` | optional | `[{'tag', 'role', 'type', 'visible'}]` for the first 200 elements the selector matches: run `ITEMS_JS` on them and pass the result through `item_rows()` in `drivers/base.py`. Raise on any error. Without it, `nonempty=True` can't check a list it finds. |
 
 Rules:
 

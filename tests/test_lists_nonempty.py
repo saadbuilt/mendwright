@@ -9,7 +9,9 @@ test_lists_emptied.py that takes the other list, is never asked)."""
 import asyncio
 import json
 import logging
+import re
 import time
+from pathlib import Path
 
 import lxml.html
 import pytest
@@ -998,3 +1000,19 @@ def test_a_page_that_cannot_be_parsed_is_said(tmp_path, make_page):
     heal.coordinator.html_provider = lambda: ''
     assert _raised(heal) == _searched('the captured page could not be parsed')
     assert not _events(tmp_path, 'heal.rejected')
+
+
+def test_the_guide_quotes_what_a_proposal_says_and_the_state_words(tmp_path, make_page,
+                                                                    stub_provider, monkeypatch):
+    path = Path(__file__).resolve().parents[1] / 'docs' / 'guide.md'
+    if not path.is_file():
+        pytest.skip('docs/ is not in this copy of the project (the sdist leaves it out)')
+    guide = path.read_text(encoding='utf-8')
+    monkeypatch.chdir(tmp_path)              # the default store: the commands name no --store
+    page = _shop(make_page)
+    heal = mendwright.open(page, provider=stub_provider(), timeout_ms=0)
+    heal.locator_all('cart', '.cart-item', nonempty=True)
+    page.set_html(cart(True, row='cart-row'))
+    assert _raised(heal) in guide
+    words = re.search(r'in a class, id, name or text: (.*?)\. A list that was', guide).group(1)
+    assert set(re.findall(r'`([a-z]+)`', words)) == lists.STATE_WORDS
