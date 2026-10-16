@@ -223,6 +223,7 @@ mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 c
 
 `mendwright doctor` checks the install, the provider and the store path. `mendwright report` lists each key with its selectors and recent heals; `--format md` prints a Markdown table you can append to `$GITHUB_STEP_SUMMARY`, and `--format html --out report.html` writes one self-contained page.
 `mendwright fix` puts confirmed heals back into your code: it prints a diff of the string literals it would change, and `--apply` writes them.
+In GitHub Actions, mendwright's own action does that for you: after your tests, it opens a pull request with the confirmed heals and keeps it up to date. See [CI](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#open-a-pull-request-with-the-fixes).
 
 ## Compatibility
 

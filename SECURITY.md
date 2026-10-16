@@ -54,6 +54,7 @@ A key is destructive only when you mark it:
 mendwright doesn't guess which controls are destructive from the key, `text=` or the page. A key you don't mark can be healed onto any element that has its role, including a button that pays or deletes.
 
 A heal saved for a key before it was marked is quarantined, not acted on.
+`mendwright.open(destructive_keys=...)` is not saved in the store, so `mendwright fix` can't see it there. Pass the same keys to `mendwright fix --destructive-key`, and to the GitHub Action's `destructive-keys` input, so a heal saved before the key was marked is never written into your code.
 With the low-level `HealCoordinator`, the flag comes from `meta['destructive']`, which `store.meta(key)` fills from the seed file, `destructive_keys` and saved flags.
 
 This is what a refused key looks like, from a run with a stub provider:
@@ -134,8 +135,25 @@ out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see
 - A list fingerprint is saved for every `heal.locator_all()` lookup that matched two or more elements while the fingerprint tier is on. `heal.page.locator(...).all()` and `heal.driver.find_elements()` save nothing. It holds the fingerprints of three of the items, as above, the tag names inside each of them and how many of each, how many items there were, and the tag, id, test id, `aria-label`, non-generated class names and role of their container. It is never sent to any provider, and no list is ever healed, so no provider is asked about a list.
 - `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. With `dismiss=True`, a `flow.dismiss` event also holds up to 60 characters of the popup's text (runs of 12 to 19 digits redacted) and the labels of the buttons mendwright clicked on it, as the WARNING line does. On POSIX it's created with mode 0600.
 - `overrides.json.lock` while a write is in progress.
+- A `heal.canary` in the journal says what confirmed the heal and, for a passing test, holds the test's node id, which can hold a parametrized test's values.
+- Uploaded as an artifact for the GitHub Action, the store and the journal can be downloaded by anyone who can read the repository, until the artifact expires. The guide's workflow uploads only the two files, for one day.
 
 A store file that is corrupt or can't be read raises an error. mendwright never treats it as empty and overwrites it.
+
+## The GitHub Action
+
+The action (`action.yml` at the root of this repository) runs `mendwright fix --apply` on the commit your tests ran on and opens a pull request with the result. The store and the journal decide which strings go into your code, so whoever can write them can propose a change. What the action does about that:
+
+- It uses only stores from runs on `push`, `schedule` and `workflow_dispatch`, and from `workflow_run` runs those started in the same repository. It takes the artifact only from its own run or the run that triggered it; no input names another run. It skips `pull_request` (a dry run is allowed there) and `workflow_run` runs that a pull request or a fork started, and it refuses `pull_request_target`, where a job has a write token and your secrets while it can see a fork's changes.
+- It refuses a checkout that is not the commit the tests ran on, or that has changes to tracked files, and it opens pull requests only into the branch the tests ran on, the default branch unless `only-default-branch: false`.
+- It runs no code from your repository. The job runs no test, no browser and no package build: lxml is one wheel, installed with `--only-binary=:all: --require-hashes` from `action/requirements.txt`, which pins its version and the hash of every file of that release, and mendwright is imported from the action's own folder. Its scripts run with `python -I`, `mendwright fix` only tokenizes and parses your files, and no git hook runs.
+- It commits only the tracked files `mendwright fix` wrote, after `mendwright fix` checked that each Python file changed only in the planned strings. Never anything under `.github/` (`mendwright fix` skips those folders, and the action checks again), and never the store, the journal or the artifact, which stay outside the workspace.
+- It never pushes over a commit it did not make, pushes with `--force-with-lease`, and pushes to the repository's own URL, not to `origin`.
+- The token reaches git only through `GIT_CONFIG_*` environment variables, never `.git/config` or an argument list, and its base64 form is masked before first use. Only the steps that call the API or push get it; the install and `mendwright fix` steps don't.
+- No `${{ }}` expression is part of a script: every input reaches a step through its environment. Text from the store, the journal, the artifact or your files is printed between `::stop-commands::` markers, so it can't act as a workflow command, and in the pull request it is in code spans and code blocks, with bidirectional controls written out. Titles and commit messages hold no store text.
+- A person merges the pull request. The action never merges, approves or turns on auto-merge.
+
+What review still has to catch: a forged store can name any string literal in your Python files that isn't a bare word as a key's old selector, and propose any XPath that compiles in its place, with a forged canary to confirm it. `mendwright fix` refuses a heal mendwright could not have saved, but an XPath such as `//cdn.example/x.js` is also a protocol-relative URL. With `--glob`, the same holds for quoted strings in other files. The pull request lists every replacement with its old and new value and where it is; read it as you would read a change from a contributor. The action is as trustworthy as everything that runs in your test job.
 
 ## Residual risks
 
@@ -145,5 +163,10 @@ A store file that is corrupt or can't be read raises an error. mendwright never 
 - A direct provider holds its API key in your process. Without the google-genai SDK, `GeminiProvider` falls back to a REST call that puts the key in the URL query (`?key=`), so a proxy that logs URLs can record it. Install `mendwright[gemini]` to have the SDK make the call instead. `GatewayProvider` keeps the model key on your server.
 - `mendwright doctor` prints absolute paths for Python, the package and the store, which can contain your user name.
 - With the pytest plugin, a passing test confirms its heals. For `GatewayProvider` that is an HTTP call to `/heal/outcome`. A test that passes for the wrong reason confirms a wrong heal.
+- With the GitHub Action, such a heal reaches a pull request. Its description says to check each selector.
+- Anything that can write the test job's files can forge the store and the journal; the pull request is then the only check.
+- A collaborator who can push to the repository can push code that writes a store on `push`. The action trusts collaborators as much as the repository does.
+- With a personal access token or a GitHub App token, the action's push and pull request start workflows. It skips a run on its own branches, so it doesn't loop, but your other workflows run on the branch.
+- A key name or a selector in the pull request can hold words such as `closes #5`. GitHub doesn't act on them in a description, but a squash merge that copies the description into the commit message can close that issue.
 
 If you find a way to get a selector past the checks, to heal a key marked destructive, or to send more page data than this page describes, please report it privately as described at the top.

@@ -1229,6 +1229,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
+A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1275,6 +1276,229 @@ Give a strict job its own fresh store:
 ```yaml
 - run: pytest --mendwright-strict --mendwright-store "$RUNNER_TEMP/mendwright/overrides.json"
 ```
+
+### Open a pull request with the fixes
+
+mendwright's GitHub Action runs `mendwright fix --apply` for you in CI and opens a pull request with the result.
+It runs in a job of its own after your test job, takes the store and journal from that job's artifact, changes the commit the tests ran on, and opens one pull request into the branch the tests ran on, on the branch `mendwright/fix/<base>`, or updates the one it opened before.
+It writes only heals your tests confirmed. It never pushes over a commit it did not make, and it never merges, approves or turns on auto-merge: a person merges the pull request.
+
+```yaml
+name: tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@<sha>  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@<sha>  # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest
+      - uses: actions/upload-artifact@<sha>  # v7.0.2
+        if: always()
+        with:
+          name: mendwright-store
+          path: |
+            .mendwright/overrides.json
+            .mendwright/journal.jsonl
+          include-hidden-files: true   # .mendwright is a hidden folder
+          if-no-files-found: ignore
+          retention-days: 1
+
+  mendwright:
+    needs: test
+    if: always() && needs.test.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    concurrency:
+      group: mendwright-fix-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@<sha>  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: saadbuilt/mendwright@v0.9.0
+        with:
+          tests-result: ${{ needs.test.result }}
+```
+
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.9.0` can be a SHA too, with a `# v0.9.0` comment; Dependabot keeps both kinds of pin current.
+
+- The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
+- `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
+- With `--mendwright-strict` the tests fail and their heals are still confirmed, so the run is red and the pull request is ready.
+- `actions/upload-artifact` leaves out hidden folders unless `include-hidden-files: true`. Upload only the two files: the lock file and anything else in the folder aren't needed.
+- The artifact holds the journal, which can quote your pages (the model's `reasoning`, the text of a popup `dismiss=True` closed), and the store's fingerprints, which hold up to 80 characters of each element's text. Anyone who can read the repository can download it. `retention-days: 1` keeps it no longer than the next job needs.
+- With the cache from [Keep heals between runs](#keep-heals-between-runs), put the cache step before `pytest`; the store keeps earlier heals, and so does the pull request. With a fresh store per run, as in [Fail on drift](#fail-on-drift), upload the folder you passed to `--mendwright-store`.
+
+#### Permissions and settings
+
+- The job needs `contents: write`, `pull-requests: write` and `actions: read`, and nothing else.
+- Turn on Settings, Actions, General, Workflow permissions, "Allow GitHub Actions to create and approve pull requests". Without it GitHub refuses the pull request, and the action says so. The branch is pushed by then, so you can also open the pull request by hand.
+- A pull request opened with the default `GITHUB_TOKEN` starts no workflow run (GitHub's rule against loops), so your CI doesn't run on it by itself. Close and reopen the pull request to start it, or pass a GitHub App token as `token`.
+
+#### The other way: workflow_run
+
+For a test workflow you would rather not change, run the action from a workflow of its own:
+
+```yaml
+name: mendwright fix
+
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+
+jobs:
+  mendwright:
+    if: >-
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.event != 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    concurrency:
+      group: mendwright-fix-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@<sha>  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: saadbuilt/mendwright@v0.9.0
+        with:
+          tests-result: ${{ github.event.workflow_run.conclusion }}
+```
+
+The test workflow still uploads the `mendwright-store` artifact; the action downloads it from the run that triggered this one.
+The job's `if:` keeps a fork's commit from being checked out at all, and the action checks the same again.
+`ref:` matters: under `workflow_run`, `actions/checkout` checks out the default branch's newest commit, not the one the tests ran on, and the action refuses that checkout.
+
+With a browser matrix, upload the store from one job of it (`if: matrix.browser == 'chromium'`), or give each job its own artifact name and run the action once per artifact, each with its own `artifact` and `branch-prefix`.
+
+#### What the pull request says
+
+The title is `mendwright fix: write back 2 healed selectors`. The description lists each selector written back, how it was found and what confirmed it, and what was left alone and why:
+
+````markdown
+mendwright healed these selectors while your tests ran, and each heal was confirmed. This pull request writes them into your code, so the code says what the store says.
+
+Check each new selector before you merge. A passing test confirms a heal, but a test can pass for the wrong reason, and anything that can write your test job's files can write the store.
+
+### mendwright fix
+
+#### Selectors written back (2)
+
+| Key | Was | Now | Found by | Confirmed by | Where |
+| --- | --- | --- | --- | --- | --- |
+| `accept_terms` (checkbox) | `#accept-terms` | `input[name="legal-consent"]` | fingerprint (no model) | passing test `tests/test_checkout.py::test_signup` | `tests/test_checkout.py:3` |
+| `search` (textbox) | `#search-box` | `//input[@name='q']` | model: `AnthropicProvider`, `claude-x` | `expect=` on an action | `tests/test_search.py:8` |
+
+#### Left alone (1)
+
+- `email`: its heal was never confirmed.
+
+From run [#11893412207](https://github.com/saadbuilt/shop/actions/runs/11893412207) on `main` at `3f2a1c9`, with mendwright 0.9.0. Each run rewrites the branch `mendwright/fix/main`. Don't push to it: the action stops updating a branch that has commits it did not make. Comment here instead of editing this description, which the action rewrites.
+````
+
+Under each item of "Left alone", a Why section quotes the line `mendwright fix` prints. Every key, selector, path and name from the store, the journal or your files is in a code span or a code block, with control and bidirectional characters written out as `\uXXXX`, so nothing in them can mention someone, link an issue or read in another order than it is written.
+The description ends with a hidden marker that holds what the action needs to know on the next run: a hash of what it writes, the run and commit, and the keys.
+The commit has the same title and one line, `From <run>, tests on <commit>.`, with no key and no selector, and its author is `commit-author-name`.
+
+The job summary starts with what the action did (`Opened #12: ...`, `#12 is up to date.`, `Skipped: ...`) and shows the same tables.
+
+#### When it does nothing
+
+| Result | When |
+|---|---|
+| `created`, `updated` | It opened a pull request, or pushed new changes to the open one or rewrote its description. |
+| `unchanged` | The open pull request already has these changes. With the same changes it pushes nothing, and a new run id alone changes nothing. |
+| `closed` | No change is needed any more, so it closed the open pull request, with a comment that says why for each key. It closes one only after a run whose tests passed, when the store accounts for every key in it, and only with `close-stale: true`. |
+| `nothing` | There was no artifact, no store, or nothing to write and no open pull request. |
+| `kept-closed` | Someone closed a pull request with exactly these changes without merging it, so it was not opened again. Reopen it to bring it back; different changes open a new one. |
+| `blocked` | The branch has a commit the action did not make, such as one from GitHub's "Update branch" button. Merge or close the pull request, or delete the branch, and the next run starts it again. |
+| `superseded` | A newer run already updated the pull request, so an older one left it as it is. |
+| `dry-run` | `dry-run: true`: it ran `mendwright fix` without `--apply` and wrote the job summary. |
+| `skipped` | The run is not one it trusts (see the next table). |
+
+#### Which runs it trusts
+
+The store and journal decide which strings go into your code, so the action takes them only from runs it trusts, and only from the run it is part of or the run that triggered it:
+
+| Event | What the action does |
+|---|---|
+| `push`, `schedule`, `workflow_dispatch` on a branch | Opens or updates the pull request into that branch, from that commit |
+| the same, on a tag | Skips |
+| `workflow_run` started by `push`, `schedule` or `workflow_dispatch` in the same repository | Opens or updates the pull request into the run's `head_branch`, from its `head_sha`, with the artifact of that run |
+| `workflow_run` started by anything else, such as a pull request or a fork | Skips, and downloads nothing |
+| `pull_request` | Skips, or does a dry run with `dry-run: true` |
+| `pull_request_target` | Refuses, and the job fails |
+| anything else | Skips |
+
+`pull_request_target` gives a job a write token and your secrets while it can see a fork's changes, so the action never runs there.
+Then, before it changes anything, it checks that the checkout is the commit the tests ran on and has no changes to tracked files, that the base branch is the default branch (unless `only-default-branch: false`), and that the base is not one of its own branches.
+On a public repository it adds a notice: the branch and the pull request are public too, and a healed selector can quote text from your pages.
+
+#### Inputs and outputs
+
+| Input | Default | Meaning |
+|---|---|---|
+| `artifact` | `mendwright-store` | The artifact that holds the store, from this run or, under `workflow_run`, from the run that triggered it. Empty: read the store from the workspace. |
+| `store` | `overrides.json` | The store's path inside the artifact, tried as given and then under `.mendwright/`. With `artifact` empty, a path relative to `working-directory`, tried the same way. No `..`. |
+| `working-directory` | `.` | Where your code is checked out; `mendwright fix` runs here. Inside the workspace and the git checkout. |
+| `paths` | `.` | One `--path` per line, each inside `working-directory`. |
+| `globs` | empty | One `--glob` per line. |
+| `destructive-keys` | empty | One key per line. List the keys you pass to `mendwright.open(destructive_keys=...)`, which the store doesn't save. |
+| `only-default-branch` | `true` | Open pull requests only into the repository's default branch. |
+| `branch-prefix` | `mendwright/fix/` | Ends with `/`. Two uses of the action on one base branch need different prefixes. |
+| `dry-run` | `false` | Run `mendwright fix` without `--apply` and write the job summary. No commit, no push, no API call that writes. Allowed on `pull_request`. |
+| `draft` | `false` | Open the pull request as a draft. |
+| `labels` | empty | Comma-separated, at most 10, added when the pull request is opened. |
+| `close-stale` | `true` | Close the open pull request when its changes are no longer needed. |
+| `tests-result` | empty | Pass `${{ needs.test.result }}` (or `${{ github.event.workflow_run.conclusion }}`). Shown in the summary; `close-stale` needs `success`. |
+| `token` | `${{ github.token }}` | The token for the API and the push. |
+| `commit-author-name` | `github-actions[bot]` | The author of its commits. |
+| `commit-author-email` | `41898282+github-actions[bot]@users.noreply.github.com` | Also how the action knows its own commits. |
+| `python-version` | `3.12` | Passed to `actions/setup-python`. Empty: the runner's `python3` or `python`, which must be 3.10 to 3.14. |
+
+Boolean inputs take `true` or `false` only.
+
+| Output | Value |
+|---|---|
+| `result` | One of the results above, or empty when the action refused the run |
+| `pull-request-number` | The pull request it created, updated, left as it is, kept closed, blocked on, found newer, or closed |
+| `pull-request-url` | That pull request's address |
+| `written` | How many keys were written back (in a dry run, would be) |
+| `left-alone` | How many items are under "Left alone" |
+
+#### Limits
+
+- One store per use of the action. Stores of several jobs are not merged.
+- On a public repository the artifact, the branch, the pull request and the job summary are public. They hold healed selectors, which can quote page text, and test names.
+- No git hook runs in the action's commit or push: a hook is code from your repository, in a job that holds a write token. Your CI checks the pull request instead.
+- The action installs one lxml wheel into a virtual environment of its own, from `action/requirements.txt`, where its version and the hash of every file of that release are pinned. It builds nothing and runs mendwright from its own tag.
+- Keep the action and the mendwright your tests install on the same version. Dependabot's `pip` and `github-actions` updates do that. The action reads stores and journals of older versions; a canary from before 0.9.0 shows as "a check before mendwright 0.9.0".
+- GitHub Enterprise Server is not tested.
+- What review still has to catch: a store is only as trustworthy as your test job. Anything that can write the test job's files can name a string literal in your code and propose any XPath that compiles in its place. `mendwright fix` refuses values mendwright could not have saved, but an XPath such as `//cdn.example/x.js` is also a protocol-relative URL. Read the pull request as you would read a change from a contributor.
 
 ## Logging
 
@@ -1419,23 +1643,29 @@ Once your code holds the new selector, mendwright tries it first on the next run
 | `--store PATH` | The store, found as `report` finds it. `journal.jsonl` is read from the same folder. |
 | `--path PATH [PATH ...]` | Folders or files to search, the current folder by default. Can be given more than once. A file named here is searched whatever its extension. |
 | `--glob GLOB [GLOB ...]` | Also search files that match, for example `--glob "*.ts" "*.robot"`. `*.py` is always searched. A glob with `/` in it is matched against the path under the `--path` folder. |
+| `--destructive-key KEY [KEY ...]` | Treat these keys as destructive, as `mendwright.open(destructive_keys=...)` does, since the store doesn't save that argument. Can be given more than once. |
 | `--include-unconfirmed` | Also write heals that were never confirmed |
 | `--apply` | Write the changes |
+| `--format FORMAT` | `text` (the default) prints what is shown above; `json` prints one document for scripts; `md` prints Markdown for a job summary or a pull request |
+| `--out FILE` | Write the output to FILE instead of stdout, and print only `Wrote <path>`. The folder is created when it is missing. |
 
 Which keys it changes:
 
 - The key's most recently successful active selector is a heal, and that heal matched at least once.
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
-- Never a key marked destructive, a heal inside an iframe, or a key whose selectors came only from a seed file.
+- Never a key marked destructive (in the store, or with `--destructive-key`), a heal inside an iframe, or a key whose selectors came only from a seed file.
+- Never a heal mendwright could not have saved: one whose selector is not an XPath lxml can compile, or whose CSS form is not one mendwright builds (a tag name, `#id`, `.class` and `[attribute="value"]`, with at most one ancestor before it). Something else wrote it into the store, so it is listed with the reason.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - Never a key with a heal of a list, saved with `"list": true` by builds of 0.8.0 before its release: mendwright no longer heals lists (see [Lists](#lists)), and such a heal can be another list. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
 - Never a key that `heal.locator_all()` looks up as a list when its heal is of one element, from `heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key: written into the list call, it would make the list that one element. The reason names the healed selector.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
+- A key whose newest heal was quarantined, and that no selector has matched since, is listed, so a key that drops out of a pull request says why: `email: its newest heal //input[@name='e-mail'] was quarantined (an action on it failed, a check said it was the wrong element, or the key is marked destructive), and no selector has worked for the key since, so there is nothing to write back.`
 
 Which strings it changes:
 
 - In Python files, only plain string literals whose whole value is the old selector, as the store keeps it (`"xpath=//a"` and `" //a "` both match a stored `//a`). Not an f-string or bytes, not part of an implicit concatenation such as `"a" "b"`, not a comment, not a substring.
 - Not the key in `heal.locator(key, selector)`, `heal.locator_all(key, selector)` or `heal.interrupt(key, selector)`, and not a `role=`, `text=`, `intent=`, `action=` or `by=` value, even when it equals the selector.
+- Never the selector of `heal.interrupt(key, selector)` or the landmark of `heal.step(name, when)`, or a string of a list passed there, even when it equals the old selector of a healed key: written there, that key's heal would make the interruption act on the key's element whenever it shows. Each is listed, for example `tests/test_checkout.py:7 was not changed: '#cookie-accept' is passed to heal.interrupt(), and mendwright fix never rewrites the selector of an interruption. It equals the old selector of accept_terms, so if the interruption broke too, change it by hand.`
 - A CSS selector in your code gets the heal's CSS form when it has one (see [Selectors](#selectors)), also where only CSS runs, such as `By.CSS_SELECTOR` or `querySelector()`. Without a CSS form, a value passed with a Selenium `By` other than `By.XPATH` (in a call, or a `(By.CSS_SELECTOR, "#x")` pair), or to a function with `css` in its name, is listed with the healed selector to put in by hand.
 - In other files (`--glob`), quoted strings on one line. Comments are skipped in C-like languages, and template strings with `${` and strings that span lines are left alone. A string right after `By.cssSelector(`, `querySelector(`, `css:` and the like gets the heal's CSS form when it has one, and is otherwise listed, not changed. In languages where only double quotes make a string (Java, Kotlin, C#, Scala, Swift, Go, Rust, JSON), a selector with a double quote in it is escaped, or listed for a hand edit where the escapes aren't known.
 - A file in which the same string belongs to more than one key is left alone whole, and listed, because mendwright can't tell which healed selector goes where.
@@ -1443,9 +1673,72 @@ Which strings it changes:
 Each rewritten Python file must still parse, have the same structure, and differ only in the planned strings, or it isn't written.
 The original quote style and prefix are kept where they can hold the new selector, and a BOM, a coding comment and the line endings are kept.
 A file is written through a temporary file next to it and then replaced, and a file that changed since it was read is not overwritten.
-`.git`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files.
+`.git`, `.github`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files. A `.github` folder holds your workflows and local actions, so it is skipped even when `--path` names it.
 
-It exits 0 when there is nothing to do, after a dry run and after `--apply`, and 1 when there is no store, a `--path` doesn't exist, or a file couldn't be written.
+`--format json` prints one JSON document and nothing else on stdout, for scripts such as the [GitHub Action](#open-a-pull-request-with-the-fixes). Errors still go to stderr. Cut down:
+
+```json
+{
+  "schema": 1,
+  "mendwright": "0.9.0",
+  "store": "/home/runner/work/shop/shop/.mendwright/overrides.json",
+  "journal": {"path": "/home/runner/work/shop/shop/.mendwright/journal.jsonl", "exists": true},
+  "applied": false,
+  "scanned": 14,
+  "plan": "5f0c3a...",
+  "written_back": [
+    {"key": "accept_terms", "role": "checkbox", "old": ["#accept-terms"],
+     "now": ["input[name=\"legal-consent\"]"], "xpath": "//input[@name='legal-consent']",
+     "css": "input[name=\"legal-consent\"]", "confirmed": true,
+     "found_by": {"tier": "fingerprint", "provider": "fingerprint", "model": null, "at": "2026-10-16T05:01:02+00:00"},
+     "confirmed_by": {"by": "test", "test": "tests/test_checkout.py::test_signup", "at": "2026-10-16T05:01:04+00:00"},
+     "places": [{"path": "tests/test_checkout.py", "line": 3}]}
+  ],
+  "replacements": [
+    {"path": "tests/test_checkout.py", "line": 3, "keys": ["accept_terms"], "selector": "#accept-terms",
+     "new": "input[name=\"legal-consent\"]", "was": "\"#accept-terms\"", "now": "'input[name=\"legal-consent\"]'"}
+  ],
+  "left_alone": [
+    {"code": "unconfirmed", "key": "email", "path": null, "line": null,
+     "text": "email: its heal was never confirmed (journal.jsonl has no canary success for it; ...)"}
+  ],
+  "files": [{"path": "tests/test_checkout.py", "replacements": 1, "written": false}],
+  "errors": []
+}
+```
+
+- `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where.
+- `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent` or `frame`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
+- `confirmed_by` describes the `heal.canary` that confirmed the heal: what confirmed it (`by`, see [journal.jsonl](#journaljsonl)) and, for a passing test, its node id (`test`). Both are `null` for a canary written before 0.9.0, and `confirmed_by` is `null` for a heal that is not confirmed, which only `--include-unconfirmed` writes.
+- `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`.
+- `plan` is a SHA-256 of what is written where: each replacement's path, old selector, new selector and keys. Line numbers and quoting are left out, so an unrelated edit that moves a line keeps it.
+- `files` says which files were `written`, which only happens with `--apply`.
+
+| `code` | What was left alone |
+|---|---|
+| `destructive` | a key marked destructive, in the store or with `--destructive-key` |
+| `iframe` | a key healed inside an iframe |
+| `not_a_selector` | a key whose heal is not an XPath lxml can compile, or whose CSS form is not one mendwright builds |
+| `seed_only` | a key with no selector from your code |
+| `list_and_element` | a key with a list heal and a one-element heal |
+| `list_heal` | a key whose heal is a heal of a list |
+| `list_key` | a list key whose heal is of one element |
+| `bare_word` | a key whose old selector is a bare word |
+| `driver_by` | a key from a `By` that can't run the healed XPath |
+| `unconfirmed` | a key whose heal was never confirmed |
+| `quarantined` | a key whose newest heal was quarantined |
+| `ambiguous` | a file with a string that belongs to more than one key |
+| `not_python` | a file that couldn't be read as Python |
+| `css_only` | a place that passes the selector where only CSS runs |
+| `no_escape` | a place that needs escapes mendwright doesn't know |
+| `flow_selector` | a place that passes the old selector to `heal.interrupt()` or `heal.step(when=)` |
+| `already_in_code` | a key whose healed selector your code already has |
+| `not_found` | a key whose old selector was found nowhere |
+
+`--format md` renders the same document as Markdown, as the GitHub Action puts it in the pull request: a table of the selectors written back with how each was found and what confirmed it, then what was left alone. Every key, selector, path and name in it is in a code span or a code block.
+
+It exits 0 when there is nothing to do, after a dry run and after `--apply`, and 1 when there is no store, a `--path` doesn't exist, a file couldn't be written, or `--out` couldn't be written.
+With `--apply`, the files are written before the output, which is about them. When the store can't be read, nothing is printed on stdout and no `--out` file is written.
 Once your code holds the healed selector, mendwright tries it first on the next run.
 
 ## Low-level API
@@ -1527,6 +1820,36 @@ It isn't an `AttentionRequired`, so no model is asked.
 | where a selector was expected | Pass a selector string, not a Locator object |
 | could not detect a browser driver | Pass a Playwright page or Selenium driver, or `register_driver` your own |
 | on Selenium does not support | Selenium ignores only `timeout=`, `force=`, `no_wait_after=` and `delay=`. Remove the other Playwright options. |
+
+### The GitHub Action
+
+Each message starts with `mendwright:`. A notice or a warning leaves the job green; an error fails it, and the job summary says `Stopped:` and the message.
+
+| The message says | What to do |
+|---|---|
+| this workflow runs on pull_request_target | Run the action in a job that needs your test job on `push`, `schedule` or `workflow_dispatch`, as in [Open a pull request with the fixes](#open-a-pull-request-with-the-fixes). |
+| skipped on pull_request | Nothing, or set `dry-run: true` to see what it would write. |
+| the run that made this store was triggered by | The store came from a pull request or a fork. The action only uses stores from `push`, `schedule` and `workflow_dispatch` runs in your repository. |
+| only-default-branch is true | Set `only-default-branch: false` to open pull requests into other branches too. |
+| the checkout is at ..., but the tests ran on | Under `workflow_run`, pass `ref: ${{ github.event.workflow_run.head_sha }}` to `actions/checkout`. |
+| the checkout has changes to tracked files | Run the action right after `actions/checkout`, so the pull request holds only mendwright's changes. |
+| is not inside a git checkout | Run `actions/checkout` first, and check `working-directory`. |
+| the action needs Python 3.10 to 3.14 | Set `python-version`, or leave it at its default. |
+| has no artifact named | Upload the store with `actions/upload-artifact` and `include-hidden-files: true`, under the name the `artifact` input gives. |
+| has no overrides.json at its top or in .mendwright/ | Upload the folder that holds the store, or set `store`. |
+| is a link or points outside it | Upload the files themselves, not links to them. |
+| over the action's limit | Move the old journal aside, or stop carrying it from run to run. |
+| there is no journal.jsonl next to the store | Upload `journal.jsonl` with `overrides.json`: without it no heal counts as confirmed. |
+| mendwright fix could not finish | The files it wrote were put back. Fix what the errors above say. |
+| has commits that this action did not make | Merge or close the pull request, or delete the branch, and the next run starts it again. |
+| changed while this run worked on it | Nothing: another run pushed meanwhile, and the next run picks it up. |
+| git push to ... was refused | Give the job `contents: write`, or pass a token that can push. A ruleset that protects `mendwright/**` or asks for signed commits also refuses it. |
+| Actions may not create pull requests in this repository | Turn on "Allow GitHub Actions to create and approve pull requests" in Settings, Actions, General, or pass a GitHub App token as `token`. |
+| GitHub refused to open the pull request (HTTP 403 | Give the job `pull-requests: write`. |
+| had exactly these changes and was closed without merging | Reopen the pull request to bring it back. |
+| is still open: | The job summary says why the action could not tell whether the pull request is still needed. Close it by hand when it isn't. |
+| rate limit stopped the action | Run the workflow again later. |
+| a redirect, which the action does not follow | The repository was probably renamed or moved. Run the workflow from its new place. |
 
 ### Other problems
 

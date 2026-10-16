@@ -155,6 +155,47 @@ def test_the_ci_job_runs_the_action_as_a_dry_run():
         assert line in job, line
 
 
+def _guide():
+    if not GUIDE.exists():
+        pytest.skip('docs/guide.md is not in this copy of the project (the sdist leaves it out)')
+    return GUIDE.read_text(encoding='utf-8')
+
+
+def _section(text, title):
+    start = text.index(title)
+    end = text.find('\n### ', start + len(title))
+    return text[start:end if end > 0 else len(text)]
+
+
+def test_the_guide_lists_every_input_and_output():
+    guide = _section(_guide(), '#### Inputs and outputs')
+    inputs = re.findall(r'^  ([\w-]+):\n    description:', TEXT[:TEXT.index('\noutputs:')], re.M)
+    outputs = re.findall(r'^  ([\w-]+):\n    description:', TEXT[TEXT.index('\noutputs:'):
+                                                               TEXT.index('\nruns:')], re.M)
+    in_table = re.findall(r'^\| `([\w-]+)` \|', guide, re.M)
+    assert sorted(set(in_table)) == sorted(set(inputs) | set(outputs))
+    assert len(inputs) == 17 and len(outputs) == 5
+
+
+def test_the_guide_uses_the_action_of_this_version():
+    """The guide's workflows name the release the next tag makes: pyproject's version, or
+    while that version is out already and the CHANGELOG has an Unreleased section, a later
+    one, which the release then sets in pyproject.toml."""
+    uses = set(re.findall(r'uses: saadbuilt/mendwright@v(\S+)', _guide()))
+    assert len(uses) == 1, uses
+    [shown] = uses
+    version = _pyproject_version()
+    if shown != version:
+        changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+        released = re.search(r'^## \[' + re.escape(version) + r'\] - \d{4}-\d{2}-\d{2}$', changelog,
+                             re.M)
+        assert released and '## [Unreleased]' in changelog, (shown, version)
+
+        def key(v):
+            return tuple(int(p) for p in v.split('.'))
+        assert key(shown) > key(version), (shown, version)
+
+
 def test_action_yml_is_yaml_with_the_steps_in_order():
     yaml = pytest.importorskip('yaml')
     data = yaml.safe_load(TEXT)
