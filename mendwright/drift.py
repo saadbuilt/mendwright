@@ -16,6 +16,11 @@ has reached.
   from memory or follow it into an iframe ('would-heal'), a run would ask a model
   ('needs-model'), a run would refuse it ('refused'), or it could not be judged here
   ('list-missing', 'needs-steps', 'optional', 'unreachable', 'skipped'), with the reason.
+- plan_check() and the helpers below it are what `mendwright check` decides before it
+  loads a page: which site each key belongs to, the address of each page, and the pages
+  whose path reads as an action, which it never loads unless told to.
+- check_visit() checks one loaded page for the command, and the format_* functions write
+  its report as text, Markdown or JSON.
 
 Nothing here imports a browser library.
 """
@@ -23,19 +28,21 @@ Nothing here imports a browser library.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
+import json
 import logging
 import os
 import re
 import textwrap
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .coordinator import HealCoordinator, _list_missing_message
 from .drivers.base import driver_describe, driver_framed
 from .facade import _frame_message, latest_success
-from .flow import page_path, page_url
+from .flow import InterruptionLoop, _is_id, page_path, page_url
 from .gate import live_reason
 from .journal import _BaseJournal
 from .lists import valid as _valid_list
@@ -1013,3 +1020,738 @@ def store_journal(store):
         return []
     return _read_journal(os.path.join(os.path.dirname(os.fspath(path)) or '.',
                                       'journal.jsonl')) or []
+
+
+# --- `mendwright check`: sites, addresses and the plan ------------------------------------------
+
+class UsageError(ValueError):
+    """A `mendwright check` argument that cannot work: the command exits 2 with this text."""
+
+
+_DEFAULT_PORTS = {'http': 80, 'https': 443}
+
+
+def origin_of(url):
+    """scheme://host[:port] of an http or https address, lower case, without a default
+    port. None for anything else."""
+    try:
+        parts = urlsplit(url)
+        scheme, host, port = parts.scheme.lower(), parts.hostname, parts.port
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if scheme not in _DEFAULT_PORTS or not host:
+        return None
+    host = '[' + host + ']' if ':' in host else host
+    return scheme + '://' + host + (':' + str(port) if port is not None
+                                    and port != _DEFAULT_PORTS[scheme] else '')
+
+
+def parse_origin(text, flag='--origin'):
+    """An origin as --origin and --base-url take it, normalized (see origin_of). Raises
+    UsageError for anything with a path other than /, a query, a fragment or user info."""
+    problem = UsageError(flag + ' takes scheme://host[:port] with http or https, such as '
+                         'https://shop.example, got ' + repr(text) + '.')
+    if not isinstance(text, str) or not text.strip():
+        raise problem
+    try:
+        parts = urlsplit(text.strip())
+        _port = parts.port      # an invalid port raises here
+    except ValueError:
+        raise problem from None
+    if (parts.path not in ('', '/') or parts.query or parts.fragment or parts.username
+            or parts.password is not None or '@' in parts.netloc):
+        raise problem
+    origin = origin_of(text.strip())
+    if origin is None or page_url(origin + '/') is None:
+        raise problem
+    return origin
+
+
+def parse_origins(values):
+    """{recorded origin: origin to load it from} from --origin values."""
+    out = {}
+    for value in values or ():
+        recorded, _, actual = value.partition('=')
+        out[parse_origin(recorded)] = parse_origin(actual) if actual else parse_origin(recorded)
+    return out
+
+
+def page_pattern(text, flag='--page'):
+    """A page pattern as --page, --skip-page and --load-page take it: it starts with / or *,
+    is lower-cased, and its segments that look like record ids become *, as
+    mendwright.flow.page_path writes pages. '/' alone is the site root. Raises UsageError."""
+    if not isinstance(text, str) or not text.strip().startswith(('/', '*')):
+        raise UsageError(flag + ' takes a path that starts with / or *, such as /checkout/*, '
+                         'got ' + repr(text) + '.')
+    stripped = text.strip()
+    parts = ['*' if _is_id(part) else part for part in stripped.lower().split('/') if part]
+    if not parts:
+        return '/'
+    return ('' if stripped.startswith('*') else '/') + '/'.join(parts)
+
+
+def page_matches(pattern, page):
+    """Whether a key's page ('/' for the root) is on a page pattern. '*' matches any
+    characters, '/' included."""
+    return page is not None and fnmatch.fnmatchcase(page, pattern)
+
+
+_URL_EXAMPLE = "'/orders/*=https://shop.example/orders/1001'"
+
+
+def parse_url(value):
+    """(page, address) of a --url PAGE=URL value. Raises UsageError."""
+    problem = UsageError('--url takes PAGE=URL, such as ' + _URL_EXAMPLE + ', got '
+                         + repr(value) + '.')
+    if not isinstance(value, str) or '=' not in value:
+        raise problem
+    page, _, address = value.partition('=')
+    try:
+        page = page_pattern(page, '--url')
+        parts = urlsplit(address.strip())
+        _port = parts.port      # an invalid port raises here
+    except (UsageError, ValueError):
+        raise problem from None
+    if (parts.scheme.lower() not in _DEFAULT_PORTS or not parts.hostname or parts.fragment
+            or '#' in address or '@' in parts.netloc or origin_of(address.strip()) is None):
+        raise problem
+    return page, address.strip()
+
+
+def shown_address(address):
+    """An address as the reports show it: a query as '?...', never its text."""
+    try:
+        parts = urlsplit(address)
+    except ValueError:
+        return address
+    origin = origin_of(address) or ''
+    return origin + (parts.path or '/') + ('?...' if parts.query else '')
+
+
+# Words that make a path read as an action, which a GET may perform (see action_word).
+ACTION_WORDS = ('logout', 'logoff', 'signout', 'signoff', 'unsubscribe', 'optout', 'delete',
+                'remove', 'cancel', 'confirm', 'verify', 'activate', 'deactivate', 'reset',
+                'approve', 'accept', 'decline', 'reject', 'revoke', 'disconnect', 'unlink',
+                'leave', 'purge', 'destroy', 'empty', 'clear', 'close')
+ACTION_PAIRS = (('log', 'out'), ('log', 'off'), ('sign', 'out'), ('sign', 'off'),
+                ('opt', 'out'))
+_WORD_SPLIT = re.compile(r'[-_.+~]')
+
+
+def action_word(path):
+    """The action a path reads as ('sign out', 'cancel'), or None. Each segment is split
+    into words on - _ . + and ~, and words are compared whole, in lower case, and pairs as
+    two words in a row: /order-confirmation is no action, /account/close-account and
+    /account/sign-out are."""
+    words = [w for segment in (path or '').lower().split('/') for w in _WORD_SPLIT.split(segment)
+             if w]
+    for first, second in zip(words, words[1:], strict=False):
+        if (first, second) in ACTION_PAIRS:
+            return first + ' ' + second
+    for word in words:
+        if word in ACTION_WORDS:
+            return word
+    return None
+
+
+@dataclass
+class PagePlan:
+    """One page `mendwright check` loads, or would load: from origin (None when it has no
+    site), the stored page, the address loaded (None when it is not), what the report shows
+    for it, its keys, the origins they were recorded on, and (detail, reason) when it is
+    not loaded."""
+    origin: str | None
+    page: str
+    address: str | None
+    shown: str
+    keys: list
+    recorded: list
+    skip: tuple | None = None
+
+
+@dataclass
+class Plan:
+    pages: list
+    left_out: list          # (key, 'no-page' | 'other-site' | 'filtered')
+    sites: list             # {'recorded': [...], 'loaded': origin}
+    notes: list             # lines for stderr, before loading
+
+
+def store_origins(store, keys=None):
+    """{origin: number of keys} of the keys' saved addresses, most keys first."""
+    counts = {}
+    for key in (store_keys(store) if keys is None else keys):
+        origin = origin_of(_last_url(store, key) or '')
+        if origin:
+            counts[origin] = counts.get(origin, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def origins_sentence(counts):
+    """'https://shop.example (12 keys) and https://login.example (2 keys)', at most 5."""
+    items = [o + ' (' + str(n) + (' key)' if n == 1 else ' keys)') for o, n in counts.items()]
+    if len(items) > 5:
+        return ', '.join(items[:5]) + ' and ' + str(len(items) - 5) + ' more'
+    return _listed(items)
+
+
+def _listed(items):
+    items = list(items)
+    if len(items) < 2:
+        return ''.join(items)
+    return ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+def _newest(store, key):
+    best = latest_success(store, key)
+    return str(best.get('lastSucceededAt') or '') if best else ''
+
+
+_ID_TEXT = ("the address of {page} has a part mendwright doesn't save (a record id, a token, "
+            "an email address or a long name), so mendwright check can't load it. Pass --url "
+            "'{page}={example}'.")
+_OLD_TEXT = ('the store has only the path {page} for it, because it was saved before 0.9.0. '
+             'Pass --base-url URL, or run your tests once with 0.9.0.')
+_STALE_TEXT = ('its saved address and its saved page {page} disagree: it was last found on a '
+               'page mendwright saves no address for (a Playwright Frame, or a frame the '
+               "Selenium driver was switched into). Pass --url '{page}={example}'.")
+_ACTION_TEXT = ('the path {path} reads as an action ({word}), and loading it could do that, '
+                'such as end the session your runs use. Pass --load-page \'{page}\' to check '
+                'it anyway.')
+
+
+def _example(origin, page):
+    base = origin or 'https://your.site'
+    if page == '/':
+        return base + '/'
+    return base + '/'.join('<one that exists>' if part == '*' else part
+                           for part in page.split('/'))
+
+
+def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_pages=(),
+               filtered=()):
+    """What `mendwright check` loads for these keys (see the module docs): a Plan.
+
+    origins maps a recorded origin to the one to load it from (--origin), base_url is
+    --base-url's origin, urls maps a page to the address --url gives it, load_pages are
+    --load-page patterns, and filtered the keys --key, --skip-key, --page and --skip-page
+    left out. Keys are grouped by the origin they are loaded from and their page. A key
+    with no site (saved before 0.9.0 with --origin, or whose saved address is not on its
+    saved page) is loaded only from a --url for its page. Raises UsageError for a --url
+    value that names no selected key's page or an origin this check doesn't load."""
+    origins, urls = dict(origins or {}), dict(urls or {})
+    left_out = [(key, 'filtered') for key in filtered]
+    groups = {}         # (load origin or None, page, kind) -> what the group's keys share
+    hosts = set()
+
+    def group(load, page, kind=''):
+        return groups.setdefault((load, page, kind), {'keys': [], 'recorded': set(), 'lu': []})
+
+    for key in keys:
+        try:
+            lp = store.meta(key).get('lastPage')
+        except Exception:
+            lp = None
+        lu = _last_url(store, key)
+        if not lp and not lu:
+            left_out.append((key, 'no-page'))
+            continue
+        consistent = bool(lu) and same_page(lu, lp)
+        recorded = origin_of(lu) if consistent else None
+        if lu and not lp and not consistent:
+            # An address with no page saved with it: from a Frame healer, say.
+            group(None, page_path(lu) or '/', 'stale')['keys'].append(key)
+            continue
+        page = lp or '/'
+        kind = '' if consistent else ('stale' if lu else 'old')
+        if recorded:
+            hosts.add(urlsplit(recorded).hostname)
+        if base_url is not None:
+            g = group(base_url, page)
+        elif recorded in origins:
+            g = group(origins[recorded], page)
+        elif recorded is not None:
+            left_out.append((key, 'other-site'))
+            continue
+        else:
+            g = group(None, page, kind)
+        g['keys'].append(key)
+        if recorded:
+            g['recorded'].add(recorded)
+            g['lu'].append((_newest(store, key), lu))
+
+    selected_pages = sorted({page for _load, page, _kind in groups})
+    loaded = set(origins.values()) | ({base_url} if base_url else set())
+    for page, address in urls.items():
+        if page not in selected_pages:
+            shown = _listed(selected_pages) if len(selected_pages) <= 2 else (
+                ', '.join(selected_pages[:2]) + ' and ' + str(len(selected_pages) - 2) + ' more')
+            raise UsageError('--url names the page ' + page + ', but no selected key was last '
+                             'found there. Pages of the selected keys: ' + (shown or 'none')
+                             + '.')
+        origin = origin_of(address)
+        if origin not in loaded:
+            raise UsageError('--url ' + shown_address(address) + ' is on ' + str(origin)
+                             + ", which this check doesn't load. Add --origin " + str(origin)
+                             + '.')
+
+    pages = []
+    first_loaded = sorted(loaded)[0] if loaded else None
+    for (load, page, kind), g in sorted(groups.items(),
+                                        key=lambda item: (item[0][1], item[0][0] or '', item[0][2])):
+        given = urls.get(page)
+        if load is None and given:
+            load = origin_of(given)         # --url gives a key with no site its address
+        address, skip, shown = None, None, page
+        newest = max(g['lu'])[1] if g['lu'] else None
+        newest_path = urlsplit(newest).path if newest else None
+        built = load + (page if page != '/' else '/') if load else None
+        if given and load and origin_of(given) == load:
+            address = given
+        elif load and newest_path is not None and '*' not in newest_path.split('/'):
+            address = load + newest_path
+        elif (load and base_url is not None and not g['lu'] and '*' not in page.split('/')
+              and _plain(built)):
+            address = built
+        if address is not None:
+            shown = shown_address(address)
+            word = action_word(urlsplit(address).path) if address is not given else None
+            if word and not any(page_matches(p, page) for p in load_pages):
+                skip = ('action-page', _ACTION_TEXT.format(path=urlsplit(address).path,
+                                                           word=word, page=page))
+                address = None
+        elif load is None:
+            if kind == 'stale':
+                skip = ('no-url', _STALE_TEXT.format(page=page,
+                                                     example=_example(first_loaded, page)))
+            else:
+                skip = ('no-url', _OLD_TEXT.format(page=page))
+        else:
+            # The address has a part mendwright masks (a record id, a token, an email).
+            skip = ('no-url', _ID_TEXT.format(page=page, example=_example(load, page)))
+            shown = load + (newest_path if newest_path is not None else
+                            (page if page != '/' else '/'))
+        pages.append(PagePlan(origin=load, page=page, address=address, shown=shown,
+                              keys=sorted(g['keys']), recorded=sorted(g['recorded']),
+                              skip=skip))
+
+    sites = []
+    if base_url is not None:
+        recorded = sorted({o for p in pages for o in p.recorded})
+        sites.append({'recorded': recorded, 'loaded': base_url})
+    else:
+        for recorded, actual in sorted(origins.items()):
+            sites.append({'recorded': [recorded], 'loaded': actual})
+    notes = []
+    hosts.discard(None)
+    if base_url is not None and len(hosts) > 1:
+        notes.append('mendwright check: pages recorded on ' + str(len(hosts)) + ' hosts ('
+                     + ', '.join(sorted(hosts)) + ') are all loaded from ' + base_url + '. If '
+                     'they are different sites, map each with --origin RECORDED=ACTUAL instead.')
+    return Plan(pages=pages, left_out=left_out, sites=sites, notes=notes)
+
+
+def _plain(address):
+    """Whether page_url() keeps every segment of address, so it holds no part mendwright
+    masks (an email address, a token): a path built from a stored lastPage is loaded only
+    then."""
+    masked = page_url(address)
+    return masked is not None and '*' not in urlsplit(masked).path.split('/')
+
+
+# --- `mendwright check`: one page --------------------------------------------------------------
+
+def _cut_urls(text):
+    """text with every http(s) address in it cut to its origin and page."""
+    def cut(match):
+        url = match.group(0)
+        origin = origin_of(url)
+        return (origin + (page_path(url) or '/')) if origin else url
+    return re.sub(r'https?://[^\s\'"<>)]+', cut, text)
+
+
+def nav_failure(exc, nav_ms, scrub=None):
+    """(detail, reason) for a navigation that raised exc."""
+    text = str(exc)
+    if 'Download is starting' in text:
+        return 'download', 'the address started a download instead of showing a page.'
+    if type(exc).__name__ == 'TimeoutError':
+        return 'nav-timeout', ('the page did not load within ' + str(nav_ms) + ' ms '
+                               '(--nav-timeout-ms).')
+    first = (text.strip().splitlines() or [''])[0]
+    first = (scrub or (lambda t: t))(first)
+    first = _cut_urls(first)[:300]
+    return 'nav-error', ('the page did not load (' + type(exc).__name__
+                         + (': ' + first if first else '') + ').')
+
+
+def status_failure(status):
+    """(detail, reason) for an HTTP status of 400 or more, else None."""
+    if not isinstance(status, int) or status < 400:
+        return None
+    said = 'the page answered HTTP ' + str(status) + ', so its keys were not checked'
+    if status in (401, 403):
+        return 'http-4xx', said + '. It probably needs a sign-in: pass --storage-state FILE.'
+    if status in (404, 410):
+        return 'http-4xx', (said + '. If the page moved, the keys that were on it need a new '
+                            'home in your script. If its address needs a record that exists, '
+                            'pass --url.')
+    if status >= 500:
+        return 'http-5xx', said + ': the site had an error.'
+    return 'http-4xx', said + '.'
+
+
+def redirect_failure(expected, final, page):
+    """(detail, reason) when the page at final is another page than the one at expected
+    (its page_path() or its origin differs), else None. page is the stored page."""
+    if (page_path(final) == page_path(expected)
+            and origin_of(final) == origin_of(expected)):
+        return None
+    where = page_path(final) or ('/' if origin_of(final) else (final.split(':', 1)[0] + ':'
+                                                                if final else 'nowhere'))
+    origin = origin_of(final)
+    if origin and origin != origin_of(expected):
+        where += ' (on ' + origin + ')'
+    return 'redirect', ('the page went to ' + where + ' instead, so its keys were not '
+                        'checked. It probably needs a sign-in or the steps before it: pass '
+                        "--storage-state FILE, or leave the page out with --skip-page '"
+                        + page + "'.")
+
+
+_PASSWORD = "xpath=//input[@type='password']"
+_FIRST_PASSWORD = "xpath=(//input[@type='password'])[1]"
+SIGN_IN_TEXT = ("none of this page's keys matched, and the page shows a password field, so "
+                'it looks like a sign-in page. If the site asks for a sign-in here, pass '
+                '--storage-state FILE. If this is your own sign-in page and it changed, its '
+                'keys broke: check it with heal.drift() from a test.')
+
+
+def _password_field(driver):
+    try:
+        return driver.count(_PASSWORD) >= 1 and bool(driver.is_visible(_FIRST_PASSWORD))
+    except Exception:
+        return False
+
+
+def page_gate(driver, expected, page):
+    """The gate probe_page() runs for a page `mendwright check` loaded: a late redirect
+    (the address left the page), and a page where every key missed that shows a password
+    field."""
+    def gate(all_missed):
+        moved = redirect_failure(expected, _url_of(driver), page)
+        if moved:
+            return moved
+        if all_missed and _password_field(driver):
+            return 'sign-in', SIGN_IN_TEXT
+        return None
+    return gate
+
+
+def unreached(store, key, verdict, detail, reason, dry_run=False):
+    """A KeyDrift for a key that was not looked at ('unreachable' or 'skipped')."""
+    try:
+        meta = store.meta(key)
+    except Exception:
+        meta = {}
+    return KeyDrift(key=key, page=key_page(store, key), verdict=verdict, detail=detail,
+                    counts_as=COUNTS_AS[verdict], role=_known_role(store, key, meta),
+                    live_role=None, destructive=bool(meta.get('destructive')), used=None,
+                    heal=None, provider=None, dry_run=dry_run, confirmed=None, reason=reason,
+                    probes=())
+
+
+@dataclass
+class PageResult:
+    """What `mendwright check` found for one PagePlan: outcome is 'checked', 'unreachable'
+    or 'skipped', status the HTTP status (None when there was no response), final_page
+    the page the browser ended on, reason the one reason every key shares when the page was
+    not checked."""
+    plan: PagePlan
+    outcome: str
+    keys: list
+    status: int | None = None
+    final_page: str | None = None
+    seconds: float | None = None
+    reason: str | None = None
+    notes: list = dataclasses.field(default_factory=list)
+
+
+def skipped_page(store, plan, dry_run=False):
+    detail, reason = plan.skip
+    return PageResult(plan=plan, outcome='skipped', reason=reason,
+                      keys=[unreached(store, k, 'skipped', detail, reason, dry_run)
+                            for k in plan.keys])
+
+
+def check_visit(visit, plan, store, *, open_healer, timeout_ms, poll_ms=200, cookies=None,
+                skips=None, canaries=None, sleep=None, nav_ms=30000, scrub=None,
+                dry_run=False, clock=time.monotonic):
+    """Check the keys of plan on the page visit loaded (see mendwright.drift_session):
+    reachability first (an error, an HTTP error status, a redirect), then the healer
+    open_healer(page) gives, the cookies= preset when cookies is 'reject' or 'accept', and
+    probe_page() with the redirect and sign-in gate. Returns a PageResult."""
+    from .interruptions import COOKIE_BANNER_KEY, Budget, cookie_preset
+    started = clock()
+    result = PageResult(plan=plan, outcome='checked', keys=[], status=visit.status)
+
+    def stop(detail, reason, keys=None):
+        result.outcome, result.reason = 'unreachable', reason
+        result.keys = [unreached(store, k, 'unreachable', detail, reason, dry_run)
+                       for k in (plan.keys if keys is None else keys)]
+        result.seconds = round(clock() - started + (visit.seconds or 0), 1)
+        return result
+
+    if visit.error is not None:
+        return stop(*nav_failure(visit.error, nav_ms, scrub))
+    page = visit.page
+    final = _page_address(page)
+    result.final_page = page_path(final) or ('/' if origin_of(final) else None)
+    failed = status_failure(visit.status)
+    if failed:
+        return stop(*failed)
+    expected = plan.address
+    keys = list(plan.keys)
+    moved = redirect_failure(plan.address, final, plan.page)
+    unreached_keys = []
+    if moved:
+        here = page_path(final)
+        stay = [k for k in keys if here and here in (store.meta(k).get('pages') or ())]
+        if not stay:
+            return stop(*moved)
+        unreached_keys = [unreached(store, k, 'unreachable', moved[0], moved[1], dry_run)
+                          for k in keys if k not in stay]
+        keys, expected = stay, final
+    heal = open_healer(page)
+    notes = []
+    if cookies:
+        heal._interruptions[COOKIE_BANNER_KEY] = cookie_preset(cookies)
+        budget, handled = Budget(), False
+        try:
+            while heal._interrupt('<check>', budget, timeout_ms, poll_ms, only=COOKIE_BANNER_KEY):
+                handled = True
+        except InterruptionLoop as exc:
+            return stop('interruption-loop', str(exc).replace('mendwright: ', '', 1))
+        if handled:
+            notes.append('closed the cookie banner with the cookies="' + cookies + '" preset.')
+    with heal._overlays.handling():
+        report = probe_page(heal, keys, timeout_ms=timeout_ms, poll_ms=poll_ms, sleep=sleep,
+                            fresh=True, gate=page_gate(heal._driver, expected, plan.page),
+                            skips=skips, canaries=canaries, opener='mendwright.open',
+                            who='mendwright check')
+    missed = [k for k in report.keys if k.verdict not in ('ok', 'ok-heal', 'wrong-role')]
+    if not cookies and missed and any(k.verdict != 'unreachable' for k in missed):
+        for choice in ('reject', 'accept'):
+            try:
+                found = heal._interruption_target(cookie_preset(choice), heal._driver,
+                                                  warn=False)
+            except Exception:
+                found = None
+            if found is not None:
+                notes.append('a cookie banner is on this page (the cookies= preset found one). '
+                             'mendwright check clicked nothing. If the banner hides the page, '
+                             'pass --cookies reject.')
+                break
+    result.keys = unreached_keys + list(report.keys)
+    result.notes = notes + list(report.notes)
+    if all(k.verdict == 'unreachable' for k in result.keys) and result.keys:
+        reasons = {k.reason for k in result.keys}
+        if len(reasons) == 1:
+            result.outcome, result.reason = 'unreachable', reasons.pop()
+    result.seconds = round(clock() - started + (visit.seconds or 0), 1)
+    return result
+
+
+def _page_address(page):
+    try:
+        url = page.url
+    except Exception:
+        return ''
+    return url if isinstance(url, str) else ''
+
+
+# --- `mendwright check`: the reports -------------------------------------------------------------
+
+def _plural(count, one, several):
+    return str(count) + ' ' + (one if count == 1 else several)
+
+
+def left_out_lines(left_out):
+    """The summary lines for the keys a check left out."""
+    lines = []
+    kinds = {}
+    for key, kind in left_out:
+        kinds.setdefault(kind, []).append(key)
+    if kinds.get('no-page'):
+        n = len(kinds['no-page'])
+        lines.append(_plural(n, 'key was', 'keys were') + ' never found on a page with an '
+                     'address (set_content(), about:blank or a data: URL) and '
+                     + ('was' if n == 1 else 'were') + ' left out.')
+    if kinds.get('other-site'):
+        n = len(kinds['other-site'])
+        lines.append(_plural(n, 'key was', 'keys were') + ' found on a site no --origin names '
+                     'and ' + ('was' if n == 1 else 'were') + ' left out.')
+    if kinds.get('filtered'):
+        n = len(kinds['filtered'])
+        lines.append(_plural(n, 'key was', 'keys were') + ' left out by --key, --skip-key, '
+                     '--page or --skip-page.')
+    return lines
+
+
+def exit_sentence(code, keys, fail_on='drift', strict=False):
+    failed = [k for k in keys if k.fails(fail_on=fail_on, strict=strict)]
+    unchecked = [k for k in keys if k.counts_as == 'unchecked']
+    if code == 1:
+        if fail_on == 'unhealable':
+            return ('Exit 1: ' + _plural(len(failed), "key a run can't get past alone",
+                                         "keys a run can't get past alone") + '.')
+        return 'Exit 1: ' + _plural(len(failed), 'key broke', 'keys broke') + '.'
+    if code == 3:
+        if not unchecked:
+            return 'Exit 3: no key was checked (pass --allow-unchecked to accept that).'
+        return ('Exit 3: ' + _plural(len(unchecked), 'key was', 'keys were') + ' not checked '
+                '(pass --allow-unchecked to accept that).')
+    if fail_on == 'unhealable':
+        return 'Exit 0: a run gets past every checked key alone.'
+    return 'Exit 0: every checked key resolves.'
+
+
+def _page_header(result):
+    plan = result.plan
+    if result.outcome == 'checked':
+        bits = []
+        if result.status is not None:
+            bits.append('HTTP ' + str(result.status))
+        if result.seconds is not None:
+            bits.append(format(result.seconds, '.1f') + ' s')
+        return plan.shown + ('  (' + ', '.join(bits) + ')' if bits else '')
+    return plan.shown + '  not checked (' + _plural(len(plan.keys), 'key', 'keys') + ')'
+
+
+def format_text(run, quiet=False):
+    """The text report of a `mendwright check` run (see CheckRun), as lines."""
+    keys = run.keys()
+    lines = ['mendwright check: ' + _plural(len(keys), 'key', 'keys') + ' on '
+             + _plural(len(run.pages), 'page', 'pages') + ', ' + run.browser_text + ', '
+             + format(run.seconds, '.1f') + ' s',
+             'Store: ' + run.store_path]
+    for result in run.pages:
+        shared = result.reason if result.outcome != 'checked' else None
+        body = []
+        body += ['  ' + _capital(note) for note in result.notes]
+        if shared:
+            body.append(_wrapped(_capital(shared), '  '))
+        else:
+            body += _key_lines(result.keys, quiet)
+        if quiet and not shared and not _key_lines(result.keys, quiet) and not result.notes:
+            continue
+        lines.append('')
+        lines.append(_page_header(result))
+        lines += body
+    tail = left_out_lines(run.plan.left_out)
+    lines.append('')
+    lines += [_wrapped(line, '', 88) for line in tail]
+    lines.append((counts_sentence(keys) if keys else 'No key was checked') + '.')
+    lines.append(exit_sentence(run.exit_code, keys, run.fail_on, run.strict))
+    return lines
+
+
+def _md_cell(text):
+    return ' '.join(str(text).split()).replace('|', '\\|')
+
+
+def _md_code(text):
+    text = ' '.join(str(text).split()).replace('|', '\\|')
+    return '`` ' + text + ' ``' if '`' in text else '`' + text + '`'
+
+
+def format_md(run, quiet=False):
+    """The Markdown report of a `mendwright check` run, for $GITHUB_STEP_SUMMARY."""
+    keys = run.keys()
+    lines = ['## mendwright check', '',
+             _plural(len(keys), 'key', 'keys') + ' on ' + _plural(len(run.pages), 'page', 'pages')
+             + ', checked with ' + run.browser_text + ' in ' + format(run.seconds, '.1f')
+             + ' s: ' + (counts_sentence(keys) if keys else 'none') + '.', '']
+    rows = []
+    for result in run.pages:
+        for k in result.keys:
+            if quiet and k.verdict == 'ok':
+                continue
+            label = LABELS[k.verdict]
+            rows.append('| ' + _md_code(result.plan.shown) + ' | ' + _md_code(k.key) + ' | '
+                        + (label if k.verdict == 'ok' else '**' + label + '**') + ' | '
+                        + _md_cell(_capital(k.reason)) + ' |')
+    if rows:
+        lines += ['| Page | Key | Result | Details |', '| --- | --- | --- | --- |'] + rows + ['']
+    extra = ['- ' + _md_code(result.plan.shown) + ': ' + _md_cell(note) for result in run.pages
+             for note in result.notes]
+    extra += ['- ' + _md_cell(line) for line in left_out_lines(run.plan.left_out)]
+    if extra:
+        lines += extra + ['']
+    lines.append(exit_sentence(run.exit_code, keys, run.fail_on, run.strict))
+    return lines
+
+
+def format_json(run):
+    """The JSON report of a `mendwright check` run, schema 1."""
+    keys = sorted(run.keys(), key=lambda k: (k.page or '', k.key))
+    counts = {}
+    for k in keys:
+        counts[k.verdict] = counts.get(k.verdict, 0) + 1
+    pages = []
+    for result in run.pages:
+        item = {'page': result.plan.page,
+                'address': result.plan.shown if result.plan.address or result.plan.skip else None,
+                'outcome': result.outcome, 'status': result.status,
+                'final_page': result.final_page, 'seconds': result.seconds,
+                'notes': list(result.notes), 'keys': sorted(result.plan.keys)}
+        if result.reason:
+            item['reason'] = result.reason
+        pages.append(item)
+    data = {
+        'schema': 1, 'mendwright': run.version, 'store': run.store_path,
+        'browser': run.browser, 'headless': run.headless, 'fingerprint': run.fingerprint,
+        'dry_run': run.dry_run, 'provider': run.provider, 'fail_on': run.fail_on,
+        'strict': run.strict, 'allow_unchecked': run.allow_unchecked,
+        'seconds': round(run.seconds, 1), 'exit_code': run.exit_code, 'sites': run.plan.sites,
+        'counts': counts,
+        'left_out': [{'key': key, 'reason': kind} for key, kind in sorted(run.plan.left_out)],
+        'pages': pages,
+        'keys': [k.as_dict(fail_on=run.fail_on, strict=run.strict) for k in keys],
+    }
+    return json.dumps(data, indent=2, sort_keys=True).split('\n')
+
+
+@dataclass
+class CheckRun:
+    """Everything a `mendwright check` report says."""
+    plan: Plan
+    pages: list
+    store_path: str
+    browser: str
+    headless: bool
+    seconds: float
+    fingerprint: bool
+    dry_run: bool
+    provider: Any
+    fail_on: str
+    strict: bool
+    allow_unchecked: bool
+    version: str
+    exit_code: int = 0
+
+    @property
+    def browser_text(self):
+        return 'Playwright ' + self.browser + (' (headless)' if self.headless else ' (headed)')
+
+    def keys(self):
+        return [k for result in self.pages for k in result.keys]
+
+    def decide_exit(self):
+        keys = self.keys()
+        if any(k.fails(fail_on=self.fail_on, strict=self.strict) for k in keys):
+            self.exit_code = 1
+        elif (not keys or any(k.counts_as == 'unchecked' for k in keys)) and not self.allow_unchecked:
+            self.exit_code = 3
+        else:
+            self.exit_code = 0
+        return self.exit_code
