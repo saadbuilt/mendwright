@@ -2,7 +2,7 @@
 # Explicit patterns rather than graft, so __pycache__ and .pyc files never get in.
 # Each pattern must match at least one file, or the build prints a warning.
 include CHANGELOG.md CONTRIBUTING.md SECURITY.md
-recursive-include tests *.py *.html
+recursive-include tests *.py *.html *.json
 recursive-include examples/demo *.py *.html *.md
 # The reference gateway and its config: tests/test_gateway_worker.py checks the worker
 # against mendwright/prompt.py.

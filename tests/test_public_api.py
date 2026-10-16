@@ -39,3 +39,18 @@ def test_the_facade_is_annotated():
 def test_the_package_ships_py_typed():
     from pathlib import Path
     assert (Path(mendwright.__file__).parent / 'py.typed').exists()
+
+
+def test_locator_all_takes_nonempty_and_all_is_unchanged():
+    import inspect
+
+    from mendwright.aio import AsyncHealer
+    from mendwright.facade import Healer
+
+    for cls in (Healer, AsyncHealer):
+        params = inspect.signature(cls.locator_all).parameters
+        assert list(params) == ['self', 'key', 'selector', 'role', 'timeout_ms', 'poll_ms',
+                                'optional', 'nonempty']
+        assert params['nonempty'].default is False
+        assert params['nonempty'].kind is inspect.Parameter.KEYWORD_ONLY
+    assert not {'ListMatch', 'ListOutcome', 'edit_list_heal'} & set(mendwright.__all__)

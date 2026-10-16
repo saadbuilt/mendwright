@@ -14,9 +14,9 @@ registered (open(dismiss=True), see mendwright.dismiss), optional steps
 found on (open(heal_across_pages=...)). Steps the site shows in another order, on one page
 or not at all run through heal.step() and heal.run_steps() (see mendwright.steps).
 
-Lists of elements, such as the cards of a product grid, heal through heal.locator_all()
-(see mendwright.lists), and expect_value= checks what a read through a heal returns (see
-mendwright.values).
+Lists of elements, such as the cards of a product grid, are looked up with
+heal.locator_all() (see mendwright.lists), and expect_value= checks what a read through a heal
+returns (see mendwright.values).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from .interruptions import (COOKIE_BANNER_KEY, COOKIE_CHOICES, Budget, Interrupt
                             make_interruption, nth_targets, precise_selectors)
 from .journal import Journal
 from .limits import Guardrails, RateLimiter
-from .lists import item_role, valid as valid_list
+from .lists import item_role, placed as placed_list, valid as valid_list
 from .providers import GatewayProvider
 from .resolver import _no_match_message, _split_runnable, resolve
 from .roles import infer_role, role_choices
@@ -237,6 +237,17 @@ def _env_flag(name):
                      'Set it to 1 to turn it on, or unset it.')
 
 
+def _fingerprint_off_by(fingerprint=None):
+    """What turns the fingerprint tier off, in the words a message uses, with the precedence
+    of fingerprint_setting(): MENDWRIGHT_DISABLE=1, fingerprint=False, or
+    MENDWRIGHT_FINGERPRINT=0."""
+    if _env_flag('MENDWRIGHT_DISABLE'):
+        return 'MENDWRIGHT_DISABLE=1'
+    if fingerprint is not None:
+        return 'fingerprint=False'
+    return 'MENDWRIGHT_FINGERPRINT=0'
+
+
 def fingerprint_setting(fingerprint=None):
     """Whether the fingerprint tier is on: the fingerprint= argument when it is not None,
     else MENDWRIGHT_FINGERPRINT (1 or 0), else on. MENDWRIGHT_DISABLE=1 turns it off with
@@ -398,6 +409,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         timeout_ms = DEFAULT_TIMEOUT_MS
     if dry_run is None:
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
+    off_by = _fingerprint_off_by(fingerprint)
     fingerprint = fingerprint_setting(fingerprint)
 
     if _env_flag('MENDWRIGHT_DISABLE'):
@@ -450,6 +462,9 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     # MENDWRIGHT_DISABLE=1 swaps in a provider that declines, which the coordinator's heal
     # path reads; the flag also stops a key being followed into an iframe.
     coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
+    # What turned the fingerprint tier off, for the refusal of a list looked up with
+    # nonempty=True (see Healer._nonempty_blocked).
+    coord.fingerprint_off_by = None if fingerprint else off_by
     return store, coord, timeout_ms
 
 
@@ -534,6 +549,19 @@ def _locator_args(key, selector, role, inline_xpath, intent=None):
         selector = inline_xpath
     roles = role_choices(role)
     return roles, _code_selectors(key, selector)
+
+
+def _nonempty_args(key, nonempty, optional):
+    """locator_all()'s checks of nonempty=, which touch neither the page nor the store:
+    TypeError for anything but True or False, ValueError for it with optional=True."""
+    if type(nonempty) is not bool:
+        raise TypeError('mendwright: heal.locator_all(' + repr(key) + ', ..., nonempty=...) takes '
+                        'True or False, got ' + type(nonempty).__name__ + '.')
+    if nonempty and optional:
+        raise ValueError('mendwright: heal.locator_all(' + repr(key) + ', ..., nonempty=True, '
+                         'optional=True) asks for two opposite things: nonempty=True says the '
+                         'list always has items here, and optional=True says it may be empty. '
+                         'Pass one of them.')
 
 
 def _code_selectors(key, selector):
@@ -1075,17 +1103,17 @@ class Healer:
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
                     role: Role | None = None, timeout_ms: int | None = None, poll_ms: int = 200,
-                    optional: bool = False) -> list:
+                    optional: bool = False, nonempty: bool = False) -> list:
         """The elements of a list, such as the cards of a product grid: an ActionProxy for
-        each element key's selector matches, in page order. A list whose selectors all match
-        nothing is never healed.
+        each element key's selector matches, in page order. mendwright never gives a list
+        that the key's own selectors don't match, those in your code or in a seed file.
 
         selector, role (the items' role, read from the first item when it is left out),
         timeout_ms and poll_ms mean what they mean for locator(). The first of key's
         selectors that matches one element or more gives the list, as written: the selector
         in your code first, then those of a seed file. A heal saved under the same key is
         skipped: a heal of one element, such as by heal.driver.find_element(), is no heal of
-        the list, and mendwright makes no list heals. Each time one matches two or more,
+        the list, and no list heal is ever used. Each time one matches two or more,
         mendwright records what the items look like (a list fingerprint, once per Healer and
         selector), which says the list had items. When none matches:
 
@@ -1100,13 +1128,28 @@ class Healer:
           name. So it looks for no other list, asks no model and saves nothing, and a
           selector that broke is fixed in your code.
 
+        nonempty=True says the list always has items at this point, such as the rows of a
+        cart the test just filled. Such a lookup records where the list sits and its heading
+        with its list fingerprint, and so does every later lookup of the key. When none of
+        its selectors matches, it always waits timeout_ms, then looks for the list on the
+        page (see mendwright.lists) and never uses what it finds: it saves it in the store as
+        a proposed list heal and raises AttentionRequired with the new selector, where the
+        list was and where the group found is, and the commands to check it (mendwright
+        lists), accept it (mendwright lists accept KEY ID) and write it into your code
+        (mendwright fix --apply). Only then does the list come from it, as your selector.
+        When it finds nothing it can propose, AttentionRequired says why. A list heal you
+        accepted is quarantined once the selector it replaced matches again, in any lookup
+        of the key.
+
         The proxies' actions handle interruptions and popups as locator()'s do, and confirm
         or quarantine nothing, as their confirm() does. Raises InvalidSelector, TypeError or
-        ValueError for arguments that can never work, before anything touches the page."""
+        ValueError for arguments that can never work (nonempty= other than True or False,
+        or nonempty=True with optional=True), before anything touches the page."""
         __tracebackhide__ = True  # pytest shows the caller
         roles, code = _locator_args(key, selector, role, None)
+        _nonempty_args(key, nonempty, optional)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        natives = self._list(key, roles, code, timeout, poll_ms, optional)
+        natives = self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
         return [self._item(key, native, timeout, poll_ms, due) for native in natives]
 
@@ -1178,17 +1221,18 @@ class Healer:
                 raise AttentionRequired(_no_match_message(key, runnable, []))
             time.sleep(poll_ms / 1000.0)
 
-    def _list(self, key, roles, code, timeout, poll_ms, optional=False):
+    def _list(self, key, roles, code, timeout, poll_ms, optional=False, nonempty=False):
         """The native handles of list key (see locator_all), with code primed first (see
         _prime). What a lookup that matches at once saves (the code's selectors, the first
-        success, the page, the list fingerprint) costs one write of the store."""
+        success, the page, the list fingerprint, a list heal it retires) costs one write of
+        the store."""
         __tracebackhide__ = True  # pytest shows the caller
         with _batched(self.store):
             self._prime(key, roles, code, None, None)
             found = self._list_look(key, self._list_runnable(key))
             if found is not None:
-                return self._list_found(key, roles, found)
-        if optional or not self._list_waits(key):
+                return self._list_found(key, roles, found, nonempty)
+        if not nonempty and (optional or not self._list_waits(key)):
             return []
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -1201,20 +1245,133 @@ class Healer:
             except AttentionRequired as exc:
                 if _raised_by_run(exc):
                     raise   # a run= function's own, not a miss of this list
+                if nonempty:
+                    return self._list_nonempty_missing(key, roles, exc)
                 raise self._list_missing(key, exc) from exc
         with _batched(self.store):
-            return self._list_found(key, roles, found)
+            return self._list_found(key, roles, found, nonempty)
 
-    def _list_found(self, key, roles, found):
+    def _list_found(self, key, roles, found, place=False):
         """The native handles of what found, (selector, count), matched for list key, with
         the page saved and, when it should be read (see _list_target), the list
-        fingerprint."""
+        fingerprint: with where the list sits when place (nonempty=True) or when the stored
+        one already holds it. The key's list heals that selector was replaced by are retired
+        (see _retire_lists)."""
         selector, count = found
         self._remember_page(key)
-        if self._list_target(key, selector, count):
+        placed = bool(place) or self._list_placed(key)
+        if self._list_target(key, selector, count, placed):
             self._keep_list(key, selector, roles,
-                            driver_list_fingerprint(self._driver, selector))
+                            driver_list_fingerprint(self._driver, selector, place=placed), placed)
+        self._retire_lists(key, selector, count)
         return driver_handles(self._driver, selector)
+
+    def _list_placed(self, key):
+        """True when key's stored list fingerprint holds where the list sits."""
+        try:
+            return placed_list(self.store.meta(key).get('listFingerprint'))
+        except Exception:
+            return False
+
+    def _list_rows(self, key):
+        """key's list heals that wait (store.list_heals), or [] for a store without
+        list_heals() or retire_list_heals()."""
+        store = self.store
+        if not (callable(getattr(store, 'list_heals', None))
+                and callable(getattr(store, 'retire_list_heals', None))):
+            return []
+        try:
+            return list(store.list_heals(key))
+        except Exception:
+            return []
+
+    def _retire_lists(self, key, selector, count):
+        """End key's list heals that selector, which just matched count elements, replaced
+        (SelectorStore.retire_list_heals): a proposed one is no longer proposed, an accepted
+        one is quarantined, with a WARNING and a heal.quarantine journal event. Nothing for a
+        key with none, which no 0.8.0 store has."""
+        rows = self._list_rows(key)
+        if not rows:
+            return
+        try:
+            changes = self.store.retire_list_heals(key, selector)
+        except Exception:
+            logger.debug('mendwright: could not retire the list heals of %r', key, exc_info=True)
+            return
+        if changes:
+            self.coordinator.retired_lists(key, selector, count, changes, rows)
+
+    def _list_nonempty_missing(self, key, roles, exc):
+        """What a lookup of list key with nonempty=True does when none of its selectors
+        matched (exc): the native handles of a list that came while mendwright looked for it,
+        or AttentionRequired with exc's text and why: the fingerprint tier is off, a list
+        heal you accepted waits for mendwright fix, or what HealCoordinator.propose_list()
+        proposed or refused."""
+        __tracebackhide__ = True  # pytest shows the caller
+        reason = self._nonempty_blocked(key)
+        if reason:
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+        for row in self._list_rows(key):
+            if row.get('status') == 'accepted':
+                count = self._count_live(row.get('xpath'))
+                if count:
+                    raise self._waits_for_fix(key, exc, row, count) from exc
+        outcome = self._propose_list(key, exc, self._url())
+        if outcome.kind == 'came':
+            with _batched(self.store):
+                found = self._list_look(key, self._list_runnable(key))
+                if found is not None:
+                    self.coordinator.came(key, found[0])
+                    return self._list_found(key, roles, found, True)
+        raise self._list_outcome_error(key, exc, outcome) from exc
+
+    def _nonempty_blocked(self, key):
+        """The refusal of a list looked up with nonempty=True while the fingerprint tier is
+        off, naming what turned it off, else ''."""
+        coordinator = self.coordinator
+        if getattr(coordinator, 'fingerprint', False):
+            return ''
+        off_by = getattr(coordinator, 'fingerprint_off_by', None)
+        if not isinstance(off_by, str) or not off_by:
+            off_by = "the HealCoordinator's fingerprint=False"
+        return coordinator.decline_nonempty(
+            key, 'mendwright looks for a list only while the fingerprint tier is on, and '
+            + off_by + ' turns it off.')
+
+    def _count_live(self, selector):
+        """How many elements selector matches on the page now; 0 on any error."""
+        try:
+            return int(self._driver.count(selector)) if isinstance(selector, str) else 0
+        except Exception:
+            return 0
+
+    def _waits_for_fix(self, key, exc, row, count):
+        """The AttentionRequired for list key, when a list heal you accepted for it (row)
+        matches count elements and waits for mendwright fix."""
+        reason = self.coordinator.waits_for_fix(key, self.store.meta(key), row, count)
+        return AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason)
+
+    def _propose_list(self, key, exc, url):
+        """HealCoordinator.propose_list() for list key, which nonempty=True says has items
+        and whose lookup raised exc, on the page at url. Runs in a worker thread on the async
+        healer, where the coordinator reaches the page through SyncBridge."""
+        return self.coordinator.propose_list(key, self.store.meta(key),
+                                             self._list_runnable(key),
+                                             self._flow_context(key, url))
+
+    def _list_outcome_error(self, key, exc, outcome):
+        """The AttentionRequired for what propose_list() did (see ListOutcome), but a list
+        that came and is still there: exc's text and the reason."""
+        if outcome.kind == 'came':
+            reason = self.coordinator.came_and_went(key, self.store.meta(key), outcome.xpath,
+                                                    outcome.reason)
+        elif outcome.kind == 'accepted':
+            row = outcome.row or {'xpath': outcome.xpath}
+            reason = self.coordinator.waits_for_fix(key, self.store.meta(key), row,
+                                                    outcome.count)
+        else:
+            reason = outcome.reason
+        return AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason)
 
     def _list_missing(self, key, exc):
         """The AttentionRequired for list key, whose lookup raised exc when none of its
@@ -1223,22 +1380,27 @@ class Healer:
         reason = self.coordinator.decline_list(key, self.store.meta(key))
         return AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason)
 
-    def _list_target(self, key, selector, count):
+    def _list_target(self, key, selector, count, place=False):
         """True when the list fingerprint of what selector matched for key should be read:
         the fingerprint tier is on, it matched two or more, this Healer has not read it for
-        that selector yet, and the key is not marked destructive."""
+        that selector yet (with where it sits, when place), and the key is not marked
+        destructive."""
         if not getattr(self.coordinator, 'fingerprint', False) or count < 2:
             return False
-        if ('list', key, selector) in self._fingerprinted:
+        if ('list', key, selector, bool(place)) in self._fingerprinted:
             return False
         try:
             return not self.store.meta(key)['destructive']
         except Exception:
             return False
 
-    def _keep_list(self, key, selector, roles, lfp):
-        """Save lfp as key's list fingerprint, and the items' role when role= did not say."""
-        self._fingerprinted.add(('list', key, selector))
+    def _keep_list(self, key, selector, roles, lfp, place=False):
+        """Save lfp as key's list fingerprint, and the items' role when role= did not say.
+        When place (where the list sits) was asked for and lfp has none, a stored list
+        fingerprint that holds one is left as it is: a failed read never removes a place."""
+        self._fingerprinted.add(('list', key, selector, bool(place)))
+        if place and not placed_list(lfp) and self._list_placed(key):
+            return
         if lfp is None:
             return
         try:
