@@ -1787,3 +1787,52 @@ def test_an_accepted_list_heal_that_names_no_selector_it_replaced_is_left_alone(
             "tell which string in your code to replace. Change it by hand to: div.cart-row. If "
             "your code already has a selector that works, drop the list heal with: mendwright "
             "lists reject cart") in out.splitlines()
+
+
+# --- what the merge of the 0.9.0 features needed --------------------------------------------
+
+def test_destructive_key_skips_an_accepted_list_heal(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, err = run(capsys, "--apply", "--destructive-key", "cart")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: it is marked destructive, so its heals are never written into code. Fix the "
+            "selector by hand.") in out.splitlines()
+
+
+@pytest.mark.parametrize("row, said", [
+    (dict(list_row("#rows", "accepted", accepted=T2), css=None),
+     "  cart: its accepted list heal '#rows' is not an XPath that lxml can compile"),
+    (list_row(ROWS, "accepted", accepted=T2, css='div.cart-row, a[href^="javascript:"]'),
+     "  cart: the CSS form of its accepted list heal, "
+     "'div.cart-row, a[href^=\"javascript:\"]', is not one mendwright builds")])
+def test_an_accepted_list_heal_mendwright_could_not_have_saved_is_never_written(root, capsys,
+                                                                              row, said):
+    write_store(root, {"cart": cart_key(row)})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert any(line.startswith(said) and line.endswith("Check the store; nothing is written for "
+                                                       "this key.") for line in out.splitlines())
+
+
+def test_destructive_key_reads_a_call_written_in_another_spelling(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code, out, err = run(capsys, "--destructive-key", "get_by_role('button', name='Sign in')")
+    assert (code, err) == (0, "")
+    assert ("  " + SIGN_IN + ": it is marked destructive, so its heals are never written into "
+            "code. Fix the selector by hand.") in out.splitlines()
+    assert "is a heal.page.get_by_role() call" not in out
+
+
+def test_a_list_heal_rejected_with_mendwright_lists_is_named_so(root, capsys):
+    rejected = dict(list_row(ROWS, "quarantined"), addedAt=T1)
+    write_store(root, {"cart": cart_key(rejected)})
+    write(root, "test_cart.py", CART_TEST)
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert ("  cart: its newest heal, the list heal " + ROWS + ", was rejected with mendwright "
+            "lists reject, and no selector has worked for the key since, so there is nothing to "
+            "write back.") in out.splitlines()

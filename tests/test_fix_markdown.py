@@ -236,6 +236,20 @@ def _one(key="k", old="#a", new=NEW, role="button", **extra):
     return {key: healed(old, new, role=role, **extra)}
 
 
+CALL = 'get_by_role("button", name="Sign in")'
+ROWS = "//div[@class='cart-row']"
+
+
+def _list_key(status, was=(".c",), code=(".c",), at=T1, **extra):
+    """A key with a list heal of heal.locator_all(..., nonempty=True), status proposed or
+    accepted (see tests/test_fix.py)."""
+    row = cand(ROWS, "heal", None, status=status, list=True, css="div.cart-row",
+               proposal={"id": "3f2a9c1d", "at": at, "count": 3, "was": {"selectors": list(was)}},
+               **({"acceptedAt": T2} if status == "accepted" else {}))
+    return {"k": {"expectedRole": "div", "listFingerprint": {"v": 1, "count": 3, "items": []},
+                  "candidates": [cand(c, "code", T0) for c in code] + [row], **extra}}
+
+
 CODE_CASES = {
     "destructive": (_one(destructive=True), [canary("k", NEW)], {"a.py": 'x = "#a"\n'}, []),
     "iframe": ({"k": {"expectedRole": "button", "candidates": [
@@ -271,6 +285,15 @@ CODE_CASES = {
     "flow_selector": (_one(), [canary("k", NEW)], {"a.py": 'heal.interrupt("i", "#a")\n'}, []),
     "already_in_code": (_one(), [canary("k", NEW)], {"a.py": 'x = "' + NEW + '"\n'}, []),
     "not_found": (_one(), [canary("k", NEW)], {"a.py": 'x = "#elsewhere"\n'}, []),
+    "get_by_call": (_one(key=CALL, old=CALL), [canary(CALL, NEW)],
+                    {"a.py": 'page.get_by_role("button", name="Sign in").click()\n'}, []),
+    "list_proposed": (_list_key("proposed"), [], {"a.py": 'x = ".c"\n'}, []),
+    "list_unnamed": (_list_key("accepted", was=()), [], {"a.py": 'x = ".c"\n'}, []),
+    "list_other_selector": (_list_key("accepted", was=(".gone",)), [], {"a.py": 'x = ".c"\n'},
+                            []),
+    # The code's selector matched on T0, after the list heal was found.
+    "list_matched_since": (_list_key("accepted", at="2026-09-01T00:00:00+00:00"), [],
+                           {"a.py": 'x = ".c"\n'}, []),
 }
 
 
@@ -295,7 +318,8 @@ def test_every_left_alone_code_with_the_text_of_the_text_output(root, capsys, co
         assert item["key"] is None and item["path"] in ("a.py", "a.go")
         assert (item["line"] is None) == (code == "not_python")
     else:
-        assert item["key"] in ("k", "id=login") and item["path"] is None and item["line"] is None
+        assert item["key"] in ("k", "id=login", CALL) and item["path"] is None
+        assert item["line"] is None
     assert code in fixback.CODES
 
 
@@ -451,6 +475,31 @@ def test_markdown_found_by_and_confirmed_by_columns():
                       (None, "a check before mendwright 0.9.0, which did not record which"),
                       ("test", "passing test")):
         assert cells(confirmed_by={"by": by, "test": None})[4] == shown
+
+
+def test_an_accepted_list_heal_was_found_by_its_list_fingerprint_and_confirmed_by_a_person(
+        root, capsys):
+    held = {"ts": T1, "event": "heal.held", "key": "k", "xpath": ROWS, "provider": "fingerprint",
+            "source": "fingerprint", "list": True}
+    accepted = {"ts": "2026-10-03T10:00:05+00:00", "event": "heal.accepted", "key": "k",
+                "xpath": ROWS, "id": "3f2a9c1d", "list": True}
+    write_store(root, _list_key("accepted", at=T1), [held, accepted])
+    write(root, "a.py", 'rows = heal.locator_all("k", ".c", nonempty=True)\n')
+    [item] = fix_json(capsys)[1]["written_back"]
+    assert (item["now"], item["xpath"], item["list"], item["accepted"]) == (
+        ["div.cart-row"], ROWS, True, T2)
+    assert item["found_by"] == {"tier": "fingerprint", "provider": "fingerprint", "model": None,
+                                "at": T1}
+    assert item["confirmed_by"] == {"by": "accepted", "test": None,
+                                    "at": "2026-10-03T10:00:05+00:00"}
+    out = run(capsys, "--format", "md")[1]
+    assert ("| `k` (div) | `.c` | `div.cart-row` | fingerprint (no model) | accepted with "
+            "`mendwright lists accept` | `a.py:1` |") in out.splitlines()
+    # Without a journal: the proposal says when it was found, and acceptedAt when accepted.
+    (root / ".mendwright" / "journal.jsonl").unlink()
+    [item] = fix_json(capsys)[1]["written_back"]
+    assert (item["found_by"]["at"], item["confirmed_by"]) == (
+        T1, {"by": "accepted", "test": None, "at": T2})
 
 
 def test_markdown_where_names_three_places_then_counts_and_takes_a_prefix():

@@ -2254,6 +2254,7 @@ A file is written through a temporary file next to it and then replaced, and a f
 - `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where.
 - `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent` or `frame`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
 - `confirmed_by` describes the `heal.canary` that confirmed the heal: what confirmed it (`by`, see [journal.jsonl](#journaljsonl)) and, for a passing test, its node id (`test`). Both are `null` for a canary written before 0.9.0, and `confirmed_by` is `null` for a heal that is not confirmed, which only `--include-unconfirmed` writes.
+- A list heal you accepted with [`mendwright lists accept`](#mendwright-lists) has `"list": true` and `accepted`, when you accepted it. Its `found_by` is the list fingerprint (`tier` `fingerprint`), at the time of its `heal.held`, else of its proposal, and its `confirmed_by` has `by` `accepted`, at the time of its `heal.accepted`, else `accepted`.
 - `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`.
 - `plan` is a SHA-256 of what is written where: each replacement's path, old selector, new selector and keys. Line numbers and quoting are left out, so an unrelated edit that moves a line keeps it.
 - `files` says which files were `written`, which only happens with `--apply`.
@@ -2265,12 +2266,17 @@ A file is written through a temporary file next to it and then replaced, and a f
 | `not_a_selector` | a key whose heal is not an XPath lxml can compile, or whose CSS form is not one mendwright builds |
 | `seed_only` | a key with no selector from your code |
 | `list_and_element` | a key with a list heal and a one-element heal |
-| `list_heal` | a key whose heal is a heal of a list |
+| `list_heal` | a key whose heal is a list heal saved by a build of 0.8.0 before its release |
+| `list_proposed` | a key whose list heal waits for you to check it with `mendwright lists` |
+| `list_unnamed` | a key whose accepted list heal doesn't name the selector it replaced |
+| `list_other_selector` | a key whose accepted list heal replaced a selector your last run didn't pass |
+| `list_matched_since` | a key whose selector matched after its list heal was found |
 | `list_key` | a list key whose heal is of one element |
 | `bare_word` | a key whose old selector is a bare word |
 | `driver_by` | a key from a `By` that can't run the healed XPath |
 | `unconfirmed` | a key whose heal was never confirmed |
-| `quarantined` | a key whose newest heal was quarantined |
+| `quarantined` | a key whose newest heal was quarantined, or a list heal you rejected |
+| `get_by_call` | the key of a `heal.page.get_by_*()` call, which `mendwright fix` never rewrites |
 | `ambiguous` | a file with a string that belongs to more than one key |
 | `not_python` | a file that couldn't be read as Python |
 | `css_only` | a place that passes the selector where only CSS runs |
