@@ -50,6 +50,8 @@ _DEFAULT_PAGE_FIXTURE = 'page'
 # Per-heal lines shown in the end-of-run summary without -v, and keys named in its line
 # about list heals that wait for a person to check them.
 _SUMMARY_LIMIT = 10
+# The longest node id a heal.canary event names (a parametrized id can be very long).
+MAX_NODEID = 300
 
 
 def pytest_addoption(parser):
@@ -347,7 +349,7 @@ class _Session:
         if report.when == 'setup' and report.passed:
             return   # heals made in setup are reported with the call phase
         if report.when == 'call' and report.passed:
-            tracker.confirm()   # the test passed with the healed selectors
+            tracker.confirm(report.nodeid)   # the test passed with the healed selectors
         heals = tracker.take()
         records = [{'nodeid': report.nodeid, 'key': str(h.get('key')),
                     'old': [str(x) for x in h.get('old') or ()], 'new': str(h.get('new')),
@@ -549,8 +551,11 @@ class _Tracker:
         held, self._held = self._held, []
         return held
 
-    def confirm(self):
-        """Confirm the heals of this test that are still waiting for an outcome."""
+    def confirm(self, nodeid=None):
+        """Confirm the heals of this test that are still waiting for an outcome. The canary
+        names the test (by='test', and its node id, cut to MAX_NODEID characters)."""
+        from .coordinator import _canary_call
+        test = nodeid[:MAX_NODEID] if isinstance(nodeid, str) else None
         for coordinator, heal in self._found:
             key = heal.get('key')
             pending = getattr(coordinator, 'pending', None)
@@ -559,7 +564,7 @@ class _Tracker:
             if pending.get(key) != heal.get('new'):
                 continue   # already reported, or replaced by a later heal of the same key
             try:
-                coordinator.confirm_pending(key, True)
+                _canary_call(coordinator.confirm_pending, key, True, by='test', test=test)
             except Exception:
                 logger.warning('mendwright: could not confirm the heal for %r', key,
                                exc_info=True)

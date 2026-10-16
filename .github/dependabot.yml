@@ -8,3 +8,10 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+  # The action installs one hash-pinned lxml wheel (action/requirements.txt, made with
+  # pip-compile --generate-hashes from action/requirements.in); this keeps the pin and its
+  # hashes current.
+  - package-ecosystem: pip
+    directory: /action
+    schedule:
+      interval: weekly

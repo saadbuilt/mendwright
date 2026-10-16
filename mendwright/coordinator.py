@@ -13,6 +13,7 @@ healed from its fingerprint only, never by a model (see _heal_get_by).
 """
 
 import contextlib
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -71,6 +72,45 @@ FRAME_PROVIDER = 'frame'
 def _no_fingerprint(selector_key):
     return ("'" + selector_key + "' has no fingerprint yet (mendwright records one each time "
             'its selector matches)')
+
+
+_TAKES = {}
+
+
+def _takes(func, name):
+    """True when func can be called with the keyword argument name: it has a parameter of
+    that name, or **kwargs. Cached per function. A function whose signature cannot be read
+    counts as not taking it, so a journal or a subclass written for 0.8.0, whose canary()
+    or confirm() has no by= and test=, still gets every call, without them."""
+    target = getattr(func, '__func__', func)
+    try:
+        cache_key = (target, name)
+        if cache_key in _TAKES:
+            return _TAKES[cache_key]
+    except TypeError:          # not hashable
+        cache_key = None
+    try:
+        params = inspect.signature(func).parameters.values()
+        takes = any(p.kind == p.VAR_KEYWORD or (p.name == name and p.kind in (
+            p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)) for p in params)
+    except (TypeError, ValueError):
+        takes = False
+    if cache_key is not None:
+        _TAKES[cache_key] = takes
+    return takes
+
+
+def _accepted(func, **fields):
+    """The fields that are not None and that func takes as keyword arguments."""
+    return {name: value for name, value in fields.items()
+            if value is not None and _takes(func, name)}
+
+
+def _canary_call(method, *args, by=None, test=None, **kwargs):
+    """method(*args, **kwargs), with by= and test= added when they are given and method takes
+    them. Every canary report goes through here, so a confirm_pending(), confirm() or
+    journal canary() replaced by code written for 0.8.0 still gets each call, once."""
+    return method(*args, **kwargs, **_accepted(method, by=by, test=test))
 
 
 def _destructive_message(selector_key):
@@ -931,11 +971,14 @@ class HealCoordinator:
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
                    + applied + timing)
 
-    def confirm(self, selector_key, xpath, success, reason=None):
+    def confirm(self, selector_key, xpath, success, reason=None, *, by=None, test=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
         candidate whose retry failed. A heal from the fingerprint tier, or a key followed
         into an iframe, is not reported to the provider, which did not propose it. reason,
-        when given, is journaled with the canary (see mendwright.values)."""
+        when given, is journaled with the canary (see mendwright.values). by says what
+        confirmed or refused the heal ('test', 'expect', 'expect_value', 'confirm', 'action'
+        or 'destructive'), and test is the pytest node id for by='test'; both are journaled
+        when given, so mendwright fix can say what confirmed each heal it writes back."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
         if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER):
@@ -943,7 +986,8 @@ class HealCoordinator:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:
                 pass
-        self.journal.canary(selector_key, xpath=xpath, success=bool(success), reason=reason)
+        _canary_call(self.journal.canary, selector_key, xpath=xpath, success=bool(success),
+                     reason=reason, by=by, test=test)
         if heal is not None:
             heal['confirmed'] = bool(success)
         if not success:
@@ -955,15 +999,17 @@ class HealCoordinator:
         confirmed yet."""
         return xpath is not None and self.pending.get(selector_key) == xpath
 
-    def confirm_pending(self, selector_key, success, reason=None, xpath=None):
+    def confirm_pending(self, selector_key, success, reason=None, xpath=None, *, by=None,
+                        test=None):
         """Report the action outcome for a just-healed key, then clear its marker.
         A failed action quarantines the healed candidate so it can't outrank the seed.
-        With xpath, only when the key's heal waiting is the one that applied xpath."""
+        With xpath, only when the key's heal waiting is the one that applied xpath. by and
+        test go to confirm() (see there) when it takes them."""
         if xpath is not None and self.pending.get(selector_key) != xpath:
             return
         xpath = self.pending.pop(selector_key, None)
         if xpath is not None:
-            self.confirm(selector_key, xpath, success, reason)
+            _canary_call(self.confirm, selector_key, xpath, success, reason, by=by, test=test)
 
     def explain(self, selector_key):
         """The human-readable reason the last heal attempt for ``selector_key`` did not

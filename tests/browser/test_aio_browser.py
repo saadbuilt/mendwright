@@ -8,6 +8,7 @@ installed is fine. One event loop and one browser per engine are shared by the m
 """
 
 import asyncio
+import json
 import threading
 
 import pytest
@@ -1279,3 +1280,73 @@ def test_a_read_that_heals_onto_the_wrong_number_is_refused(engine, tmp_path):
     assert "there is '4.5', which is not money (expect_value='money')" in error
     assert heal.store.status('price', "//span[@class='rating']") == 'quarantined'
     assert provider.outcomes == [('price', "//span[@class='rating']", False)]
+
+
+# --- from a redesign to what mendwright fix writes back --------------------------------------
+
+STEPS = '''async def checkout(heal):
+    heal.interrupt("terms_popup", "#accept-terms")
+    box = heal.locator("accept_terms", "#accept-terms", role="checkbox")
+    await box.check(expect=lambda: box.native.is_checked())
+    field = heal.locator("search", "#search-box", role="textbox")
+    await field.fill("shoes", expect=lambda: field.native.input_value())
+'''
+
+
+def _steps(folder):
+    """checkout() from the user's code, read again from the file each time."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('checkout_steps', folder / 'checkout_steps.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.checkout
+
+
+def test_an_async_redesign_confirmed_by_expect_is_written_back(engine, tmp_path, monkeypatch,
+                                                                capsys):
+    if engine.name != 'chromium':
+        pytest.skip('the flow runs on Chromium; the rest of this file runs on every engine')
+    from mendwright import cli
+    from mw_engines import CHECKOUT_V1, CHECKOUT_V2
+    code = tmp_path / 'project'
+    code.mkdir()
+    (code / 'checkout_steps.py').write_text(STEPS, encoding='utf-8')
+    store = str(code / '.mendwright' / 'overrides.json')
+    provider = Stub("//input[@name='q']")
+
+    async def run(html):
+        page = await engine.page(html)
+        try:
+            heal = await mendwright.aio.open(page, provider=provider, store_path=store,
+                                             cookies='reject', timeout_ms=300)
+            if html is CHECKOUT_V1:
+                await heal.locator('accept_terms', '#accept-terms', role='checkbox').check()
+            else:
+                await _steps(code)(heal)
+            consent = await page.locator('#consent').text_content() if html is CHECKOUT_V2 else ''
+            return heal, consent
+        finally:
+            await page.context.close()
+
+    engine.run(run(CHECKOUT_V1))                    # an earlier run, while the selectors worked
+    heal, consent = engine.run(run(CHECKOUT_V2))
+    assert consent == 'rejected'
+    assert [(h.key, h.source, h.confirmed) for h in heal.heals] == [
+        ('accept_terms', 'fingerprint', True), ('search', 'model', True)]
+
+    monkeypatch.chdir(code)
+    capsys.readouterr()
+    assert cli.main(['fix', '--store', store, '--format', 'json']) == 0
+    data = json.loads(capsys.readouterr().out)
+    confirmed = {w['key']: w['confirmed_by']['by'] for w in data['written_back']}
+    assert confirmed == {'accept_terms': 'expect', 'search': 'expect'}
+    assert {w['key']: w['found_by']['tier'] for w in data['written_back']} == {
+        'accept_terms': 'fingerprint', 'search': 'model'}
+    assert [i['code'] for i in data['left_alone']] == ['flow_selector']
+
+    assert cli.main(['fix', '--store', store, '--apply']) == 0
+    source = (code / 'checkout_steps.py').read_text(encoding='utf-8')
+    assert 'heal.interrupt("terms_popup", "#accept-terms")' in source
+    assert '"#search-box"' not in source and source.count('"#accept-terms"') == 1
+    heal, consent = engine.run(run(CHECKOUT_V2))
+    assert heal.heals == [] and consent == 'rejected'

@@ -1,0 +1,3 @@
+{"ts":"2026-10-16T05:01:02+00:00","event":"heal.applied","key":"accept_terms","provider":"fingerprint","latency_ms":3,"xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","old":["#accept-terms"],"source":"fingerprint"}
+{"ts":"2026-10-16T05:01:03+00:00","event":"heal.applied","key":"email","provider":"StubProvider","model":"stub-model","latency_ms":12,"xpath":"//input[@name='e-mail']","old":["#email"]}
+{"ts":"2026-10-16T05:01:04+00:00","event":"heal.canary","key":"accept_terms","xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","success":true,"by":"test","test":"tests/test_checkout.py::test_sign_up"}

@@ -3,6 +3,11 @@
 # Each pattern must match at least one file, or the build prints a warning.
 include CHANGELOG.md CONTRIBUTING.md SECURITY.md
 recursive-include tests *.py *.html *.json *.md *.txt
+# The GitHub Action: tests/test_action_script.py loads its script, and the CI job's
+# fixture project and store are what tests/test_action_script.py runs it on.
+include action.yml
+recursive-include action *.py *.txt *.in
+recursive-include tests/fixtures/action *.py *.json *.jsonl
 recursive-include examples/demo *.py *.html *.md
 # The reference gateway and its config: tests/test_gateway_worker.py checks the worker
 # against mendwright/prompt.py.

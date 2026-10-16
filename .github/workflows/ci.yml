@@ -137,6 +137,44 @@ jobs:
           MENDWRIGHT_REQUIRE_ENGINES: pw-chromium,pw-firefox,pw-webkit,sel-chrome,sel-firefox
         run: python -m pytest -m browser -q -rs
 
+  # The GitHub Action (action.yml) from this checkout, as a dry run on a fixture project
+  # with its store in the workspace: the Python setup, the venv with the hash-pinned lxml
+  # wheel, the Windows paths, the job summary and the outputs. Nothing is pushed, and the
+  # token can only read.
+  action:
+    name: action (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the action as a dry run
+        id: mendwright
+        uses: ./
+        with:
+          artifact: ''
+          working-directory: tests/fixtures/action/project
+          store: store/overrides.json
+          dry-run: true
+      - name: Check its outputs
+        env:
+          RESULT: ${{ steps.mendwright.outputs.result }}
+          WRITTEN: ${{ steps.mendwright.outputs.written }}
+          LEFT_ALONE: ${{ steps.mendwright.outputs.left-alone }}
+        run: |
+          echo "result=$RESULT written=$WRITTEN left-alone=$LEFT_ALONE"
+          test "$RESULT" = dry-run
+          test "$WRITTEN" = 1
+          test "$LEFT_ALONE" = 2
+          test -z "$(git status --porcelain)"
+
   # Build the sdist and wheel the way a release does, install the wheel into a clean venv,
   # and run the sdist's own tests against it.
   package:

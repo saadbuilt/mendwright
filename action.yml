@@ -1,0 +1,209 @@
+name: mendwright fix
+description: >-
+  After your tests, open a pull request that writes the selectors mendwright healed, and your
+  tests confirmed, back into your code.
+author: saadbuilt
+branding:
+  icon: git-pull-request
+  color: green
+
+# The steps pass every input and value through env: and read it as "$VAR", so no ${{ }}
+# expression is ever part of a script. Only guard, find-artifact, the download from another
+# run and publish get the token. See action/mendwright_action.py and the guide's
+# "Open a pull request with the fixes".
+
+inputs:
+  artifact:
+    description: >-
+      Name of the artifact that holds the store, from this run or, under workflow_run, from the
+      run that triggered it. Empty: read the store from the workspace.
+    default: mendwright-store
+  store:
+    description: >-
+      The store's path inside the artifact, tried as given and then under .mendwright/. With
+      artifact empty, a path relative to working-directory, tried the same way.
+    default: overrides.json
+  working-directory:
+    description: Where your code is checked out; mendwright fix runs here.
+    default: .
+  paths:
+    description: One --path for mendwright fix per line, inside working-directory.
+    default: .
+  globs:
+    description: One --glob for mendwright fix per line.
+    default: ''
+  destructive-keys:
+    description: >-
+      One key per line, treated as destructive. List the keys you pass to
+      mendwright.open(destructive_keys=...), which the store does not save.
+    default: ''
+  only-default-branch:
+    description: Open pull requests only into the repository's default branch.
+    default: 'true'
+  branch-prefix:
+    description: The prefix of the branch the action writes. Must end with /.
+    default: mendwright/fix/
+  dry-run:
+    description: Run mendwright fix without --apply and write the job summary. Nothing is pushed.
+    default: 'false'
+  draft:
+    description: Open the pull request as a draft.
+    default: 'false'
+  labels:
+    description: Comma-separated labels for a new pull request, at most 10.
+    default: ''
+  close-stale:
+    description: Close the open pull request when its changes are no longer needed.
+    default: 'true'
+  tests-result:
+    description: >-
+      Pass needs.test.result (or github.event.workflow_run.conclusion). close-stale needs
+      success.
+    default: ''
+  token:
+    description: Token for the API and the push.
+    default: ${{ github.token }}
+  commit-author-name:
+    description: The author of the action's commits.
+    default: github-actions[bot]
+  commit-author-email:
+    description: The author's email, which is also how the action knows its own commits.
+    default: 41898282+github-actions[bot]@users.noreply.github.com
+  python-version:
+    description: Passed to actions/setup-python. Empty uses the runner's Python.
+    default: '3.12'
+
+outputs:
+  result:
+    description: >-
+      created, updated, unchanged, closed, nothing, kept-closed, blocked, superseded, dry-run or
+      skipped; empty after a refusal.
+    value: ${{ steps.publish.outputs.result || steps.fix.outputs.result || steps.guard.outputs.result }}
+  pull-request-number:
+    description: The pull request created, updated, left as it is, kept closed, blocked, superseded or closed.
+    value: ${{ steps.publish.outputs.pull-request-number || steps.fix.outputs.pull-request-number || steps.guard.outputs.pull-request-number }}
+  pull-request-url:
+    description: The same pull request's URL.
+    value: ${{ steps.publish.outputs.pull-request-url || steps.fix.outputs.pull-request-url || steps.guard.outputs.pull-request-url }}
+  written:
+    description: How many keys were written back (in a dry run, would be).
+    value: ${{ steps.publish.outputs.written || steps.fix.outputs.written || steps.guard.outputs.written }}
+  left-alone:
+    description: How many items mendwright fix left alone.
+    value: ${{ steps.publish.outputs.left-alone || steps.fix.outputs.left-alone || steps.guard.outputs.left-alone }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      id: python
+      if: inputs.python-version != ''
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Check which run this is
+      id: guard
+      shell: bash
+      env:
+        MW_SETUP_PYTHON: ${{ steps.python.outputs.python-path }}
+        MW_TOKEN: ${{ inputs.token }}
+        MW_IN_ARTIFACT: ${{ inputs.artifact }}
+        MW_IN_STORE: ${{ inputs.store }}
+        MW_IN_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MW_IN_ONLY_DEFAULT_BRANCH: ${{ inputs.only-default-branch }}
+        MW_IN_BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        MW_IN_DRY_RUN: ${{ inputs.dry-run }}
+        MW_IN_DRAFT: ${{ inputs.draft }}
+        MW_IN_LABELS: ${{ inputs.labels }}
+        MW_IN_CLOSE_STALE: ${{ inputs.close-stale }}
+        MW_IN_TESTS_RESULT: ${{ inputs.tests-result }}
+      run: |
+        MW_PY="$MW_SETUP_PYTHON"
+        if [ -z "$MW_PY" ]; then MW_PY="$(command -v python3 || command -v python)"; fi
+        "$MW_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" guard
+
+    - name: Install lxml
+      id: install
+      if: steps.guard.outputs.mode == 'fix' || steps.guard.outputs.mode == 'dry-run'
+      shell: bash
+      env:
+        MW_SETUP_PYTHON: ${{ steps.python.outputs.python-path }}
+      run: |
+        cd "$RUNNER_TEMP"
+        MW_PY="$MW_SETUP_PYTHON"
+        if [ -z "$MW_PY" ]; then MW_PY="$(command -v python3 || command -v python)"; fi
+        MW_VENV="$RUNNER_TEMP/mendwright-action/venv"
+        "$MW_PY" -I -m venv "$MW_VENV"
+        if [ "$RUNNER_OS" = "Windows" ]; then MW_VENV_PY="$MW_VENV/Scripts/python.exe"; else MW_VENV_PY="$MW_VENV/bin/python"; fi
+        "$MW_VENV_PY" -I -m pip install --disable-pip-version-check --no-input --no-deps --only-binary=:all: --require-hashes -r "$GITHUB_ACTION_PATH/action/requirements.txt"
+        echo "python=$MW_VENV_PY" >> "$GITHUB_OUTPUT"
+
+    - name: Find the artifact
+      id: find-artifact
+      if: (steps.guard.outputs.mode == 'fix' || steps.guard.outputs.mode == 'dry-run') && inputs.artifact != ''
+      shell: bash
+      env:
+        MW_VENV_PY: ${{ steps.install.outputs.python }}
+        MW_TOKEN: ${{ inputs.token }}
+        MW_IN_ARTIFACT: ${{ inputs.artifact }}
+        MW_ARTIFACT_RUN_ID: ${{ steps.guard.outputs.artifact-run-id }}
+      run: |
+        "$MW_VENV_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" find-artifact
+
+    - name: Download the artifact from this run
+      if: steps.find-artifact.outputs.found == 'true' && steps.guard.outputs.same-run == 'true'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/mendwright-action/artifact
+
+    - name: Download the artifact from the run that triggered this one
+      if: steps.find-artifact.outputs.found == 'true' && steps.guard.outputs.same-run == 'false'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/mendwright-action/artifact
+        run-id: ${{ steps.guard.outputs.artifact-run-id }}
+        repository: ${{ github.repository }}
+        github-token: ${{ inputs.token }}
+
+    - name: Run mendwright fix
+      id: fix
+      if: steps.guard.outputs.mode == 'fix' || steps.guard.outputs.mode == 'dry-run'
+      shell: bash
+      env:
+        MW_VENV_PY: ${{ steps.install.outputs.python }}
+        MW_MODE: ${{ steps.guard.outputs.mode }}
+        MW_FOUND: ${{ steps.find-artifact.outputs.found }}
+        MW_ARTIFACT_RUN_ID: ${{ steps.guard.outputs.artifact-run-id }}
+        MW_IN_ARTIFACT: ${{ inputs.artifact }}
+        MW_IN_STORE: ${{ inputs.store }}
+        MW_IN_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MW_IN_PATHS: ${{ inputs.paths }}
+        MW_IN_GLOBS: ${{ inputs.globs }}
+        MW_IN_DESTRUCTIVE_KEYS: ${{ inputs.destructive-keys }}
+      run: |
+        "$MW_VENV_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" fix
+
+    - name: Open or update the pull request
+      id: publish
+      if: (steps.guard.outputs.mode == 'fix' || steps.guard.outputs.mode == 'dry-run') && steps.fix.outputs.ok == 'true'
+      shell: bash
+      env:
+        MW_VENV_PY: ${{ steps.install.outputs.python }}
+        MW_TOKEN: ${{ inputs.token }}
+        MW_MODE: ${{ steps.guard.outputs.mode }}
+        MW_BASE: ${{ steps.guard.outputs.base }}
+        MW_SHA: ${{ steps.guard.outputs.sha }}
+        MW_ARTIFACT_RUN_ID: ${{ steps.guard.outputs.artifact-run-id }}
+        MW_IN_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MW_IN_BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        MW_IN_DRAFT: ${{ inputs.draft }}
+        MW_IN_LABELS: ${{ inputs.labels }}
+        MW_IN_CLOSE_STALE: ${{ inputs.close-stale }}
+        MW_IN_TESTS_RESULT: ${{ inputs.tests-result }}
+        MW_IN_COMMIT_AUTHOR_NAME: ${{ inputs.commit-author-name }}
+        MW_IN_COMMIT_AUTHOR_EMAIL: ${{ inputs.commit-author-email }}
+      run: |
+        "$MW_VENV_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" publish

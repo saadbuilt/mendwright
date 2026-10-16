@@ -27,6 +27,7 @@ import sys
 import textwrap
 from urllib.parse import urlsplit
 
+from . import _md
 from .demo._story import BROWSERS, write_line
 
 DEFAULT_STORE_PATH = './.mendwright/overrides.json'  # the same default mendwright.open() uses
@@ -49,6 +50,7 @@ _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RU
 _SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
 
 REPORT_FORMATS = ('text', 'md', 'json', 'html')
+FIX_FORMATS = ('text', 'json', 'md')
 LAST_HEALS = 10
 
 
@@ -683,15 +685,11 @@ def _report_text(r):
 
 
 def _md_code(text):
-    """text as a Markdown code span that is safe inside a table cell."""
-    text = ' '.join(str(text).split()).replace('|', '\\|')
-    if '`' in text:
-        return '`` ' + text + ' ``'
-    return '`' + text + '`'
+    """text as a Markdown code span that is safe inside a table cell (see mendwright._md)."""
+    return _md.code(text, table=True, cut=None)
 
 
-def _md_cell(text):
-    return ' '.join(str(text).split()).replace('|', '\\|')
+_md_cell = _md.cell
 
 
 def _report_md(r):
@@ -851,17 +849,36 @@ def cmd_fix(args):
         _err('mendwright fix: no such file or folder: ' + ', '.join(missing) + '. Check the '
              '--path value; nothing was changed.')
         return 1
-    events = _read_journal(os.path.join(os.path.dirname(path), 'journal.jsonl'))
+    journal_path = os.path.join(os.path.dirname(path), 'journal.jsonl')
+    events = _read_journal(journal_path)
     plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed,
-                              store_path=path)
+                              destructive_keys=_flatten(args.destructive_key), store_path=path)
     result = fixback.build_result(plan, paths, _flatten(args.glob))
     if args.apply:
         fixback.apply_result(result)
-    for line in fixback.format_lines(result, apply=args.apply):
-        _out(line)
+    # The output comes after the source files are written, since it is about them.
+    if args.format == 'text':
+        lines = fixback.format_lines(result, apply=args.apply)
+    else:
+        data = fixback.to_json(result, apply=args.apply, store_path=path,
+                               journal_path=journal_path, events=events)
+        if args.format == 'json':
+            lines = json.dumps(data, indent=2, ensure_ascii=True).split('\n')
+        else:
+            lines = fixback.render_markdown(data).rstrip('\n').split('\n')
+    failed = False
+    if args.out:
+        target = _write_text_file('fix', args.out, ''.join(line + '\n' for line in lines))
+        if target is None:
+            failed = True
+        else:
+            _out('Wrote ' + target)
+    else:
+        for line in lines:
+            _out(line)
     for error in result.errors:
         _err('mendwright fix: ' + error)
-    return 1 if result.errors else 0
+    return 1 if result.errors or failed else 0
 
 
 # --- check -----------------------------------------------------------------------------
@@ -1525,10 +1542,19 @@ def build_parser():
     fix.add_argument('--glob', metavar='GLOB', action='append', nargs='+',
                      help='also search files matching GLOB, for example --glob "*.ts" '
                           '"*.robot" (*.py is always searched)')
+    fix.add_argument('--destructive-key', metavar='KEY', action='append', nargs='+',
+                     help='treat these keys as destructive, as mendwright.open(destructive_keys='
+                          '...) does, which the store does not save; can be given more than once')
     fix.add_argument('--include-unconfirmed', action='store_true',
                      help='also use heals with no canary success in journal.jsonl')
     fix.add_argument('--apply', action='store_true',
                      help='write the changes (default: print the diff only)')
+    fix.add_argument('--format', choices=FIX_FORMATS, default='text',
+                     help='output format: text (default), json for scripts, md for a job summary '
+                          'or pull request')
+    fix.add_argument('--out', metavar='FILE',
+                     help='write the output to FILE instead of stdout (the folder is created when '
+                          'it is missing)')
     fix.set_defaults(handler=cmd_fix)
 
     check = sub.add_parser(
