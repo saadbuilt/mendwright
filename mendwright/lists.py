@@ -51,8 +51,8 @@ whose items all moved to Saved for later, is not healed onto the other list that
 now. When every group is another list, find() says so (ListMatch.emptied), naming both
 things that can be: the list is empty at this point, or its selector broke. An emptied list
 can still heal onto another list that holds its items when no heading or label tells the two
-apart and nothing around that other list was on the page, as it is now, when the list was
-recorded.
+apart and that other list sits in markup that was not on the page in that form when the list
+was recorded, inside an element that holds the list too.
 
 The XPath then goes through the list gate (client.apply_list): two or more elements of the
 role on the captured page, none inside another, not quarantined for the key, and, on the
