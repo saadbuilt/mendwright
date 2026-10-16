@@ -601,8 +601,11 @@ def _func_name(call):
 
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-# Methods of a dict or list that give back what it holds, and builtins that pass a list on.
+# Methods of a dict or list that give back what it holds, methods that put something into
+# one, and builtins that pass a list on.
 _READS = frozenset({'get', 'items', 'values', 'copy', 'pop', 'setdefault'})
+_FILLS = frozenset({'append', 'appendleft', 'extend', 'extendleft', 'insert', 'add', 'update',
+                    'setdefault'})
 _PASS_ON = frozenset({'list', 'tuple', 'set', 'dict', 'sorted', 'reversed', 'enumerate', 'iter'})
 
 
@@ -619,18 +622,23 @@ def _target_names(target):
 class _FlowTrace:
     """The string literals of one file that a name, an attribute or a subscript passed to
     heal.interrupt() or heal.step(when=) can stand for: what is assigned to the name in the
-    scope it belongs to, or looped over into it, a parameter's default and the arguments of
-    the calls to its function in this file, what is assigned to an attribute of that name
-    anywhere in the file (a class constant, self.x = ...), and the values of a dict or the
-    items of a list it reads. It counts a literal that might reach the call as reaching it,
-    and follows nothing out of the file: an imported constant, functools.partial and a
-    string built at run time are not seen."""
+    scope it belongs to (from another function too, under global or nonlocal), or looped over
+    into it, a parameter's default and the arguments of the calls to its function in this
+    file, what is assigned to an attribute of that name anywhere in the file (a class
+    constant, self.x = ...), and the values of a dict or the items of a list it reads, also
+    those put in with D[k] = ..., append(), update() and the like, or dict(k=...). It counts
+    a literal that might reach the call as reaching it, and follows nothing out of the file:
+    an imported constant, functools.partial, a function's return value and a string built at
+    run time are not seen."""
 
     def __init__(self, tree):
         self.tree = tree
         self.scope = {}         # node -> the Module, function, lambda or class it runs in
         self.bound = {}         # scope -> names bound there
         self.globals = {}       # scope -> names declared global there
+        self.nonlocals = {}     # scope -> names declared nonlocal there
+        self.later = []         # (scope, name, expression) assigned to a nonlocal name
+        self.fills = {}         # name -> (scope, expression) put into it: D[k] = v, D.append(v)
         self.sources = {}       # (scope, name) -> expressions assigned or looped into it
         self.attrs = {}         # attribute name -> expressions assigned to it
         self.calls = {}         # function name -> the calls to it
@@ -652,10 +660,24 @@ class _FlowTrace:
                 self._bind(scope, node.name)
             else:
                 stack += [(c, scope) for c in ast.iter_child_nodes(node)]
+        for node, scope in self.scope.items():
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                names = self.globals if isinstance(node, ast.Global) else self.nonlocals
+                names.setdefault(scope, set()).update(node.names)
         for node in list(self.scope):
             self._record(node)
+        for scope, name, source in self.later:
+            where = self._binding_scope(name, scope)
+            if where is not None:
+                self.sources.setdefault((where, name), []).append(source)
 
     def _bind(self, scope, name, source=None):
+        if name in self.globals.get(scope, ()):         # global NAME: the module's NAME
+            scope = self.tree
+        elif name in self.nonlocals.get(scope, ()):     # nonlocal NAME: an outer function's
+            if source is not None:
+                self.later.append((scope, name, source))
+            return
         self.bound.setdefault(scope, set()).add(name)
         if source is not None:
             self.sources.setdefault((scope, name), []).append(source)
@@ -679,12 +701,27 @@ class _FlowTrace:
             for t, v in zip(target.elts, value.elts, strict=True):
                 self._assign(scope, t, v)
             return
-        if isinstance(target, ast.Attribute):
+        if isinstance(target, (ast.Tuple, ast.List, ast.Starred)):
+            parts = [target.value] if isinstance(target, ast.Starred) else target.elts
+            for part in parts:                          # each part can get any of value
+                self._assign(scope, part, value)
+        elif isinstance(target, ast.Attribute):
             self.attrs.setdefault(target.attr, []).append(value)
-        for name in _target_names(target):
-            self._bind(scope, name.id, value)
+        elif isinstance(target, ast.Subscript):        # D[k] = value: one of D's values
+            self._fill(scope, target.value, [value])
+        elif isinstance(target, ast.Name):
+            self._bind(scope, target.id, value)
             if isinstance(scope, ast.ClassDef):       # a class constant, read as Class.NAME
-                self.attrs.setdefault(name.id, []).append(value)
+                self.attrs.setdefault(target.id, []).append(value)
+
+    def _fill(self, scope, holder, values):
+        """values were put into holder, a name or an attribute (or an item of one)."""
+        while isinstance(holder, ast.Subscript):
+            holder = holder.value
+        if isinstance(holder, ast.Name):
+            self.fills.setdefault(holder.id, []).extend((scope, v) for v in values)
+        elif isinstance(holder, ast.Attribute):
+            self.attrs.setdefault(holder.attr, []).extend(values)
 
     def _record(self, node):
         scope = self.scope[node]
@@ -704,12 +741,12 @@ class _FlowTrace:
                 self._bind(scope, (alias.asname or alias.name).split('.')[0])
         elif isinstance(node, ast.ExceptHandler) and node.name:
             self._bind(scope, node.name)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            self.globals.setdefault(scope, set()).update(node.names)
         elif isinstance(node, ast.Call):
             name = _func_name(node)
             if name:
                 self.calls.setdefault(name, []).append(node)
+            if isinstance(node.func, ast.Attribute) and name in _FILLS:
+                self._fill(scope, node.func.value, node.args + [k.value for k in node.keywords])
 
     def _binding_scope(self, name, scope):
         if name in self.globals.get(scope, ()):
@@ -725,23 +762,40 @@ class _FlowTrace:
             scope = self.scope[scope]
 
     def _call_arguments(self, func, name):
-        """The arguments the calls in this file pass to parameter name of func."""
-        positional = [a.arg for a in func.args.posonlyargs + func.args.args]
-        method = isinstance(self.scope[func], ast.ClassDef)
+        """The arguments the calls in this file pass to parameter name of func, *args and
+        **kwargs included."""
+        args = func.args
+        positional = [a.arg for a in args.posonlyargs + args.args]
+        named = positional + [a.arg for a in args.kwonlyargs]
+        owner = self.scope[func]
+        kinds = {getattr(d, 'id', getattr(d, 'attr', None)) for d in func.decorator_list}
         out = []
         for call in self.calls.get(getattr(func, 'name', None), ()):
+            # obj.method(...) passes obj as self (Class.method(...) the class as cls), while
+            # Class.method(obj, ...) passes obj itself, and a staticmethod gets neither.
+            via = call.func.value if isinstance(call.func, ast.Attribute) else None
+            skip = int(isinstance(owner, ast.ClassDef) and via is not None
+                       and 'staticmethod' not in kinds
+                       and ('classmethod' in kinds
+                            or not (isinstance(via, ast.Name) and via.id == owner.name)))
             if name in positional:
-                index = positional.index(name) - (1 if method and isinstance(call.func, ast.Attribute)
-                                                  else 0)
+                index = positional.index(name) - skip
                 if 0 <= index < len(call.args) and not any(
                         isinstance(a, ast.Starred) for a in call.args[:index + 1]):
                     out.append(call.args[index])
-            out += [k.value for k in call.keywords if k.arg == name]
+            elif args.vararg is not None and name == args.vararg.arg:
+                start = max(len(positional) - skip, 0)
+                if any(isinstance(a, ast.Starred) for a in call.args[:start]):
+                    start = 0
+                out += call.args[start:]
+            out += [k.value for k in call.keywords if k.arg == name or (
+                args.kwarg is not None and name == args.kwarg.arg and k.arg not in named)]
         return out
 
     def _is_param(self, func, name):
         args = func.args
-        return name in [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+        return name in [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs
+                        + [a for a in (args.vararg, args.kwarg) if a is not None]]
 
     def literals(self, expr):
         """The str Constant nodes expr can stand for."""
@@ -772,11 +826,13 @@ class _FlowTrace:
                 work += [node.func.value] + node.args[1:2]
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
                     and node.func.id in _PASS_ON:
-                work += node.args
+                work += node.args + [k.value for k in node.keywords]
             elif isinstance(node, ast.Name):
                 where = self._binding_scope(node.id, scope)
                 if where is not None:
                     work += [s for s in self.sources.get((where, node.id), ()) if s is not None]
+                    work += [v for s, v in self.fills.get(node.id, ())
+                             if self._binding_scope(node.id, s) is where]
                     if isinstance(where, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
                             self._is_param(where, node.id):
                         work += self._call_arguments(where, node.id)
@@ -792,8 +848,9 @@ def python_contexts(text):
     selector of heal.interrupt(key, selector) or the landmark of heal.step(name, when), or
     one string of a list or tuple passed there, or (CSS_ONLY, by) for one that sits where an
     XPath cannot run: the value next to a Selenium By other than By.XPATH (in a call or a
-    (By, value) pair), or an argument of a function with css in its name. Columns count
-    characters, as tokenize does. {} when the source does not parse."""
+    (By, value) pair), or an argument of a function with css in its name. One that is both
+    FLOW and CSS_ONLY is FLOW. Columns count characters, as tokenize does. {} when the source
+    does not parse."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
@@ -807,7 +864,11 @@ def python_contexts(text):
             return
         line = lines[node.lineno - 1] if 0 < node.lineno <= len(lines) else ''
         col = len(line.encode('utf-8')[:node.col_offset].decode('utf-8', 'replace'))
-        out.setdefault((node.lineno, col), context)
+        old = out.get((node.lineno, col))
+        # FLOW beats CSS_ONLY: a helper with css in its name can hand the string on to
+        # heal.interrupt(), and the CSS form would be rewritten there just the same.
+        if old is None or (isinstance(old, tuple) and old[0] == CSS_ONLY and context[0] == FLOW):
+            out[(node.lineno, col)] = context
 
     def by_pair(by_node, value_node):
         by = _by_of(by_node)

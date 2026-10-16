@@ -1058,6 +1058,71 @@ FLOW_THROUGH = {
                'def test_a(heal):\n'
                '    dismiss(heal, "#x")\n'
                '    dismiss(heal, selector="#x")\n', [(1, "selector"), (4, "selector"), (5, "selector")]),
+    "staticmethod": ('class Banner:\n'
+                     '    @staticmethod\n'
+                     '    def dismiss(heal, selector):\n'
+                     '        heal.interrupt("banner", selector)\n'
+                     'def test_a(heal, banner):\n'
+                     '    Banner.dismiss(heal, "#x")\n'
+                     '    banner.dismiss(heal, "#x")\n', [(6, "selector"), (7, "selector")]),
+    "classmethod": ('class Banner:\n'
+                    '    @classmethod\n'
+                    '    def dismiss(cls, heal, selector):\n'
+                    '        heal.interrupt("banner", selector)\n'
+                    'def test_a(heal):\n'
+                    '    Banner.dismiss(heal, "#x")\n', [(6, "selector")]),
+    "method-through-its-class": ('class Banner:\n'
+                                 '    def dismiss(self, heal, selector):\n'
+                                 '        heal.interrupt("banner", selector)\n'
+                                 'def test_a(heal, banner):\n'
+                                 '    Banner.dismiss(banner, heal, "#x")\n', [(5, "selector")]),
+    "args": ('def dismiss_all(heal, *selectors):\n'
+             '    for selector in selectors:\n'
+             '        heal.interrupt("banner", selector)\n'
+             'def test_a(heal):\n'
+             '    dismiss_all(heal, "#chat-close", "#x")\n', [(5, "selector")]),
+    "kwargs": ('def dismiss_all(heal, **selectors):\n'
+               '    for key, selector in selectors.items():\n'
+               '        heal.interrupt(key, selector)\n'
+               'def test_a(heal):\n'
+               '    dismiss_all(heal, banner="#x")\n', [(5, "selector")]),
+    "css-helper": ('def dismiss_css(heal, selector):\n'
+                   '    heal.interrupt("banner", selector)\n'
+                   'def test_a(heal):\n'
+                   '    dismiss_css(heal, "#x")\n', [(4, "selector")]),
+    "item-assignment": ('INTERRUPTIONS = {}\n'
+                        'INTERRUPTIONS["banner"] = "#x"\n'
+                        'def test_a(heal):\n'
+                        '    for key, selector in INTERRUPTIONS.items():\n'
+                        '        heal.interrupt(key, selector)\n', [(2, "selector")]),
+    "append": ('SELECTORS = []\n'
+               'SELECTORS.append("#x")\n'
+               'def test_a(heal):\n'
+               '    for selector in SELECTORS:\n'
+               '        heal.interrupt("banner", selector)\n', [(2, "selector")]),
+    "dict-call": ('INTERRUPTIONS = dict(banner="#x")\n'
+                  'def test_a(heal):\n'
+                  '    for key, selector in INTERRUPTIONS.items():\n'
+                  '        heal.interrupt(key, selector)\n', [(1, "selector")]),
+    "global": ('SEL = None\n'
+               'def setup_module():\n'
+               '    global SEL\n'
+               '    SEL = "#x"\n'
+               'def test_a(heal):\n'
+               '    heal.interrupt("banner", SEL)\n', [(4, "SEL")]),
+    "nonlocal": ('def test_a(heal):\n'
+                 '    sel = None\n'
+                 '    def pick():\n'
+                 '        nonlocal sel\n'
+                 '        sel = "#x"\n'
+                 '    pick()\n'
+                 '    heal.interrupt("banner", sel)\n', [(5, "sel")]),
+    "nonlocal-read": ('def test_a(heal):\n'
+                      '    sel = "#x"\n'
+                      '    def dismiss():\n'
+                      '        nonlocal sel\n'
+                      '        heal.interrupt("banner", sel)\n'
+                      '    dismiss()\n', [(2, "sel")]),
 }
 
 
@@ -1076,6 +1141,44 @@ def test_a_flow_selector_passed_through_a_name_is_never_rewritten(root, capsys, 
     assert "no string equal to" not in out
 
 
+def test_a_flow_selector_passed_to_a_css_helper_keeps_its_value_too(root, capsys):
+    # A literal passed to a function with css in its name takes the heal's CSS form, unless the
+    # function hands it on to heal.interrupt().
+    new = "//button[@id='ok']"
+    write_store(root, {"accept": {"expectedRole": "button", "candidates": [
+        cand("#x", "code", T0), dict(cand(new, "heal", T1), css="button#ok")]}},
+        [applied("accept", new, ["#x"]), canary("accept", new)])
+    text = ('def dismiss_css(heal, selector):\n'
+            '    heal.interrupt("banner", selector)\n'
+            'def test_a(heal, driver):\n'
+            '    dismiss_css(heal, "#x")\n'
+            '    find_css(driver, "#x")\n')
+    source = write(root, "tests/test_flow.py", text)
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == text.replace('find_css(driver, "#x")',
+                                                             'find_css(driver, "button#ok")')
+    assert ("tests/test_flow.py:4 was not changed: '#x' is passed to heal.interrupt() through "
+            "selector, and mendwright fix never rewrites") in out, out
+
+
+def test_a_method_does_not_see_the_names_of_its_class_body(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_scope.py", textwrap.dedent('''\
+        SEL = "#cookie-ok"
+        class Banner:
+            SEL = "#x"
+            def dismiss(self, heal):
+                heal.interrupt("cookies", SEL)
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == 'SEL = "#cookie-ok"'
+    assert lines[2] == '    SEL = "//button[@id=\'ok\']"'       # not what dismiss() passes
+    assert "was not changed" not in out
+
+
 def test_a_name_is_followed_in_its_own_scope_only(root, capsys):
     confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
     source = write(root, "tests/test_scope.py", textwrap.dedent('''\
@@ -1091,6 +1194,15 @@ def test_a_name_is_followed_in_its_own_scope_only(root, capsys):
         def test_flow(heal):
             sel = "#cookie-ok"
             heal.interrupt("cookies", sel)
+        def test_list(heal):
+            sels = []
+            sels.append("#cookie-ok")
+            for s in sels:
+                heal.interrupt("cookies", s)
+        def test_other_list(heal):
+            sels = []
+            sels.append("#x")
+            heal.locator("accept", sels[0]).click()
     '''))
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
@@ -1098,6 +1210,7 @@ def test_a_name_is_followed_in_its_own_scope_only(root, capsys):
     assert lines[0] == 'SEL = "#x"'                                 # the interruption's
     assert lines[4] == '    SEL = "//button[@id=\'ok\']"'          # a local of another test
     assert lines[7] == '    sel = "//button[@id=\'ok\']"'
+    assert lines[19] == '    sels.append("//button[@id=\'ok\']")'
     assert "tests/test_scope.py:1 was not changed: '#x' is passed to heal.interrupt() through SEL" \
         in out
 
