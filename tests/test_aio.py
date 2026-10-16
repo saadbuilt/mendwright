@@ -878,3 +878,207 @@ def test_the_async_healer_saves_the_address_the_sync_one_saves(make_page, tmp_pa
     assert aheal.store.last_url('email') == heal.store.last_url('email') == (
         'https://shop.example/Orders/*/')
     assert aheal.store.meta('email')['lastPage'] == '/orders/*'
+
+
+# --- await heal.drift() -------------------------------------------------------------------------
+
+DRIFT_V1 = ("<form><input id='email' name='email'>"
+            "<label><input type='checkbox' id='terms' name='terms'> I accept the terms</label>"
+            "<button type='button' id='pay'>Pay now</button>"
+            "<ul><li class='card'>A</li><li class='card'>B</li></ul></form>")
+DRIFT_V2 = ("<form><input id='email' name='email'>"
+            "<label><input type='checkbox' name='terms' data-testid='legal'> I accept the "
+            "terms</label><button type='button' id='pay-now'>Pay now</button>"
+            "<ul><li class='tile'>A</li></ul></form>")
+DRIFT_URL = 'https://shop.example/signup'
+
+
+def _drift_store(make_page, tmp_path, stub_provider):
+    page = make_page(DRIFT_V1, url=DRIFT_URL, fingerprints=True)
+    heal = mendwright.open(page, provider=stub_provider(None),
+                           store_path=str(tmp_path / 'o.json'))
+    heal.locator('email', '#email', role='input', timeout_ms=0, poll_ms=0)
+    heal.locator('terms', '#terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    heal.locator('pay', '#pay', role='button', destructive=True, timeout_ms=0, poll_ms=0)
+    heal.locator_all('cards', "//li[@class='card']", timeout_ms=0, poll_ms=0)
+
+
+def _verdicts(report):
+    return [(k.key, k.verdict, k.detail, k.reason, k.heal) for k in report.keys]
+
+
+def test_await_drift_gives_the_sync_verdicts(make_page, tmp_path, stub_provider):
+    _drift_store(make_page, tmp_path, stub_provider)
+    before = (tmp_path / 'o.json').read_bytes()
+    sync_page = make_page(DRIFT_V2, url=DRIFT_URL, fingerprints=True)
+    sync = mendwright.open(sync_page, provider=stub_provider(None),
+                           store_path=str(tmp_path / 'o.json')).drift(timeout_ms=0)
+    page = AsyncFakePage(make_page(DRIFT_V2, url=DRIFT_URL, fingerprints=True))
+    provider = stub_provider(None)
+
+    async def main():
+        heal = await _open(page, tmp_path, provider)
+        report = await heal.drift(timeout_ms=0)
+        return heal, report
+
+    heal, report = run(main())
+    assert _verdicts(report) == _verdicts(sync)
+    assert {k.key: k.verdict for k in report.keys} == {
+        'cards': 'list-missing', 'email': 'ok', 'pay': 'refused', 'terms': 'would-heal'}
+    assert (tmp_path / 'o.json').read_bytes() == before
+    assert page.sync.actions == [] and provider.bundles == [] and heal.heals == []
+
+
+class AsyncDocs:
+    """A custom async driver over a sync one, with frame_matches() and framed() as
+    coroutines, as AsyncPlaywrightDriver has them."""
+
+    def __init__(self, sync):
+        self.sync = sync
+
+    async def count(self, selector, frame_chain=()):
+        return self.sync.count(selector, frame_chain)
+
+    async def is_visible(self, selector, frame_chain=()):
+        return self.sync.is_visible(selector, frame_chain)
+
+    async def handle(self, selector, frame_chain=()):
+        return self.sync.handle(selector, frame_chain)
+
+    async def scroll_into_view(self, selector, frame_chain=()):
+        return self.sync.scroll_into_view(selector, frame_chain)
+
+    async def describe(self, selector, frame_chain=()):
+        return self.sync.describe(selector, frame_chain)
+
+    async def url(self):
+        return self.sync.url()
+
+    async def outer_html(self, scope=None):
+        return self.sync.outer_html(scope)
+
+    async def frame_matches(self, selector):
+        return self.sync.frame_matches(selector)
+
+    async def framed(self, frame_selector):
+        inner = self.sync.framed(frame_selector)
+        return AsyncDocs(inner) if inner is not None else None
+
+
+def _two_docs():
+    """A sync driver over a page with one iframe, whose checkbox is only in the iframe."""
+    import lxml.html
+
+    class Doc:
+        def __init__(self, html, inner=None):
+            self.doc, self.inner, self.actions = lxml.html.fromstring(html), inner, []
+
+        def _find(self, selector, chain=()):
+            body = selector
+            if body.startswith(('css=', 'xpath=')):
+                body = body.split('=', 1)[1]
+            doc = self.inner.doc if chain else self.doc
+            if body.startswith('#'):
+                return doc.xpath('//*[@id=$i]', i=body[1:])
+            return [e for e in doc.xpath(body) if hasattr(e, 'tag')]
+
+        def count(self, selector, frame_chain=()):
+            return len(self._find(selector, frame_chain))
+
+        def is_visible(self, selector, frame_chain=()):
+            return self.count(selector, frame_chain) == 1
+
+        def handle(self, selector, frame_chain=()):
+            self.actions.append(('handle', selector))
+            return selector
+
+        def scroll_into_view(self, selector, frame_chain=()):
+            self.actions.append(('scroll', selector))
+
+        def describe(self, selector, frame_chain=()):
+            found = self._find(selector, frame_chain)
+            if len(found) != 1:
+                return None
+            role = 'checkbox' if found[0].get('type') == 'checkbox' else found[0].tag
+            return {'tag': found[0].tag, 'role': role, 'text': '', 'outer_html': ''}
+
+        def url(self):
+            return DRIFT_URL
+
+        def outer_html(self, scope=None):
+            return lxml.html.tostring(self.doc, encoding='unicode')
+
+    class TwoDocs(Doc):
+        def frame_matches(self, selector):
+            n = self.inner.count(selector)
+            return [{'name': 'consent', 'url': 'about:srcdoc', 'nested': False,
+                     'selector': 'iframe[name="consent"]', 'count': n}] if n else []
+
+        def framed(self, frame_selector):
+            return self.inner
+
+    inner = Doc("<label><input type='checkbox' id='inner-terms'> I agree</label>")
+    return TwoDocs("<main><iframe name='consent'></iframe></main>", inner=inner)
+
+
+def test_await_drift_follows_a_key_into_an_iframe(tmp_path, stub_provider):
+    from mendwright.store import load_store
+    store = load_store(None, str(tmp_path / 'o.json'))
+    store.set_code_candidates('terms', ['#inner-terms'])
+    store.set_meta('terms', role='checkbox')
+    store.set_last_page('terms', '/signup')
+    sync = mendwright.open(_two_docs(), provider=stub_provider(None),
+                           store_path=str(tmp_path / 'o.json')).drift(['terms'], timeout_ms=0)
+    docs = _two_docs()
+
+    async def main():
+        heal = await _open(AsyncDocs(docs), tmp_path, stub_provider(None))
+        return await heal.drift(['terms'], timeout_ms=0)
+
+    report = run(main())
+    [k] = report.keys
+    assert (k.verdict, k.detail) == ('would-heal', 'frame')
+    assert _verdicts(report) == _verdicts(sync)
+    assert docs.actions == [] and docs.inner.actions == []
+
+
+def test_await_drift_holds_the_lock_of_the_healer(make_page, tmp_path, stub_provider,
+                                                 monkeypatch):
+    _drift_store(make_page, tmp_path, stub_provider)
+    from mendwright import drift as drift_module
+    real = drift_module.probe_page
+    order = []
+
+    def probe(*args, **kwargs):
+        order.append('drift starts')
+        try:
+            return real(*args, **kwargs)
+        finally:
+            order.append('drift ends')
+    monkeypatch.setattr(drift_module, 'probe_page', probe)
+    page = AsyncFakePage(make_page(DRIFT_V2, url=DRIFT_URL, fingerprints=True))
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(None))
+        checking = asyncio.ensure_future(heal.drift(['terms'], timeout_ms=200, poll_ms=20))
+        await asyncio.sleep(0.05)
+        assert heal._lock.locked()
+
+        async def look():
+            await heal.locator('email', '#email', role='input', timeout_ms=0, poll_ms=0)
+            order.append('locator')
+        await asyncio.gather(checking, look())
+
+    run(main())
+    assert order == ['drift starts', 'drift ends', 'locator']
+
+
+def test_await_drift_checks_its_arguments_first(apage, tmp_path):
+    async def main():
+        heal = await _open(apage, tmp_path)
+        with pytest.raises(TypeError, match='not one string'):
+            await heal.drift('terms')
+
+    apage.sync.queries.clear()
+    run(main())
+    assert apage.sync.queries == []
