@@ -27,7 +27,7 @@ from mendwright import AttentionRequired, InvalidSelector
 from mendwright.drivers.base import VISIBLE_MATCH_JS
 from mendwright.drivers.playwright_sync import playwright_selector
 from mendwright.flow import (UNROUTED_STEP, flow_change_message, handled_message,
-                             is_interception_error, loop_message, page_path,
+                             is_interception_error, loop_message, page_path, page_url,
                              rejected_selector_message, run_cancelled_message,
                              run_failed_message, run_plain_message, several_message,
                              skip_message, stuck_message, unhandled_message)
@@ -2329,6 +2329,83 @@ def test_async_actions_awaited_together_handle_a_banner_once(tmp_path):
 ])
 def test_page_path(url, path):
     assert page_path(url) == path
+
+
+@pytest.mark.parametrize('url, address', [
+    ('https://u:p@Shop.Example:443/Orders/10482/?tab=2#x', 'https://shop.example/Orders/*/'),
+    ('https://shop.example', 'https://shop.example/'),
+    ('https://shop.example/reset/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc',
+     'https://shop.example/reset/*'),
+    ('https://shop.example/users/ada%40example.com', 'https://shop.example/users/*'),
+    ('http://[::1]:8000/signup', 'http://[::1]:8000/signup'),
+    ('file:///C:/Users/ada/site/v1.html', None),
+    ('about:blank', None),
+    # Default ports go, others stay; a trailing slash and an empty segment stay.
+    ('http://shop.example:80/a', 'http://shop.example/a'),
+    ('https://shop.example:443/a', 'https://shop.example/a'),
+    ('http://shop.example:443/a', 'http://shop.example:443/a'),
+    ('http://127.0.0.1:8000//signup/', 'http://127.0.0.1:8000//signup/'),
+    ('HTTPS://SHOP.EXAMPLE/Signup', 'https://shop.example/Signup'),
+])
+def test_page_url(url, address):
+    assert page_url(url) == address
+
+
+@pytest.mark.parametrize('segment', [
+    '10482', '0b5a3c1e-7d2f-4c55-9a0e-123456789abc', '507f1f77bcf86cd799439011',
+    '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0.', 'ada%40example.com',
+    'ada@example.com', 'x' * 65, 'caf%C3%A9', '-dash-first', 'with space', 'semi;colon'])
+def test_page_url_masks_what_can_name_a_record_or_a_person(segment):
+    assert page_url('https://shop.example/x/' + segment + '/y') == 'https://shop.example/x/*/y'
+
+
+@pytest.mark.parametrize('segment', ['v2', 'step-3', 'order-confirmation', 'page.html',
+                                     'Orders', 'x' * 64, '2fa', 'v1.2.3'])
+def test_page_url_keeps_page_names(segment):
+    assert page_url('https://shop.example/' + segment) == 'https://shop.example/' + segment
+
+
+@pytest.mark.parametrize('url', [
+    'about:blank', 'data:text/html,<p>x</p>', 'blob:https://shop.example/1234',
+    'javascript:void(0)', 'file:///tmp/a.html', 'ftp://shop.example/a', 'https:///no-host',
+    '/relative/path', 'shop.example/a', '', None, 42, b'https://shop.example/',
+    'https://shop.example:99999/a', 'https://exa mple.com/a',
+    'https://shop.example/' + 'a/' * 1100])
+def test_page_url_is_none_for_what_cannot_be_loaded_again(url):
+    assert page_url(url) is None
+
+
+def test_page_url_is_idempotent():
+    import random
+    rng = random.Random(7)
+    parts = ['Orders', '10482', 'v2', 'ada@example.com', 'a%20b', '', 'page.html',
+             '507f1f77bcf86cd799439011', 'Step-3', 'x' * 70, 'eyJhbGci.eyJzdWIi.sig', '~me']
+    hosts = ['Shop.Example', 'shop.example:8443', '127.0.0.1:80', '[::1]:3000', 'u:p@a.test']
+    for _ in range(200):
+        url = (rng.choice(['http', 'https', 'HTTPS']) + '://' + rng.choice(hosts) + '/'
+               + '/'.join(rng.choice(parts) for _ in range(rng.randint(0, 4)))
+               + rng.choice(['', '?q=1', '#frag', '/']))
+        once = page_url(url)
+        assert once is not None, url
+        assert page_url(once) == once, url
+        assert '@' not in once and '?' not in once and '#' not in once
+
+
+@pytest.mark.parametrize('last_url, last_page, same', [
+    ('https://shop.example/signup', '/signup', True),
+    ('https://shop.example/SignUp/', '/signup', True),
+    ('https://shop.example/Orders/*/', '/orders/*', True),
+    ('https://shop.example/users/*', '/users/ada@example.com', True),
+    ('https://shop.example/orders/1', '/orders/*', False),
+    ('https://shop.example/signup/details', '/signup', False),
+    ('https://shop.example/', None, True),
+    ('https://shop.example/', '/signup', False),
+    ('https://shop.example/signup', None, False),
+    (None, '/signup', False),
+])
+def test_same_page(last_url, last_page, same):
+    from mendwright.drift import same_page
+    assert same_page(last_url, last_page) is same
 
 
 def test_the_page_a_key_was_found_on_is_saved(side, tmp_path):

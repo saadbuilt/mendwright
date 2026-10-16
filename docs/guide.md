@@ -24,6 +24,7 @@ Contents:
 - [Destructive controls](#destructive-controls)
 - [Store and journal](#store-and-journal)
 - [CI](#ci)
+- [Checking for drift before a run](#checking-for-drift-before-a-run)
 - [Logging](#logging)
 - [Command line](#command-line)
 - [Low-level API](#low-level-api)
@@ -1101,7 +1102,7 @@ With `optional=True`, a step whose element doesn't appear within `timeout_ms` is
 
 ### Steps that moved to another page
 
-mendwright saves the page where each key's element was found, in the store next to its selectors: `lastPage` (the most recent) and `pages` (the last 5). A page is its path in lower case, without the scheme, host, query or fragment, and without empty parts, so a trailing or doubled slash changes nothing. Parts that look like record ids are replaced by `*`: numbers, uuids, hex of 16 or more characters such as a MongoDB id, and generated ids of 16 or more letters and digits (dashes and underscores allowed) with at least two digits, such as a ULID. So `https://shop.example/Orders/10482/?tab=2` is `/orders/*`, and so is `/orders/507f1f77bcf86cd799439011`. Short parts such as `v2`, `2fa` or `step-3` stay as they are. `about:blank`, `data:` URLs and the site root have no page, and are never compared. A `file://` page is compared by its path, so two local files, such as `v1.html` and `v2.html` of the same page, count as two pages.
+mendwright saves the page where each key's element was found, in the store next to its selectors: `lastPage` (the most recent) and `pages` (the last 5). A page is its path in lower case, without the scheme, host, query or fragment, and without empty parts, so a trailing or doubled slash changes nothing. Parts that look like record ids are replaced by `*`: numbers, uuids, hex of 16 or more characters such as a MongoDB id, and generated ids of 16 or more letters and digits (dashes and underscores allowed) with at least two digits, such as a ULID. So `https://shop.example/Orders/10482/?tab=2` is `/orders/*`, and so is `/orders/507f1f77bcf86cd799439011`. Short parts such as `v2`, `2fa` or `step-3` stay as they are. `about:blank`, `data:` URLs and the site root have no page, and are never compared. A `file://` page is compared by its path, so two local files, such as `v1.html` and `v2.html` of the same page, count as two pages. Next to `lastPage` the store saves `lastUrl`, the page's address with its record ids masked, for [`mendwright check`](#checking-for-drift-before-a-run); the page guard doesn't use it.
 
 When a key's selector misses on a page that isn't one of its saved pages, mendwright declines the heal before any model call, raises `AttentionRequired` and writes a `flow.page_guard` journal event:
 
@@ -1352,7 +1353,7 @@ The real file is a single line; it is wrapped here.
 
 - `source` is `code` (passed to `locator()`), `heal` or `seed`.
 - `status` is `active`, `quarantined` or `superseded`. Only active candidates are tried.
-- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)).
+- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `lastUrl`, the address of the last of them, which [`mendwright check`](#checking-for-drift-before-a-run) loads again (scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)).
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
 - The key of a `heal.page.get_by_*()` call is written as the call, and so is its `code` candidate: `"get_by_role(\"button\", name=\"Sign in\")"`, with the inner quotes escaped by JSON (see [get_by locators](#get_by-locators)). A seed file may hold such keys, to mark one destructive, say, and such candidates, which run as calls on Playwright and are dropped with an `InvalidSelector` on Selenium.
@@ -1442,6 +1443,263 @@ Give a strict job its own fresh store:
 - run: pytest --mendwright-strict --mendwright-store "$RUNNER_TEMP/mendwright/overrides.json"
 ```
 
+### Check before the nightly run
+
+[`mendwright check`](#checking-for-drift-before-a-run) loads the page of each key in the cached store and says which keys broke, before the run starts:
+
+```yaml
+- uses: actions/cache/restore@v6
+  with:
+    path: .mendwright
+    key: mendwright-${{ github.ref_name }}-${{ github.run_id }}
+    restore-keys: mendwright-${{ github.ref_name }}-
+- run: python -m playwright install chromium
+- name: mendwright check
+  run: mendwright check --base-url "$SHOP_URL" --storage-state check-auth.json --format md >> "$GITHUB_STEP_SUMMARY"
+```
+
+The step fails the job when `mendwright check` exits 1 (a key broke) or 3 (a key couldn't be checked). Put `if: always()` on later steps that should still run.
+
+## Checking for drift before a run
+
+`mendwright check` opens the page where each key in the store was last found, in a headless Playwright browser, on a site you name, and looks at the key's saved selectors there the way a run does.
+It never clicks, types or presses anything, saves nothing and asks no model.
+Each key gets one result: it still resolves, it resolves only through a saved heal, it resolves to an element of another role, a run would heal it from memory, a run would need a model, a run would refuse it, or it couldn't be checked, with the reason.
+It exits 1 when a key broke, so a CI job can fail before the nightly run starts.
+
+```text
+$ mendwright check --base-url https://shop.example
+mendwright check: loading 2 pages from https://shop.example with Playwright chromium (headless).
+mendwright check: 10 keys on 4 pages, Playwright chromium (headless), 2.1 s
+Store: C:\work\shop\.mendwright\overrides.json
+
+https://shop.example/account  not checked (2 keys)
+  The page went to /login instead, so its keys were not checked. It probably needs a
+  sign-in or the steps before it: pass --storage-state FILE, or leave the page out with
+  --skip-page '/account'.
+
+https://shop.example/account/sign-out  not checked (1 key)
+  The path /account/sign-out reads as an action (sign out), and loading it could do
+  that, such as end the session your runs use. Pass --load-page '/account/sign-out' to
+  check it anyway.
+
+https://shop.example/Orders/*/  not checked (2 keys)
+  The address of /orders/* has a part mendwright doesn't save (a record id, a token, an
+  email address or a long name), so mendwright check can't load it. Pass --url
+  '/orders/*=https://shop.example/orders/<one that exists>'.
+
+https://shop.example/signup  (HTTP 200, 1.3 s)
+  would heal     accept_terms    #accept-terms matches nothing. A run would heal it from
+                                 memory to //input[@data-testid='legal-consent']
+                                 (fingerprint score 0.57, next best 0.40), which passed
+                                 every check of a heal on this page. Nothing was saved.
+  ok (heal)      create_account  The selectors before it miss (#create-account: no
+                                 match); the heal saved on 2026-10-10,
+                                 //button[normalize-space(.)='Create account'], matches
+                                 one visible button, and a run uses it. Run mendwright
+                                 fix to put it in your code. No passing test confirmed
+                                 it, so check that it finds the right element.
+  ok             email           #email matches one visible input.
+  needs model    newsletter      #news matches nothing, and the fingerprint match for
+                                 'newsletter' was not confident: two elements score
+                                 alike (0.71 and 0.71), so the fingerprint does not tell
+                                 them apart. A run would ask AnthropicProvider, model
+                                 claude-x. mendwright check asks no model.
+  refused        pay             #pay matches nothing. A run would not heal it: 'pay' is
+                                 marked as a destructive control, and mendwright never
+                                 auto-heals those, because a validated but wrong
+                                 selector here could act on a live account. Fix the
+                                 selector in your code or seed file by hand.
+
+2 keys were never found on a page with an address (set_content(), about:blank or a data:
+URL) and were left out.
+1 ok, 1 ok through a saved heal, 1 would heal from memory, 1 needs a model, 1 refused, 5 not checked.
+Exit 1: 3 keys broke.
+```
+
+Every page is loaded once, and its keys wait for their elements up to `--timeout-ms` together, not one after another.
+
+### Naming the site
+
+`mendwright check` loads only sites you name. Give one of these:
+
+- `--origin https://shop.example` loads the pages recorded on that origin, from that origin. Repeat it for each site to check. Keys recorded on other sites are left out, and counted in one line.
+- `--origin https://shop.example=https://staging.shop.example` loads the pages recorded on the first origin from the second, such as production's pages from staging.
+- `--base-url http://127.0.0.1:8000` loads every page from that origin, whatever origin was recorded, for a test app that starts on a new port each run. It also builds the address of a key saved before 0.9.0 from its `lastPage`. When the store has pages on more than one host, it says so on stderr, since those may be different sites.
+
+An origin is `scheme://host[:port]` with `http` or `https`, and nothing after it. One recorded origin can be loaded from one site only: naming it twice with two sites is a usage error.
+The store is a file from a cache or a commit, so `mendwright check` never loads a site the store alone points to: a store from somewhere else can't send your browser, with the session of your storage state file, to another host, a local file or a cloud metadata address.
+With neither flag it exits 2 and lists the sites the store has pages on.
+
+### Where the addresses come from
+
+From 0.9.0 on, each time a key's element is found, the store saves the page's address as `lastUrl`, next to `lastPage`: scheme, host, port and path, without user info, query or fragment. Parts of the path that look like a record id, a token (a JWT, a reset link's code), an email address, percent-encoded text or a name longer than 64 characters are saved as `*`, so the file holds no link that still works for someone's account.
+`https://shop.example/Orders/10482/?tab=2` is saved as `https://shop.example/Orders/*/`.
+A healer opened on a Playwright `Frame`, or on a Selenium driver switched into a frame, saves no address, and neither does a `file://`, `about:` or `data:` page.
+The site root's address is saved only for a key found on no other page, so a header link found on `/signup` and on the home page is checked on `/signup`.
+
+A page whose address has a `*` can't be loaded as it is. Give it an address that exists with `--url`:
+
+```bash
+mendwright check --origin https://shop.example --url '/orders/*=https://shop.example/orders/1001'
+```
+
+`--url PAGE=URL` wins over the saved address and over `--base-url`. Its `URL` must be on a site the check loads (with `--origin https://shop.example=https://staging.shop.example`, on staging), and may have a query, which the reports print as `?...`.
+A key saved before 0.9.0 has only its path: `--base-url` loads it from the stored `lastPage`, which is lower case. It does so only for a path as mendwright saves one. A `lastPage` that holds anything else, such as user info, a port or a query (`@169.254.169.254/latest/`), is `not checked`, so it can't make the address name another host. A server that tells paths apart by case answers 404, which is reported as such. Run your tests once with 0.9.0 and the address is saved.
+
+Some sites change state on a GET. `mendwright check` doesn't load a page whose path reads as an action, as `dismiss=True` doesn't click a button by its words: one whose path has a word `logout`, `logoff`, `signout`, `signoff`, `unsubscribe`, `optout`, `delete`, `remove`, `cancel`, `confirm`, `verify`, `activate`, `deactivate`, `reset`, `approve`, `accept`, `decline`, `reject`, `revoke`, `disconnect`, `unlink`, `leave`, `purge`, `destroy`, `empty`, `clear` or `close`, or the words `log out`, `log off`, `sign out`, `sign off` or `opt out` in a row. Words are split on `/`, `-`, `_`, `.`, `+` and `~` and compared whole, so `/order-confirmation` and `/blog/clearance-sale` load, and `/account/close-account`, `/cart/empty` and `/account/sign-out` don't. So does `/products/close-up-lens`, which is no action: pass `--load-page '/products/*'` for pages like it. A `--url` value is never refused.
+
+### What each result means
+
+| Result | What it means | What to do |
+|---|---|---|
+| `ok` | A saved selector matches one visible element of the key's role (a hidden checkbox counts, as in a run). | Nothing. |
+| `ok (heal)` | The selectors from your code miss, and a heal saved earlier matches. A run uses it, with no model call. | Run [`mendwright fix`](#mendwright-fix) to put it in your code. It says when no passing test confirmed the heal. |
+| `wrong role` | A selector matches one visible element, but it is another control (a button that became a `div`). A run acts on it all the same: mendwright compares roles only for heals. A changed tag on a key you only read from, such as a `span` that became a `div`, is noted on an `ok`. | Check the selector in your code. |
+| `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or [follow it into an iframe](#iframes). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
+| `needs model` | The selectors miss, the fingerprint doesn't find the element with confidence, and a run would ask the model provider it names. | Check that the run has a provider, or fix the selector. |
+| `refused` | A run would stop with `AttentionRequired`: a key marked destructive, a page the key was never found on, an unknown role, a `guard=` that blocks, `MENDWRIGHT_DISABLE=1`, or no provider and no confident fingerprint. The reason is the run's own, the one [Troubleshooting](#attentionrequired) lists. | Fix the selector by hand, or what the reason names. |
+| `list empty?` | A [list](#lists) that had items matches nothing. mendwright can't tell an empty list from a broken one, and never heals a list. | Check the selector, or the page's state. |
+| `needs steps` | The key was found during [`run_steps()`](#steps-in-any-order), and the page was loaded without the steps before it, so its miss may be the page's state. | Check it with `heal.drift()` inside your flow. |
+| `optional` | Earlier runs skipped the key when it was missing (`optional=True`, or `heal.interrupt()`). Not counted. | Nothing. |
+| `not checked` | The key couldn't be checked, and the reason says why: the page answered HTTP 400 or more, went to another page (a sign-in), showed only a sign-in form, didn't load, reads as an action, or has no address mendwright can load; or the key has no active selector, or none that can run. | Pass what the reason names: `--storage-state`, `--url`, `--load-page`, `--skip-page`. |
+
+A key a run heals from memory still broke: tonight it costs a heal, strict mode fails on it, and the selector in your code is out of date.
+The words of a `refused` result come from the run's own decision, made by the same code on a copy of the store, so a key is never reported `would heal` when a run would refuse it.
+
+### Exit codes
+
+| Code | When |
+|---|---|
+| 0 | No key fails, and every key was checked (or `--allow-unchecked`). |
+| 1 | At least one key fails. Wins over 3. |
+| 2 | A usage error. Nothing was loaded. |
+| 3 | No key fails, but one couldn't be checked, or the store has no keys. `--allow-unchecked` makes that 0. |
+| 4 | It couldn't run: no store, a store or seed it can't read, no Playwright, a browser that won't start, a storage state file it can't use (also one Playwright refuses), or an error that stopped it before it could report, such as a browser that crashed. It prints one line, never a key's result. |
+| 130 | Interrupted. Every browser is closed first. |
+
+- `--fail-on drift` (the default) fails on `wrong role`, `refused`, `would heal` and `needs model`.
+- `--fail-on unhealable` fails only on what a run can't get past alone: `wrong role`, `refused`, and `would heal` while dry run is on (a run in dry run applies no heal).
+- `--strict` also fails on `ok (heal)`, as `--mendwright-strict` would fail a test that needs it.
+
+The last line of the report says why: `Exit 1: 3 keys broke.`
+
+### Pages behind a sign-in
+
+A page that answers 401 or 403, goes to another page such as `/login`, or shows only a sign-in form when none of its keys match, is reported as not checked.
+Save a Playwright storage state after a sign-in and pass it with `--storage-state FILE`:
+
+```python
+context.storage_state(path="check-auth.json")
+```
+
+Every page gets a new browser context with that state, so nothing one page sets reaches another. The file is read by Playwright and never written, and its contents are never printed.
+Make that sign-in for `mendwright check` alone, with its own state file, not the nightly run's: a site that rotates refresh tokens can end the session in the file once `check` uses it, and with reuse detection the nightly run's session too.
+
+### Cookie banners
+
+`mendwright check` asks whether an element is visible, not whether it is on top, so a banner over an element changes no result.
+When a key of a page misses and the [`cookies=` preset](#cookie-banners) finds a banner, the page gets a note. Nothing is clicked.
+A banner that hides the whole page until it is answered needs `--cookies reject` (or `accept`): the preset closes it before the keys are looked at, and again when keys miss, for a banner a consent script shows a moment after the page loaded, as a run does after a miss. Each time, `handled interruption 'cookie_banner' before '<check>'` is logged. That is the only click `mendwright check` makes. No Playwright overlay handler is registered, and interruptions registered in your code are unknown to it.
+
+### Iframes, lists, steps and optional keys
+
+- **Iframes.** A selector saved inside an iframe is looked at there. A key whose selector now matches only inside one iframe is `would heal`, by the rules of [Iframes](#iframes), and one a run wouldn't follow is `refused` with the run's reason. A key last found in an iframe is healed there in the preview, as in a run.
+- **Lists.** A key used with `heal.locator_all()` whose list had two or more items is looked at as a list: any match is `ok`, with the count then and now, and no match is `list empty?`. It is never `would heal`. A list that never had two items, or one recorded with the fingerprint tier off, is looked at as one element.
+- **Steps.** `mendwright check` runs no step. A key found during `run_steps()` that misses is `needs steps`.
+- **Optional keys.** `optional=True` and `heal.interrupt()` aren't saved in the store, but a run that skipped a key writes `flow.skip` to `journal.jsonl`, and such a key is `optional` when it misses.
+
+### What it never does
+
+- It never clicks, types, presses, scrolls or acts on the page, but for the `--cookies` preset.
+- It saves nothing: the store is opened read-only, no journal line is written, no storage state is written back, and no screenshot, trace or HTML is kept. Downloads are refused.
+- It asks no model. A heal it looks for runs on a copy of the store in memory, with a provider that stops before any call, and a configured provider is replaced by one that raises if anything calls it.
+- It loads no site you didn't name, nothing but `http` and `https`, no user info or fragment, and a query only from `--url`.
+
+### Options
+
+Sites, exactly one of:
+
+| Option | Meaning |
+|---|---|
+| `--origin ORIGIN[=ACTUAL]` | Load the pages recorded on `ORIGIN`, from `ACTUAL` when given. Can be given more than once. |
+| `--base-url URL` | Load every page from this origin. |
+
+The rest:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--store PATH` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | The store. `journal.jsonl` is read from the same folder. A pytest run with the `mendwright_store` ini key needs this. |
+| `--seed PATH` | none | A seed file read under the store. Its roles, texts and destructive flags count. |
+| `--destructive-key KEY` | none | The keys your run passes to `open(destructive_keys=...)`, which the store doesn't save. Can be given more than once. |
+| `--url PAGE=URL` | none | The address to load for a stored page. |
+| `--load-page PATTERN` | none | Load pages matching `PATTERN` even when their path reads as an action. |
+| `--key PATTERN`, `--skip-key PATTERN` | all keys | Check only the keys matching the glob, or leave them out. |
+| `--page PATTERN`, `--skip-page PATTERN` | all pages | The same for the key's page, a path pattern such as `/checkout/*` (`*` matches across `/`, and `/` alone is the site root). |
+| `--browser` | `chromium` | `chromium`, `firefox` or `webkit`. |
+| `--headed` | headless | Show the browser. |
+| `--viewport WxH` | 1280x720 | The window size, each side 200 to 4000. A responsive page shows other elements at other sizes. |
+| `--storage-state FILE` | none | A Playwright storage state for every page. |
+| `--cookies {reject,accept}` | none | Close a consent banner with the preset first, and again when keys miss. |
+| `--timeout-ms MS` | `MENDWRIGHT_TIMEOUT_MS`, else 10000 | How long each page waits for its keys once it has loaded. |
+| `--nav-timeout-ms MS` | 30000 | The limit of each navigation, 1000 or more. |
+| `--wait-until` | `load` | `load`, `domcontentloaded` or `networkidle`. |
+| `--workers N` | 1 | Pages checked at once, 1 to 8. Each worker runs its own browser. |
+| `--fingerprint`, `--no-fingerprint` | as a run | Whether to look for heals from memory. `MENDWRIGHT_DISABLE=1` wins. |
+| `--fail-on {drift,unhealable}` | `drift` | See [Exit codes](#exit-codes). |
+| `--strict` | off | `ok (heal)` counts as broken. |
+| `--allow-unchecked` | off | Keys that couldn't be checked don't make the exit code 3. |
+| `--format {text,md,json}` | `text` | `md` is for `$GITHUB_STEP_SUMMARY`; `json` has `"schema": 1`. |
+| `--out FILE` | stdout | Write the report to a file and print `Wrote <path>`. |
+| `--quiet` | off | List only the keys that aren't `ok`, and the summary. |
+
+It reads `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_FINGERPRINT`, `MENDWRIGHT_DISABLE` and `MENDWRIGHT_DRY_RUN` as a run does, and the provider variables only to name the provider a run would ask. Run it with the nightly run's environment.
+
+### Checking from your own test with heal.drift()
+
+`heal.drift()` does the same on the page your script has reached, with no navigation, on every driver mendwright supports: sync and async Playwright, patchright, camoufox, Selenium and your own. Use it for pages behind a sign-in flow or earlier steps, for Selenium's own visibility rules, and for `file://` pages:
+
+```python
+def test_checkout_selectors(page, heal):
+    log_in_and_fill_cart(heal.page)
+    page.goto("https://shop.example/checkout/payment")
+    report = heal.drift()
+    assert report.ok, report.text()
+```
+
+- `heal.drift()` checks the keys found on this page before, and `heal.drift(["email", "pay"])` those keys wherever they were found: a key never found on this page gets the page guard's refusal, as in a run, unless `heal_across_pages=True`. The site root has no page, so there `heal.drift()` checks the keys whose saved address is a root of the same host, whatever its port, for a test app that starts on a new port each run. That address is saved only for a key found on no other page (see [Where the addresses come from](#where-the-addresses-come-from)), so a header link found on `/signup` and on the home page is checked by `heal.drift()` on `/signup`, and on the home page by name.
+- `timeout_ms=` (the healer's by default) is one wait for the whole page.
+- It returns a `DriftReport` from `mendwright.drift`: `ok` (at least one key, none broken, none unchecked; `False` for a page where no key was found), `broken`, `unchecked`, `failed(fail_on=..., strict=...)`, `text()` and `as_dict()`. Each of its `keys` is a `KeyDrift` with the `verdict`, `reason`, `used` selector, `heal` and the `probes` of each selector.
+- It uses the healer's store, provider, fingerprint setting, `destructive_keys`, guard, `heal_across_pages` and dry-run setting. A key registered with `heal.interrupt()` is `optional` when it misses.
+- It writes nothing, acts on nothing and asks no model, as `mendwright check` doesn't. Playwright's overlay handlers stay out of it. It logs one INFO line, such as `mendwright: drift on /signup: 6 keys, 4 ok, 1 would heal from memory, 1 refused`.
+- A list of keys as one string, keys the store doesn't have, and a negative `timeout_ms` raise `TypeError` or `ValueError` before anything touches the page.
+
+On `mendwright.aio.open()`'s healer it is `await heal.drift()`. It holds the healer's lock, and runs the check in a worker thread as a heal does.
+A test that calls `heal.drift()` makes no heal, so it confirms nothing and strict mode never fires on it.
+
+### What it prints
+
+- Key names, the store's selectors, origins and paths (saved masked; a redirect's target cut to its page), HTTP statuses, results and reasons.
+- A `would heal` XPath and a run's reason for a refusal can quote page text, as heal log lines do.
+- Error texts go through the same masking as `mendwright doctor`, and their addresses are cut to origin and page.
+- Never cookie names or values, header values, storage values, page HTML or a query string from the site.
+
+The CI logs of a public repository are public. Use `--format md` into the job summary, or `--quiet`, and check what the store's selectors say before you print them there.
+
+### Limits
+
+- `destructive_keys=` of `open()` and `optional=True` aren't in the store. Pass `--destructive-key` for the first; the journal covers the second once a run skipped the key.
+- Each key is checked on its last page only.
+- The store knows the selectors your code passed on the last run that saved it. A selector you changed since shows as drift until the next run updates the store.
+- Elements that show only after a scroll or a click, such as lazy or virtualized rows, are misses.
+- A list key whose list never had two items, or was used with the fingerprint tier off, is looked at as one element. Leave it out with `--skip-key`.
+- A store written by Selenium holds only XPath and CSS, which Playwright runs, but with Playwright's visibility rules: Selenium counts `opacity: 0` as hidden and Playwright doesn't. For Selenium's rules, call `heal.drift()` from a Selenium test.
+- A process of mendwright 0.8.0 that writes a shared store (pytest-xdist workers on mixed versions) drops `lastUrl`. Until a 0.9.0 run saves it again, those keys are `not checked` unless you pass `--base-url`.
+- A healer opened on a Playwright `Frame` saves the frame's path as the key's page, and no address. With `--base-url`, and with `--origin` for a key found on the site root before (the store can't tell it from a key two test processes saved at once, one on the root and one on another page), `mendwright check` loads that path on the site you name: a page that may not exist there, or another one. Leave such keys out with `--skip-key`.
+- Playwright dismisses JavaScript dialogs (`alert`, `confirm`, `prompt`) when no handler is set, and `mendwright check` sets none.
+- The run's rate limit, a guard that blocks at that moment, and interruptions registered in code are unknown to it.
+- What it costs, measured on a Windows laptop against a local server: 50 keys on 10 pages, none broken, took 2.2 to 2.6 s in headless Chromium with `--workers 1`, and 3.5 to 4 s with `--workers 3`, since each worker starts its own browser. Workers pay off on pages that are slow to load, not on fast local ones. A real site adds its own load time to each page, and a page where a key misses waits up to `--timeout-ms` (10 s by default), once for the page. Each worker's browser takes the memory of one browser.
+
 ## Logging
 
 mendwright logs to `logging.getLogger("mendwright")`.
@@ -1468,7 +1726,7 @@ pytest shows the lines in the captured output of a failed test.
 
 ## Command line
 
-`mendwright` (or `python -m mendwright`) has four commands, plus `--version`.
+`mendwright` (or `python -m mendwright`) has six commands, `demo`, `doctor`, `report`, `fix`, `model` (see [Local model](#local-model)) and `check`, plus `--version`.
 
 ### mendwright demo
 
@@ -1620,6 +1878,11 @@ A file is written through a temporary file next to it and then replaced, and a f
 
 It exits 0 when there is nothing to do, after a dry run and after `--apply`, and 1 when there is no store, a `--path` doesn't exist, or a file couldn't be written.
 Once your code holds the healed selector, mendwright tries it first on the next run.
+
+### mendwright check
+
+Loads the page where each key was last found, on a site you name with `--origin` or `--base-url`, in a headless Playwright browser, and says which keys still resolve, which a run would heal and which it would refuse, without acting on the page, saving anything or asking a model. It exits 1 when a key broke and 3 when one couldn't be checked.
+[Checking for drift before a run](#checking-for-drift-before-a-run) has the results, the exit codes and every option.
 
 ## Low-level API
 

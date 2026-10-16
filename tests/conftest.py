@@ -447,6 +447,7 @@ class FakePage:
         self.get_by_calls = []   # (method, args, kwargs) of every get_by_* call
         self.reject = {}      # get_by_* method -> the error the browser gives for its calls
         self.trips = 0        # page queries of the get_by_* locators
+        self.frames = []      # a Page has a list of frames, a Frame none (no iframes here)
         self.set_html(html)
 
     def set_html(self, html):

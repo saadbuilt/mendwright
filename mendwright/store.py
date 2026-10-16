@@ -9,9 +9,11 @@ than hardcoded, so the store can serve any tool.
 Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive, intent,
 fingerprint and listFingerprint) is saved in the override file next to the candidates, so the next process
 sees it, and so is where the key's element was last found (``set_last_page``: lastPage
-and pages) and the steps of run_steps() it was found during (``set_last_step``: steps).
-The file stays schema 2; the fields are optional. A key is destructive when the seed says
-so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
+and pages; ``set_last_url``: lastUrl, the page's address with its record ids masked, see
+mendwright.flow.page_url) and the steps of run_steps() it was found during
+(``set_last_step``: steps). The file stays schema 2; the fields are optional. A key is
+destructive when the seed says so, when it is in ``destructive_keys``, or when
+``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these. A key of ``destructive_keys``
 or of a seed file written as a get_by_* call in another spelling than mendwright's, such as
 get_by_role('button', name='Pay'), stands for the call's key (getby.canonical_key).
@@ -21,8 +23,12 @@ valid JSON (a hand edit, a merge conflict) or is not a selector file raises
 StoreReadError: reading it as empty would drop its destructive flags and quarantines,
 and the next write would replace the file. A read that Windows refuses for a moment
 (another process replacing the file) is retried briefly.
+
+A store made with read_only=True (`mendwright check` opens its store that way) never
+touches the file after reading it, and snapshot() gives a read-only copy in memory.
 """
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -34,6 +40,7 @@ from pathlib import Path
 
 from . import getby
 from .fingerprint import valid as _valid_fingerprint
+from .flow import page_url
 from .lists import valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
@@ -216,12 +223,13 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
 
 
 # Metadata fields saved in the override file: the ones set_meta() sets, the pages
-# set_last_page() records and the steps set_last_step() records. intent is what the element
+# set_last_page() records, the address set_last_url() records and the steps set_last_step()
+# records. intent is what the element
 # is for, in words (locator(intent=)); fingerprint is what the element looked like the last
 # time it matched (see mendwright.fingerprint), and listFingerprint what the items of a
 # list looked like the last time it matched two or more (see mendwright.lists).
 META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
-               'fingerprint', 'steps', 'listFingerprint')
+               'fingerprint', 'steps', 'listFingerprint', 'lastUrl')
 
 # How many pages set_last_page() keeps per key, most recent first, and how many steps
 # set_last_step() keeps.
@@ -249,6 +257,8 @@ def _meta_fields(entry):
     page = entry.get('lastPage')
     if isinstance(page, str) and page:
         out['lastPage'] = page
+    if _valid_url(entry.get('lastUrl')):
+        out['lastUrl'] = entry['lastUrl']
     pages = _pages(entry.get('pages'))
     if pages:
         out['pages'] = pages
@@ -265,6 +275,12 @@ def _meta_fields(entry):
     return out
 
 
+def _valid_url(value):
+    """Whether value is an address set_last_url() saves: one page_url() gives back as it
+    is, so it has no user info, query, fragment or unmasked record id."""
+    return isinstance(value, str) and bool(value) and page_url(value) == value
+
+
 def _pages(value):
     """A saved 'pages' list, or [] when it is missing or malformed."""
     if isinstance(value, list) and all(isinstance(p, str) and p for p in value):
@@ -279,8 +295,11 @@ class SelectorStore:
     lock_stale_after = 10.0
 
     def __init__(self, data, override_path, destructive_keys=frozenset(), seed=None,
-                 override=None):
+                 override=None, *, read_only=False):
         self._data = data
+        # read_only: changes stay in memory, and the file is never locked, read or written
+        # again (see _persist_override).
+        self._read_only = bool(read_only)
         self._override_path = Path(_expand(override_path))
         # A key written as a get_by_* call in another spelling marks the call's key too. One
         # written on an object, such as page.get_by_role(...), does not, and is logged.
@@ -355,7 +374,8 @@ class SelectorStore:
             e['expectedText'] = list(fields['expectedText'])
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
-        for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint'):
+        for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint',
+                     'lastUrl'):
             if name in fields:
                 e[name] = list(fields[name]) if name in ('pages', 'steps') else fields[name]
 
@@ -518,6 +538,54 @@ class SelectorStore:
             self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
             if set(saved.get('pages') or ()) != set(pages):
                 self._persist_override()
+
+    def set_last_url(self, key, url):
+        """Record the address of the page key's element was just found on: ``url`` as
+        mendwright.flow.page_url gives it; anything else is ignored. lastUrl is saved in the
+        override file, which is written at once only when the key had no saved lastUrl. A
+        new address (another page, or a test app on another port) changes it in memory and
+        is saved with the next write, as a new page order is in set_last_page()."""
+        if not _valid_url(url):
+            return
+        e = self._entry(key)
+        e['lastUrl'] = url
+        saved = self._meta.get(key, {})
+        if saved.get('lastUrl') != url:
+            self._meta[key] = dict(saved, lastUrl=url)
+            if 'lastUrl' not in saved:
+                self._persist_override()
+
+    def last_url(self, key):
+        """The address key's element was last found on (see set_last_url), or None. It is
+        what the loaded entry holds: a merge with a file another process wrote without it
+        (mendwright 0.8.0) leaves it here, so this process does not record it again."""
+        e = self._data['selectors'].get(key)
+        value = e.get('lastUrl') if isinstance(e, dict) else None
+        return value if _valid_url(value) else None
+
+    @property
+    def read_only(self):
+        """True for a store that never writes its file (see load_store(read_only=True))."""
+        return self._read_only
+
+    def snapshot(self):
+        """An independent copy of this store in memory, with read_only=True: what is done
+        to it (a heal applied, a quarantine) never reaches this store or any file. It keeps
+        the destructive flags, the seed's roles and texts, the role guesses and the order
+        set_code_candidates() gave, and starts with no batch, no unsaved change and no
+        success recorded in this process."""
+        clone = copy.copy(self)
+        for name in ('_data', '_meta', '_base', '_base_place', '_base_meta'):
+            setattr(clone, name, copy.deepcopy(getattr(self, name, {})))
+        for name in ('_locked', '_seed_role', '_seed_text', '_guessed'):
+            setattr(clone, name, set(getattr(self, name, ())))
+        clone._preferred = {k: list(v) for k, v in self._preferred.items()}
+        clone._seed_state = dict(self._seed_state)
+        clone._batch = threading.local()
+        clone._dirty = set()
+        clone._last_success = {}
+        clone._read_only = True
+        return clone
 
     def set_last_step(self, key, step):
         """Record that key's element was just found while run_steps() ran the step named
@@ -684,6 +752,8 @@ class SelectorStore:
                 self._persist_override()
 
     def _persist_override(self):
+        if self._read_only:
+            return      # no lock file, no read, no write (see read_only)
         state = self._batch
         if getattr(state, 'depth', 0):
             state.wanted = True     # written when the batch ends (see batch)
@@ -952,7 +1022,7 @@ def _call_keys(data, path):
     return dict(data, selectors=renamed)
 
 
-def load_store(seed_path, override_path, destructive_keys=frozenset()):
+def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False):
     """A SelectorStore over a read-only seed file and a writable override file.
 
     seed_path=None means no seed. A seed path that does not exist raises
@@ -960,7 +1030,9 @@ def load_store(seed_path, override_path, destructive_keys=frozenset()):
     file is an empty store, created on the first write. A seed or override file that
     exists but is not valid JSON, or not a selector file, raises StoreReadError (a
     ValueError) naming the file, and so does a seed with two keys for one get_by_* call.
-    Relative paths are read from the current directory, and '~' is expanded."""
+    Relative paths are read from the current directory, and '~' is expanded.
+    read_only=True gives a store that never writes the override file: changes stay in
+    memory (`mendwright check` reads its store this way)."""
     override_path = _expand(override_path)
     if seed_path is None:
         seed = _empty()
@@ -976,4 +1048,4 @@ def load_store(seed_path, override_path, destructive_keys=frozenset()):
     # Saved metadata is read only from a schema-2 override. A schema-1 file migrated here
     # has inferred metadata, not metadata someone set.
     return SelectorStore(merge(seed, override), override_path, destructive_keys, seed=seed,
-                         override=override if native else None)
+                         override=override if native else None, read_only=read_only)

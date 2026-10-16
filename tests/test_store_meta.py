@@ -259,3 +259,184 @@ def test_the_first_success_of_a_key_with_role_given_is_saved(tmp_path, make_page
     healer.locator('go', OLD, role='button', timeout_ms=0, poll_ms=0)
     saved = json.loads(open(sp, encoding='utf-8').read())['selectors']['go']['candidates']
     assert saved[0]['xpath'] == OLD and saved[0]['lastSucceededAt']
+
+
+# --- lastUrl: the address a key's element was last found on (mendwright check) -------------
+
+SHOP = 'https://shop.example/Orders/*/'
+
+
+def _counted_writes(store):
+    writes = []
+    real = store._write
+
+    def write(payload):
+        writes.append(payload)
+        real(payload)
+    store._write = write
+    return writes
+
+
+def test_set_last_url_writes_the_first_address_only(tmp_path):
+    path = tmp_path / 'o.json'
+    store = load_store(None, str(path))
+    store.add_candidate('note', '#note', source='code')
+    writes = _counted_writes(store)
+    store.set_last_url('note', SHOP)
+    assert len(writes) == 1
+    assert json.loads(path.read_text(encoding='utf-8'))['selectors']['note']['lastUrl'] == SHOP
+    # Another origin (a test app on a new port) or another page: memory only.
+    store.set_last_url('note', 'http://127.0.0.1:8123/signup')
+    store.set_last_url('note', 'http://127.0.0.1:8123/signup')
+    assert len(writes) == 1
+    assert store.last_url('note') == 'http://127.0.0.1:8123/signup'
+    # The next write of anything saves it.
+    store.set_meta('note', role='textarea')
+    assert len(writes) == 2
+    saved = json.loads(path.read_text(encoding='utf-8'))['selectors']['note']
+    assert saved['lastUrl'] == 'http://127.0.0.1:8123/signup'
+    assert load_store(None, str(path)).last_url('note') == 'http://127.0.0.1:8123/signup'
+
+
+@pytest.mark.parametrize('value', [
+    'ftp://shop.example/a', 'https://u:p@shop.example/a', 'https://shop.example/a?q=1',
+    'https://shop.example/a#top', 'https://shop.example/orders/10482', 'https://Shop.example/a',
+    'https://shop.example/' + 'a/' * 1100, 5, ['https://shop.example/'], ''])
+def test_a_malformed_saved_last_url_is_dropped(tmp_path, value):
+    path = tmp_path / 'o.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'lastPage': '/a', 'lastUrl': value,
+        'candidates': [{'xpath': '#k', 'source': 'code', 'status': 'active'}]}}}),
+        encoding='utf-8')
+    store = load_store(None, str(path))
+    assert store.last_url('k') is None
+    store.set_last_url('k', value)          # nor taken from a caller
+    assert store.last_url('k') is None
+
+
+def test_two_processes_last_url_values_merge(tmp_path):
+    path = str(tmp_path / 'o.json')
+    first = load_store(None, path)
+    first.add_candidate('k', '#k', source='code')
+    first.set_last_url('k', 'https://shop.example/a')
+    a, b = load_store(None, path), load_store(None, path)
+    a.set_last_url('k', 'https://shop.example/b')
+    a.set_meta('k', role='button')                   # a writes its new address
+    b.set_meta('k', text='Go')                       # b did not change it: a's stays
+    assert load_store(None, path).last_url('k') == 'https://shop.example/b'
+
+
+def test_a_0_8_0_writer_drops_last_url_once(tmp_path):
+    path = tmp_path / 'o.json'
+    first = load_store(None, str(path))
+    first.add_candidate('k', '#k', source='code')
+    first.set_last_url('k', 'https://shop.example/a')
+    store = load_store(None, str(path))          # a 0.9.0 process
+    # A 0.8.0 process rewrites the file without the field it does not know.
+    data = json.loads(path.read_text(encoding='utf-8'))
+    del data['selectors']['k']['lastUrl']
+    path.write_text(json.dumps(data), encoding='utf-8')
+    store.set_meta('k', role='button')           # merges that file, then writes
+    assert 'lastUrl' not in json.loads(path.read_text(encoding='utf-8'))['selectors']['k']
+    # This process still knows the address (a lookup that finds the key there again then
+    # calls no set_last_url(), see Healer._remember_url).
+    assert store.last_url('k') == 'https://shop.example/a'
+    # The next process records it again, once.
+    again = load_store(None, str(path))
+    writes = _counted_writes(again)
+    again.set_last_url('k', 'https://shop.example/a')
+    assert len(writes) == 1
+
+
+# What 0.8.0 saved per key and what its meta() gives.
+FIELDS_080 = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
+              'fingerprint', 'steps', 'listFingerprint')
+META_080 = {'expectedRole', 'expectedText', 'destructive', 'stage', 'action', 'maxCandidates',
+            'lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint'}
+
+
+def test_a_0_8_0_store_loads_and_a_0_9_0_store_loses_only_last_url_there(tmp_path):
+    from mendwright.store import META_FIELDS, _meta_fields
+    path = tmp_path / 'o.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'expectedRole': 'button', 'lastPage': '/a', 'pages': ['/a'],
+        'candidates': [{'xpath': '#k', 'source': 'code', 'status': 'active'}]}}}),
+        encoding='utf-8')
+    store = load_store(None, str(path))
+    assert store.last_url('k') is None and store.meta('k')['lastPage'] == '/a'
+    assert set(META_FIELDS) == set(FIELDS_080) | {'lastUrl'}
+    saved = _meta_fields({'expectedRole': 'button', 'lastPage': '/a', 'pages': ['/a'],
+                          'lastUrl': 'https://shop.example/a', 'steps': ['pay']})
+    assert {k: v for k, v in saved.items() if k in FIELDS_080} == {
+        'expectedRole': 'button', 'lastPage': '/a', 'pages': ['/a'], 'steps': ['pay']}
+    assert saved['lastUrl'] == 'https://shop.example/a'
+
+
+def test_meta_has_the_0_8_0_keys_only(tmp_path):
+    store = load_store(None, str(tmp_path / 'o.json'))
+    store.add_candidate('k', '#k', source='code')
+    store.set_last_url('k', 'https://shop.example/a')
+    assert set(store.meta('k')) == META_080
+
+
+def test_a_read_only_store_never_touches_its_file(tmp_path, caplog):
+    path = tmp_path / 'o.json'
+    first = load_store(None, str(path))
+    first.add_candidate('k', '#k', source='code')
+    first.add_candidate('k', '//b', source='heal')
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    store = load_store(None, str(path), read_only=True)
+    assert store.read_only is True and first.read_only is False
+    with caplog.at_level('DEBUG', logger='mendwright'):
+        store.record_success('k', '#k')
+        store.add_candidate('k', '//c', source='heal')
+        store.quarantine('k', '//b')
+        store.set_meta('k', role='button', destructive=True)
+        store.set_last_url('k', 'https://shop.example/a')
+        store.set_last_page('k', '/a')
+        with store.batch():
+            store.set_last_step('k', 'pay')
+    assert store.status('k', '//b') == 'quarantined' and store.meta('k')['destructive']
+    assert store.last_url('k') == 'https://shop.example/a'
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['o.json']
+    assert caplog.records == []
+
+
+def test_a_read_only_store_over_no_file_creates_none(tmp_path):
+    store = load_store(None, str(tmp_path / 'missing' / 'o.json'), read_only=True)
+    store.add_candidate('k', '#k', source='code')
+    assert not (tmp_path / 'missing').exists()
+
+
+def test_a_snapshot_is_an_independent_read_only_copy(tmp_path):
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {
+        'pay': {'expectedRole': 'button', 'destructive': True,
+                'candidates': [{'xpath': '#pay', 'source': 'seed'}]},
+        'terms': {'expectedRole': 'checkbox',
+                  'candidates': [{'xpath': '#terms', 'source': 'seed'}]}}}), encoding='utf-8')
+    path = tmp_path / 'o.json'
+    store = load_store(str(seed), str(path), destructive_keys={'cancel'})
+    store.add_candidate('note', '#note', source='code')
+    store.set_meta('note', destructive=True)
+    store.set_code_candidates('terms', ['#t2', '#terms'])
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    copy = store.snapshot()
+    assert copy.read_only is True and store.read_only is False
+    copy.add_candidate('note', '//textarea', source='heal')
+    copy.quarantine('note', '#note')
+    copy.set_meta('terms', role='input')
+    assert [c['xpath'] for c in store.candidates('note')] == ['#note']
+    assert store.status('note', '#note') == 'active'
+    assert store.meta('terms')['expectedRole'] == 'checkbox'
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    # Flags from the seed, from destructive_keys and from set_meta, and the seed's roles.
+    for key in ('pay', 'note'):
+        assert copy.meta(key)['destructive'] is True
+    copy._entry('cancel')
+    assert copy.meta('cancel')['destructive'] is True and copy.is_locked_destructive('pay')
+    assert copy.meta('pay')['expectedRole'] == 'button' and not copy.role_is_guess('pay')
+    # The code's order, as in the process that made it.
+    assert [c['xpath'] for c in copy.candidates('terms')][:2] == ['#t2', '#terms']
+    assert copy.last_success('terms') is None

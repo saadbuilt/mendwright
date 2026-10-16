@@ -428,6 +428,24 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     return healer
 
 
+def _quiet_framed(driver):
+    """AsyncPlaywrightDriver.framed() without its wait, for heal.drift(): before the wait of
+    Locator.element_handle() Playwright runs the page's overlay handlers, the script's own
+    among them, and a count() and query_selector() run none (see drift._quiet_framed)."""
+    from .drivers.playwright_sync import playwright_selector
+
+    async def framed(frame_selector):
+        try:
+            if await driver.count(frame_selector) != 1:
+                return None
+            handle = await driver._page.query_selector(playwright_selector(frame_selector))
+            frame = await handle.content_frame() if handle is not None else None
+        except Exception:
+            return None
+        return AsyncPlaywrightDriver(frame) if frame is not None else None
+    return framed
+
+
 # --- the async healer --------------------------------------------------------------------
 
 async def _match_handle(driver, candidate, require_visible):
@@ -763,6 +781,66 @@ class AsyncHealer:
             if candidates and len(errors) == len(candidates):
                 raise errors[0]
             return False
+
+    async def drift(self, keys: Iterable[str] | None = None, *, timeout_ms: int | None = None,
+                    poll_ms: int = 200) -> Any:
+        """Healer.drift(), awaited: check whether the selectors saved for keys still find
+        their elements on this page, and what a run would do about the ones that don't,
+        without acting on the page, saving anything or asking a model. Returns a
+        mendwright.drift.DriftReport. The arguments mean what they mean there, and argument
+        errors raise before anything is awaited.
+
+        It holds the healer's lock, so a lookup started meanwhile waits for it, and runs
+        the sync engine in a worker thread, which reaches the page through SyncBridge. A key
+        whose selector matches only inside an iframe is followed there as in a run, with
+        the async driver's frame lookups awaited on the event loop."""
+        from . import drift as _drift
+        core = self._core
+        wanted = _drift.drift_keys(self.store, keys, timeout_ms, poll_ms)
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        skips, canaries = _drift.journal_evidence(_drift.store_journal(self.store))
+        async with self._turn():
+            with core._overlays.handling():
+                url = await _url(self._driver)
+                if wanted is None:
+                    wanted = _drift.keys_on_page(self.store, url)
+                bridge = self._sync_driver()
+                frames = self._drift_frames(bridge)
+
+                def probe():
+                    return _drift.probe_page(
+                        core, wanted, driver=bridge, frames=frames, timeout_ms=timeout,
+                        poll_ms=poll_ms, sleep=lambda ms: time.sleep(ms / 1000.0),
+                        skips=skips, canaries=canaries, optional=set(core._interruptions),
+                        opener='await mendwright.aio.open', url=url)
+                report = await _in_thread(probe)
+        logger.info('mendwright: ' + report.summary())
+        return report
+
+    def _drift_frames(self, bridge):
+        """drift.Frames for the async driver: its frame_matches() and framed() awaited on the
+        event loop through bridge, and a framed driver wrapped in a SyncBridge of its own,
+        as _heal_scope() wraps it. None for one the driver lacks."""
+        from .drift import Frames
+        driver, loop = self._driver, asyncio.get_running_loop()
+        finder = framer = None
+        if callable(_member(driver, 'frame_matches')):
+            def finder(selector):
+                return bridge.run(driver.frame_matches, selector)
+        if isinstance(driver, AsyncPlaywrightDriver):
+            look = _quiet_framed(driver)       # no wait, so no overlay handler runs
+        elif callable(_member(driver, 'framed')):
+            look = driver.framed
+        else:
+            look = None
+        if look is not None:
+            def framer(frame_selector):
+                try:
+                    inner = bridge.run(look, frame_selector)
+                except Exception:
+                    return None
+                return SyncBridge(inner, loop) if inner is not None else None
+        return Frames(finder, framer)
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 

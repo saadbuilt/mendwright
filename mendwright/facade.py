@@ -49,7 +49,7 @@ from .drivers.base import (UNSURE, driver_handles, driver_list_fingerprint, driv
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
-                   journal_event, loop_message, nothing_matched_message, page_path,
+                   journal_event, loop_message, nothing_matched_message, page_path, page_url,
                    rejected_selector_message, run_cancelled_message, run_failed_message,
                    several_message, skip_message, stuck_message, unhandled_message)
 from .flow import (DISMISS_KEY, alert_message, consent_message, dismiss_loop_message,
@@ -1255,6 +1255,42 @@ class Healer:
             return
         self._get_by_noted.add(step)
         self.coordinator._emit(logging.INFO, getby.not_healed_message(step, why))
+    def drift(self, keys: Iterable[str] | None = None, *, timeout_ms: int | None = None,
+              poll_ms: int = 200) -> Any:
+        """Check, on the page this healer is on, whether the selectors saved for keys still
+        find their elements, and what a run would do about the ones that don't, without
+        acting on the page, saving anything or asking a model. Returns a
+        mendwright.drift.DriftReport: one KeyDrift per key, with a verdict ('ok', 'ok-heal',
+        'wrong-role', 'would-heal', 'needs-model', 'refused', or one that says why the key
+        could not be judged) and the reason, in the run's own words.
+
+        keys=None checks the keys found on this page before (its page is their lastPage or
+        one of their pages; on the site root, the keys whose lastUrl is a root of this host,
+        whatever its port, which _remember_page saves only for a key found on no other
+        page). keys=[...] checks those wherever they were found: a key never
+        found on this page gets the page guard's refusal, as in a run, unless
+        heal_across_pages=True. timeout_ms (default: the healer's) is one wait for the whole
+        page, polled every poll_ms.
+
+        It writes nothing: no store write, no journal line, no fingerprint, no quarantine,
+        no canary. It changes nothing in heals, pending() or handled_interruptions, performs
+        no action, handles no interruption and dismisses no popup, and Playwright's overlay
+        handlers of this healer stay out of it. It never calls the provider. It logs one
+        INFO line. TypeError or ValueError for arguments that can never work (a single
+        string as keys, keys the store doesn't have), before anything touches the page."""
+        from . import drift as _drift
+        wanted = _drift.drift_keys(self.store, keys, timeout_ms, poll_ms)
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        skips, canaries = _drift.journal_evidence(_drift.store_journal(self.store))
+        with self._overlays.handling():
+            url = self._url()
+            if wanted is None:
+                wanted = _drift.keys_on_page(self.store, url)
+            report = _drift.probe_page(self, wanted, timeout_ms=timeout, poll_ms=poll_ms,
+                                       skips=skips, canaries=canaries,
+                                       optional=set(self._interruptions), url=url)
+        logger.info('mendwright: ' + report.summary())
+        return report
 
     # --- lists (see mendwright.lists) ------------------------------------------------
 
@@ -2378,14 +2414,64 @@ class Healer:
 
     def _remember_page(self, key, url=None):
         """Save the page key's element was just found on (see mendwright.flow.page_path),
-        and the step run_steps() runs now, if any (see _remember_step)."""
-        path = page_path(self._url() if url is None else url)
-        self._remember_step(key, path)
-        setter = getattr(self.store, 'set_last_page', None)
+        its address (see _remember_url), and the step run_steps() runs now, if any (see
+        _remember_step), with at most one write of the store for all three."""
+        url = self._url() if url is None else url
+        path = page_path(url)
+        with _batched(self.store):
+            self._remember_step(key, path)
+            setter = getattr(self.store, 'set_last_page', None)
+            if callable(setter) and path:
+                setter(key, path)
+            # The site root has no page: its address is saved only for a key found on no
+            # page yet, so that lastUrl stays an address of lastPage.
+            if path or not self._saved_page(key):
+                self._remember_url(key, url)
+
+    def _saved_page(self, key):
+        try:
+            return self.store.meta(key).get('lastPage')
+        except Exception:
+            return None
+
+    def _remember_url(self, key, url):
+        """Save the address of the page key's element was just found on, with its record
+        ids masked (see mendwright.flow.page_url), so that `mendwright check` can load the
+        page again. Nothing for a page with no such address (about:blank, a data: URL, a
+        file:// page), nor for one inside an iframe (see _top_level), nor on a custom store
+        without set_last_url(). An address the store holds already costs no browser call
+        and no write."""
+        setter = getattr(self.store, 'set_last_url', None)
         if not callable(setter):
             return
-        if path:
-            setter(key, path)
+        address = page_url(url)
+        if address is None:
+            return
+        getter = getattr(self.store, 'last_url', None)
+        try:
+            if callable(getter) and getter(key) == address:
+                return
+        except Exception:
+            pass
+        if not self._top_level():
+            return
+        setter(key, address)
+
+    def _top_level(self):
+        """Whether the address url() gives is the top-level page's: on Playwright, when
+        mendwright was opened on a Page (a Frame's address is the frame's own); on Selenium,
+        when the driver is not switched into a frame (current_url is the top-level page's
+        then, whatever frame the element is in: one round trip). Any other driver's url()
+        is taken as given."""
+        from .drivers.playwright_async import AsyncPlaywrightDriver
+        from .drivers.playwright_sync import PlaywrightSyncDriver
+        from .drivers.selenium import SeleniumDriver
+        driver = self._driver
+        if isinstance(driver, (PlaywrightSyncDriver, AsyncPlaywrightDriver)):
+            return isinstance(getattr(self._page, 'frames', None), list)
+        if isinstance(driver, SeleniumDriver):
+            return not driver.inside_frame()
+        return True
 
     def _fingerprint_target(self, key):
         """The selector to read key's fingerprint through after a match, or None when there
@@ -2417,15 +2503,16 @@ class Healer:
         except Exception:
             logger.debug('mendwright: could not save the fingerprint of %r', key, exc_info=True)
 
-    def _flow_context(self, key, url):
+    def _flow_context(self, key, url, *, quiet=False):
         """The heal context: the URL, and the pages the page guard compares (this page among
-        them while a step that key was found during runs, see _step_pages)."""
+        them while a step that key was found during runs, see _step_pages). quiet=True
+        leaves out the INFO line _step_pages() logs (heal.drift() logs one line only)."""
         try:
             meta = self.store.meta(key)
         except Exception:
             meta = {}
         return {'url': url, 'page': page_path(url), 'lastPage': meta.get('lastPage'),
-                'pages': self._step_pages(key, meta, page_path(url))}
+                'pages': self._step_pages(key, meta, page_path(url), quiet=quiet)}
 
     # --- healing -------------------------------------------------------------------
 
@@ -2443,10 +2530,12 @@ class Healer:
         self.coordinator._decline(key, reason)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
-    def _frame_plan(self, key, selector, frames):
+    def _frame_plan(self, key, selector, frames, coordinator=None):
         """(iframe selector, selector to save) when key can be followed into the one iframe
-        its selector matches in (see _follow_into_frame), else (None, why not)."""
-        coord = self.coordinator
+        its selector matches in (see _follow_into_frame), else (None, why not). coordinator,
+        when given, is the one whose disabled and dry_run settings count (heal.drift()'s
+        preview passes its own); else this healer's."""
+        coord = self.coordinator if coordinator is None else coordinator
         if getattr(coord, 'disabled', False):
             return None, 'healing is turned off by MENDWRIGHT_DISABLE=1'
         if coord.dry_run:
@@ -2669,7 +2758,7 @@ class Healer:
         if running is not None and path and path == running[1] and callable(setter):
             setter(key, running[0])
 
-    def _step_pages(self, key, meta, here):
+    def _step_pages(self, key, meta, here, quiet=False):
         """The pages the page guard compares for key: the ones saved with it, and, while
         run_steps() runs a step that key was found during before, this page too when it is
         the page that step showed on (its landmark, its url=) when it started. So a site
@@ -2684,7 +2773,7 @@ class Healer:
             return pages
         step = running[0]
         last = meta.get('lastPage')
-        if (here not in pages and here != last and (pages or last)
+        if (here not in pages and here != last and (pages or last) and not quiet
                 and not self.coordinator.heal_across_pages):
             self.coordinator._emit(logging.INFO, _steps.scope_message(key, step, here, last))
         return pages + [here]
