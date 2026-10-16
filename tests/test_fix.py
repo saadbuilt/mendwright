@@ -308,6 +308,26 @@ def test_a_key_whose_heal_is_a_list_heal_is_left_alone(root, capsys):
             "hand.") in out.splitlines()
 
 
+def test_a_heal_of_one_element_is_never_written_into_a_list_s_key(root, capsys):
+    # heal.locator_all('.cart-item', '.cart-item') recorded the list, and
+    # heal.page.inner_text('.cart-item') healed onto one row saved for later once the cart
+    # was emptied: written back, the cart's loop would take that row.
+    saved = "//div[@id='saved-1']"
+    entry = {"expectedRole": "div", "listFingerprint": {"version": 1},
+             "candidates": [cand(".cart-item", "code", T0), dict(cand(saved, "heal", T1), css="#saved-1")]}
+    write_store(root, {".cart-item": entry}, [canary(".cart-item", saved)])
+    text = ('for row in heal.locator_all(".cart-item", ".cart-item"):\n    row.click()\n'
+            'first = heal.page.inner_text(".cart-item")\n')
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .cart-item: heal.locator_all() looks it up as a list, and its heal is of one "
+            "element, so written into the list call it would make the list match that one "
+            "element. Give the list a key of its own, or change the selector by hand to: "
+            + saved) in out.splitlines()
+
+
 def test_every_old_code_selector_of_a_key_is_replaced(root, capsys):
     confirmed_project(root, "k", ["#a", "//button[@id='b']"], EMAIL, role="input")
     source = write(root, "test_a.py", "heal.locator('k', ['#a', \"//button[@id='b']\"])\n")

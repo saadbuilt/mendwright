@@ -215,6 +215,15 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  'was emptied from one whose selector broke, so the heal can be '
                                  'another list. If the selector broke, change it by hand.'))
             continue
+        if entry.get('listFingerprint') is not None:
+            # heal.locator_all() looks the key up as a list, and the heal is of one element
+            # (heal.locator(), a heal.page shortcut or heal.driver.find_element() under the same
+            # key): written into the list call, it would make the list that one element.
+            plan.skipped.append((key, 'heal.locator_all() looks it up as a list, and its heal is '
+                                 'of one element, so written into the list call it would make the '
+                                 'list match that one element. Give the list a key of its own, or '
+                                 'change the selector by hand to: ' + new))
+            continue
         bare = [s for s in old if _BARE_WORD.match(s)]
         if bare:
             plan.skipped.append((key, 'its old selector ' + repr(bare[0]) + ' is a bare word, and '
