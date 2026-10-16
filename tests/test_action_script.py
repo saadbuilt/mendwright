@@ -715,7 +715,21 @@ def test_an_artifact_without_a_store_lists_what_it_has(world):
         "mendwright: the artifact mendwright-store has no overrides.json at its top or in "
         ".mendwright/ (it has: 'a.txt', 'b/', \"it's.txt\"). Upload the folder that holds the "
         "store, such as .mendwright/."]
-    assert world.summary().startswith('## mendwright\n\nStopped: mendwright: the artifact ')
+    assert world.summary() == (
+        "## mendwright\n\nStopped: mendwright: the artifact mendwright-store has no overrides.json "
+        "at its top or in .mendwright/ (it has: `a.txt`, `b/`, `it's.txt`). Upload the folder that "
+        "holds the store, such as .mendwright/.\n")
+
+
+def test_the_summary_shows_the_artifact_s_entries_in_code_spans(world):
+    shutil.rmtree(str(world.uploaded))
+    world.uploaded.mkdir()
+    (world.uploaded / '[x](https%3A__evil.example) @octocat.txt').write_text('x', encoding='utf-8')
+    world.run()
+    assert world.summary() == (
+        '## mendwright\n\nStopped: mendwright: the artifact mendwright-store has no overrides.json '
+        'at its top or in .mendwright/ (it has: `[x](https%3A__evil.example) @octocat.txt`). '
+        'Upload the folder that holds the store, such as .mendwright/.\n')
 
 
 def _can_link(tmp_path):
@@ -1190,7 +1204,7 @@ def test_the_closing_comment_names_a_seed_selector_and_a_left_alone_code(world):
     ('tests-empty', '#12 is still open: the tests did not pass in this run, and close-stale '
                     'closes a pull request only after a run whose tests passed.'),
     ('key-missing', '#12 is still open: the store from this run does not account for '
-                    'accept_terms, so mendwright cannot tell whether it is still needed.'),
+                    '`accept_terms`, so mendwright cannot tell whether it is still needed.'),
     ('more', '#12 is still open: its description does not list all of its keys, so mendwright '
              'cannot tell whether it is still needed.'),
     ('close-stale-false', '#12 is still open: close-stale is false.'),
@@ -1215,6 +1229,43 @@ def test_a_pull_request_is_left_open_when_mendwright_cannot_tell(world, change, 
     assert world.result() == 'unchanged'
     assert world.api.writes() == [] and world.api.pulls[12]['state'] == 'open'
     assert world.summary().startswith('## mendwright\n\n#12 is up to date.\n\n' + line + '\n')
+
+
+EVIL_KEY = '[click me](https://evil.example/x) <img src=https://evil.example/i.png> @octocat'
+
+
+@pytest.mark.parametrize('key, shown', [
+    (EVIL_KEY, '`' + EVIL_KEY + '`'),
+    ('k\ud800', '`k\\uD800`'),
+    ('a‮b', '`a\\u202Eb`'),
+], ids=['markdown', 'lone-surrogate', 'bidi'])
+def test_a_key_the_store_no_longer_has_is_in_a_code_span_in_the_summary(world, key, shown):
+    world.write('tests/test_checkout.py', 'def test_signup(heal):\n    heal.locator('
+                + ascii(key) + ', "#accept-terms").check()\n')
+    world.env['GITHUB_SHA'] = world.commit('a key with markup in it')
+    git(world.ws, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+    world.upload({key: heal('#accept-terms', TERMS, role='checkbox')}, confirmed(key, TERMS))
+    world.run()
+    assert world.result() == 'created', world.log()
+    world.checkout()
+    world.env['GITHUB_RUN_ID'] = '101'
+    world.upload({}, [])
+    world.run()
+    assert (world.result(), world.steps['publish'][0]) == ('unchanged', 0)
+    assert ('\n#12 is still open: the store from this run does not account for ' + shown
+            + ', so mendwright cannot tell whether it is still needed.\n') in world.summary()
+
+
+def test_text_with_a_lone_surrogate_is_written_to_the_log_outputs_and_summary(world):
+    out = io.StringIO()
+    act = ma.Action(world.step_env('publish'), stdout=out, transport=world.api)
+    act.print('a\udc80b')
+    act.set_output('x', 'c\ud800d')
+    act.summary('e\udfffef')
+    assert out.getvalue() == 'a\\uDC80b\n'
+    assert act.outputs['x'] == 'c\\uD800d'
+    assert (world.tmp / 'summary.md').read_text(encoding='utf-8') == 'e\\uDFFFef\n'
+    assert 'c\\uD800d' in (world.tmp / 'output.txt').read_text(encoding='utf-8')
 
 
 # --- publish: races and refusals ----------------------------------------------------------------

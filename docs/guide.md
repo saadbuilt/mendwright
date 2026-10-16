@@ -1420,7 +1420,7 @@ Check each new selector before you merge. A passing test confirms a heal, but a 
 From run [#11893412207](https://github.com/saadbuilt/shop/actions/runs/11893412207) on `main` at `3f2a1c9`, with mendwright 0.9.0. Each run rewrites the branch `mendwright/fix/main`. Don't push to it: the action stops updating a branch that has commits it did not make. Comment here instead of editing this description, which the action rewrites.
 ````
 
-Under each item of "Left alone", a Why section quotes the line `mendwright fix` prints. Every key, selector, path and name from the store, the journal or your files is in a code span or a code block, with control and bidirectional characters written out as `\uXXXX`, so nothing in them can mention someone, link an issue or read in another order than it is written.
+Under each item of "Left alone", a Why section quotes the line `mendwright fix` prints. Every key, selector, path and name from the store, the journal or your files is in a code span or a code block, with control and bidirectional characters written out as `\uXXXX`, so nothing in them can mention someone, link an issue or read in another order than it is written. The job summary shows them the same way.
 The description ends with a hidden marker that holds what the action needs to know on the next run: a hash of what it writes, the run and commit, and the keys.
 The commit has the same title and one line, `From <run>, tests on <commit>.`, with no key and no selector, and its author is `commit-author-name`.
 

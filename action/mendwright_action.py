@@ -70,7 +70,12 @@ MORE_LEFT = 'Run mendwright fix with this store to see them all.'
 
 class Stop(Exception):
     """A refusal: the message is printed as an error, written to the job summary as
-    Stopped: <message>, and the step exits 1."""
+    Stopped: <message>, and the step exits 1. summary, when given, is the message as the job
+    summary shows it, with the text from the artifact or the store in code spans."""
+
+    def __init__(self, message, summary=None):
+        super().__init__(message)
+        self.summary = summary
 
 
 class Done(Exception):
@@ -87,6 +92,12 @@ def plan_hash(replacements):
     rows = sorted([r['path'], r['selector'], r['new'], sorted(r['keys'])] for r in replacements)
     text = json.dumps(rows, separators=(',', ':'), ensure_ascii=True)
     return hashlib.sha256(text.encode('ascii')).hexdigest()
+
+
+def encodable(text):
+    """text with any lone surrogate written as \\uXXXX, so it can be written as UTF-8. A key
+    or a file name can hold one, and the log, the outputs and the job summary are UTF-8."""
+    return re.sub('[\ud800-\udfff]', lambda m: '\\u%04X' % ord(m.group()), str(text))
 
 
 def escape_data(text):
@@ -271,7 +282,7 @@ class Action:
         return self.input(name).strip() == 'true'
 
     def print(self, text=''):
-        self.stdout.write(str(text) + '\n')
+        self.stdout.write(encodable(text) + '\n')
         self.stdout.flush()
 
     def annotate(self, kind, text):
@@ -287,7 +298,7 @@ class Action:
         self.print('::' + token + '::')
 
     def set_output(self, name, value):
-        value = str(value)
+        value = encodable(value)
         self.outputs[name] = value
         path = self.env.get('GITHUB_OUTPUT')
         if not path:
@@ -301,7 +312,7 @@ class Action:
         if not path:
             return
         with open(path, 'a', encoding='utf-8', newline='\n') as handle:
-            handle.write(text.rstrip('\n') + '\n')
+            handle.write(encodable(text).rstrip('\n') + '\n')
 
     # git
 
@@ -627,10 +638,14 @@ def find_store(action):
             except OSError:
                 entries = []
             shown = [e + ('/' if os.path.isdir(os.path.join(root, e)) else '') for e in entries]
-            listed = ', '.join(repr(e) for e in shown[:20]) + (', ...' if len(shown) > 20 else '')
-            raise Stop('mendwright: the artifact ' + artifact + ' has no ' + store_input + ' at '
-                       'its top or in .mendwright/ (it has: ' + (listed or 'nothing') + '). '
-                       'Upload the folder that holds the store, such as .mendwright/.')
+            more = ', ...' if len(shown) > 20 else ''
+
+            def refusal(listed):
+                return ('mendwright: the artifact ' + artifact + ' has no ' + store_input + ' at '
+                        'its top or in .mendwright/ (it has: ' + (listed or 'nothing') + '). '
+                        'Upload the folder that holds the store, such as .mendwright/.')
+            raise Stop(refusal(', '.join(repr(e) for e in shown[:20]) + more),
+                       summary=refusal(', '.join(md_code(e) for e in shown[:20]) + more))
         inside = os.path.realpath(root)
         refused = ('mendwright: the store or journal in the artifact is a link or points outside '
                    'it, so it was not read.')
@@ -1089,7 +1104,7 @@ class Publish:
                    and self.plan['best_source'].get(k) not in ('code', 'seed')]
         if missing:
             return (n + ' is still open: the store from this run does not account for '
-                    + ', '.join(str(k) for k in missing) + ', so mendwright cannot tell whether '
+                    + ', '.join(md_code(k) for k in missing) + ', so mendwright cannot tell whether '
                     'it is still needed.')
         return None
 
@@ -1248,7 +1263,7 @@ def main(argv=None, action=None):
     except Stop as stop:
         message = str(stop)
         action.annotate('error', message)
-        action.summary('## mendwright\n\nStopped: ' + message + '\n')
+        action.summary('## mendwright\n\nStopped: ' + (stop.summary or message) + '\n')
         return 1
 
 
