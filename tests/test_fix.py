@@ -1231,3 +1231,28 @@ def test_an_accepted_list_heal_without_its_evidence_counts_every_code_selector(r
     assert any(line.startswith("  cart: its selector '.wish' matched on 2026-10-04 11:00:00 UTC, "
                                "after its list heal was found on 2026-10-01 08:00:00 UTC")
                for line in out.splitlines())
+
+
+def test_an_accepted_list_heal_is_not_written_once_a_seed_selector_matched_again(root, capsys):
+    # The code's .cart-item last matched before the list heal was found, the seed file's
+    # selector of the key after: the list was not broken there.
+    seeded = "//div[@class='cart-item']"
+    write_store(root, {"cart": cart_key(cand(seeded, "seed", T3),
+                                        list_row(ROWS, "accepted", accepted=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert any(line.startswith("  cart: its selector " + repr(seeded) + " matched on 2026-10-04 "
+                               "11:00:00 UTC, after its list heal was found on 2026-10-02 "
+                               "09:30:00 UTC") for line in out.splitlines())
+
+
+def test_an_accepted_list_heal_that_names_no_selector_it_replaced_is_left_alone(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2, was=()))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: its list heal doesn't name the selector it replaced, so mendwright can't "
+            "tell which string in your code to replace. Change it by hand to: div.cart-row. If "
+            "your code already has a selector that works, drop the list heal with: mendwright "
+            "lists reject cart") in out.splitlines()
