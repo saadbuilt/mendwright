@@ -577,7 +577,8 @@ def test_a_key_that_moved_into_an_iframe_would_be_followed(stub_provider, tmp_pa
 
 
 @pytest.mark.parametrize('how', [
-    {'nested': True}, {'selector': None}, {'frames': 2}, 'several', 'quarantined', 'hidden'])
+    {'nested': True}, {'selector': None}, {'frames': 2}, 'several', 'quarantined', 'hidden',
+    'another-page'])
 def test_an_iframe_a_run_would_not_follow_is_refused_in_its_words(how, stub_provider, tmp_path,
                                                                   caplog):
     inner = INNER
@@ -590,11 +591,19 @@ def test_an_iframe_a_run_would_not_follow_is_refused_in_its_words(how, stub_prov
         store.add_candidate('terms', 'css=#inner-terms', source='heal', frame_xpath=FRAME)
         store.quarantine('terms', 'css=#inner-terms')
     frame = how if isinstance(how, dict) else {}
-    expected = _locator_text(TwoDocs(inner, **frame), tmp_path, stub_provider)
-    page = TwoDocs(inner, **frame)
+    pages = [TwoDocs(inner, **frame), TwoDocs(inner, **frame)]
+    if how == 'another-page':
+        # 'terms' was found on /signup only: the page guard stops the follow on /checkout.
+        for doc in pages:
+            doc._url = 'https://shop.example/checkout'
+    expected = _locator_text(pages[0], tmp_path, stub_provider)
+    if how == 'another-page':
+        assert expected.startswith("'terms' was last found on /signup, and this page is "
+                                   '/checkout.'), expected
+    page = pages[1]
     heal = mendwright.open(page, provider=stub_provider(None), store_path=_store(tmp_path),
                            timeout_ms=0)
-    [k] = drifted(heal, page, caplog).keys
+    [k] = drifted(heal, page, caplog, keys=['terms']).keys
     assert k.verdict == 'refused'
     assert k.reason.endswith('A run would not heal it: ' + expected)
 
