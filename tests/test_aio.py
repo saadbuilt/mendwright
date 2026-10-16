@@ -102,6 +102,26 @@ class AsyncFakePage:
         self.threads.add(threading.get_ident())
         return self.sync.evaluate(js, arg)
 
+    def __getattr__(self, method):
+        if not method.startswith('get_by_'):
+            raise AttributeError(method)
+
+        def get_by(*args, **kwargs):
+            self.threads.add(threading.get_ident())
+            return AsyncFakeGetBy(self, getattr(self.sync, method)(*args, **kwargs))
+        return get_by
+
+
+class AsyncFakeGetBy(AsyncFakeLocator):
+    """The async shape of conftest's FakeGetBy, from AsyncFakePage's get_by_* calls."""
+
+    def __init__(self, page, loc):
+        self._page = page
+        self._loc = loc
+
+    def and_(self, other):
+        return AsyncFakeGetBy(self._page, self._loc.and_(other._loc))
+
 
 class ThreadedStub:
     """conftest's StubProvider, also recording the thread propose() runs on."""
@@ -859,3 +879,157 @@ def test_the_async_healer_takes_fingerprint_false(make_page, tmp_path, stub_prov
     heal = run(main())
     assert sync.fingerprint_reads == 0 and len(provider.bundles) == 1
     assert heal.heals[-1].source == 'model'
+
+
+
+# --- heal.page.get_by_*() with heal_get_by=True ----------------------------------------------
+
+CALL = 'get_by_role("button", name="Sign in")'
+LOGIN = "<html><body><main><button id='login' class='primary'>Sign in</button></main></body></html>"
+RENAMED = LOGIN.replace('>Sign in<', '>Log in<')
+
+
+def _call_page(make_page, html=LOGIN):
+    sync = make_page(html, url='https://shop.test/login', fingerprints=True)
+    return sync, AsyncFakePage(sync)
+
+
+async def _sign_in(heal, **kwargs):
+    return await heal.page.get_by_role('button', name='Sign in').click(**kwargs)
+
+
+def test_the_sync_bridge_forwards_role_match():
+    class Driver:
+        async def count(self, selector, frame_chain=()):
+            return 1
+
+    class WithRole(Driver):
+        async def role_match(self, selector, role, level=None, frame_chain=()):
+            return (selector, role, level, frame_chain)
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        bridge = SyncBridge(WithRole(), loop)
+        return await asyncio.to_thread(bridge.role_match, '//b', 'tab', 2)
+
+    assert run(main()) == ('//b', 'tab', 2, ())
+    loop = asyncio.new_event_loop()
+    try:
+        assert SyncBridge(Driver(), loop).role_match is None
+    finally:
+        loop.close()
+
+
+def test_an_async_call_acts_records_and_heals_from_its_fingerprint(make_page, tmp_path,
+                                                                    stub_provider):
+    sync, page = _call_page(make_page)
+    provider = stub_provider("//button[@id='login']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by=True)
+        button = heal.page.get_by_role('button', name='Sign in')
+        assert repr(button) == "<AsyncHealingGetByLocator '" + CALL + "'>"
+        await button.click()
+        assert heal.store.meta(CALL)['expectedRole'] == 'button'
+        assert heal.store.meta(CALL)['fingerprint'] is not None
+        assert await heal.present(CALL) is True
+        sync.set_html(RENAMED)
+        assert await button.is_visible() is False       # the call as written
+        await _sign_in(heal)
+        assert await heal.present(CALL) is True         # the saved heal, while the call misses
+        return heal
+
+    heal = run(main())
+    assert [a[:2] for a in sync.actions] == [("get_by_role('button', name='Sign in')", 'click'),
+                                             ("xpath=//button[@id='login']", 'click')]
+    assert [(h.key, h.new, h.source) for h in heal.heals] == [
+        (CALL, "//button[@id='login']", 'fingerprint')]
+    assert provider.bundles == []
+
+
+def test_an_async_call_that_matches_several_goes_to_playwright(make_page, tmp_path,
+                                                             stub_provider):
+    sync, page = _call_page(make_page, LOGIN.replace('</main>', '<button>Sign in</button></main>'))
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=10000,
+                           heal_get_by=True)
+        proxy = heal._get_by_locator(mendwright.getby.parse(CALL),
+                                     page.get_by_role('button', name='Sign in'))
+        await proxy
+        assert proxy._canary is False and proxy._healed is None
+        with pytest.raises(Exception, match='strict mode violation') as caught:
+            await _sign_in(heal)
+        assert not isinstance(caught.value, AttentionRequired)
+        return heal
+
+    run(main())
+    assert not (tmp_path / 'o.json').exists()
+
+
+def test_an_async_call_the_browser_rejects_goes_to_playwright_at_once(make_page, tmp_path,
+                                                                      stub_provider):
+    sync, page = _call_page(make_page)
+    sync.reject['get_by_role'] = 'Locator.count: Error: "level" attribute is only supported for roles'
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=10000,
+                           heal_get_by=True)
+        started = time.monotonic()
+        with pytest.raises(Exception, match='"level" attribute') as caught:
+            await heal.page.get_by_role('button', name='Sign in', level=2).click()
+        assert time.monotonic() - started < 5
+        assert not isinstance(caught.value, (AttentionRequired, InvalidSelector))
+
+    run(main())
+    assert not (tmp_path / 'o.json').exists()
+
+
+def test_an_async_call_with_no_fingerprint_raises_a_timeout_error(make_page, tmp_path,
+                                                                  stub_provider):
+    timeout_error = pytest.importorskip('playwright.async_api').TimeoutError
+    _sync, page = _call_page(make_page, RENAMED)
+    provider = stub_provider("//button[@id='login']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by=True)
+        with pytest.raises(timeout_error) as caught:
+            await _sign_in(heal)
+        return caught.value
+
+    error = run(main())
+    assert isinstance(error, mendwright.getby.GetByNotFound)
+    assert str(error).endswith(mendwright.getby.no_fingerprint_message(CALL))
+    assert provider.bundles == []
+
+
+def test_an_async_heal_without_the_calls_aria_role_is_refused(make_page, tmp_path,
+                                                              stub_provider):
+    sync, page = _call_page(make_page, "<html><body><button role='tab' id='settings'>Settings"
+                                       '</button></body></html>')
+    provider = stub_provider("//button[@id='settings']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by=True)
+        await heal.page.get_by_role('tab', name='Settings').click()
+        sync.set_html("<html><body><button id='settings'>Preferences</button></body></html>")
+        with pytest.raises(mendwright.getby.GetByNotFound) as caught:
+            await heal.page.get_by_role('tab', name='Settings').click()
+        return heal, caught.value
+
+    heal, error = run(main())
+    assert "Playwright does not give it the ARIA role 'tab')" in str(error)
+    assert heal.heals == [] and provider.bundles == []
+
+
+def test_the_async_call_off_by_default_is_the_real_locator(make_page, tmp_path, stub_provider):
+    _sync, page = _call_page(make_page)
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=0)
+        assert type(heal.page.get_by_role('button', name='Sign in')) is AsyncFakeGetBy
+        with pytest.raises(TypeError, match='heal_get_by=True, heal_get_by=False or '
+                                            'heal_get_by=None'):
+            await _open(page, tmp_path, stub_provider(None), heal_get_by=1)
+
+    run(main())
