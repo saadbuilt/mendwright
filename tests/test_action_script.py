@@ -1512,3 +1512,21 @@ def test_with_two_open_pull_requests_the_lowest_is_updated(world):
     assert notices(world, 'publish', 'warning') == [
         'mendwright: 2 pull requests are open from mendwright/fix/main; the action updates #12. '
         'Close the others.']
+
+
+def test_the_ci_fixture_gives_the_outputs_the_ci_job_checks(world):
+    """.github/workflows/ci.yml runs the action as a dry run on tests/fixtures/action/project
+    and checks result, written and left-alone."""
+    fixture = ROOT / 'tests' / 'fixtures' / 'action' / 'project'
+    target = world.ws / 'tests' / 'fixtures' / 'action' / 'project'
+    shutil.copytree(str(fixture), str(target))
+    world.commit('fixture')
+    git(world.ws, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+    world.env['GITHUB_SHA'] = world.head()
+    world.inputs.update(**{'artifact': '', 'working-directory': 'tests/fixtures/action/project',
+                           'store': 'store/overrides.json', 'dry-run': 'true'})
+    world.run()
+    out = world.outputs()
+    assert (world.result(), out['written'], out['left-alone']) == ('dry-run', '1', '2')
+    assert git(world.ws, 'status', '--porcelain') == ''
+    assert world.api.calls == []
