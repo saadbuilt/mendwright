@@ -181,12 +181,12 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory and fingerprint), act_on for an
-    interruption's action, visible_match for the WARNING about a selector that matches
-    several elements, the popup methods of open(dismiss=True) (popup_probe and the others),
-    run() for any other callable, and wait() for a run= function of heal.interrupt().
-    describe, fingerprint, visible_match and the popup methods are None when the async
-    driver has none."""
+    handle, url, outer_html, describe, inventory, fingerprint, and role_match for a heal of
+    a get_by_role() call), act_on for an interruption's action, visible_match for the
+    WARNING about a selector that matches several elements, the popup methods of
+    open(dismiss=True) (popup_probe and the others), run() for any other callable, and
+    wait() for a run= function of heal.interrupt(). describe, fingerprint, role_match,
+    visible_match and the popup methods are None when the async driver has none."""
 
     timeout = 30.0
 
@@ -203,6 +203,8 @@ class SyncBridge:
             self.describe = None
         if not callable(_member(driver, 'fingerprint')):
             self.fingerprint = None
+        if not callable(_member(driver, 'role_match')):
+            self.role_match = None      # a heal of a get_by_role() call is then refused
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
         for name in _POPUP_METHODS:
@@ -286,6 +288,9 @@ class SyncBridge:
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
+
+    def role_match(self, selector, role, level=None, frame_chain=()):
+        return self.run(self._driver.role_match, selector, role, level, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has

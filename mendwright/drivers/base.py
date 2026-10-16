@@ -20,6 +20,12 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   fingerprint(selector, frame_chain=())   the matched element's fingerprint, or None
   frame_matches(selector)                 the child frames the selector matches in
   framed(frame_selector)                  a driver for the document inside one iframe
+  role_match(selector, role, level=None, frame_chain=())
+                                          whether the browser gives the one element the
+                                          selector matches that ARIA role (and level):
+                                          True, False, or None when it cannot tell. The
+                                          live gate checks a heal of a get_by_role() call
+                                          with it, and refuses the heal without it
 
 For lists (see mendwright.lists):
 
@@ -44,12 +50,13 @@ lives (inside its frame chain on Selenium):
                                           focused element, whatever document it is in
   popup_release(root)                     let the root's handle go
 
-Callers should go through driver_act_on, driver_describe, driver_inventory and
-driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
-when a driver lacks the method, through driver_handles and driver_list_fingerprint, which
-fall back to [handle()] and None (a driver without list_fingerprint() records no list, so
-a list lookup that matches nothing gives []), and through the driver_popup_* helpers,
-which fall back to None or False: a driver without them never dismisses anything.
+Callers should go through driver_act_on, driver_describe, driver_inventory,
+driver_fingerprint and driver_role_match below, which fall back to
+getattr(native, verb)(...), None, [], None and None when a driver lacks the method,
+through driver_handles and driver_list_fingerprint, which fall back to [handle()] and None
+(a driver without list_fingerprint() records no list, so a list lookup that matches
+nothing gives []), and through the driver_popup_* helpers, which fall back to None or
+False: a driver without them never dismisses anything.
 """
 
 import inspect
@@ -128,6 +135,21 @@ def driver_fingerprint(driver, selector, frame_chain=()):
     except Exception:
         return None
     return out if valid(out) else None
+
+
+def driver_role_match(driver, selector, role, level=None, frame_chain=()):
+    """driver.role_match(selector, role, level, frame_chain) when the driver has it, else
+    None: whether the browser gives the one element the selector matches the ARIA role
+    ``role`` (and heading level ``level``). None also when it raises or answers anything
+    but True or False, so a caller that needs to know refuses (see gate.live_reason)."""
+    method = getattr(driver, 'role_match', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, role, level, frame_chain)
+    except Exception:
+        return None
+    return out if isinstance(out, bool) else None
 
 
 def driver_visible_match(driver, selector, frame_chain=()):
