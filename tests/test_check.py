@@ -583,12 +583,19 @@ def _banner_page(make_page):
     return make
 
 
-def test_cookies_reject_closes_the_banner_with_one_click(make_page, store_dir, capsys, caplog):
+def test_cookies_reject_closes_the_banner_with_one_click(make_page, store_dir, capsys, caplog,
+                                                         monkeypatch):
+    from mendwright.facade import Healer
     path = record(make_page, store_dir, pages={SHOP + '/signup': (V1, [('email', '#email', 'input')])})
+    before = open(path, 'rb').read()
     hidden = BANNER + "<form style='display:none'><input id='email'></form>"
     site = {SHOP + '/signup': (hidden.replace("style='display:none'", ''), 200, SHOP + '/signup',
                                _banner_page(make_page))}
     browser = Browser(make_page, site)
+    # open(cookies=...) registers a Playwright overlay handler through Healer._watch: check
+    # never passes cookies= to open(), so nothing is registered.
+    watched = []
+    monkeypatch.setattr(Healer, '_watch', lambda self, item: watched.append(item.key))
     with caplog.at_level('WARNING', logger='mendwright'):
         code, out, _err = run_check(_args(path, '--cookies', 'reject'), browser, capsys)
     assert code == 0, out
@@ -596,7 +603,11 @@ def test_cookies_reject_closes_the_banner_with_one_click(make_page, store_dir, c
     assert click[1] == 'click' and 'onetrust-reject-all-handler' in click[0]
     assert "handled interruption 'cookie_banner' before '<check>'" in caplog.text
     assert 'Closed the cookie banner with the cookies="reject" preset.' in out
+    assert watched == []
     assert browser.sessions[0].pages[0].add_locator_handler_calls == []
+    # The handled banner is journaled nowhere: no journal.jsonl next to the store.
+    assert sorted(os.listdir(store_dir)) == ['overrides.json']
+    assert open(path, 'rb').read() == before
 
 
 def _late_banner_page(make_page):
