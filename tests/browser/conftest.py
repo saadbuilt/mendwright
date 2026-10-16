@@ -6,7 +6,8 @@
 - tab: a fresh page on that engine for each test.
 
 A test marked @pytest.mark.engine_family('playwright') (or 'selenium') runs only on that
-family; the other engines are deselected rather than skipped, since the test does not
+family, and one marked @pytest.mark.engines('pw-chromium', 'sel-chrome') only on those
+engines; the other engines are deselected rather than skipped, since the test does not
 apply to them.
 
 Nothing here imports playwright or selenium at module level. The default run (which
@@ -36,6 +37,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         'markers', "engine_family(*families): run a browser test only on these engine "
                    "families ('playwright', 'selenium')")
+    config.addinivalue_line(
+        'markers', "engines(*ids): run a browser test only on these engines, such as "
+                   "'pw-chromium' and 'sel-chrome'")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -45,10 +49,13 @@ def pytest_collection_modifyitems(config, items):
     keep, drop = [], []
     for item in items:
         marker = item.get_closest_marker('engine_family')
+        only = item.get_closest_marker('engines')
         callspec = getattr(item, 'callspec', None)
         engine_id = callspec.params.get('engine') if callspec is not None else None
         applies = (marker is None or engine_id not in ENGINE_IDS
                    or family_of(engine_id) in marker.args)
+        applies = applies and (only is None or engine_id not in ENGINE_IDS
+                               or engine_id in only.args)
         if not applies:
             drop.append(item)
         else:
