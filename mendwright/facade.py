@@ -2237,7 +2237,16 @@ class Healer:
             setter = getattr(self.store, 'set_last_page', None)
             if callable(setter) and path:
                 setter(key, path)
-            self._remember_url(key, url)
+            # The site root has no page: its address is saved only for a key found on no
+            # page yet, so that lastUrl stays an address of lastPage.
+            if path or not self._saved_page(key):
+                self._remember_url(key, url)
+
+    def _saved_page(self, key):
+        try:
+            return self.store.meta(key).get('lastPage')
+        except Exception:
+            return None
 
     def _remember_url(self, key, url):
         """Save the address of the page key's element was just found on, with its record

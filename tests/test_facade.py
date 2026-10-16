@@ -166,6 +166,24 @@ def test_a_new_port_changes_the_address_in_memory_only(tmp_path, make_page):
     assert healer.store.last_url('note') == 'http://127.0.0.1:8123/signup'
 
 
+def test_the_site_root_saves_no_address_over_a_page(tmp_path, make_page):
+    # A header link found on /signup, then on the home page: lastPage stays /signup, so
+    # lastUrl stays the address of /signup, and `mendwright check` loads it there.
+    page = make_page(NOTE, url='https://shop.example/signup')
+    healer = sh_open(page, store_path=str(tmp_path / 'o.json'))
+    _note(healer)
+    page.url = 'https://shop.example/'
+    _note(healer)
+    assert healer.store.meta('note')['lastPage'] == '/signup'
+    assert healer.store.last_url('note') == 'https://shop.example/signup'
+    # A key found only on the root gets the root's address.
+    page = make_page(NOTE, url='https://shop.example/')
+    healer = sh_open(page, store_path=str(tmp_path / 'r.json'))
+    _note(healer)
+    assert healer.store.last_url('note') == 'https://shop.example/'
+    assert healer.store.meta('note')['lastPage'] is None
+
+
 def test_a_healer_on_a_frame_saves_no_address(tmp_path, make_page):
     frame = make_page(NOTE, url='https://shop.example/embed/consent')
     del frame.frames                            # a Playwright Frame has no frames list

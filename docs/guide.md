@@ -1370,6 +1370,7 @@ With neither flag it exits 2 and lists the sites the store has pages on.
 From 0.9.0 on, each time a key's element is found, the store saves the page's address as `lastUrl`, next to `lastPage`: scheme, host, port and path, without user info, query or fragment. Parts of the path that look like a record id, a token (a JWT, a reset link's code), an email address, percent-encoded text or a name longer than 64 characters are saved as `*`, so the file holds no link that still works for someone's account.
 `https://shop.example/Orders/10482/?tab=2` is saved as `https://shop.example/Orders/*/`.
 A healer opened on a Playwright `Frame`, or on a Selenium driver switched into a frame, saves no address, and neither does a `file://`, `about:` or `data:` page.
+The site root's address is saved only for a key found on no other page, so a header link found on `/signup` and on the home page is checked on `/signup`.
 
 A page whose address has a `*` can't be loaded as it is. Give it an address that exists with `--url`:
 

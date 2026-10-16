@@ -11,7 +11,7 @@ While the version starts with 0, a minor release can change the public API.
 
 ### Changed
 
-- The store saves the address where each key's element was last found, `lastUrl`, next to `lastPage`: scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment. Keys found on the site root get one too. It isn't saved for `file://` pages, or for a healer opened on a Playwright `Frame` or on a Selenium driver switched into a frame. The first run after the upgrade writes the store once for each key it finds; later runs don't write for it, also when a test app starts on a new port. `locator()` saves a new page, step and address in one write. 0.8.0 reads such a store and drops `lastUrl` when it writes one. `load_store()` and `SelectorStore` take `read_only=True`, and `SelectorStore` has `last_url()` and `snapshot()`.
+- The store saves the address where each key's element was last found, `lastUrl`, next to `lastPage`: scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment. Keys found only on the site root get one too; a key also found on another page keeps that page's address. It isn't saved for `file://` pages, or for a healer opened on a Playwright `Frame` or on a Selenium driver switched into a frame. The first run after the upgrade writes the store once for each key it finds; later runs don't write for it, also when a test app starts on a new port. `locator()` saves a new page, step and address in one write. 0.8.0 reads such a store and drops `lastUrl` when it writes one. `load_store()` and `SelectorStore` take `read_only=True`, and `SelectorStore` has `last_url()` and `snapshot()`.
 
 ## [0.8.0] - 2026-10-16
 

@@ -149,7 +149,8 @@ def test_a_stale_address_and_an_old_store(tmp_path):
     assert pages['/signup'].skip == ('no-url', 'its saved address and its saved page /signup '
                                      'disagree: it was last found on a page mendwright saves no '
                                      'address for (a Playwright Frame, or a frame the Selenium '
-                                     "driver was switched into). Pass --url "
+                                     'driver was switched into), or two test processes saved '
+                                     "them at once. Pass --url "
                                      "'/signup=https://shop.example/signup'.")
     assert pages['/checkout'].skip == ('no-url', 'the store has only the path /checkout for it, '
                                        'because it was saved before 0.9.0. Pass --base-url URL, '
@@ -162,6 +163,25 @@ def test_a_stale_address_and_an_old_store(tmp_path):
                                            base_url='https://shop.example').pages}
     assert pages['/checkout'].address == 'https://shop.example/checkout'
     assert pages['/signup'].address == 'https://shop.example/signup'
+
+
+def test_a_root_address_next_to_a_page_names_the_site_of_the_page(tmp_path):
+    # Two processes saved the key at once, one on the home page and one on /signup: the
+    # root's address is on no page, but it names the key's site, and lastPage its page.
+    store = _store(tmp_path, {'cart': ('/signup', 'https://shop.example/', None),
+                              'promo': (None, 'https://shop.example/', None),
+                              'note': ('/orders/*', 'https://shop.example/', None)})
+    origins = {'https://shop.example': 'https://shop.example'}
+    pages = {p.page: p for p in plan_check(store, ['cart', 'promo', 'note'],
+                                           origins=origins).pages}
+    assert pages['/signup'].address == 'https://shop.example/signup'
+    assert pages['/signup'].keys == ['cart'] and pages['/signup'].skip is None
+    assert pages['/'].address == 'https://shop.example/' and pages['/'].keys == ['promo']
+    assert pages['/orders/*'].address is None
+    assert pages['/orders/*'].skip[1].startswith("the address of /orders/* has a part ")
+    # Its site still has to be named.
+    plan = plan_check(store, ['cart'], origins={'https://other.example': 'https://other.example'})
+    assert plan.pages == [] and plan.left_out == [('cart', 'other-site')]
 
 
 def test_url_must_name_a_selected_page_on_a_loaded_site(tmp_path):

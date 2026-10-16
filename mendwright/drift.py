@@ -1238,7 +1238,8 @@ _OLD_TEXT = ('the store has only the path {page} for it, because it was saved be
              'Pass --base-url URL, or run your tests once with 0.9.0.')
 _STALE_TEXT = ('its saved address and its saved page {page} disagree: it was last found on a '
                'page mendwright saves no address for (a Playwright Frame, or a frame the '
-               "Selenium driver was switched into). Pass --url '{page}={example}'.")
+               'Selenium driver was switched into), or two test processes saved them at once. '
+               "Pass --url '{page}={example}'.")
 _BAD_PAGE_TEXT = ("its saved page {page!r} isn't a path as mendwright saves one (an older "
                   'version saved it, or it was edited), so mendwright check builds no address '
                   'from it. Run your tests once with 0.9.0 to save it again.')
@@ -1284,13 +1285,17 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
             left_out.append((key, 'no-page'))
             continue
         consistent = bool(lu) and same_page(lu, lp)
-        recorded = origin_of(lu) if consistent else None
+        # The site root's address next to a page: two processes saved the key at once, one
+        # on the root and one on the page (a run saves no root address over a page, see
+        # Healer._remember_page). The address names the key's site, and lastPage its page.
+        on_site = bool(lu) and bool(lp) and not consistent and _root_page(lu) == '/'
+        recorded = origin_of(lu) if consistent or on_site else None
         if lu and not lp and not consistent:
             # An address with no page saved with it: from a Frame healer, say.
             group(None, page_path(lu) or '/', 'stale')['keys'].append(key)
             continue
         page = lp or '/'
-        kind = '' if consistent else ('stale' if lu else 'old')
+        kind = '' if consistent or on_site else ('stale' if lu else 'old')
         if recorded:
             hosts.add(urlsplit(recorded).hostname)
         if base_url is not None:
@@ -1305,6 +1310,7 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
         g['keys'].append(key)
         if recorded:
             g['recorded'].add(recorded)
+        if consistent:
             g['lu'].append((_newest(store, key), lu))
 
     selected_pages = sorted({page for _load, page, _kind in groups})
@@ -1337,8 +1343,10 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
             address = given
         elif load and newest_path is not None and '*' not in newest_path.split('/'):
             address = load + newest_path
-        elif (load and base_url is not None and not g['lu'] and '*' not in page.split('/')
-              and _stored_page(page) and _on(built, load, page) and _plain(built)):
+        elif (load and not g['lu'] and '*' not in page.split('/') and _stored_page(page)
+              and _on(built, load, page) and _plain(built)):
+            # A key with no address of its page: saved before 0.9.0 (with --base-url), or
+            # whose saved address is its site's root.
             address = built
         if address is not None:
             shown = shown_address(address)
