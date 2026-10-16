@@ -171,6 +171,26 @@ def _proposal_id(c):
     return proposal.get('id') if isinstance(proposal.get('id'), str) else None
 
 
+def _replaced(c):
+    """The selectors a list heal replaced (its proposal's was.selectors), or None when its
+    proposal is gone (a 0.8.0 write drops it): then every selector of the key's code counts,
+    as for SelectorStore.retire_list_heals."""
+    proposal = c.get('proposal') if isinstance(c.get('proposal'), dict) else {}
+    was = proposal.get('was') if isinstance(proposal.get('was'), dict) else {}
+    selectors = was.get('selectors')
+    if not isinstance(selectors, list):
+        return None
+    return [s for s in selectors if isinstance(s, str)]
+
+
+def _found_at(c):
+    """When a list heal was found: its proposal's time, else when the row was added (a
+    0.8.0 write drops the proposal), else when it was accepted; '' when none is known."""
+    proposal = c.get('proposal') if isinstance(c.get('proposal'), dict) else {}
+    return (_text(proposal.get('at')) or _text(c.get('addedAt'))
+            or _text(c.get('acceptedAt')))
+
+
 def plan_fixes(store, events, *, include_unconfirmed=False, store_path=None):
     """The Plan for a store (schema-2 dict) and its journal events (oldest first, or an
     empty list). The key is fixed when its best active selector, the one that succeeded most
@@ -292,7 +312,7 @@ def _plan_list(plan, key, entry, candidates, store_path):
     nonempty=True) or accepted: the newest accepted one is written, under the rules that keep
     a heal out of the code; a proposed one, or an accepted one with a newer proposal next to
     it, is left alone with what to run."""
-    from .cli import command_key, store_flag
+    from .cli import _when, command_key, store_flag
     flag = store_flag(store_path) if store_path else ''
     word, note = command_key(key)
     accepted = _list_heals(entry, 'accepted')
@@ -323,13 +343,46 @@ def _plan_list(plan, key, entry, candidates, store_path):
                              'the page itself. Change the selector and the frame handling by '
                              'hand.'))
         return
-    old = list(dict.fromkeys(c['xpath'] for c in candidates
-                             if c.get('source') == 'code' and c['xpath'] != new))
-    if not old:
+    code = list(dict.fromkeys(c['xpath'] for c in candidates
+                              if c.get('source') == 'code' and c['xpath'] != new))
+    if not code:
         plan.skipped.append((key, 'no selector from your code is saved for it (its selectors '
                              'come from a seed file, or locator_all() was called without one), '
                              'so there is no string in your code to replace. Update the seed '
                              'file by hand, to: ' + new))
+        return
+    # Only the selectors it replaced: the key can be used with another selector on another
+    # page, or the code was fixed by hand, and neither is the selector that broke.
+    replaced = _replaced(row)
+    old = code if replaced is None else [s for s in code if s in replaced]
+    drop = ('. If your code already has a selector that works, drop the list heal with: '
+            'mendwright lists reject ' + word + flag + note)
+    if not old and not replaced:
+        plan.skipped.append((key, "its list heal doesn't name the selector it replaced, so "
+                             "mendwright can't tell which string in your code to replace. Change "
+                             'it by hand to: ' + _written(row, code) + drop))
+        return
+    if not old:
+        plan.skipped.append((key, 'its list heal replaced ' + _quote_list(replaced) + ', and '
+                             'the last run passed ' + _quote_list(code) + ' for it instead: your '
+                             'code changed, or the key is used with another selector on another '
+                             "page, so mendwright can't tell that a string it would replace is "
+                             'the selector that broke. If ' + _quote_list(replaced) + ' is still '
+                             'in your code, change it by hand to: ' + _written(row, replaced)
+                             + drop))
+        return
+    found = _found_at(row)
+    later = sorted((c for c in candidates if c.get('source') in ('code', 'seed')
+                    and c['xpath'] != new and found
+                    and _text(c.get('lastSucceededAt')) > found),
+                   key=lambda c: _text(c.get('lastSucceededAt')), reverse=True)
+    if later:
+        plan.skipped.append((key, 'its selector ' + repr(later[0]['xpath']) + ' matched on '
+                             + _when(later[0]['lastSucceededAt']) + ', after its list heal was '
+                             'found on ' + _when(found) + ', so the list was not broken there, or '
+                             'your code has a new selector already. Look at the page, then change '
+                             'the selector by hand to: ' + _written(row, old) + ', or drop the '
+                             'list heal with: mendwright lists reject ' + word + flag + note))
         return
     ones = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is not True]
     if ones:
