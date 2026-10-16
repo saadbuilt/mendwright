@@ -412,6 +412,24 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     return healer
 
 
+def _quiet_framed(driver):
+    """AsyncPlaywrightDriver.framed() without its wait, for heal.drift(): before the wait of
+    Locator.element_handle() Playwright runs the page's overlay handlers, the script's own
+    among them, and a count() and query_selector() run none (see drift._quiet_framed)."""
+    from .drivers.playwright_sync import playwright_selector
+
+    async def framed(frame_selector):
+        try:
+            if await driver.count(frame_selector) != 1:
+                return None
+            handle = await driver._page.query_selector(playwright_selector(frame_selector))
+            frame = await handle.content_frame() if handle is not None else None
+        except Exception:
+            return None
+        return AsyncPlaywrightDriver(frame) if frame is not None else None
+    return framed
+
+
 # --- the async healer --------------------------------------------------------------------
 
 async def _match_handle(driver, candidate, require_visible):
@@ -789,10 +807,16 @@ class AsyncHealer:
         if callable(_member(driver, 'frame_matches')):
             def finder(selector):
                 return bridge.run(driver.frame_matches, selector)
-        if callable(_member(driver, 'framed')):
+        if isinstance(driver, AsyncPlaywrightDriver):
+            look = _quiet_framed(driver)       # no wait, so no overlay handler runs
+        elif callable(_member(driver, 'framed')):
+            look = driver.framed
+        else:
+            look = None
+        if look is not None:
             def framer(frame_selector):
                 try:
-                    inner = bridge.run(driver.framed, frame_selector)
+                    inner = bridge.run(look, frame_selector)
                 except Exception:
                     return None
                 return SyncBridge(inner, loop) if inner is not None else None

@@ -351,9 +351,33 @@ class Frames:
 
     @classmethod
     def of(cls, driver):
+        from .drivers.playwright_sync import PlaywrightSyncDriver
         finder = getattr(driver, 'frame_matches', None)
-        return cls(finder if callable(finder) else None,
-                   lambda frame_selector: driver_framed(driver, frame_selector))
+        if isinstance(driver, PlaywrightSyncDriver):
+            framed = _quiet_framed(driver)
+        else:
+            def framed(frame_selector):
+                return driver_framed(driver, frame_selector)
+        return cls(finder if callable(finder) else None, framed)
+
+
+def _quiet_framed(driver):
+    """PlaywrightSyncDriver.framed() without its wait. Locator.element_handle() waits for
+    the element, and before such a wait Playwright runs the page's overlay handlers
+    (page.add_locator_handler, the script's own among them), which may click. A count()
+    and query_selector() run none."""
+    from .drivers.playwright_sync import PlaywrightSyncDriver, playwright_selector
+
+    def framed(frame_selector):
+        try:
+            if driver.count(frame_selector) != 1:
+                return None
+            handle = driver._page.query_selector(playwright_selector(frame_selector))
+            frame = handle.content_frame() if handle is not None else None
+        except Exception:
+            return None
+        return PlaywrightSyncDriver(frame) if frame is not None else None
+    return framed
 
 
 # --- the engine ------------------------------------------------------------------------------
