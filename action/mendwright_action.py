@@ -973,8 +973,12 @@ class Publish:
     def check_tree(self):
         """The changed tracked files, which must be exactly those mendwright fix wrote."""
         changed = self.tracked_changes()
-        planned = [_norm(p) for p in self.plan.get('files') or ()]
-        github = [p for p in set(changed) | set(planned) if p == '.github' or p.startswith('.github/')]
+        top = self.top()
+        # fix names a file as --path spelled it, git as it tracks it: on Windows and macOS
+        # Tests/a.py and tests/a.py are the same file.
+        planned = [git_name(top, _norm(p), changed) or _norm(p) for p in self.plan.get('files') or ()]
+        github = [p for p in set(changed) | set(planned)
+                  if _fold(p) == '.github' or _fold(p).startswith('.github/')]
         if github:
             self.put_back(changed)
             raise Stop('mendwright: mendwright fix changed ' + ', '.join(sorted(github))
@@ -986,7 +990,6 @@ class Publish:
             raise Stop('mendwright: git shows changes mendwright fix did not report ('
                        + ', '.join(extra) + '). The files were put back and nothing was pushed; '
                        'please report this.')
-        top = self.top()
         for path in planned:
             if path not in changed:
                 listed = self.action.git('-C', top, 'ls-files', '-z', '--', path)[1]

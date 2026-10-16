@@ -977,6 +977,18 @@ def test_only_an_untracked_file_written_is_nothing_to_push(world):
         in world.summary()
 
 
+def test_paths_in_another_case_on_a_file_system_that_ignores_case(world):
+    if not (world.ws / 'TESTS').exists():
+        pytest.skip('this file system tells Tests from tests')
+    world.new_commit('services/web/tests/test_a.py', TEST_FILE)
+    world.inputs.update({'working-directory': 'Services/Web', 'paths': 'Tests'})
+    world.run()
+    assert world.result() == 'created', world.log()
+    files = git(world.bare, 'diff', '--name-only', 'main', 'mendwright/fix/main').split()
+    assert files == ['services/web/tests/test_a.py']
+    assert 'Written but not tracked' not in world.api.pulls[12]['body']
+
+
 def test_a_monorepo_working_directory(world):
     world.new_commit('services/web/tests/test_a.py', TEST_FILE)
     world.upload({'accept_terms': heal('#accept-terms', TERMS, role='checkbox')},
