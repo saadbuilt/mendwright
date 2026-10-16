@@ -930,6 +930,19 @@ def test_errors_in_fix_put_back_the_tracked_files_and_name_the_untracked_ones(wo
     assert '`generated/test_gen.py`' in world.summary()
 
 
+def test_errors_in_fix_put_back_a_file_paths_names_in_another_case(world, monkeypatch):
+    if not (world.ws / 'TESTS').exists():
+        pytest.skip('this file system tells Tests from tests')
+    _fix_fails_on_one_file(world, monkeypatch)
+    world.inputs['paths'] = 'Tests'             # fix says Tests/..., git tests/...
+    world.run()
+    assert world.steps['fix'][0] == 1 and 'publish' not in world.steps
+    assert notices(world, 'fix', 'error') == [
+        FAILED_WRITE.replace('tests/test_other.py', 'Tests/test_other.py') + 'The files it wrote '
+        'were put back and nothing was pushed. The other errors are above.']
+    assert git(world.ws, 'status', '--porcelain', '--untracked-files=no') == ''
+
+
 @pytest.mark.parametrize('folder', ['.github', '.github/scripts'])
 def test_a_working_directory_inside_github_is_refused(world, folder):
     # mendwright fix counts only the part of a path below the folder it runs in, so run there
@@ -1079,6 +1092,25 @@ def test_a_changed_file_fix_did_not_report_is_refused_and_put_back(world):
         'mendwright: git shows changes mendwright fix did not report (README.md). The files were '
         'put back and nothing was pushed; please report this.']
     _nothing_pushed_and_all_put_back(world)
+
+
+def test_a_put_back_that_git_refuses_in_publish_is_not_called_done(world, monkeypatch):
+    world.new_commit('README.md', 'readme\n')
+    _changed_after_fix(world, 'README.md', 'changed\n')
+    real = ma.Action.git
+
+    def no_checkout(self, *args, **kwargs):
+        if 'checkout' in args:
+            return 1, '', "error: unable to unlink old 'README.md': Permission denied\n"
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ma.Action, 'git', no_checkout)
+    world.run()
+    assert notices(world, 'publish', 'error') == [
+        "mendwright: git shows changes mendwright fix did not report (README.md). Nothing was "
+        "pushed, but git could not put the files back (error: unable to unlink old 'README.md': "
+        "Permission denied); please report this."]
+    assert world.remote_sha('mendwright/fix/main') is None and world.api.writes() == []
 
 
 def test_a_staged_file_fix_did_not_write_is_refused_and_put_back(world, monkeypatch):
