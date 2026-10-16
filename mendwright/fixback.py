@@ -13,8 +13,13 @@ What it will and will not touch:
   one when the test that made the heal passes, and an expect= or confirm(True) check does too).
 - A CSS selector in your code gets the heal's CSS form (mendwright.css) when it has one;
   otherwise the healed XPath.
-- Never a key marked destructive, never a heal that sits inside an iframe, and never a key
-  whose selectors came only from a seed file (there is no string in your code to replace).
+- Never a key marked destructive (in the store, or with --destructive-key), never a heal that
+  sits inside an iframe, never a heal mendwright could not have saved (an XPath lxml cannot
+  compile, or a CSS form mendwright.css does not build), and never a key whose selectors
+  came only from a seed file (there is no string in your code to replace).
+- Never the selector of heal.interrupt() or the landmark of heal.step(when=): equal to the
+  old selector of a healed key, it is listed instead, since another key's heal there would
+  make the interruption act on that key's element.
 - Only a string literal whose whole value is the old selector (compared as stored, so
   "xpath=//a" and " //a " both match the stored "//a"). Not a substring, not a comment,
   not an f-string, not bytes, not part of an implicit concatenation.
@@ -42,14 +47,17 @@ import time
 import tokenize
 from dataclasses import dataclass, field
 
-from .selectors import CSS, XPATH, classify, normalize
+from .selectors import CSS, XPATH, check_syntax, classify, normalize
 
-# Folders that never hold your code. A folder is skipped by name, at any depth.
+# Folders that never hold your code. A folder is skipped by name, at any depth. .github holds
+# workflows and local actions, which a heal must never change.
 SKIP_DIRS = frozenset({
     '.git', '.hg', '.svn', '.venv', 'venv', 'node_modules', '.mendwright', 'build', 'dist',
     '__pycache__', '.tox', '.nox', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.eggs',
-    'site-packages', '.claude',
+    'site-packages', '.claude', '.github',
 })
+# A folder never scanned even when --path names it or a folder inside it.
+NEVER_SCANNED = '.github'
 DEFAULT_GLOBS = ('*.py',)
 MAX_FILE_BYTES = 2 * 1024 * 1024        # larger files are not source code worth scanning
 
@@ -73,6 +81,15 @@ _BARE_WORD = re.compile(r'^[A-Za-z][\w-]*$')
 # Keys that heal.driver makes for driver.find_element(by, value), and that By. The healed
 # selector is an XPath, which these Bys cannot run.
 _DRIVER_KEYS = (('css selector=', 'By.CSS_SELECTOR'), ('id=', 'By.ID'), ('name=', 'By.NAME'))
+
+# The CSS forms mendwright.css builds for a heal: a compound of a tag name, #id, .class and
+# [attribute="value"] (css_string's quoting), with at most one ancestor compound before it.
+_CSS_IDENT = r'-?[A-Za-z_][A-Za-z0-9_-]*'
+_CSS_NAME = r'[A-Za-z_][A-Za-z0-9_:.-]*'
+_CSS_STRING = r'"(?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*"'
+_CSS_PART = r'(?:\#' + _CSS_IDENT + r'|\.' + _CSS_IDENT + r'|\[' + _CSS_NAME + '=' + _CSS_STRING + r'\])'
+_CSS_COMPOUND = r'(?:' + _CSS_IDENT + _CSS_PART + '*|' + _CSS_PART + '+)'
+_CSS_TWIN = re.compile(_CSS_COMPOUND + '(?: ' + _CSS_COMPOUND + ')?')
 
 
 # --- the plan: which keys to fix ---------------------------------------------------------
@@ -106,6 +123,11 @@ class Plan:
     new_for: dict = field(default_factory=dict)       # old selector -> new, when unambiguous
     keys_for: dict = field(default_factory=dict)      # old selector -> keys that use it
     ambiguous: dict = field(default_factory=dict)     # old selector -> keys, when ambiguous
+    skip_codes: dict = field(default_factory=dict)    # key -> the code of its skip (CODES)
+
+    def skip(self, key, code, reason):
+        self.skipped.append((key, reason))
+        self.skip_codes[key] = code
 
 
 def _text(value):
@@ -147,13 +169,43 @@ def _written(candidate, old):
     return candidate['xpath']
 
 
-def plan_fixes(store, events, *, include_unconfirmed=False):
+def _quarantined_heal(entry):
+    """The newest heal of entry when it was quarantined and no active selector of the key
+    has matched since, else None. The newest heals are the rows with the largest addedAt
+    (a row without one counts as oldest); all of them must be quarantined."""
+    heals = [c for c in entry.get('candidates') or ()
+             if isinstance(c, dict) and c.get('source') == 'heal' and isinstance(c.get('xpath'), str)]
+    if not any(c.get('status') == 'quarantined' for c in heals):
+        return None
+    newest = max(_text(c.get('addedAt')) for c in heals)
+    latest = [c for c in heals if _text(c.get('addedAt')) == newest]
+    if not all(c.get('status') == 'quarantined' for c in latest):
+        return None
+    for c in _active(entry):
+        last = _text(c.get('lastSucceededAt'))
+        if last and last >= newest:
+            return None
+    return latest[0]
+
+
+def _could_be_saved(new):
+    """True when new is an XPath that lxml compiles, the only kind of heal client.apply()
+    saves."""
+    try:
+        return classify(new) == XPATH and check_syntax(new) == XPATH
+    except (TypeError, ValueError):
+        return False
+
+
+def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=()):
     """The Plan for a store (schema-2 dict) and its journal events (oldest first, or an
     empty list). The key is fixed when its best active selector, the one that succeeded most
-    recently, came from a heal."""
+    recently, came from a heal. destructive_keys are treated as marked destructive, as
+    mendwright.open(destructive_keys=...) does, which the store does not save."""
     selectors = store.get('selectors') if isinstance(store, dict) else None
     selectors = selectors if isinstance(selectors, dict) else {}
     canary = _canary_state(events)
+    destructive_keys = frozenset(k for k in destructive_keys or () if isinstance(k, str))
     plan = Plan()
     claims = {}                 # a selector -> the keys that use it from code or a seed
     active = {}
@@ -167,88 +219,105 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
 
     for key in sorted(active):
         entry, candidates = selectors[key], active[key]
-        if not candidates:
-            continue
         # The one that succeeded most recently. Timestamps have a one second resolution, so
         # a heal and the code selector it replaced can tie: the heal wins the tie, because
         # a heal was only made after the code selector stopped matching. A heal that never
         # matched anything is not a fix.
         best = sorted(candidates, key=lambda c: (_text(c.get('lastSucceededAt')),
-                                                 c.get('source') == 'heal'), reverse=True)[0]
-        if best.get('source') != 'heal' or not _text(best.get('lastSucceededAt')):
+                                                 c.get('source') == 'heal'), reverse=True)[0] \
+            if candidates else None
+        if best is None or best.get('source') != 'heal' or not _text(best.get('lastSucceededAt')):
+            # No fix, but say why a key whose newest heal was quarantined dropped out.
+            gone = _quarantined_heal(entry)
+            if gone is not None:
+                plan.skip(key, 'quarantined', 'its newest heal ' + gone['xpath'] + ' was '
+                          'quarantined (an action on it failed, a check said it was the wrong '
+                          'element, or the key is marked destructive), and no selector has '
+                          'worked for the key since, so there is nothing to write back.')
             continue
         new = best['xpath']
-        if entry.get('destructive') is True:
-            plan.skipped.append((key, 'it is marked destructive, so its heals are never written '
-                                 'into code. Fix the selector by hand.'))
+        if entry.get('destructive') is True or key in destructive_keys:
+            plan.skip(key, 'destructive', 'it is marked destructive, so its heals are never '
+                      'written into code. Fix the selector by hand.')
             continue
         if best.get('frameXPath'):
-            plan.skipped.append((key, 'its healed selector runs inside the iframe ' + str(best['frameXPath'])
-                                 + ', and a selector in your code runs in the page itself. Change '
-                                 'the selector and the frame handling by hand.'))
+            plan.skip(key, 'iframe', 'its healed selector runs inside the iframe '
+                      + str(best['frameXPath']) + ', and a selector in your code runs in the page '
+                      'itself. Change the selector and the frame handling by hand.')
+            continue
+        # client.apply() saves only an XPath that lxml compiles, and css.css_selectors() only
+        # the forms of _CSS_TWIN: anything else in the store was written by something else.
+        if not _could_be_saved(new):
+            plan.skip(key, 'not_a_selector', 'its healed selector ' + repr(new) + ' is not an '
+                      'XPath that lxml can compile, and mendwright saves only heals that are, so '
+                      'something else wrote it into overrides.json. Check the store; nothing is '
+                      'written for this key.')
+            continue
+        css = best.get('css') if isinstance(best.get('css'), str) and best.get('css') else None
+        if css is not None and not _CSS_TWIN.fullmatch(css):
+            plan.skip(key, 'not_a_selector', 'the CSS form of its heal, ' + repr(css) + ', is not '
+                      'one mendwright builds (a tag name, #id, .class and [attribute="value"], '
+                      'with at most one ancestor before it), so something else wrote it into '
+                      'overrides.json. Check the store; nothing is written for this key.')
             continue
         old = list(dict.fromkeys(c['xpath'] for c in candidates
                                  if c.get('source') == 'code' and c['xpath'] != new))
         if not old:
-            plan.skipped.append((key, 'no selector from your code is saved for it (its selectors '
-                                 'come from a seed file, or locator() was called without one), '
-                                 'so there is no string in your code to replace. Update the seed '
-                                 'file by hand, or pass the healed selector to heal.locator().'))
+            plan.skip(key, 'seed_only', 'no selector from your code is saved for it (its '
+                      'selectors come from a seed file, or locator() was called without one), so '
+                      'there is no string in your code to replace. Update the seed file by hand, '
+                      'or pass the healed selector to heal.locator().')
             continue
         lists = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is True]
         ones = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is not True]
         if lists and ones:
             # heal.locator_all(key, ...) and a heal.page shortcut or heal.driver.find_element()
             # share the key, and each healed: the newer one is no fix for the other's call.
-            plan.skipped.append((key, 'it has a heal of the list (heal.locator_all()) and a heal '
-                                 'of one element under the same key, and one selector in your '
-                                 'code cannot be both, so mendwright cannot tell which one goes '
-                                 'where. Change the selectors by hand, or give the list a key of '
-                                 'its own: the list to ' + _written(_latest(lists), old)
-                                 + ', the element to ' + _written(_latest(ones), old)))
+            plan.skip(key, 'list_and_element', 'it has a heal of the list (heal.locator_all()) '
+                      'and a heal of one element under the same key, and one selector in your '
+                      'code cannot be both, so mendwright cannot tell which one goes where. '
+                      'Change the selectors by hand, or give the list a key of its own: the list '
+                      'to ' + _written(_latest(lists), old) + ', the element to '
+                      + _written(_latest(ones), old))
             continue
         if best.get('list') is True:
             # Only a build of 0.8.0 before its release saved list heals, and one can be another
             # list that holds the items of an emptied one (see Healer.locator_all).
-            plan.skipped.append((key, 'its heal is a heal of a list (heal.locator_all()), which '
-                                 "mendwright no longer makes or uses: it can't tell a list that "
-                                 'was emptied from one whose selector broke, so the heal can be '
-                                 'another list. If the selector broke, change it by hand.'))
+            plan.skip(key, 'list_heal', 'its heal is a heal of a list (heal.locator_all()), which '
+                      "mendwright no longer makes or uses: it can't tell a list that was emptied "
+                      'from one whose selector broke, so the heal can be another list. If the '
+                      'selector broke, change it by hand.')
             continue
         if entry.get('listFingerprint') is not None:
             # heal.locator_all() looks the key up as a list, and the heal is of one element
             # (heal.locator(), a heal.page shortcut or heal.driver.find_element() under the same
             # key): written into the list call, it would make the list that one element.
-            plan.skipped.append((key, 'heal.locator_all() looks it up as a list, and its heal is '
-                                 'of one element, so written into the list call it would make the '
-                                 'list match that one element. Give the list a key of its own, or '
-                                 'change the selector by hand to: ' + new))
+            plan.skip(key, 'list_key', 'heal.locator_all() looks it up as a list, and its heal is '
+                      'of one element, so written into the list call it would make the list match '
+                      'that one element. Give the list a key of its own, or change the selector by '
+                      'hand to: ' + new)
             continue
         bare = [s for s in old if _BARE_WORD.match(s)]
         if bare:
-            plan.skipped.append((key, 'its old selector ' + repr(bare[0]) + ' is a bare word, and '
-                                 'other strings in your code can be the same word (a role= '
-                                 'value, a dict entry), so mendwright cannot tell which ones '
-                                 'are the selector. Change it by hand to: ' + new))
+            plan.skip(key, 'bare_word', 'its old selector ' + repr(bare[0]) + ' is a bare word, '
+                      'and other strings in your code can be the same word (a role= value, a dict '
+                      'entry), so mendwright cannot tell which ones are the selector. Change it by '
+                      'hand to: ' + new)
             continue
-        css = best.get('css') if isinstance(best.get('css'), str) and best.get('css') else None
         by = next((b for prefix, b in _DRIVER_KEYS if key.startswith(prefix)), None)
         if (by and classify(new) == XPATH and all(classify(s) == CSS for s in old)
                 and not (css and by == 'By.CSS_SELECTOR')):
-            plan.skipped.append((key, 'it comes from driver.find_element(' + by + ', ...) through '
-                                 'heal.driver, and ' + by + ' cannot run the healed XPath. '
-                                 'Change the call by hand to: find_element(By.XPATH, '
-                                 + repr(new) + ')'
-                                 + (', or find_element(By.CSS_SELECTOR, ' + repr(css) + ')'
-                                    if css else '')))
+            plan.skip(key, 'driver_by', 'it comes from driver.find_element(' + by + ', ...) '
+                      'through heal.driver, and ' + by + ' cannot run the healed XPath. Change the '
+                      'call by hand to: find_element(By.XPATH, ' + repr(new) + ')'
+                      + (', or find_element(By.CSS_SELECTOR, ' + repr(css) + ')' if css else ''))
             continue
         confirmed = canary.get((key, new)) is True
         if not confirmed and not include_unconfirmed:
-            plan.skipped.append((key, 'its heal was never confirmed (journal.jsonl has no canary '
-                                 'success for it; the pytest plugin or an expect= or confirm(True) '
-                                 'check writes one in the run that makes the heal). Check that '
-                                 'the selector finds the right element, then add '
-                                 '--include-unconfirmed to write it anyway.'))
+            plan.skip(key, 'unconfirmed', 'its heal was never confirmed (journal.jsonl has no '
+                      'canary success for it; the pytest plugin or an expect= or confirm(True) '
+                      'check writes one in the run that makes the heal). Check that the selector '
+                      'finds the right element, then add --include-unconfirmed to write it anyway.')
             continue
         role = entry.get('expectedRole')
         plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None,
@@ -299,7 +368,7 @@ def _is_link(path):
 def collect_files(paths, extra_globs=()):
     """(files, errors): the source files under ``paths`` (folders are walked, a file path is
     taken as it is), in a stable order. Folders in SKIP_DIRS, symbolic links and Windows
-    junctions are skipped."""
+    junctions are skipped, and a path inside a .github folder is skipped even when named."""
     globs = list(DEFAULT_GLOBS) + [g for g in extra_globs if g not in DEFAULT_GLOBS]
     files, errors, seen = [], [], set()
 
@@ -310,6 +379,10 @@ def collect_files(paths, extra_globs=()):
             files.append(os.path.abspath(path))
 
     for root in paths:
+        if NEVER_SCANNED in os.path.normpath(root).replace('\\', '/').split('/'):
+            if not os.path.exists(root):
+                errors.append('no such file or folder: ' + root + '. Check the --path value.')
+            continue
         if os.path.isfile(root):
             add(root)
         elif os.path.isdir(root):
@@ -472,6 +545,11 @@ _BY_NAMES = {'XPATH': 'xpath', 'CSS_SELECTOR': 'css selector', 'ID': 'id', 'NAME
 _BY_VALUES = {v: k for k, v in _BY_NAMES.items()}
 SKIP = 'skip'           # not a selector at all
 CSS_ONLY = 'css'        # a selector, but in a place that cannot run an XPath
+FLOW = 'flow'           # an interruption's selector or a step's landmark: never rewritten
+# Calls whose second argument (or this keyword) is a selector mendwright fix never rewrites:
+# another key's heal written there would make the interruption act on that key's element,
+# or the step wait for it.
+FLOW_CALLS = {'interrupt': ('selector', 'heal.interrupt()'), 'step': ('when', 'heal.step(when=)')}
 # The end of the code before a literal, in other languages, that takes a CSS selector only:
 # By.cssSelector(, By.CSS_SELECTOR, css: , querySelector(, By.id(, ...
 _CSS_CALL = re.compile(r'(?i)(?:css(?:[ _]?selector)?|queryselector(?:all)?|'
@@ -497,10 +575,12 @@ def _func_name(call):
 def python_contexts(text):
     """{(line, column): context} for the string literals of Python source that are not a
     plain selector. The context is SKIP for a literal that is no selector at all (a role=,
-    text= or intent= value, or the key in heal.locator(key, selector)), or (CSS_ONLY, by)
-    for one that sits where an XPath cannot run: the value next to a Selenium By other than
-    By.XPATH (in a call or a (By, value) pair), or an argument of a function with css in its
-    name. Columns count characters, as tokenize does. {} when the source does not parse."""
+    text= or intent= value, or the key in heal.locator(key, selector)), (FLOW, what) for the
+    selector of heal.interrupt(key, selector) or the landmark of heal.step(name, when), or
+    one string of a list or tuple passed there, or (CSS_ONLY, by) for one that sits where an
+    XPath cannot run: the value next to a Selenium By other than By.XPATH (in a call or a
+    (By, value) pair), or an argument of a function with css in its name. Columns count
+    characters, as tokenize does. {} when the source does not parse."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
@@ -524,6 +604,13 @@ def python_contexts(text):
         if isinstance(node, ast.Call):
             name = _func_name(node)
             keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+            if name in FLOW_CALLS:
+                keyword, what = FLOW_CALLS[name]
+                values = node.args[1:2] + ([keywords[keyword]] if keyword in keywords else [])
+                for value in values:
+                    items = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+                    for item in items:
+                        mark(item, (FLOW, what))
             for arg, value in keywords.items():
                 if arg in NOT_SELECTOR_KEYWORDS:
                     mark(value, SKIP)
@@ -723,9 +810,15 @@ class FixResult:
     unmatched: list = field(default_factory=list)       # Fix objects with no literal anywhere
     holding: dict = field(default_factory=dict)          # healed selector -> where code has it
     notes: list = field(default_factory=list)            # left alone, with the reason
+    # One {'code', 'path', 'line', 'text'} per note, in the same order (see left_alone).
+    note_records: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     written: list = field(default_factory=list)
     has_robot: bool = False
+
+    def note(self, code, path, line, text):
+        self.notes.append(text)
+        self.note_records.append({'code': code, 'path': path, 'line': line, 'text': text})
 
 
 def shown_path(path):
@@ -795,6 +888,18 @@ def _diff(shown, before, after):
     return [line.rstrip('\r\n') for line in lines]
 
 
+def _flow_note(where, value, what, keys):
+    """The note for a literal under heal.interrupt() or heal.step(when=) that equals the old
+    selector of keys."""
+    if what == 'heal.step(when=)':
+        rule, thing = "never rewrites a step's landmark", "the step's landmark"
+    else:
+        rule, thing = 'never rewrites the selector of an interruption', 'the interruption'
+    return (where + ' was not changed: ' + repr(value) + ' is passed to ' + what + ', and '
+            'mendwright fix ' + rule + '. It equals the old selector of ' + ', '.join(keys)
+            + ', so if ' + thing + ' broke too, change it by hand.')
+
+
 def scan_file(path, plan, result, needles):
     """Look for the plan's old selectors in one file. Adds a FileChange, a Blocked entry,
     a note or an error to ``result``, notes where a healed selector is already in the file,
@@ -817,9 +922,9 @@ def scan_file(path, plan, result, needles):
             ast.parse(text)
         literals = python_literals(text) if python else generic_literals(text, ext)
     except (SyntaxError, ValueError) as exc:
-        result.notes.append(shown + ' was not changed: it could not be read as Python ('
-                            + str(exc) + '). Fix the syntax error and run again, or edit the '
-                            'selector by hand.')
+        result.note('not_python', shown, None, shown + ' was not changed: it could not be read '
+                    'as Python (' + str(exc) + '). Fix the syntax error and run again, or edit '
+                    'the selector by hand.')
         return found
 
     table = {**plan.new_for, **plan.ambiguous}
@@ -841,6 +946,10 @@ def scan_file(path, plan, result, needles):
         if context == SKIP:
             continue        # a key, or a role= value: equal to the selector, but not one
         found.add(selector)
+        if context and context[0] == FLOW:
+            result.note('flow_selector', shown, lit.line, _flow_note(
+                shown + ':' + str(lit.line), lit.value, context[1], plan.keys_for[selector]))
+            continue
         if selector in plan.ambiguous:
             blocked.append((lit.line, selector, plan.ambiguous[selector]))
             continue
@@ -848,10 +957,10 @@ def scan_file(path, plan, result, needles):
         if lit.value == new:
             continue
         if context and context[0] == CSS_ONLY and classify(new) == XPATH:
-            result.notes.append(shown + ':' + str(lit.line) + ' was not changed: ' + lit.source
-                                + ' is passed to ' + context[1] + ', which cannot run the healed '
-                                'XPath. Change the call to take an XPath (By.XPATH in Selenium) '
-                                'and the selector to: ' + new)
+            result.note('css_only', shown, lit.line, shown + ':' + str(lit.line) + ' was not '
+                        'changed: ' + lit.source + ' is passed to ' + context[1] + ', which cannot '
+                        'run the healed XPath. Change the call to take an XPath (By.XPATH in '
+                        'Selenium) and the selector to: ' + new)
             continue
         if python:
             now = python_literal(new, lit.source)
@@ -860,11 +969,11 @@ def scan_file(path, plan, result, needles):
         else:
             now = generic_literal(new, lit.source, ext)
         if now is None:
-            result.notes.append(shown + ':' + str(lit.line) + ' was not changed: ' + lit.source
-                                + ' is the old selector of ' + ', '.join(plan.keys_for[selector])
-                                + ', but the healed selector cannot be written into this kind of '
-                                'file without guessing at its escapes. Replace it by hand with: '
-                                + new)
+            result.note('no_escape', shown, lit.line, shown + ':' + str(lit.line) + ' was not '
+                        'changed: ' + lit.source + ' is the old selector of '
+                        + ', '.join(plan.keys_for[selector]) + ', but the healed selector cannot '
+                        'be written into this kind of file without guessing at its escapes. '
+                        'Replace it by hand with: ' + new)
             continue
         hits.append((lit, selector, now, new))
     if blocked:
@@ -960,6 +1069,53 @@ def _count(n, word):
     return str(n) + ' ' + word + ('' if n == 1 else 's')
 
 
+def left_alone(result):
+    """What format_lines lists under "Left alone", in its order (the keys skipped, the files
+    blocked, the notes, then the fixes found nowhere), as {'code', 'key', 'path', 'line',
+    'text'} dicts. text is the line without its indent; code is one of CODES."""
+    plan = result.plan
+    out = [{'code': plan.skip_codes.get(key, 'other'), 'key': key, 'path': None, 'line': None,
+            'text': key + ': ' + reason} for key, reason in plan.skipped]
+    for blocked in result.blocked:
+        selectors = sorted({i[1] for i in blocked.items})
+        keys = sorted({k for i in blocked.items for k in i[2]})
+        out.append({'code': 'ambiguous', 'key': None, 'path': blocked.shown,
+                    'line': blocked.items[0][0] if blocked.items else None,
+                    'text': blocked.shown + ' was not touched: ' + _quote_list(selectors)
+                    + (' belongs' if len(selectors) == 1 else ' belong') + ' to more than one key ('
+                    + ', '.join(keys) + '), so mendwright cannot tell which healed selector goes at '
+                    + _count(len(blocked.items), 'place')
+                    + (' (line ' if len(blocked.items) == 1 else ' (lines ')
+                    + ', '.join(str(i[0]) for i in blocked.items) + '). '
+                    + ('The ' + _count(blocked.held_back, 'other replacement') + ' in this file '
+                       + ('was' if blocked.held_back == 1 else 'were') + ' held back too. '
+                       if blocked.held_back else '')
+                    + 'Give each key its own selector string, or edit the file by hand.'})
+    records = list(result.note_records)
+    if len(records) != len(result.notes):      # notes added without note()
+        records = [{'code': 'other', 'path': None, 'line': None, 'text': text}
+                   for text in result.notes]
+    out.extend({'code': r['code'], 'key': None, 'path': r['path'], 'line': r['line'],
+                'text': r['text']} for r in records)
+    for fix in result.unmatched:
+        where = next((result.holding[s] for s in fix.written() + [fix.new]
+                      if s in result.holding), None)
+        if where:
+            out.append({'code': 'already_in_code', 'key': fix.key, 'path': None, 'line': None,
+                        'text': fix.key + ': your code already passes the healed selector ('
+                        + ', '.join(where[:3]) + (', and more' if len(where) > 3 else '')
+                        + '), so there is nothing to change. Run your tests once and mendwright '
+                        "records it as your code's selector."})
+            continue
+        out.append({'code': 'not_found', 'key': fix.key, 'path': None, 'line': None,
+                    'text': fix.key + ': no string equal to ' + _quote_list(fix.old) + ' was found in '
+                    + _count(result.scanned, 'file') + '. Add --path or --glob (for example --glob '
+                    "'*.ts') if it is somewhere else, or change it by hand to: " + fix.written()[0]
+                    + (' mendwright fix only rewrites quoted strings, so unquoted Robot Framework '
+                       'arguments are not changed.' if result.has_robot else '')})
+    return out
+
+
 def format_lines(result, *, apply):
     """The text `mendwright fix` prints on stdout, as a list of lines."""
     lines = []
@@ -1003,35 +1159,7 @@ def format_lines(result, *, apply):
                 lines.append('  (it had ' + str(len(fix.old)) + ' selectors in code, and each '
                              'found one is replaced by the healed selector)')
 
-    left = [key + ': ' + reason for key, reason in result.plan.skipped]
-    for blocked in result.blocked:
-        selectors = sorted({i[1] for i in blocked.items})
-        keys = sorted({k for i in blocked.items for k in i[2]})
-        left.append(blocked.shown + ' was not touched: ' + _quote_list(selectors)
-                    + (' belongs' if len(selectors) == 1 else ' belong') + ' to more than one key ('
-                    + ', '.join(keys) + '), so mendwright cannot tell which healed selector goes at '
-                    + _count(len(blocked.items), 'place')
-                    + (' (line ' if len(blocked.items) == 1 else ' (lines ')
-                    + ', '.join(str(i[0]) for i in blocked.items) + '). '
-                    + ('The ' + _count(blocked.held_back, 'other replacement') + ' in this file '
-                       + ('was' if blocked.held_back == 1 else 'were') + ' held back too. '
-                       if blocked.held_back else '')
-                    + 'Give each key its own selector string, or edit the file by hand.')
-    left.extend(result.notes)
-    for fix in result.unmatched:
-        where = next((result.holding[s] for s in fix.written() + [fix.new]
-                      if s in result.holding), None)
-        if where:
-            left.append(fix.key + ': your code already passes the healed selector ('
-                        + ', '.join(where[:3]) + (', and more' if len(where) > 3 else '')
-                        + '), so there is nothing to change. Run your tests once and mendwright '
-                        "records it as your code's selector.")
-            continue
-        left.append(fix.key + ': no string equal to ' + _quote_list(fix.old) + ' was found in '
-                    + _count(result.scanned, 'file') + '. Add --path or --glob (for example --glob '
-                    "'*.ts') if it is somewhere else, or change it by hand to: " + fix.written()[0]
-                    + (' mendwright fix only rewrites quoted strings, so unquoted Robot Framework '
-                       'arguments are not changed.' if result.has_robot else ''))
+    left = [item['text'] for item in left_alone(result)]
     if left:
         lines.append('')
         lines.append('Left alone:')
@@ -1051,3 +1179,4 @@ def format_lines(result, *, apply):
 
 def _quote_list(items):
     return ', '.join(repr(i) for i in items)
+

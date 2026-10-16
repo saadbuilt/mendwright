@@ -716,7 +716,8 @@ def cmd_fix(args):
              '--path value; nothing was changed.')
         return 1
     events = _read_journal(os.path.join(os.path.dirname(path), 'journal.jsonl'))
-    plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed)
+    plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed,
+                              destructive_keys=_flatten(args.destructive_key))
     result = fixback.build_result(plan, paths, _flatten(args.glob))
     if args.apply:
         fixback.apply_result(result)
@@ -824,6 +825,9 @@ def build_parser():
     fix.add_argument('--glob', metavar='GLOB', action='append', nargs='+',
                      help='also search files matching GLOB, for example --glob "*.ts" '
                           '"*.robot" (*.py is always searched)')
+    fix.add_argument('--destructive-key', metavar='KEY', action='append', nargs='+',
+                     help='treat these keys as destructive, as mendwright.open(destructive_keys='
+                          '...) does, which the store does not save; can be given more than once')
     fix.add_argument('--include-unconfirmed', action='store_true',
                      help='also use heals with no canary success in journal.jsonl')
     fix.add_argument('--apply', action='store_true',

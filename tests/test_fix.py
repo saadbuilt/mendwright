@@ -374,7 +374,14 @@ def rewrite(root, capsys, line, old="#save", new=TERMS):
         "triple-trailing-single", "raw-switch", "raw-keeps-backslash", "raw-both-quotes",
         "raw-trailing-backslash", "u-prefix", "backslash", "control-characters"])
 def test_the_new_literal_is_valid_python_with_the_right_value(root, capsys, line, new, expected):
-    assert rewrite(root, capsys, line, new=new) == expected
+    if fixback._could_be_saved(new):
+        assert rewrite(root, capsys, line, new=new) == expected
+    else:
+        # Not an XPath, so not a heal mendwright saves: fix leaves it alone (see
+        # test_a_heal_mendwright_could_not_have_saved_is_never_written), and the writer still
+        # has to get it right.
+        assert rewrite(root, capsys, line, new=new) is None
+        assert "x = " + fixback.python_literal(new, line[len("x = "):]) == expected
     value = ast.literal_eval(expected[len("x = "):])
     assert value == new
 
@@ -516,14 +523,19 @@ def test_a_key_or_a_role_value_equal_to_the_selector_is_not_rewritten(root, caps
         heal.locator_all("#login", "#login")
         page.locator("#login").click()
     '''))
-    assert run(capsys, "--apply")[0] == 0
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
     assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
         heal.locator("#login", "{0}").click()
         heal.locator("#login", selector="{0}", text="#login")
-        heal.interrupt("#login", "{0}", action="click")
+        heal.interrupt("#login", "#login", action="click")
         heal.locator_all("#login", "{0}")
         page.locator("{0}").click()
     ''').format(new)
+    # The interruption's selector is never rewritten (see test_flow_selectors_are_never_rewritten).
+    assert ("  test_a.py:3 was not changed: '#login' is passed to heal.interrupt(), and mendwright "
+            "fix never rewrites the selector of an interruption. It equals the old selector of "
+            "#login, so if the interruption broke too, change it by hand.") in out.splitlines()
 
 
 def test_a_key_whose_old_selector_is_a_bare_word_is_left_alone(root, capsys):
@@ -967,6 +979,207 @@ def test_the_text_and_the_diff_never_carry_carriage_returns(root, capsys):
     out = run(capsys)[1]
     assert "\r" not in out
     assert '-b = "#save"' in out.splitlines()
+
+
+# --- what fix never writes (0.9.0) -------------------------------------------------------
+
+def test_flow_selectors_are_never_rewritten(root, capsys):
+    new = "//button[@data-testid='cookie-ok']"
+    confirmed_project(root, "accept", "#x", new, role="button")
+    source = write(root, "tests/test_flow.py", textwrap.dedent('''\
+        heal.interrupt("banner", "#x")
+        heal.interrupt("banner", selector="#x", action="click")
+        heal.interrupt("banner", ["#x", "#y"])
+        heal.step("pay", "#x")
+        heal.step("pay", when=["#x"])
+        heal.step("pay", when=("#y", "#x"), fn=pay)
+        allure.step("#x")
+        heal.locator("accept", "#x").click()
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
+        heal.interrupt("banner", "#x")
+        heal.interrupt("banner", selector="#x", action="click")
+        heal.interrupt("banner", ["#x", "#y"])
+        heal.step("pay", "#x")
+        heal.step("pay", when=["#x"])
+        heal.step("pay", when=("#y", "#x"), fn=pay)
+        allure.step("{0}")
+        heal.locator("accept", "{0}").click()
+    ''').format(new)
+    lines = out.splitlines()
+    for line in (1, 2, 3):
+        assert ("  tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to "
+                "heal.interrupt(), and mendwright fix never rewrites the selector of an "
+                "interruption. It equals the old selector of accept, so if the interruption "
+                "broke too, change it by hand.") in lines, out
+    for line in (4, 5, 6):
+        assert ("  tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to "
+                "heal.step(when=), and mendwright fix never rewrites a step's landmark. It "
+                "equals the old selector of accept, so if the step's landmark broke too, change "
+                "it by hand.") in lines, out
+    assert "no string equal to" not in out
+
+
+def test_a_selector_seen_only_under_a_flow_call_is_found_but_not_written(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "test_a.py", 'heal.interrupt("banner", "#x")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert "no string equal to" not in out
+    assert "test_a.py:1 was not changed: '#x' is passed to heal.interrupt()" in out
+
+
+@pytest.mark.parametrize("new, why", [
+    ("#not-an-xpath", "its healed selector '#not-an-xpath' is not an XPath"),
+    ("//button[@id='x'", "its healed selector \"//button[@id='x'\" is not an XPath"),
+    ("text=Save", "its healed selector 'text=Save' is not an XPath"),
+], ids=["css", "does-not-compile", "engine"])
+def test_a_heal_mendwright_could_not_have_saved_is_never_written(root, capsys, new, why):
+    confirmed_project(root, "save", "#save", new, role="button")
+    source = write(root, "test_a.py", 'heal.locator("save", "#save")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply", "--include-unconfirmed")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  save: " + why + " that lxml can compile, and mendwright saves only heals that "
+            "are, so something else wrote it into overrides.json. Check the store; nothing is "
+            "written for this key.") in out.splitlines()
+
+
+@pytest.mark.parametrize("css", [
+    'form > button', 'button:hover', 'a[href=x]', "a[href='x']", 'div.a span.b em',
+    'button[name="x"]::after', '*', 'a, b', 'a  b', '#1x',
+])
+def test_a_css_form_mendwright_does_not_build_is_never_written(root, capsys, css):
+    new = "//button[@name='save']"
+    confirmed_project(root, "save", "#save", new, role="button", candidates=[
+        cand("#save", "code", T0), dict(cand(new, "heal", T1), css=css)])
+    source = write(root, "test_a.py", 'heal.locator("save", "#save")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  save: the CSS form of its heal, " + repr(css) + ", is not one mendwright builds (a "
+            'tag name, #id, .class and [attribute="value"], with at most one ancestor before '
+            "it), so something else wrote it into overrides.json. Check the store; nothing is "
+            "written for this key.") in out.splitlines()
+
+
+@pytest.mark.parametrize("css", [
+    '#coupon-code', '[data-testid="save-btn"]', 'button[type="submit"]', '[id="a.b"]',
+    'button.btn.primary', 'form#checkout button', 'div.row button.btn', 'input[aria-label="a \\"b\\""]',
+    'label[for="x\\a y"]', '-x', '_a.b-c',
+])
+def test_every_css_form_mendwright_builds_is_written(css):
+    assert fixback._CSS_TWIN.fullmatch(css), css
+
+
+def test_destructive_key_skips_a_key_the_store_does_not_mark(root, capsys):
+    write_store(root, {
+        "pay": healed("#pay", "//button[@id='pay-now']", role="button"),
+        "refund": healed("#refund", "//button[@id='refund-now']", role="button"),
+        "save": healed("#save", "//button[@id='save-now']", role="button"),
+    }, [canary("pay", "//button[@id='pay-now']"), canary("refund", "//button[@id='refund-now']"),
+        canary("save", "//button[@id='save-now']")])
+    source = write(root, "test_a.py", 'A = "#pay"\nB = "#refund"\nC = "#save"\n')
+    code, out, err = run(capsys, "--apply", "--destructive-key", "pay", "--destructive-key",
+                         "refund", "other")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == ('A = "#pay"\nB = "#refund"\n'
+                                                  'C = "//button[@id=\'save-now\']"\n')
+    for key in ("pay", "refund"):
+        assert ("  " + key + ": it is marked destructive, so its heals are never written into "
+                "code. Fix the selector by hand.") in out.splitlines()
+
+
+QUARANTINED = ("  email: its newest heal //input[@name='e-mail'] was quarantined (an action on "
+               "it failed, a check said it was the wrong element, or the key is marked "
+               "destructive), and no selector has worked for the key since, so there is nothing "
+               "to write back.")
+
+
+def _with_quarantine(*candidates):
+    return {"email": {"expectedRole": "textbox", "candidates": list(candidates)}}
+
+
+def test_a_key_whose_newest_heal_was_quarantined_is_listed(root, capsys):
+    bad = "//input[@name='e-mail']"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T0), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)),
+        [canary("email", bad, False)])
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert QUARANTINED in out.splitlines()
+    assert "No key has a healed selector ahead" not in out
+
+
+def test_a_quarantined_heal_is_not_listed_once_a_selector_works_again(root, capsys):
+    bad = "//input[@name='e-mail']"
+    later = "2026-10-03T00:00:00+00:00"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", later), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert "quarantined" not in run(capsys)[1]
+    # The same second counts as after.
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T1), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)))
+    assert "quarantined" not in run(capsys)[1]
+
+
+def test_a_tie_between_an_active_and_a_quarantined_heal_is_not_listed(root, capsys):
+    # Every row is added at T0, and the code selector last matched before that.
+    bad, good = "//input[@name='e-mail']", "//input[@name='mail']"
+    before = "2026-09-30T00:00:00+00:00"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", before), cand(bad, "heal", None, status="quarantined"),
+        cand(good, "heal", None)))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert "quarantined" not in run(capsys)[1]
+    write_store(root, _with_quarantine(
+        cand("#email", "code", before), cand(bad, "heal", None, status="quarantined"),
+        cand("//input[@id='other']", "heal", None, status="quarantined")))
+    assert QUARANTINED in run(capsys)[1].splitlines()
+
+
+def test_a_key_with_only_quarantined_selectors_is_listed(root, capsys):
+    bad = "//input[@name='e-mail']"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T0, status="quarantined"), cand(bad, "heal", None, status="quarantined")))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert QUARANTINED in run(capsys)[1].splitlines()
+
+
+def test_an_old_quarantine_is_not_listed_when_a_newer_heal_is_written(root, capsys):
+    bad, good = "//input[@name='e-mail']", "//input[@name='mail']"
+    write_store(root, _with_quarantine(
+        dict(cand("#email", "code", T0), addedAt="2026-09-01T00:00:00+00:00"),
+        dict(cand(bad, "heal", None, status="quarantined"), addedAt="2026-09-02T00:00:00+00:00"),
+        cand(good, "heal", T1)), [canary("email", good)])
+    source = write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert "quarantined" not in out
+    assert good in source.read_text(encoding="utf-8")
+
+
+def test_github_folders_are_never_scanned(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    script = write(root, ".github/scripts/x.py", 'x = "#save"\n')
+    workflow = write(root, ".github/workflows/ci.yml", 'run: echo "#save"\n')
+    nested = write(root, "pkg/.github/x.py", 'x = "#save"\n')
+    for args in ((), ("--glob", "*.yml"), ("--path", ".github"), ("--path", ".github/scripts/x.py")):
+        code, out, err = run(capsys, "--apply", *args)
+        assert (code, err) == (0, ""), (args, err)
+        for path in (script, workflow, nested):
+            assert "#save" in path.read_text(encoding="utf-8"), (args, path)
+    code, out, err = run(capsys, "--path", ".github/nope")
+    assert code == 1 and "no such file or folder: .github/nope" in err
 
 
 # --- the command line --------------------------------------------------------------------
