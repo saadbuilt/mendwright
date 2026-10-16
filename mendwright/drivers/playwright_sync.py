@@ -14,11 +14,13 @@ import re
 
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..flow import click_may_have_run
+from ..lists import LIST_JS
+from ..lists import from_raw as list_from_raw
 from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
-                   frame_selector, inventory_rows, is_async_api, looks_like_locator,
-                   summary_from_js)
+                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api,
+                   looks_like_locator, summary_from_js, visible_match_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -108,7 +110,8 @@ class PlaywrightSyncDriver:
     Required Driver methods: count, is_visible, scroll_into_view, handle, act, url,
     outer_html. All take a selector of any kind plus an optional frame chain (frame
     selectors, outermost first). Optional extras, which callers reach through the
-    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint."""
+    driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint,
+    visible_match, and for lists handles and list_fingerprint."""
 
     def __init__(self, page):
         self._page = page
@@ -181,6 +184,14 @@ class PlaywrightSyncDriver:
         return self._probe(selector, frame_chain,
                            lambda loc: summary_from_js(loc.evaluate_all(DESCRIBE_JS)), None)
 
+    def visible_match(self, selector, frame_chain=()):
+        """describe()'s result for the first visible element the selector matches, plus
+        'visible': how many of its matches are visible, counted up to 2. None when none is.
+        One round trip. A malformed selector raises InvalidSelector; any other error gives
+        None."""
+        return self._probe(selector, frame_chain, lambda loc: visible_match_from_js(
+            loc.locator('visible=true').evaluate_all(VISIBLE_MATCH_JS)), None)
+
     def fingerprint(self, selector, frame_chain=()):
         """The fingerprint of the one element the selector matches (see
         mendwright.fingerprint), or None when it matches none or several. One round trip
@@ -188,6 +199,25 @@ class PlaywrightSyncDriver:
         InvalidSelector; any other error gives None."""
         return self._probe(selector, frame_chain,
                            lambda loc: from_raw(loc.evaluate_all(FINGERPRINT_JS)), None)
+
+    def handles(self, selector, frame_chain=()):
+        """A Locator for each element the selector matches now, as Locator.all() gives them
+        (nth(0), nth(1), ...). A malformed selector raises InvalidSelector."""
+        loc = self.handle(selector, frame_chain)
+        try:
+            count = loc.count()
+        except Exception as exc:
+            _raise_if_invalid(exc, selector, frame_chain)
+            raise
+        return [loc.nth(i) for i in range(count)]
+
+    def list_fingerprint(self, selector, frame_chain=()):
+        """The list fingerprint of the elements the selector matches (see mendwright.lists),
+        or None when it matches fewer than two. One round trip (evaluate_all), which reads no
+        input value. A malformed selector raises InvalidSelector; any other error gives
+        None."""
+        return self._probe(selector, frame_chain,
+                           lambda loc: list_from_raw(loc.evaluate_all(LIST_JS)), None)
 
     def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one

@@ -252,9 +252,16 @@ def _flow_detail(event):
         before = event.get('before')
         how = ('preset ' + _code(event.get('preset')) if event.get('preset')
                else ('selector ' + _code(event.get('selector')) if event.get('selector') else ''))
-        action = event.get('action')
+        if event.get('function'):
+            action = 'run ' + _code(str(event['function']) + '()')
+        else:
+            action = h(event.get('action') or 'action')
+        if _failed(event):
+            return ('Not handled before ' + (_code(before) if before else 'a step') + ': '
+                    + action + ' raised ' + _code(event.get('error') or 'an error')
+                    + (', found via ' + how if how else '') + '.')
         return ('Handled before ' + (_code(before) if before else 'a step') + ': '
-                + h(action or 'action') + (' via ' + how if how else '') + '.')
+                + action + (' via ' + how if how else '') + '.')
     if name == 'flow.skip':
         return 'Skipped instead of healed: ' + h(event.get('reason') or 'no reason recorded') + '.'
     if name == 'flow.dismiss':
@@ -271,6 +278,11 @@ def _step(step):
     if step.get('how') == 'escape':
         return 'Escape'
     return 'its button ' + _code(step['label']) if step.get('label') else 'a button'
+
+
+def _failed(event):
+    """Whether a flow.interrupt event is a run= function of heal.interrupt() that raised."""
+    return event.get('outcome') == 'failed'
 
 
 def _dismissed(event):
@@ -321,6 +333,8 @@ def _flow_section(report, events, flow_counts):
         label, kind = kinds[e['event']]
         if e['event'] == 'flow.dismiss' and not _dismissed(e):
             label, kind = 'popup left', 'warn'
+        if e['event'] == 'flow.interrupt' and _failed(e):
+            label, kind = 'interruption failed', 'warn'
         key = e.get('key')
         rows.append('<tr>' + _cell('Event', _badge(label, kind))
                     + _cell('When', h(_when(e.get('ts'))), 'nowrap')
@@ -442,6 +456,8 @@ def render_html(report, events, *, version=None):
     flow_counts = {name: sum(1 for e in events if e.get('event') == name) for name in _FLOW_EVENTS}
     flow_counts['flow.dismiss'] = sum(1 for e in events
                                       if e.get('event') == 'flow.dismiss' and _dismissed(e))
+    flow_counts['flow.interrupt'] = sum(1 for e in events
+                                        if e.get('event') == 'flow.interrupt' and not _failed(e))
     journal = report['journal']
     stamps = [e['ts'] for e in events if isinstance(e.get('ts'), str)]
     if journal['exists']:

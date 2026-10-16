@@ -6,6 +6,7 @@ submitted, keys marked destructive are never healed, a key is not healed on a pa
 it was never found (a change in the flow, see mendwright.flow), and a failed canary
 quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
+A list whose selectors all match nothing is never healed (see decline_list).
 """
 
 import contextlib
@@ -60,6 +61,19 @@ def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
             "could act on a live account. Fix the selector in your code or seed file by hand.")
+
+
+def _list_missing_message(selector_key, count):
+    """Why a list whose selectors all match nothing is not healed (see decline_list). count
+    is how many elements the list had when its list fingerprint was recorded."""
+    had = (str(count) + ' elements' if isinstance(count, int) and not isinstance(count, bool)
+           and count >= 2 else 'two or more elements')
+    return ("'" + selector_key + "' matched " + had + ' when its list fingerprint was recorded, '
+            'and none of its selectors matches now. Either the list is empty at this point, or '
+            "its selector broke: mendwright can't tell the two apart, since the items of an "
+            "emptied list can show in another list, such as a cart's in Saved for later, so it "
+            'never heals a list that matches nothing. If the selector broke, change it in your '
+            'code.')
 
 
 class HealCoordinator:
@@ -372,6 +386,18 @@ class HealCoordinator:
         return None, ("the fingerprint match for '" + selector_key + "', " + match.xpath
                       + ", failed mendwright's checks (" + str(reason) + ')'), True
 
+    def decline_list(self, selector_key, meta):
+        """Decline to heal list key, whose selectors all match nothing (see
+        Healer.locator_all), and return the reason, recorded and logged as for any heal that
+        did not apply (see ``explain``). mendwright never heals such a list: an emptied list
+        whose items show in another list on the page now, such as a cart's in Saved for
+        later, can be the same page as a redesign but for a class name or a heading's text.
+        So nothing is looked for on the page, no model is asked and nothing is saved."""
+        lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
+        self._decline(selector_key, _list_missing_message(
+            selector_key, lfp.get('count') if isinstance(lfp, dict) else None))
+        return self.explain(selector_key)
+
     def _live_visible(self, xpath):
         """For the fingerprint tier: False when xpath does not reach one visible element on
         the live page, True when it does, None when the page could not be read."""
@@ -440,10 +466,11 @@ class HealCoordinator:
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
                    + applied + timing)
 
-    def confirm(self, selector_key, xpath, success):
+    def confirm(self, selector_key, xpath, success, reason=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
         candidate whose retry failed. A heal from the fingerprint tier, or a key followed
-        into an iframe, is not reported to the provider, which did not propose it."""
+        into an iframe, is not reported to the provider, which did not propose it. reason,
+        when given, is journaled with the canary (see mendwright.values)."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
         if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER):
@@ -451,19 +478,27 @@ class HealCoordinator:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:
                 pass
-        self.journal.canary(selector_key, xpath=xpath, success=bool(success))
+        self.journal.canary(selector_key, xpath=xpath, success=bool(success), reason=reason)
         if heal is not None:
             heal['confirmed'] = bool(success)
         if not success:
             self.store.quarantine(selector_key, xpath)
-            self.journal.quarantine(selector_key, xpath=xpath)
+            self.journal.quarantine(selector_key, xpath=xpath, reason=reason)
 
-    def confirm_pending(self, selector_key, success):
+    def is_pending(self, selector_key, xpath):
+        """True when xpath is the heal of selector_key this process applied and has not
+        confirmed yet."""
+        return xpath is not None and self.pending.get(selector_key) == xpath
+
+    def confirm_pending(self, selector_key, success, reason=None, xpath=None):
         """Report the action outcome for a just-healed key, then clear its marker.
-        A failed action quarantines the healed candidate so it can't outrank the seed."""
+        A failed action quarantines the healed candidate so it can't outrank the seed.
+        With xpath, only when the key's heal waiting is the one that applied xpath."""
+        if xpath is not None and self.pending.get(selector_key) != xpath:
+            return
         xpath = self.pending.pop(selector_key, None)
         if xpath is not None:
-            self.confirm(selector_key, xpath, success)
+            self.confirm(selector_key, xpath, success, reason)
 
     def explain(self, selector_key):
         """The human-readable reason the last heal attempt for ``selector_key`` did not

@@ -6,8 +6,8 @@ writes to the seed file.
 Tool-agnostic: the set of destructive keys is injected (``destructive_keys``) rather
 than hardcoded, so the store can serve any tool.
 
-Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive, intent
-and fingerprint) is saved in the override file next to the candidates, so the next process
+Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive, intent,
+fingerprint and listFingerprint) is saved in the override file next to the candidates, so the next process
 sees it, and so is where the key's element was last found (``set_last_page``: lastPage
 and pages) and the steps of run_steps() it was found during (``set_last_step``: steps).
 The file stays schema 2; the fields are optional. A key is destructive when the seed says
@@ -25,11 +25,13 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .fingerprint import valid as _valid_fingerprint
+from .lists import valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
 
@@ -213,9 +215,10 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
 # Metadata fields saved in the override file: the ones set_meta() sets, the pages
 # set_last_page() records and the steps set_last_step() records. intent is what the element
 # is for, in words (locator(intent=)); fingerprint is what the element looked like the last
-# time it matched (see mendwright.fingerprint).
+# time it matched (see mendwright.fingerprint), and listFingerprint what the items of a
+# list looked like the last time it matched two or more (see mendwright.lists).
 META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
-               'fingerprint', 'steps')
+               'fingerprint', 'steps', 'listFingerprint')
 
 # How many pages set_last_page() keeps per key, most recent first, and how many steps
 # set_last_step() keeps.
@@ -254,6 +257,8 @@ def _meta_fields(entry):
         out['intent'] = intent
     if _valid_fingerprint(entry.get('fingerprint')):
         out['fingerprint'] = entry['fingerprint']
+    if _valid_list_fingerprint(entry.get('listFingerprint')):
+        out['listFingerprint'] = entry['listFingerprint']
     return out
 
 
@@ -281,6 +286,8 @@ class SelectorStore:
         self._sleep = time.sleep
         self._wallclock = time.time
         self._warned = False
+        # Per thread: how many batch() blocks are open, and whether a write waits for them.
+        self._batch = threading.local()
         # Keys whose expectedRole is a guess made with guess_role(): used, never saved.
         self._guessed = set()
         # key -> the candidate record_success() last marked in this process.
@@ -339,7 +346,7 @@ class SelectorStore:
             e['expectedText'] = list(fields['expectedText'])
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
-        for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint'):
+        for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint'):
             if name in fields:
                 e[name] = list(fields[name]) if name in ('pages', 'steps') else fields[name]
 
@@ -364,7 +371,9 @@ class SelectorStore:
                 'pages': _pages(e.get('pages')),
                 'steps': _pages(e.get('steps')),
                 'intent': e['intent'] if isinstance(e.get('intent'), str) and e['intent'] else None,
-                'fingerprint': e['fingerprint'] if _valid_fingerprint(e.get('fingerprint')) else None}
+                'fingerprint': e['fingerprint'] if _valid_fingerprint(e.get('fingerprint')) else None,
+                'listFingerprint': (e['listFingerprint']
+                                    if _valid_list_fingerprint(e.get('listFingerprint')) else None)}
 
     def _by_recency(self, key):
         e = self._data['selectors'].get(key)
@@ -426,16 +435,16 @@ class SelectorStore:
             'maxCandidates': 5, 'stage': None, 'action': None, 'candidates': []})
 
     def set_meta(self, key, *, role=None, text=None, destructive=None, stage=None, action=None,
-                 intent=None, fingerprint=None):
+                 intent=None, fingerprint=None, list_fingerprint=None):
         """Set a key's metadata. None leaves a field as it is.
 
-        role, text, destructive, intent and fingerprint are saved in the override file, so
-        the next process sees them; the file is written only when one of them changes.
-        destructive=False clears a flag an earlier set_meta() saved, but never one from the
-        seed or from destructive_keys: meta() still reports those keys as destructive.
-        intent is a description of the element in words; fingerprint a dict from
-        mendwright.fingerprint (anything else raises ValueError). stage and action stay in
-        memory."""
+        role, text, destructive, intent, fingerprint and list_fingerprint are saved in the
+        override file, so the next process sees them; the file is written only when one of
+        them changes. destructive=False clears a flag an earlier set_meta() saved, but never
+        one from the seed or from destructive_keys: meta() still reports those keys as
+        destructive. intent is a description of the element in words; fingerprint a dict
+        from mendwright.fingerprint and list_fingerprint one from mendwright.lists (anything
+        else raises ValueError). stage and action stay in memory."""
         e = self._entry(key)
         changed = {}
         if intent is not None:
@@ -454,6 +463,14 @@ class SelectorStore:
                                  + '. Build one with mendwright.fingerprint.of_element().')
             e['fingerprint'] = fingerprint
             changed['fingerprint'] = fingerprint
+        if list_fingerprint is not None:
+            if not _valid_list_fingerprint(list_fingerprint):
+                raise ValueError('mendwright: set_meta(list_fingerprint=...) takes a list '
+                                 'fingerprint from mendwright.lists, got '
+                                 + type(list_fingerprint).__name__ + '. Build one with '
+                                 'mendwright.lists.of_elements().')
+            e['listFingerprint'] = list_fingerprint
+            changed['listFingerprint'] = list_fingerprint
         if role is not None:
             e['expectedRole'] = role
             changed['expectedRole'] = role
@@ -574,13 +591,17 @@ class SelectorStore:
             self._persist_override()
         return not was_top
 
-    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None, now=None):
+    def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
+                      list_heal=None, now=None):
         """Add a candidate selector for key, or update the one with the same text.
 
         frame_xpath is the selector of the iframe the candidate runs in: '' moves an
         existing candidate to the page, None leaves it where it is. css is a CSS selector
         checked to match the same element as a healed XPath (see mendwright.css), saved for
-        mendwright fix and never run: '' drops one saved before, None leaves it."""
+        mendwright fix and never run: '' drops one saved before, None leaves it. list_heal
+        True marks a heal of a list, saved as "list": true, as a build of 0.8.0 before its
+        release did: list lookups use no heal (see Healer.locator_all), and mendwright fix
+        writes none of these back. False clears the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         if not found:
@@ -590,6 +611,8 @@ class SelectorStore:
                 cand['frameXPath'] = frame_xpath
             if css:
                 cand['css'] = css
+            if list_heal:
+                cand['list'] = True
             entry['candidates'].append(cand)
         else:
             # An empty value stays as a key, so _absorb() does not take an old one back
@@ -598,6 +621,10 @@ class SelectorStore:
                 found['frameXPath'] = frame_xpath
             if css is not None and (found.get('css') or '') != css:
                 found['css'] = css
+            if list_heal:
+                found['list'] = True
+            elif list_heal is not None:
+                found.pop('list', None)
         self._dirty.add((key, xpath))
         self._persist_override()
 
@@ -631,7 +658,27 @@ class SelectorStore:
     # replaces the file. What this store changed itself wins. If the file cannot be
     # written, the store logs one warning and keeps working in memory.
 
+    @contextlib.contextmanager
+    def batch(self):
+        """Write the override file once, when the outermost batch of this thread ends, for
+        every change made in it, instead of once per change: a lookup that saves its
+        selector, its first success, its page and its list fingerprint costs one write.
+        Changes made in other threads are written as they come."""
+        state = self._batch
+        state.depth = getattr(state, 'depth', 0) + 1
+        try:
+            yield self
+        finally:
+            state.depth -= 1
+            if not state.depth and getattr(state, 'wanted', False):
+                state.wanted = False
+                self._persist_override()
+
     def _persist_override(self):
+        state = self._batch
+        if getattr(state, 'depth', 0):
+            state.wanted = True     # written when the batch ends (see batch)
+            return
         try:
             with self._locked_file():
                 # A file that became unreadable raises here, so it is never replaced.
@@ -764,6 +811,8 @@ class SelectorStore:
                 newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
                 local['lastSucceededAt'] = newest or None
                 _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
+                if c.get('list') is True:
+                    local['list'] = True     # another process healed a list with it
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):
@@ -797,6 +846,8 @@ class SelectorStore:
                     item['frameXPath'] = c['frameXPath']
                 if isinstance(c.get('css'), str) and c['css']:
                     item['css'] = c['css']
+                if c.get('list') is True:
+                    item['list'] = True
                 overlay.append(item)
             saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
             if overlay or saved:

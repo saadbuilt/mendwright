@@ -4,7 +4,8 @@ a newsletter modal or an "are you still there?" dialog.
 heal.interrupt(key, selector) registers one. mendwright looks for it only when a step
 needs help: when a locator() misses, before an action while the page shows it, and when an
 action fails because something covered the element. When it is there and visible,
-mendwright performs its action (a click by default) and goes on with the step. The actions
+mendwright performs its action (a click by default), or calls its run= function for one
+that needs a whole form, and goes on with the step. The actions
 are those of heal.locator(), heal.page's selector shortcuts and the click, send_keys,
 clear and submit of the elements heal.driver finds; on a Playwright Page it is also
 registered with page.add_locator_handler, so Playwright hands over before the other
@@ -33,8 +34,15 @@ well, which Playwright's CSS engine can reach and Selenium's cannot. Playwright'
 handler watches for all of them, the CSS one included.
 """
 
+import inspect
+import re
 from dataclasses import dataclass, field
+from typing import Callable
 
+import lxml.html
+
+from .candidates import xpath_literal
+from .css import css_selectors, css_string
 from .roles import role_choices
 from .selectors import XPATH, InvalidSelector, check_syntax, classify, normalize, strip_prefix
 
@@ -50,7 +58,8 @@ class Interruption:
     the element to act on (tried in order), the action and its arguments, and the roles
     the element may have (empty: any). probe is an XPath that matches when any of the
     XPath selectors could match, checked first so a page without the interruption costs
-    one query."""
+    one query. run is the function heal.interrupt(run=...) got, which handles the
+    interruption itself (action is then 'run'); the selectors only show it is there."""
     key: str
     selectors: tuple
     action: str = 'click'
@@ -58,6 +67,7 @@ class Interruption:
     roles: tuple = ()
     probe: str | None = None
     preset: str | None = None
+    run: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -80,18 +90,24 @@ class InterruptionEvent:
 class Budget:
     """How many interruptions one step has handled (see flow.MAX_INTERRUPTIONS_PER_STEP).
     gave_up names a popup open(dismiss=True) could not dismiss in this step, so it is
-    tried once per step and named in one WARNING."""
+    tried once per step and named in one WARNING. raised is what a run= function raised in
+    Playwright's overlay handler while the step ran, which cannot raise into the action:
+    the step raises it instead (see Healer._overlay_run)."""
     used: int = 0
     handled: list = field(default_factory=list)
     gave_up: str | None = None
+    raised: BaseException | None = None
 
 
-def make_interruption(key, selector, *, action='click', args=(), role=None, actions=()):
+def make_interruption(key, selector, *, action=None, args=(), role=None, run=None, actions=(),
+                      awaits=False):
     """Check heal.interrupt()'s arguments and build the Interruption.
 
     selector is one selector string or a list of them. action must be one of ``actions``
-    (the proxy verbs). Raises TypeError, ValueError or InvalidSelector, each naming the
-    fix, before anything touches the page."""
+    (the proxy verbs); None is a click. run is a function that handles the interruption
+    itself, instead of action and args. awaits=False (the sync healer) rejects an async
+    function, which it could not await. Raises TypeError, ValueError or InvalidSelector,
+    each naming the fix, before anything touches the page."""
     if not isinstance(key, str) or not key.strip():
         raise TypeError('mendwright: heal.interrupt() needs a key, a non-empty name such as '
                         "'cookies', got " + repr(key) + '.')
@@ -106,17 +122,54 @@ def make_interruption(key, selector, *, action='click', args=(), role=None, acti
         except InvalidSelector as exc:
             raise exc.for_key(key) from None
         selectors.append(normalize(item))
+    roles = tuple(role_choices(role)) if role is not None else ()
+    if run is not None:
+        _check_run(key, run, action, args, awaits)
+        return Interruption(key=key, selectors=tuple(dict.fromkeys(selectors)), action='run',
+                            roles=roles, run=run)
+    action = 'click' if action is None else action
     if not isinstance(action, str) or action not in actions:
         raise ValueError('mendwright: heal.interrupt(' + repr(key) + ', ...) got action='
                          + repr(action) + ', which mendwright cannot run. Use one of: '
-                         + ', '.join(actions) + '.')
+                         + ', '.join(actions) + ', or run= with a function that handles the '
+                         'interruption itself.')
     if isinstance(args, (str, bytes)) or not isinstance(args, (list, tuple)):
         raise TypeError('mendwright: heal.interrupt(' + repr(key) + ', ...) takes args= as a '
                         "tuple, for example action='press', args=('Escape',). Got "
                         + repr(args) + '.')
-    roles = tuple(role_choices(role)) if role is not None else ()
     return Interruption(key=key, selectors=tuple(dict.fromkeys(selectors)), action=action,
                         args=tuple(args), roles=roles)
+
+
+def _check_run(key, run, action, args, awaits):
+    """heal.interrupt(run=...)'s checks: a function, without action= or args=, and not an
+    async one on the sync healer."""
+    if not callable(run):
+        raise TypeError('mendwright: heal.interrupt(' + repr(key) + ', ..., run=...) takes the '
+                        'function that handles the interruption, which gets the page, such as '
+                        'def relogin(page): ..., got ' + repr(run) + '.')
+    given = []
+    if action is not None:
+        given.append('action=' + repr(action))
+    if not isinstance(args, (list, tuple)) or args:
+        given.append('args=' + repr(args))
+    if given:
+        raise TypeError('mendwright: heal.interrupt(' + repr(key) + ', ...) got run= and '
+                        + ' and '.join(given) + '. run= does the whole interruption itself, so '
+                        'it takes no action= or args=: drop them, or drop run=.')
+    if not awaits and (inspect.iscoroutinefunction(run)
+                       or inspect.iscoroutinefunction(type(run).__call__)):
+        raise TypeError('mendwright: heal.interrupt(' + repr(key) + ', ..., run=...) got an '
+                        'async function, which the healer of mendwright.open() cannot await. '
+                        'Make it a plain function, or use mendwright.aio.open() with async '
+                        'Playwright.')
+
+
+def function_name(fn):
+    """How the log and the journal name a run= function: its __name__ ('relogin',
+    '<lambda>'), else its type's."""
+    name = getattr(fn, '__name__', None)
+    return name if isinstance(name, str) and name else type(fn).__name__
 
 
 def nth_targets(selector, count, limit=5):
@@ -130,6 +183,40 @@ def nth_targets(selector, count, limit=5):
         return []
     body = strip_prefix(selector)
     return ['xpath=(' + body + ')[' + str(i) + ']' for i in range(1, min(count, limit) + 1)]
+
+
+# The roles of mendwright's summary of an element (drivers.base.element_summary) whose
+# accessible name, for Playwright's role= engine, is their text.
+_NAMED_BY_TEXT = ('button', 'link')
+# The longest text a suggested selector is built from: a button's or a heading's, not the
+# whole text of a dialog.
+SUGGEST_TEXT = 60
+_TAG = re.compile(r'^[a-z][a-z0-9-]*$')
+
+
+def precise_selectors(summary, playwright=False):
+    """Selectors that may match the element ``summary`` describes (describe()'s result for
+    the first visible match of a selector that matches several) and nothing else, best
+    first: CSS from its own attributes (mendwright.css.css_selectors: its id or test id
+    first), then, for a text of at most SUGGEST_TEXT characters, role=button[name="..."]
+    and text="..." on Playwright, and an XPath of its tag and whole text. The caller keeps
+    those that match one visible element on the live page."""
+    out = []
+    try:
+        el = lxml.html.fragment_fromstring(summary.get('outer_html') or '')
+    except Exception:
+        el = None
+    if el is not None and isinstance(el.tag, str):
+        out.extend(css_selectors(el, limit=3))
+    text, tag = summary.get('text') or '', (summary.get('tag') or '').lower()
+    if 0 < len(text) <= SUGGEST_TEXT:
+        if playwright:
+            if summary.get('role') in _NAMED_BY_TEXT:
+                out.append('role=' + summary['role'] + '[name=' + css_string(text) + ']')
+            out.append('text=' + css_string(text))
+        if _TAG.match(tag):
+            out.append('//' + tag + '[normalize-space()=' + xpath_literal(text) + ']')
+    return list(dict.fromkeys(out))
 
 
 # --- the cookies= preset --------------------------------------------------------------------

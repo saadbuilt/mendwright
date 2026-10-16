@@ -21,6 +21,12 @@ url and outer_html are expected as well. Optional, and absent from older custom 
   frame_matches(selector)                 the child frames the selector matches in
   framed(frame_selector)                  a driver for the document inside one iframe
 
+For lists (see mendwright.lists):
+
+  handles(selector, frame_chain=())       a native handle for each element it matches
+  list_fingerprint(selector, frame_chain=())   the list fingerprint of what it matches
+                                          (LIST_JS), or None for fewer than two elements
+
 For open(dismiss=True) (see mendwright.dismiss), each on a handle() result and run where it
 lives (inside its frame chain on Selenium):
 
@@ -40,8 +46,10 @@ lives (inside its frame chain on Selenium):
 
 Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
-when a driver lacks the method, and through the driver_popup_* helpers, which fall back to
-None or False: a driver without them never dismisses anything.
+when a driver lacks the method, through driver_handles and driver_list_fingerprint, which
+fall back to [handle()] and None (a driver without list_fingerprint() records no list, so
+a list lookup that matches nothing gives []), and through the driver_popup_* helpers,
+which fall back to None or False: a driver without them never dismisses anything.
 """
 
 import inspect
@@ -113,6 +121,46 @@ def driver_fingerprint(driver, selector, frame_chain=()):
     error, or a result that is not a fingerprint, gives None."""
     from ..fingerprint import valid
     method = getattr(driver, 'fingerprint', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, frame_chain)
+    except Exception:
+        return None
+    return out if valid(out) else None
+
+
+def driver_visible_match(driver, selector, frame_chain=()):
+    """driver.visible_match(selector, frame_chain) when the driver has it, else None:
+    describe()'s result for the first visible element of those the selector matches, plus
+    'visible', how many of them are visible (counted up to 2), or None when none is. The
+    WARNING for a selector that matches several builds its advice from it when exactly one
+    is visible. Any error, or a result that is not a dict, gives None."""
+    method = getattr(driver, 'visible_match', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, frame_chain)
+    except Exception:
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def driver_handles(driver, selector, frame_chain=()):
+    """driver.handles(selector, frame_chain) when the driver has it, else [handle()]: a
+    native handle for each element the selector matches. Errors propagate."""
+    method = getattr(driver, 'handles', None)
+    if callable(method):
+        return list(method(selector, frame_chain))
+    return [driver.handle(selector, frame_chain)]
+
+
+def driver_list_fingerprint(driver, selector, frame_chain=()):
+    """driver.list_fingerprint(selector, frame_chain) when the driver has it, else None: the
+    list fingerprint (see mendwright.lists) of the elements the selector matches. Any error,
+    or a result that is not one, gives None."""
+    from ..lists import valid
+    method = getattr(driver, 'list_fingerprint', None)
     if not callable(method):
         return None
     try:
@@ -350,6 +398,11 @@ _VALUE_ATTR = re.compile(r"""\svalue=("[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
 # describe(): run against every match of a locator; null unless exactly one matched.
 DESCRIBE_JS = ('els => els.length === 1 ? '
                '{tag: els[0].tagName.toLowerCase(), html: els[0].outerHTML} : null')
+
+# visible_match(): run against the visible matches of a locator; the first of them as
+# DESCRIBE_JS gives it, and how many there are, counted up to 2. null when none is.
+VISIBLE_MATCH_JS = ('els => els.length ? {tag: els[0].tagName.toLowerCase(), '
+                    'html: els[0].outerHTML, visible: Math.min(els.length, 2)} : null')
 
 # inventory(): one pass over the document's interactive elements. Form fields and
 # editable regions report no text, so typed values never leave the page.
@@ -657,6 +710,15 @@ def summary_from_js(data):
     if not isinstance(data, dict) or not isinstance(data.get('html'), str):
         return None
     return element_summary(data.get('tag'), data['html'])
+
+
+def visible_match_from_js(data):
+    """visible_match()'s result for VISIBLE_MATCH_JS's: summary_from_js() plus 'visible',
+    or None when no match was visible."""
+    summary = summary_from_js(data)
+    if summary is not None:
+        summary['visible'] = data.get('visible')
+    return summary
 
 
 def inventory_rows(raw, limit=200):

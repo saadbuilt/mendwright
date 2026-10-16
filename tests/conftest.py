@@ -3,7 +3,10 @@
 FakePage is detected as a Playwright page by mendwright.open(). Its locators count real
 matches in the HTML, answer describe() (evaluate_all) like a browser would, and record
 every action instead of running it. No browser, no network, no clock. The fingerprint read
-answers only on a FakePage(..., fingerprints=True).
+answers only on a FakePage(..., fingerprints=True), and so does the read of a list's
+fingerprint (mendwright.lists.LIST_JS). Locators have nth() and all(). CSS is "#id" only,
+and a selector needs its xpath= or css= prefix, unless the page is made with css=True, when
+cssselect matches the rest and a selector without a prefix is read as mendwright reads it.
 """
 
 import re
@@ -12,6 +15,7 @@ import lxml.html
 import pytest
 
 from mendwright.fingerprint import FINGERPRINT_JS, raw_of_element
+from mendwright.lists import LIST_JS, raw_of_elements
 
 # tests/test_pytest_plugin.py runs pytest inside pytest through the pytester fixture.
 pytest_plugins = ['pytester']
@@ -54,7 +58,16 @@ class FakeLocator:
     def scroll_into_view_if_needed(self, **kwargs):
         pass
 
+    def nth(self, index):
+        return FakeNth(self._page, self._selector, index)
+
+    def all(self):
+        return [self.nth(i) for i in range(self.count())]
+
     def evaluate_all(self, js):
+        if js == LIST_JS:
+            self._page.fingerprint_reads += 1
+            return raw_of_elements(self._elements()) if self._page.fingerprints else None
         if js == FINGERPRINT_JS:
             # The fingerprint read. Off unless the page was made with fingerprints=True, so
             # tests written before the fingerprint tier still see the model heal.
@@ -79,6 +92,14 @@ class FakeLocator:
         els = self._elements()
         return ' '.join(els[0].text_content().split()) if els else ''
 
+    def text_content(self, **kwargs):
+        els = self._elements()
+        return els[0].text_content() if els else None
+
+    def input_value(self, **kwargs):
+        els = self._elements()
+        return (els[0].get('value') or '') if els else ''
+
     def __getattr__(self, verb):
         if verb not in ACTIONS:
             raise AttributeError("'FakeLocator' object has no attribute " + repr(verb))
@@ -92,12 +113,25 @@ class FakeLocator:
         return action
 
 
+class FakeNth(FakeLocator):
+    """locator.nth(index): the index-th match of the selector, or none."""
+
+    def __init__(self, page, selector, index):
+        super().__init__(page, selector)
+        self._index = index
+
+    def _elements(self):
+        els = self._page.query(self._selector)
+        return els[self._index:self._index + 1]
+
+
 class FakePage:
     """Playwright-shaped page over an lxml DOM. set_html() stands in for a navigation."""
 
-    def __init__(self, html, url='https://example.test/', fingerprints=False):
+    def __init__(self, html, url='https://example.test/', fingerprints=False, css=False):
         self.url = url
         self.fingerprints = fingerprints   # answer mendwright's fingerprint read
+        self.css = css                     # match CSS beyond "#id" with cssselect
         self.fingerprint_reads = 0
         self.actions = []     # (selector, verb, args, kwargs) for every action run
         self.fail = {}        # verb -> exception the action raises
@@ -117,9 +151,30 @@ class FakePage:
             except Exception:
                 return []
             return [e for e in found if hasattr(e, 'tag')]
+        if self.css and not selector.startswith(('xpath=', 'css=')):
+            from mendwright.selectors import XPATH, classify
+            selector = ('xpath=' if classify(selector) == XPATH else 'css=') + selector
+        if selector.startswith('xpath='):
+            try:
+                found = self._doc.xpath(selector[len('xpath='):])
+            except Exception:
+                return []
+            return [e for e in found if hasattr(e, 'tag')]
         if selector.startswith('css='):
-            m = _CSS_ID.match(selector[len('css='):].strip())
-            return self._doc.xpath('//*[@id=$i]', i=m.group(1)) if m else []
+            css = selector[len('css='):].strip()
+            m = _CSS_ID.match(css)
+            if m:
+                return self._doc.xpath('//*[@id=$i]', i=m.group(1))
+            if not self.css:
+                return []
+            try:
+                from lxml.cssselect import CSSSelector
+            except ImportError:     # lxml's own extra: a test that needs CSS can't run without it
+                pytest.skip('cssselect is not installed')
+            try:
+                return CSSSelector(css)(self._doc)
+            except Exception:
+                return []
         return []
 
     def locator(self, selector):

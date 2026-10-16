@@ -663,6 +663,27 @@ def test_a_banner_that_opens_during_the_click_is_handled_and_the_click_retried(t
     assert _interrupts(heal) == [('cookies', 'link text=Terms')]
 
 
+def test_find_element_raises_what_a_run_function_raised_as_it_is(tmp_path):
+    relogin = ("<div id='relogin' data-overlay='' role='dialog'><p>Your session expired.</p>"
+               "<input id='user'></div>")
+    web = CoveredDriver('<html><body>' + relogin + '</body></html>')
+    heal = _open(web, tmp_path)
+    error = AttentionRequired('mendwright: the sign-in form changed')
+    calls = []
+
+    def relogin_run(driver):
+        calls.append(driver)
+        raise error
+
+    heal.interrupt('relogin', '#relogin', run=relogin_run)
+    # The page has no form until the user signs in again, so the lookup misses and the
+    # popup is handled then: the function's own AttentionRequired is not turned into a
+    # NoSuchElementException for 'email'.
+    with pytest.raises(AttentionRequired) as caught:
+        heal.driver.find_element('id', 'email')
+    assert caught.value is error and calls == [heal.driver]
+
+
 def test_an_action_no_interruption_explains_raises_its_own_error(tmp_path):
     web = _covered()                                       # a banner nobody registered
     heal = _open(web, tmp_path)

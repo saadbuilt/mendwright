@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mendwright"
-version = "0.7.0"
+version = "0.8.0"
 description = "Self-healing selectors for Playwright and Selenium. When a selector breaks, a model suggests a new one, mendwright checks it against the page, and the step is retried."
 readme = "README.md"
 license = "MIT"

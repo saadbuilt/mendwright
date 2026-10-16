@@ -25,6 +25,12 @@ whose click, send_keys, clear and submit handle interruptions as heal.locator()'
 do. Only the elements heal.locator() found carry the heal canary. Everything else is the
 real driver's.
 
+Lists: Locator.all() on heal.page.locator(selector) and driver.find_elements() give what
+the real call gives. They never wait, heal or save anything, so a list that matches nothing
+is [] at once. heal.locator_all() records a list, and raises for one that had items and
+matches nothing; it never heals one either (see Healer.locator_all). With
+open(dismiss=True), the Locators all() gives are GuardedLocators.
+
 The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
 and focus work on a hidden element in Playwright, and Selenium's find_element returns a
 hidden element or the first of several. For these, a selector that matches something
@@ -44,7 +50,7 @@ from typing import Any
 
 from .drivers.base import looks_like_locator
 from .exceptions import AttentionRequired
-from .facade import ACTIONS, ActionProxy
+from .facade import ACTIONS, ActionProxy, _raised_by_run
 from .selectors import InvalidSelector, check_syntax
 
 # Locator methods that resolve the key (and heal it when it broke) before they run: the
@@ -58,7 +64,8 @@ ANY_STATE = frozenset(READS) | frozenset({'set_input_files', 'focus'})
 
 # Page methods that take a selector first and act on one element.
 PAGE_SHORTCUTS = ('click', 'dblclick', 'fill', 'check', 'uncheck', 'select_option', 'press',
-                  'type', 'hover', 'is_checked', 'text_content', 'inner_text', 'get_attribute')
+                  'type', 'hover', 'is_checked', 'text_content', 'inner_text', 'get_attribute',
+                  'input_value')
 
 # Selenium's By values that heal, and how each becomes a selector mendwright stores.
 BY_XPATH, BY_CSS, BY_ID, BY_NAME = 'xpath', 'css selector', 'id', 'name'
@@ -149,6 +156,12 @@ class HealingLocator(_Proxy):
     def _mw_step(self):
         return 'page.locator(' + repr(self._mw_selector) + ')'
 
+    def all(self):
+        """Locator.all(): a Locator for each element the selector matches, as Playwright
+        gives them, never healed and with nothing saved (nor does heal.locator_all() heal one).
+        With open(dismiss=True), each one is a GuardedLocator."""
+        return _items(self, self._mw_target.all())
+
     def _mw_is_visible(self, **kwargs):
         if not self._mw_healer._knows(self._mw_selector):
             return self._mw_target.is_visible(**kwargs)
@@ -196,6 +209,12 @@ class HealingPage(_Proxy):
 
     def __repr__(self):
         return '<HealingPage ' + repr(self._mw_target) + '>'
+
+
+def _items(proxy, items):
+    """The Locators of proxy's all(), each guarded with open(dismiss=True) (see _guard)."""
+    step = proxy._mw_step() + '.all()'
+    return [_guard(proxy, item, step + '[' + str(i) + ']') for i, item in enumerate(items)]
 
 
 def _page_shortcut(name):
@@ -267,13 +286,13 @@ def _chained(proxy, name, value):
 class GuardedLocator(_Proxy):
     """With open(dismiss=True), what heal.page hands back for the locators it does not
     heal: get_by_role() and the other get_by_* locators, a locator built with options, a
-    chained locator, .first, .last, .nth() and .filter(), on a sync Playwright page or
-    frame. It is the real Locator (or FrameLocator), not healed, and nothing about it is
-    saved. Its actions run through the same guard as heal.locator()'s (ActionProxy),
-    without the heal canary: registered interruptions are handled first, a popup that
-    covers the element is dismissed (see mendwright.dismiss), and an action that failed
-    because something covered the element is tried once more after one was. Locators built
-    from it are guarded the same way.
+    chained locator, .first, .last, .nth(), .filter() and the elements of
+    locator(selector).all(), on a sync Playwright page or frame. It is the real Locator (or
+    FrameLocator), not healed, and nothing about it is saved. Its actions run through the
+    same guard as heal.locator()'s (ActionProxy), without the heal canary: registered
+    interruptions are handled first, a popup that covers the element is dismissed (see
+    mendwright.dismiss), and an action that failed because something covered the element is
+    tried once more after one was. Locators built from it are guarded the same way.
 
     It passes isinstance() checks for the Locator, so Playwright's expect() takes it, and
     .native is the Locator. Log lines and handled_interruptions name its step after the
@@ -324,6 +343,10 @@ class AsyncHealingLocator(HealingLocator):
         if not self._mw_healer._knows(self._mw_selector):
             return await self._mw_target.is_visible(**kwargs)
         return await self._mw_healer._peek_visible(self._mw_selector)
+
+    async def all(self):
+        """HealingLocator.all(), awaited."""
+        return _items(self, await self._mw_target.all())
 
 
 class AsyncHealingPage(HealingPage):
@@ -484,6 +507,19 @@ class HealingElement(_Proxy):
     def submit(self):
         return self._mw_action._act('submit', (), {}, None)
 
+    # The reads expect_value= checks for an element heal.locator() found through a heal
+    # (see ActionProxy.__getattr__). Any other element's are its own.
+
+    @property
+    def text(self):
+        return self._mw_action.text
+
+    def get_attribute(self, name):
+        return self._mw_action.get_attribute(name)
+
+    def get_dom_attribute(self, name):
+        return self._mw_action.get_dom_attribute(name)
+
     def find_element(self, by=BY_ID, value=None):
         return _found(self._mw_healer, self._mw_target.find_element(by, value),
                       _by_key(by, value))
@@ -526,14 +562,17 @@ class HealingDriver(_Proxy):
         try:
             action = self._mw_healer.locator(key, selector)
         except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # from a run= function of heal.interrupt(): raised as it is
             raise not_found_error(exc) from exc
         if not action.present:
             return None     # a key registered with heal.interrupt(), and not on the page
         return HealingElement(self._mw_healer, action.native, action)
 
     def find_elements(self, by=BY_ID, value=None):
-        """The real driver's find_elements(by, value), not healed, with each element
-        wrapped as a HealingElement."""
+        """The real driver's find_elements(by, value), not healed and with nothing saved,
+        with each element wrapped as a HealingElement. heal.locator_all() never heals a list
+        either."""
         healer, key = self._mw_healer, _by_key(by, value)
         return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
 
