@@ -89,7 +89,7 @@ Other `Healer` members:
 - `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, expect_value=None)`: the elements of a list, such as the cards of a product grid, with the list selector healed when it matches nothing any more. See [Lists](#lists).
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
-- `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
+- `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet, list heals included. For a key with a list heal and a heal of one element waiting, it shows the heal of one element.
 - `heal.confirm_all(True)` or `heal.confirm_all(False)`: confirm or quarantine every pending heal.
 
 ### Actions and confirmation
@@ -396,7 +396,7 @@ No matching element for: cards (tried 1 candidate(s)).
 
 A list heal logs one line, such as `healed the list 'cards' (12 elements): .product-card -> //div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')] (fingerprint, 0.0s)`, and its journal events have `"list": true`, with the number of elements as `items` on `heal.applied`. When your code's selector is CSS, the heal also gets a CSS form, such as `div.product-tile` or `div#grid > div.product-tile`, that `mendwright fix` writes back.
 
-The elements' actions handle interruptions and popups as `heal.locator()`'s do, and confirm or quarantine nothing. On Playwright, the first read of an element of `heal.locator_all()` handles interruptions too, once for the whole list (see [Interruptions](#interruptions)). The reads of the elements of `heal.page.locator(selector).all()` handle none. A list heal is confirmed by the pytest plugin when the test passes, or with `heal.confirm_all(True)`, and `--mendwright-strict` fails a test that needed one. With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s.
+The elements' actions handle interruptions and popups as `heal.locator()`'s do, and confirm or quarantine nothing. On Playwright, the first read of an element of `heal.locator_all()` handles interruptions too, once for the whole list (see [Interruptions](#interruptions)). The reads of the elements of `heal.page.locator(selector).all()` handle none. A list heal is confirmed by the pytest plugin when the test passes, or with `heal.confirm_all(True)`, and `--mendwright-strict` fails a test that needed one. A list heal and a heal of one element under the same key, such as `heal.locator_all(".card", ".card")` next to `page.inner_text(".card")`, are confirmed each on its own, and `mendwright fix` leaves such a key alone. With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s.
 
 For a list found through a heal, the elements' reads are checked against `expect_value=`, or the key's check in `mendwright.open(expect_values=...)`, as `heal.locator()`'s are (see [Checking what a read returns](#checking-what-a-read-returns)). A value that fails quarantines the list heal, and the read raises `AttentionRequired`. One that passes confirms nothing, as an element's action doesn't. Reads of locators chained from an element, such as `card.native.locator("h3").inner_text()`, aren't checked.
 
@@ -1439,6 +1439,7 @@ Which keys it changes:
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
 - Never a key marked destructive, a heal inside an iframe, or a key whose selectors came only from a seed file.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
+- Never a key with both a heal of the list (`heal.locator_all()`) and a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), since one string in your code can't be both. The reason gives the selector for each.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
 
 Which strings it changes:

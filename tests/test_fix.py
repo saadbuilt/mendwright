@@ -268,6 +268,28 @@ def test_a_heal_that_ties_with_its_code_selector_wins_and_one_that_never_matched
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
 
 
+LIST_TILE = "//div[contains(concat(' ', normalize-space(@class), ' '), ' tile ')]"
+
+
+@pytest.mark.parametrize('first_card', ["2026-10-02T09:30:00+00:00", "2026-10-02T09:30:07+00:00"])
+def test_a_key_with_a_list_heal_and_a_heal_of_one_element_is_left_alone(root, capsys, first_card):
+    # heal.locator_all('.card', '.card') and heal.page.inner_text('.card') share a key, and
+    # each healed: one string in the code cannot take both, whichever succeeded last.
+    entry = {"expectedRole": "div", "candidates": [
+        cand(".card", "code", T0), dict(cand(LIST_TILE, "heal", T1), list=True, css="div.tile"),
+        dict(cand("//div[@id='p1']", "heal", first_card), css="#p1")]}
+    write_store(root, {".card": entry}, [canary(".card", LIST_TILE), canary(".card", "//div[@id='p1']")])
+    text = 'cards = page.locator(".card").all()\nfirst = page.inner_text(".card")\n'
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .card: it has a heal of the list (heal.locator_all()) and a heal of one element "
+            "under the same key, and one selector in your code cannot be both, so mendwright "
+            "cannot tell which one goes where. Change the selectors by hand, or give the list "
+            "a key of its own: the list to div.tile, the element to #p1") in out.splitlines()
+
+
 def test_every_old_code_selector_of_a_key_is_replaced(root, capsys):
     confirmed_project(root, "k", ["#a", "//button[@id='b']"], EMAIL, role="input")
     source = write(root, "test_a.py", "heal.locator('k', ['#a', \"//button[@id='b']\"])\n")

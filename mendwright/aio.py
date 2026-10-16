@@ -1051,10 +1051,10 @@ class AsyncHealer:
         if xpath is None:
             return
         coordinator = self.coordinator
-        if coordinator.pending.get(key) == xpath:
+        if coordinator.is_pending(key, xpath):
             # A heal from earlier in this process. A gateway provider reports the outcome
             # over HTTP.
-            await _in_thread(coordinator.confirm_pending, key, False)
+            await _in_thread(coordinator.confirm_pending, key, False, None, xpath)
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -1211,9 +1211,9 @@ class AsyncHealer:
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
         async with self._turn():
-            if coordinator.pending.get(key) == healed:
+            if coordinator.is_pending(key, healed):
                 if confirms or not ok:
-                    await _in_thread(coordinator.confirm_pending, key, ok, reason)
+                    await _in_thread(coordinator.confirm_pending, key, ok, reason, healed)
             elif not ok:
                 self.store.quarantine(key, healed)
                 coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1484,8 +1484,10 @@ class AsyncActionProxy:
 
     def confirm(self, success: bool) -> AsyncActionProxy:
         """Confirm (True) or quarantine (False) a heal for this key, from a check of your
-        own. Sync, like ActionProxy.confirm()."""
-        self._healer.coordinator.confirm_pending(self._key, bool(success))
+        own: for an element of a list found through a heal, that list heal. Sync, like
+        ActionProxy.confirm()."""
+        xpath = None if self._canary else self._healed
+        self._healer.coordinator.confirm_pending(self._key, bool(success), xpath=xpath)
         return self
 
     def __getattr__(self, name: str) -> Any:

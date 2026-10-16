@@ -223,6 +223,52 @@ def shared():
     ])
 
 
+GRID = '''
+
+def _grid(cls):
+    cards = ''.join("<div id='p" + str(i) + "' class='" + cls + "'><h3>" + name + "</h3>"
+                    "<button>Add</button></div>"
+                    for i, name in enumerate(('Blue mug', 'Red mug', 'Tea pot'), 1))
+    return "<html><body><main id='shop'><div id='grid'>" + cards + "</div></main></body></html>"
+
+
+PROPOSALS['.card'] = "//div[@id='p1']"
+
+
+@pytest.fixture
+def grid():
+    page = FakePage(_grid('card'), fingerprints=True, css=True)
+    page.redesign = lambda: page.set_html(_grid('tile'))
+    return page
+'''
+
+
+def test_a_list_heal_and_a_heal_of_one_element_of_one_key_are_both_confirmed(project):
+    # heal.locator_all('.card', ...) and heal.page.inner_text('.card') share a key, and both
+    # heal in one test: the list through its list fingerprint, the first card through the model.
+    project.makeconftest(_conftest() + GRID)
+    project.makepyfile('''
+        import mendwright
+
+        def test_grid(grid):
+            heal = mendwright.open(grid, store_path='grid/overrides.json', timeout_ms=0)
+            assert len(heal.locator_all('.card', '.card')) == 3
+            grid.redesign()
+            assert len(heal.locator_all('.card', '.card')) == 3
+            assert heal.page.inner_text('.card').startswith('Blue mug')
+    ''')
+    result = run(project)
+    result.assert_outcomes(passed=1)
+    journal = project.path / 'grid' / 'journal.jsonl'
+    canaries = sorted((e['xpath'], e['success']) for e in events(journal)
+                      if e['event'] == 'heal.canary')
+    assert canaries == [("//div[@id='p1']", True),
+                        ("//div[contains(concat(' ', normalize-space(@class), ' '), ' tile ')]",
+                         True)]
+    result.stdout.fnmatch_lines(['mendwright: 2 selectors healed in 1 test (2 confirmed by '
+                                 'passing tests)'])
+
+
 # --- strict mode ---------------------------------------------------------------------
 
 def test_strict_fails_a_test_that_needed_a_heal(project, monkeypatch):

@@ -1104,3 +1104,57 @@ def test_async_a_run_function_s_list_lookups_and_checked_reads_skip_the_lock(tmp
     assert actions[-1][1] == 'click'
     assert [(h.key, h.new) for h in heal.heals] == [('cards', TILE)]
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'heading')]
+
+
+# --- a list heal and a heal of one element under one key -------------------------------------
+
+FIRST = "//div[contains(@class,'product-tile')][h3='Blue mug']"
+
+
+def _both(tmp_path, make_page, stub_provider):
+    """A healer whose key '.product-card' has, in this run, a list heal (heal.locator_all())
+    and a heal of the first card (a heal.page shortcut, through the model)."""
+    page = make_page(V1, fingerprints=True, css=True)
+    provider = stub_provider(FIRST)
+    heal = _open(page, tmp_path, provider)
+    assert len(heal.locator_all('.product-card', '.product-card')) == 4
+    page.set_html(V2)
+    cards = heal.locator_all('.product-card', '.product-card')     # the list heal
+    assert heal.page.inner_text('.product-card').startswith('Blue mug')   # the first card's
+    assert [(h.new, h.source) for h in heal.heals] == [(TILE, 'fingerprint'), (FIRST, 'model')]
+    return heal, cards, provider
+
+
+def _canaries(tmp_path):
+    return sorted((e['xpath'], e['success']) for e in _journal(tmp_path)
+                  if e['event'] == 'heal.canary')
+
+
+def test_a_list_heal_and_a_heal_of_one_element_of_one_key_are_confirmed_each_on_its_own(
+        tmp_path, make_page, stub_provider):
+    heal, _cards, provider = _both(tmp_path, make_page, stub_provider)
+    assert heal.pending() == {'.product-card': FIRST}     # one key: the element's heal shows
+    assert heal.confirm_all(True) == 2
+    assert [(h.new, h.confirmed) for h in heal.heals] == [(TILE, True), (FIRST, True)]
+    assert _canaries(tmp_path) == sorted([(TILE, True), (FIRST, True)])
+    assert heal.pending() == {} and heal.confirm_all(True) == 0
+    assert provider.outcomes == [('.product-card', FIRST, True)]   # the model's own heal only
+
+
+def test_a_list_element_s_confirm_and_failed_read_are_the_list_heal_s(
+        tmp_path, make_page, stub_provider):
+    heal, cards, _provider = _both(tmp_path, make_page, stub_provider)
+    cards[1].confirm(True)                                 # an element of the list says so
+    assert [(h.new, h.confirmed) for h in heal.heals] == [(TILE, True), (FIRST, None)]
+    assert heal.pending() == {'.product-card': FIRST}
+    heal.confirm_all(False)                               # the test failed: the element's heal
+    assert heal.store.status('.product-card', FIRST) == 'quarantined'
+    assert heal.store.status('.product-card', TILE) == 'active'
+
+    heal, _cards, _provider = _both(tmp_path / 'b', make_page, stub_provider)
+    cards = heal.locator_all('.product-card', '.product-card', expect_value='money')
+    with pytest.raises(AttentionRequired, match="'.product-card' was healed to " + re.escape(TILE)):
+        cards[0].inner_text()
+    assert heal.store.status('.product-card', TILE) == 'quarantined'
+    assert heal.store.status('.product-card', FIRST) == 'active'
+    assert heal.pending() == {'.product-card': FIRST}

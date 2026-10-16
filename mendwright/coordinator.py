@@ -126,6 +126,9 @@ class HealCoordinator:
         # single slot) so healing several fields on one page never drops an earlier
         # unproven selector's canary.
         self.pending = {}
+        # The same for list heals (see try_heal_list), kept apart: a key can have a list
+        # heal and a heal of one element in one run, and each is confirmed on its own.
+        self.pending_lists = {}
         # selector_key -> the human-readable reason the last heal attempt did not apply a
         # fix. resolve_with_heal appends this to the AttentionRequired it surfaces, so a
         # person sees WHY (and what to do) instead of a bare "no matching element".
@@ -616,10 +619,23 @@ class HealCoordinator:
             self.store.quarantine(selector_key, xpath)
             self.journal.quarantine(selector_key, xpath=xpath, reason=reason)
 
-    def confirm_pending(self, selector_key, success, reason=None):
+    def is_pending(self, selector_key, xpath):
+        """True when xpath is a heal of selector_key this process applied and has not
+        confirmed yet: of one element (pending) or of the list (pending_lists)."""
+        return xpath is not None and xpath in (self.pending.get(selector_key),
+                                               self.pending_lists.get(selector_key))
+
+    def confirm_pending(self, selector_key, success, reason=None, xpath=None):
         """Report the action outcome for a just-healed key, then clear its marker.
-        A failed action quarantines the healed candidate so it can't outrank the seed."""
-        xpath = self.pending.pop(selector_key, None)
+        A failed action quarantines the healed candidate so it can't outrank the seed.
+        Without xpath it is the key's heal of one element, as an action reports; with it,
+        the key's heal that applied xpath, of one element or of the list."""
+        if xpath is None or self.pending.get(selector_key) == xpath:
+            xpath = self.pending.pop(selector_key, None)
+        elif self.pending_lists.get(selector_key) == xpath:
+            xpath = self.pending_lists.pop(selector_key)
+        else:
+            return
         if xpath is not None:
             self.confirm(selector_key, xpath, success, reason)
 

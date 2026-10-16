@@ -1247,7 +1247,7 @@ class Healer:
             reason = coordinator.explain(key)
             message = str(exc).rstrip() + ('\n  -> ' + reason if reason else '')
             raise AttentionRequired(message) from exc
-        coordinator.pending[key] = applied
+        coordinator.pending_lists[key] = applied   # kept apart from a heal of one element
 
     def _list_target(self, key, selector, count):
         """True when the list fingerprint of what selector matched for key should be read:
@@ -1258,7 +1258,7 @@ class Healer:
             return False
         if ('list', key, selector) in self._fingerprinted:
             return False
-        if self.coordinator.pending.get(key) == selector:
+        if self.coordinator.is_pending(key, selector):
             return False
         try:
             return not self.store.meta(key)['destructive']
@@ -1281,17 +1281,21 @@ class Healer:
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 
     def pending(self) -> dict:
-        """{key: healed xpath} for heals whose canary has not reported yet. A copy."""
-        return dict(self.coordinator.pending)
+        """{key: healed xpath} for heals whose canary has not reported yet, list heals
+        included. A copy. A key with a list heal and a heal of one element waiting shows the
+        heal of one element; confirm_all() reports both."""
+        return {**self.coordinator.pending_lists, **self.coordinator.pending}
 
     def confirm_all(self, success: bool) -> int:
         """Report every pending heal as confirmed (True) or failed (False, which
         quarantines it), and return how many there were. A test runner can call this
-        with the test's outcome."""
-        keys = list(self.coordinator.pending)
-        for key in keys:
-            self.coordinator.confirm_pending(key, bool(success))
-        return len(keys)
+        with the test's outcome. A list heal and a heal of one element of one key are
+        reported each on its own."""
+        coordinator = self.coordinator
+        heals = list(coordinator.pending.items()) + list(coordinator.pending_lists.items())
+        for key, xpath in heals:
+            coordinator.confirm_pending(key, bool(success), xpath=xpath)
+        return len(heals)
 
     @property
     def heals(self) -> list:
@@ -1409,9 +1413,9 @@ class Healer:
         coordinator = self.coordinator
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
-        if coordinator.pending.get(key) == healed:
+        if coordinator.is_pending(key, healed):
             if confirms or not ok:
-                coordinator.confirm_pending(key, ok, reason=reason)
+                coordinator.confirm_pending(key, ok, reason=reason, xpath=healed)
         elif not ok:
             self.store.quarantine(key, healed)
             coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1438,8 +1442,9 @@ class Healer:
         if xpath is None:
             return
         coordinator = self.coordinator
-        if coordinator.pending.get(key) == xpath:
-            coordinator.confirm_pending(key, False)   # a heal from earlier in this process
+        if coordinator.is_pending(key, xpath):
+            # A heal from earlier in this process.
+            coordinator.confirm_pending(key, False, xpath=xpath)
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -2775,8 +2780,10 @@ class ActionProxy:
         return self._act('submit', args, kwargs, expect)
 
     def confirm(self, success: bool) -> ActionProxy:
-        """Confirm (True) or quarantine (False) a heal for this key, from a check of your own."""
-        self._healer.coordinator.confirm_pending(self._key, bool(success))
+        """Confirm (True) or quarantine (False) a heal for this key, from a check of your own:
+        for an element of a list found through a heal, that list heal."""
+        xpath = None if self._canary else self._healed
+        self._healer.coordinator.confirm_pending(self._key, bool(success), xpath=xpath)
         return self
 
     def __getattr__(self, name: str) -> Any:
