@@ -120,12 +120,6 @@ class LocalModelProvider:
         """Never raises: every failure returns None and leaves a reason in last_error."""
         self.last_error = None
         self.last_answer = None
-        if bundle.get('list'):
-            self.last_error = sentence(
-                'the local model picks one element, and this is a list heal, which needs a '
-                'model that reads the repeated groups of the page (a hosted provider or a '
-                'gateway)')
-            return None
         try:
             cands = extract(bundle, limit=self.max_candidates)
         except Exception as exc:

@@ -1368,12 +1368,11 @@ class Healer:
             return None
         return winner['xpath'] if isinstance(winner.get('xpath'), str) else None
 
-    def _check_value(self, key, healed, verb, args, value, expect, confirms=True):
+    def _check_value(self, key, healed, verb, args, value, expect):
         """value, which the read verb(*args) returned for key, when it passes expect (see
         mendwright.values) or key was not found through a heal (healed is None). A value
-        that passes confirms a heal of key made in this process, unless confirms is False,
-        as for the elements of a list. One that fails quarantines the heal, and
-        AttentionRequired is raised with the key, the heal and the value."""
+        that passes confirms a heal of key made in this process. One that fails quarantines
+        the heal, and AttentionRequired is raised with the key, the heal and the value."""
         __tracebackhide__ = True  # pytest shows the caller
         if healed is None or expect is None:
             return value
@@ -1381,8 +1380,7 @@ class Healer:
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
         if coordinator.is_pending(key, healed):
-            if confirms or not ok:
-                coordinator.confirm_pending(key, ok, reason=reason, xpath=healed)
+            coordinator.confirm_pending(key, ok, reason=reason, xpath=healed)
         elif not ok:
             self.store.quarantine(key, healed)
             coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -2768,10 +2766,8 @@ class ActionProxy:
         if not (checked or handles):
             return value
         healer, key, healed, expect = self._healer, self._key, self._healed, self._expect
-        confirms = self._canary          # off for the elements of a list: reads only refuse
         if not callable(value):
-            return healer._check_value(key, healed, name, (), value, expect,  # Selenium's text
-                                       confirms)
+            return healer._check_value(key, healed, name, (), value, expect)  # Selenium's text
 
         def read(*args, **kwargs):
             __tracebackhide__ = True  # pytest shows the caller
@@ -2780,7 +2776,7 @@ class ActionProxy:
             result = value(*args, **kwargs)
             if not checked:
                 return result
-            return healer._check_value(key, healed, name, args, result, expect, confirms)
+            return healer._check_value(key, healed, name, args, result, expect)
         read.__name__ = name
         return read
 

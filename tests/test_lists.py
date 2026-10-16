@@ -15,11 +15,7 @@ import pytest
 
 import mendwright
 import mendwright.aio
-from mendwright import AttentionRequired, LocalModelProvider, lists
-from mendwright.capture import build_list_bundle
-from mendwright.client import apply_list
-from mendwright.gate import list_live_reason
-from mendwright.prompt import build_prompt
+from mendwright import AttentionRequired, lists
 from mendwright.store import load_store
 
 from test_aio import AsyncFakeLocator, AsyncFakePage
@@ -50,7 +46,6 @@ V1 = shop(grid('product-card'))
 V2 = shop(grid('product-tile'))                     # the card class changed
 TILE = "//div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')]"
 CARDS = "//div[contains(@class,'product-card')]"
-NEW_PRODUCTS = [('Lamp', '$40.00'), ('Chair', '$90.00'), ('Desk', '$250.00'), ('Sofa', '$900.00')]
 # What a lookup of the list 'cards', recorded with 4 cards, raises when none of its selectors
 # matches.
 MISSING = ("No matching element for: cards (tried 1 candidate(s)).\n  -> 'cards' matched 4 "
@@ -106,254 +101,13 @@ def test_a_shape_skips_what_the_browser_does_not_render():
                                   'template': 1, 'noscript': 1}
 
 
-# --- finding the list ---------------------------------------------------------------------------
-
-def test_a_grid_whose_card_class_changed_is_found():
-    match = lists.find(_lfp(), V2, 'div')
-    assert match.xpath == TILE and match.css == 'div.product-tile'
-    assert match.count == 4 and match.score > 0.9 and match.reason == ''
-
-
-def test_new_products_in_the_same_container_are_left_to_the_model():
-    # Where a group sits says nothing about what its items are: none of them is a product
-    # the list had, so the list fingerprint does not take them.
-    match = lists.find(_lfp(), shop(grid('product-tile', NEW_PRODUCTS)), 'div')
-    assert match.xpath is None and match.score >= lists.THRESHOLD
-    assert match.reason == ('the best group (score ' + format(match.score, '.2f') + ') shares '
-                            'no id, test id, name, link, label or text with the items that '
-                            'were recorded')
-    assert match.groups[0].xpath == TILE                # the model is shown it
-
-
-def _form(errors, cls='error'):
-    """A signup form: two fields, each with a hint and, with errors, an error."""
-    fields = ''
-    for name, hint, error in zip(('email', 'password'), HINTS, errors or (None, None), strict=True):
-        fields += ("<div class='field'><label for='" + name + "'>" + name.title() + "</label>"
-                   "<input id='" + name + "' name='" + name + "'><span class='hint'>" + hint
-                   + '</span>' + ("<span class='" + cls + "'>" + error + '</span>' if error else '')
-                   + '</div>')
-    return "<html><body><form id='signup'>" + fields + '<button>Sign up</button></form></body></html>'
-
-
-HINTS = ('We never share your email', '8 characters or more')
-ERRORS = ('Email is required', 'Password is required')
-
-
-def test_an_emptied_error_list_is_not_healed_onto_the_hints_next_to_it():
-    lfp = _lfp(_form(ERRORS), "//span[@class='error']")
-    match = lists.find(lfp, _form(None), 'span')
-    assert match.xpath is None and match.score >= lists.THRESHOLD   # alike, and in the form
-    assert 'shares no id, test id, name, link, label or text' in match.reason
-    # The same errors under a new class name are the list: their text says so.
-    match = lists.find(lfp, _form(ERRORS, cls='field-error'), 'span')
-    assert match.xpath == "//span[contains(concat(' ', normalize-space(@class), ' '), ' field-error ')]"
-
-
-def test_two_empty_shapes_say_nothing():
-    assert lists.shape_similarity({}, {}) is None
-    assert lists.shape_similarity({'b': 1}, {}) == 0.0
-    lfp = _lfp(_form(ERRORS), "//span[@class='error']")
-    match = lists.find(lfp, _form(ERRORS, cls='field-error'), 'span')
-    assert match.groups[0].shape is None                 # the shape check is left out
-
-
-def _results(cls, names, attrs=''):
-    cards = ''.join("<div class='" + cls + "'" + attrs + "><img src='/i/x.png' alt='" + n
-                    + "'><h3>" + n + "</h3><span class='price'>$9.00</span></div>" for n in names)
-    return ("<html><body><main id='search'><h1>Search</h1><div id='results'>" + cards
-            + '</div></main></body></html>')
-
-
-MUGS = ['Blue mug', 'Red mug', 'Green mug', 'Mug set']
-POPULAR = ['Tea pot', 'Kettle', 'Coffee grinder', 'French press']
-
-
-def test_a_search_with_no_results_is_not_healed_onto_its_recommendations():
-    lfp = _lfp(_results('result-card', MUGS), "//div[@class='result-card']")
-    match = lists.find(lfp, _results('popular-card', POPULAR), 'div')
-    assert match.xpath is None and match.score >= lists.THRESHOLD
-    assert 'shares no id, test id, name, link, label or text' in match.reason
-    # One recorded item among them is not enough: the list held three that were recorded.
-    match = lists.find(lfp, _results('popular-card', ['Blue mug'] + POPULAR), 'div')
-    assert match.xpath is None
-    assert ('has only 1 of the 3 recorded items among its elements (an element that shares an '
-            'id, test id, name, link, label or text with one), and 2 are needed, so it may be '
-            'another list in the same place') in match.reason
-    # What every recorded item shares, such as one test id on each card, is not which items.
-    tested = " data-testid='card'"
-    lfp = _lfp(_results('result-card', MUGS, tested), "//div[@class='result-card']")
-    match = lists.find(lfp, _results('popular-card', POPULAR, tested), 'div')
-    assert match.xpath is None
-    assert 'shares an id, test id, name, link, label or text only with every recorded item' in (
-        match.reason)
-    assert lists.find(lfp, _results('popular-card', MUGS, tested), 'div').reason == ''
-
-
-def test_a_long_list_whose_class_changed_is_found():
-    # The recorded items are the first, the middle and the last of 450: the last two are
-    # far past the first members a group is looked through for.
-    many = [('Mug ' + str(i), '$' + str(i) + '.00') for i in range(450)]
-    lfp = _lfp(shop(grid('product-card', many)))
-    match = lists.find(lfp, shop(grid('product-tile', many)), 'div')
-    assert match.xpath == TILE and match.count == 450 and match.reason == ''
-
-
-def _skeleton():
-    return ("<div class='card-skeleton'><img src='/i/blank.png'><h3></h3><span></span>"
-            "<button type='button' disabled></button></div>")
-
-
-def test_the_placeholders_of_a_list_that_is_loading_are_no_list():
-    match = lists.find(_lfp(), shop(_skeleton() * 4), 'div')
-    assert match.xpath is None and match.groups == []
-    assert match.reason == ('the only groups of div elements look like placeholders (no text '
-                            'where the recorded items had text, or marked aria-busy="true"), '
-                            'so the list may still be loading')
-    busy = shop(grid('product-tile'), grid="id='grid' class='grid' aria-busy='true'")
-    assert lists.find(_lfp(), busy, 'div').reason.startswith('the only groups of div')
-    # Placeholders after the cards, as an infinite scroll loads more, are no rival.
-    more = shop(grid('product-tile') + _skeleton() * 4)
-    assert lists.find(_lfp(), more, 'div').xpath == TILE
-
-
-def test_new_products_in_a_new_container_are_left_to_the_model():
-    page = shop(grid('product-tile', NEW_PRODUCTS), grid="class='catalog'")
-    match = lists.find(_lfp(), page, 'div')
-    assert match.xpath is None
-    assert match.reason.startswith('the best group (score ')
-    assert 'shares no id, test id, name, link, label or text with the items' in match.reason
-    assert match.groups and match.groups[0].xpath == TILE
-
-
-def test_a_look_alike_list_outside_the_recorded_container_is_no_rival():
-    recent = "<section id='recent'><h2>Recently viewed</h2>" + grid('product-tile', PRODUCTS[:3]) + '</section>'
-    match = lists.find(_lfp(), shop(grid('product-tile'), extra=recent), 'div')
-    assert match.xpath == ("//div[@id='grid']/div[contains(concat(' ', normalize-space(@class), "
-                           "' '), ' product-tile ')]")
-    assert match.css == 'div#grid > div.product-tile'
-    # One that would tie with it, with every product the list had and a container of the
-    # same tag and class, is left out too: it is not inside div#grid.
-    recent = "<div id='recent' class='grid'>" + grid('product-tile') + '</div>'
-    match = lists.find(_lfp(), shop(grid('product-tile'), extra=recent), 'div')
-    assert match.reason == '' and match.count == 4 and match.runner_up == 0.0
-    assert match.xpath.startswith("//div[@id='grid']/")
-
-
-def test_one_element_is_never_taken_for_a_list():
-    one = shop(card('product-tile', *PRODUCTS[0]) + "<div class='banner'><p>Sale!</p></div>")
-    match = lists.find(_lfp(), one, 'div')
-    assert match.xpath is None
-    assert 'not all shaped like the recorded items' in match.reason
-    assert ("The only element like the recorded items is one <div> ('Blue mug$12.00Add to "
-            "cart'); mendwright never heals a list onto one element") in match.reason
-
-    alone = ("<html><body><main id='content'><section>" + card('product-tile', *PRODUCTS[0])
-             + "</section></main></body></html>")
-    match = lists.find(_lfp(), alone, 'div')
-    assert match.xpath is None and match.groups == []
-    assert match.reason.startswith('the page has no group of 2 or more div elements that '
-                                   'repeat the same structure. The only element like')
-
-
-def test_a_hidden_copy_is_neither_the_answer_nor_a_rival():
-    page = shop(grid('product-tile'), extra="<div id='m' class='grid'>" + grid('product-tile')
-                + '</div>', grid="id='d' class='grid'")
-    lfp = _lfp(shop(grid('product-card'), grid="class='grid'"))
-    assert lists.find(lfp, page, 'div').reason.startswith('two groups score alike')
-    hidden = "//div[@id='m']/div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')]"
-    assert hidden in [g.xpath for g in lists.find(lfp, page, 'div').groups]
-    match = lists.find(lfp, page, 'div', visible=lambda xpath: xpath != hidden)
-    assert match.reason == '' and match.count == 4 and match.xpath != hidden
-
-
-def test_items_wrapped_one_level_down_are_found():
-    wrapped = ''.join("<div class='col'>" + card('product-tile', n, p) + '</div>' for n, p in PRODUCTS)
-    match = lists.find(_lfp(), shop(wrapped), 'div')
-    assert match.xpath == TILE and match.count == 4
-
-
-def test_a_list_of_links_heals_onto_links():
-    v1 = "<html><body><ul id='menu'><li><a class='m' href='/a'>A</a></li><li><a class='m' href='/b'>B</a></li><li><a class='m' href='/c'>C</a></li></ul></body></html>"
-    lfp = _lfp(v1, "//a[@class='m']")
-    assert lists.item_role(lfp) == 'link'
-    match = lists.find(lfp, v1.replace("class='m'", "class='menu-link'"), 'link')
-    assert match.xpath == "//a[contains(concat(' ', normalize-space(@class), ' '), ' menu-link ')]"
-
-
-# --- the static gate --------------------------------------------------------------------------
-
-def test_the_static_gate():
-    assert lists.validate(TILE, V2, 'div').ok
-    assert lists.validate(TILE, V2, 'div').count == 4
-    assert lists.validate("//div[@id='grid']/div[2]", V2, 'div').reason == lists.POSITIONAL
-    assert lists.validate('//h1', V2, 'h1').reason == ('it matches 1 element, and a list heals '
-                                                      'only onto 2 or more')
-    assert lists.validate(TILE, V2, 'article').reason == 'role mismatch: got div want article'
-    assert lists.validate('//div', V2, 'div').reason == 'its elements are inside one another'
-    assert lists.validate('//p', V2, 'p').reason == 'no match'
-
-
-class LiveDriver:
-    """count() and list_items() over a page, for the live gate."""
-
-    def __init__(self, html, hidden=False):
-        self.doc = lxml.html.fromstring(html)
-        self.hidden = hidden
-
-    def _els(self, selector):
-        body = selector[len('xpath='):] if selector.startswith('xpath=') else selector
-        if body.startswith(('div.', 'div#')):
-            from lxml.cssselect import CSSSelector
-            return CSSSelector(body)(self.doc)
-        return [e for e in self.doc.xpath(body) if hasattr(e, 'tag')]
-
-    def count(self, selector, frame_chain=()):
-        return len(self._els(selector))
-
-    def list_items(self, selector, frame_chain=()):
-        return [{'tag': e.tag, 'role': e.tag, 'visible': not self.hidden} for e in self._els(selector)]
-
-
-def test_the_live_gate():
-    meta = {'expectedRole': 'div'}
-    assert list_live_reason(LiveDriver(V2), TILE, meta) == ''
-    assert list_live_reason(None, TILE, meta) == ''
-    assert list_live_reason(LiveDriver(V2, hidden=True), TILE, meta) == (
-        'none of its 4 elements is visible on the live page')
-    assert list_live_reason(LiveDriver(V2), '//h1', meta) == (
-        'it matches 1 element on the live page, and a list heals only onto 2 or more')
-    assert list_live_reason(LiveDriver(V2), TILE, {'expectedRole': 'li'}).startswith(
-        'live element role mismatch: got div want li')
-
+# --- the store -------------------------------------------------------------------------------
 
 def _store(tmp_path, code='.product-card'):
     store = load_store(None, str(tmp_path / 'o.json'))
     store.set_code_candidates('cards', [code])
     store.set_meta('cards', role='div', list_fingerprint=_lfp())
     return store
-
-
-def test_apply_list_saves_the_heal_and_its_css(tmp_path):
-    store = _store(tmp_path)
-    applied, reason, count = apply_list(store, 'cards', TILE, V2, store.meta('cards'),
-                                        driver=LiveDriver(V2), css='div.product-tile')
-    assert (applied, reason, count) == (TILE, 'ok', 4)
-    heal = [c for c in store.candidates('cards') if c['source'] == 'heal'][0]
-    assert heal['xpath'] == TILE and heal['css'] == 'div.product-tile'
-    saved = json.loads((tmp_path / 'o.json').read_text(encoding='utf-8'))['selectors']['cards']
-    assert lists.valid(saved['listFingerprint'])
-
-
-def test_apply_list_refuses_what_a_quarantine_holds(tmp_path):
-    store = _store(tmp_path, code=CARDS)
-    store.add_candidate('cards', TILE, source='heal')
-    store.quarantine('cards', TILE)
-    other = "//div[@id='grid']/div"
-    assert apply_list(store, 'cards', TILE, V2, store.meta('cards'))[1] == 'previously quarantined'
-    applied, reason, _count = apply_list(store, 'cards', other, V2, store.meta('cards'))
-    assert applied is None and reason.startswith('previously quarantined (it takes elements')
-    assert apply_list(store, 'cards', '//h1', V2, store.meta('cards'))[1].startswith('it matches 1')
 
 
 def test_the_store_keeps_a_list_fingerprint(tmp_path):
@@ -363,6 +117,8 @@ def test_the_store_keeps_a_list_fingerprint(tmp_path):
     with pytest.raises(ValueError, match='takes a list fingerprint from mendwright.lists'):
         store.set_meta('cards', list_fingerprint={'v': 1})
 
+
+# --- Healer.locator_all() ---------------------------------------------------------------------
 
 def test_a_grid_whose_card_class_changed_is_not_healed(tmp_path, make_page, stub_provider, caplog):
     page = make_page(V1, fingerprints=True)
@@ -422,31 +178,6 @@ def test_what_would_stop_a_heal_changes_nothing_for_a_list(tmp_path, make_page, 
     with pytest.raises(AttentionRequired) as info:
         heal.locator_all('cards', CARDS)
     assert str(info.value) == MISSING and heal.heals == []
-
-
-def test_the_local_model_declines_a_list():
-    provider = LocalModelProvider(model='m', base_url='http://127.0.0.1:9')
-    assert provider.propose({'list': True, 'key': 'cards', 'groups': []}) is None
-    assert provider.last_error.startswith('the local model picks one element, and this is a '
-                                          'list heal')
-
-
-def test_the_list_prompt():
-    bundle, shown = build_list_bundle(
-        'cards', {'expectedRole': 'div', 'listFingerprint': _lfp(), 'intent': 'the products'},
-        [{'xpath': CARDS}], [{'xpath': TILE, 'count': 4, 'container': '<div id="grid">',
-                              'items': ['<div>Blue mug https://cdn.example/x.png</div>']}],
-        {'url': 'https://shop.example/shop', 'page': '/shop', 'lastPage': '/shop'})
-    assert shown == {TILE: TILE}
-    assert bundle['groups'][0]['items'] == ['<div>Blue mug [URL]</div>']
-    prompt = build_prompt(bundle)
-    assert prompt['system'].startswith('You repair ONE broken web-automation selector for a LIST')
-    assert "Each item's role must be 'div'." in prompt['system']
-    assert prompt['user'] == (
-        'key: cards\nitemRole: div\nintent: the products\npage: /shop\nlast found on page: /shop'
-        '\nitems when it last matched: 4\nbroken candidates:\n' + CARDS +
-        '\nrepeated groups (redacted):\n[1] ' + TILE + '\n    4 items in <div id="grid">'
-        '\n    item: <div>Blue mug [URL]</div>')
 
 
 # --- heal.page and heal.driver: as in 0.7.0 ---------------------------------------------------
@@ -551,8 +282,6 @@ class ListDriver(WebDriver):
     def execute_script(self, script, *args):
         if script.startswith('return (' + lists.LIST_JS):
             return lists.raw_of_elements([e.el for e in args[0]])
-        if script.startswith('return (' + lists.ITEMS_JS):
-            return [{'tag': e.el.tag, 'role': '', 'type': '', 'visible': True} for e in args[0]]
         return super().execute_script(script, *args)
 
 
@@ -696,24 +425,6 @@ def test_a_saved_list_heal_needs_no_list_fingerprint_read_again(tmp_path, make_p
 
 # --- review fixes ---------------------------------------------------------------------------
 
-def test_a_list_heal_is_saved_marked_and_needs_a_store_that_marks_it(tmp_path):
-    store = _store(tmp_path)
-    assert apply_list(store, 'cards', TILE, V2, store.meta('cards'), driver=LiveDriver(V2))[1] == 'ok'
-    again = load_store(None, str(tmp_path / 'o.json'))
-    assert [c.get('list') for c in again.candidates('cards') if c['source'] == 'heal'] == [True]
-
-    old = _store(tmp_path / 'old')
-    real = old.add_candidate
-
-    def add_candidate(key, xpath, *, source='heal', frame_xpath=None, css=None):
-        return real(key, xpath, source=source, frame_xpath=frame_xpath, css=css)
-    old.add_candidate = add_candidate                    # a store from before list heals
-    applied, reason, _count = apply_list(old, 'cards', TILE, V2, old.meta('cards'),
-                                         driver=LiveDriver(V2))
-    assert applied is None and reason.startswith('the store cannot mark a list heal')
-    assert [c for c in old.candidates('cards') if c['source'] == 'heal'] == []
-
-
 @pytest.mark.parametrize('order', ['find_element first', 'find_elements first'])
 def test_a_heal_of_one_card_never_answers_for_the_list(tmp_path, stub_provider, order):
     # heal.locator_all() under the key and selector of driver.find_element().
@@ -744,6 +455,11 @@ def test_a_heal_page_shortcut_s_heal_never_answers_for_the_list(tmp_path, make_p
     heal.page.click('.product-card')                      # a heal of one card
     with pytest.raises(AttentionRequired, match='its selector broke'):
         heal.locator_all('.product-card', '.product-card')
+
+
+def _skeleton():
+    return ("<div class='card-skeleton'><img src='/i/blank.png'><h3></h3><span></span>"
+            "<button type='button' disabled></button></div>")
 
 
 def test_a_list_that_is_still_loading_is_not_healed_onto_its_placeholders(tmp_path):

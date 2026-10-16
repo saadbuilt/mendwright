@@ -18,11 +18,7 @@ describe() gets only the count and visibility checks.
 
 A selector that matched once in a captured string is not enough; it must be uniquely
 present on the live page when it is saved. Keys marked destructive never get this far: the
-coordinator refuses them first.
-
-A list heal (see mendwright.lists) has a live check of its own, list_live_reason(): two or
-more elements on the live page, each of the items' role, and at least one of them
-visible."""
+coordinator refuses them first."""
 
 from .validation import _norm
 
@@ -59,37 +55,6 @@ def live_reason(driver, xpath, meta, frame_chain=()):
         return ''
     except Exception:
         return NOT_LIVE
-
-
-def list_live_reason(driver, xpath, meta):
-    """'' when the list heal xpath passes the live check, else the reason it does not. With a
-    driver that has list_items(), the elements are read in one round trip: two or more, each
-    of the expected role, at least one visible. A driver without it gets the count only. Any
-    driver error counts as a failure (fail closed); with no live driver this is ''."""
-    from .drivers.base import driver_list_items
-    if driver is None:
-        return ''
-    want = (meta or {}).get('expectedRole')
-    try:
-        items = driver_list_items(driver, xpath)
-        if items is None:
-            count = driver.count(xpath)
-            return '' if count >= 2 else _too_few(count)
-    except Exception:
-        return NOT_LIVE
-    if len(items) < 2:
-        return _too_few(len(items))
-    for item in items:
-        if want and want != 'unknown' and item.get('role') != want:
-            return 'live element role mismatch: got ' + str(item.get('role')) + ' want ' + str(want)
-    if not any(item.get('visible') for item in items):
-        return 'none of its ' + str(len(items)) + ' elements is visible on the live page'
-    return ''
-
-
-def _too_few(count):
-    return ('it matches ' + str(count) + (' element' if count == 1 else ' elements')
-            + ' on the live page, and a list heals only onto 2 or more')
 
 
 def live_match(driver, xpath, meta, frame_chain=()):

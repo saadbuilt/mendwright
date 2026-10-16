@@ -407,20 +407,17 @@ class HealCoordinator:
             return None
 
     def _record_applied(self, selector_key, broken_candidates, applied, started, provider,
-                        model, source, items=None):
-        """Journal, remember and log a heal that was applied. items is how many elements a
-        list heal matches (None for one element)."""
+                        model, source):
+        """Journal, remember and log a heal that was applied."""
         seconds = max(0.0, self.clock() - started)
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
-                             source=source if source != 'model' else None,
-                             list=True if items is not None else None, items=items)
+                             source=source if source != 'model' else None)
         self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
         self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
                            'new': applied, 'confirmed': None, 'source': source})
-        self._log_applied(selector_key, broken_candidates, applied, seconds, provider, source,
-                          items)
+        self._log_applied(selector_key, broken_candidates, applied, seconds, provider, source)
 
     def _flow_change(self, selector_key, context):
         """The reason to decline when the current page is not one the key was found on,
@@ -453,7 +450,7 @@ class HealCoordinator:
         return ''
 
     def _log_applied(self, selector_key, broken_candidates, applied, seconds, provider,
-                     source='model', items=None):
+                     source='model'):
         old = _old_selectors(broken_candidates)
         timing = ' (' + provider + ', ' + format(seconds, '.1f') + 's)'
         if source == 'intent':
@@ -466,9 +463,8 @@ class HealCoordinator:
             was = old[0]
         else:
             was = old[0] + ' (+' + str(len(old) - 1) + ' more)'
-        what = repr(selector_key) if items is None else (
-            'the list ' + repr(selector_key) + ' (' + str(items) + ' elements)')
-        self._emit(logging.WARNING, 'healed ' + what + ': ' + was + ' -> ' + applied + timing)
+        self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
+                   + applied + timing)
 
     def confirm(self, selector_key, xpath, success, reason=None):
         """Canary report: route the outcome through the provider, and quarantine a healed

@@ -94,15 +94,6 @@ def test_the_browser_records_what_lxml_computes_for_a_list(tab):
     assert live == lists.of_elements(captured)
     assert live['count'] == 4 and live['container']['id'] == 'grid'
     assert driver.list_fingerprint('h1') is None          # one element is no list
-    items = driver.list_items('.product-card')
-    assert [i['role'] for i in items] == ['div'] * 4 and all(i['visible'] for i in items)
-
-
-def test_list_items_tells_hidden_items_apart(tab):
-    tab.load(shop(card('product-card', *PRODUCTS[0])
-                  + card('product-card hidden', *PRODUCTS[1]).replace('<div ', '<div style="display:none" ', 1)))
-    items = wrap(tab.target).list_items('.product-card')
-    assert [i['visible'] for i in items] == [True, False]
 
 
 def test_a_grid_whose_card_class_changed_is_not_healed(tab, store_file):

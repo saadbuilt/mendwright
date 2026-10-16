@@ -15,7 +15,7 @@ import lxml.html
 import pytest
 
 from mendwright.fingerprint import FINGERPRINT_JS, raw_of_element
-from mendwright.lists import ITEMS_JS, LIST_JS, raw_of_elements
+from mendwright.lists import LIST_JS, raw_of_elements
 
 # tests/test_pytest_plugin.py runs pytest inside pytest through the pytester fixture.
 pytest_plugins = ['pytester']
@@ -68,10 +68,6 @@ class FakeLocator:
         if js == LIST_JS:
             self._page.fingerprint_reads += 1
             return raw_of_elements(self._elements()) if self._page.fingerprints else None
-        if js == ITEMS_JS:
-            return [{'tag': el.tag.lower(), 'role': el.get('role') or '',
-                     'type': el.get('type') or '', 'visible': not _hidden(el)}
-                    for el in self._elements()]
         if js == FINGERPRINT_JS:
             # The fingerprint read. Off unless the page was made with fingerprints=True, so
             # tests written before the fingerprint tier still see the model heal.
