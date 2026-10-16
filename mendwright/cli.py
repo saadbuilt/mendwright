@@ -558,10 +558,28 @@ def _counts_sentence(counts):
             + (', ' + str(held) + ' held' if held else ''))
 
 
-def list_note(c):
+def _from_seed(rows):
+    """True when rows, a key's rows in the store or the report, hold no active selector of
+    the code: its selectors come from a seed file, which mendwright fix doesn't change (see
+    fixback._plan_list)."""
+    return not any(isinstance(c, dict) and c.get('source') == 'code'
+                   and (c.get('status') or 'active') == 'active' for c in rows)
+
+
+def _replaced_text(evidence):
+    """' in place of A and B', the selectors a list heal's evidence says it replaced, or ''."""
+    from .lists import _printable
+    was = evidence.get('was') if isinstance(evidence, dict) else None
+    selectors = was.get('selectors') if isinstance(was, dict) else None
+    shown = [_printable(str(s)) for s in selectors or ()]
+    return ' in place of ' + ' and '.join(shown) if shown else ''
+
+
+def list_note(c, seeded=False):
     """What the report says under a list heal of the store, or '' for any other row: one
     proposed for heal.locator_all(..., nonempty=True) waits for a person to check it, one
-    accepted for mendwright fix."""
+    accepted for mendwright fix, or, when seeded (the key's selectors come from a seed file),
+    for a person to put it in the seed file."""
     if not c.get('list'):
         return ''
     from .lists import _printable
@@ -573,9 +591,12 @@ def list_note(c):
                 + (' under ' + repr(_printable(now['label'])) if now.get('label') else '')
                 + '; check it with: mendwright lists')
     if c['status'] == 'accepted':
-        return ('list, accepted ' + (_when(c.get('accepted')) if c.get('accepted')
-                                     else 'date unknown')
-                + '; write it with: mendwright fix --apply')
+        when = _when(c.get('accepted')) if c.get('accepted') else 'date unknown'
+        if seeded:
+            return ('list, accepted ' + when + "; its selectors come from a seed file, which "
+                    "mendwright fix doesn't change, so put it there"
+                    + _replaced_text(c.get('proposal')))
+        return 'list, accepted ' + when + '; write it with: mendwright fix --apply'
     return ''
 
 
@@ -601,6 +622,7 @@ def _report_text(r):
         lines.append('')
         lines.append(k['key'] + '  (' + _role_note(k) + ')')
         per = r['journal']['per_key'].get(k['key'])
+        seeded = _from_seed(k['candidates'])
         for c in k['candidates']:
             frame = '  in frame ' + c['frame'] if c.get('frame') else ''
             lines.append('  ' + c['status'].ljust(11) + ' ' + c['source'].ljust(4) + '  '
@@ -608,8 +630,8 @@ def _report_text(r):
                          + ')')
             if c.get('css'):
                 lines.append('  ' + ' ' * 18 + 'as CSS: ' + c['css'])
-            if list_note(c):
-                lines.append('  ' + ' ' * 18 + list_note(c))
+            if list_note(c, seeded):
+                lines.append('  ' + ' ' * 18 + list_note(c, seeded))
         if per:
             lines.append('  heals: ' + _counts_sentence(per))
     if not r['keys']:
@@ -651,6 +673,7 @@ def _report_md(r):
         for k in r['keys']:
             first = True
             label = _md_code(k['key']) + ' (' + _md_cell(_role_note(k)) + ')'
+            seeded = _from_seed(k['candidates'])
             for c in k['candidates'] or [None]:
                 cell = label if first else ''
                 first = False
@@ -663,8 +686,8 @@ def _report_md(r):
                     selector += ' in frame ' + _md_code(c['frame'])
                 if c.get('css'):
                     selector += ' (as CSS: ' + _md_code(c['css']) + ')'
-                if list_note(c):
-                    selector += ' (' + _md_cell(list_note(c)) + ')'
+                if list_note(c, seeded):
+                    selector += ' (' + _md_cell(list_note(c, seeded)) + ')'
                 lines.append('| ' + cell + ' | ' + selector + ' | ' + _md_cell(c['source'])
                              + ' | ' + status + ' | ' + _md_cell(_when(c['last_success'])) + ' |')
         waiting = sum(1 for k in r['keys'] for c in k['candidates']
@@ -827,7 +850,9 @@ def _shown_items(items):
 def collect_lists(path, data):
     """The list heals of the store data read from path: {'store', 'proposed': [{'key', 'id',
     'xpath', 'css', 'proposal', 'accept', 'reject', 'role'}], 'accepted': [{'key', 'xpath',
-    'css', 'acceptedAt'}]}, keys in name order, the newest first within a key."""
+    'css', 'acceptedAt', 'seed'}]}, keys in name order, the newest first within a key. seed is
+    None, or, for a key whose selectors come from a seed file, ' in place of' the selectors
+    the list heal replaced (or ''). role and seed are left out of --json."""
     from .store import _proposal_order, evidence_of
     flag = store_flag(path)
     out = {'store': path, 'proposed': [], 'accepted': []}
@@ -838,6 +863,7 @@ def collect_lists(path, data):
         rows = [c for c in entry.get('candidates') or () if isinstance(c, dict)
                 and c.get('list') is True and isinstance(c.get('xpath'), str)]
         word, note = command_key(key)
+        seeded = _from_seed(entry.get('candidates') or ())
         for c in sorted((c for c in rows if c.get('status') == 'proposed'), key=_proposal_order,
                         reverse=True):
             evidence = evidence_of(c)
@@ -854,7 +880,8 @@ def collect_lists(path, data):
         for c in sorted((c for c in rows if c.get('status') == 'accepted'),
                         key=lambda c: str(c.get('acceptedAt') or ''), reverse=True):
             out['accepted'].append({'key': key, 'xpath': c['xpath'], 'css': c.get('css') or None,
-                                    'acceptedAt': c.get('acceptedAt')})
+                                    'acceptedAt': c.get('acceptedAt'),
+                                    'seed': _replaced_text(evidence_of(c)) if seeded else None})
     return out
 
 
@@ -914,14 +941,27 @@ def _lists_text(listing):
                          'Look at the page before you accept.')
         lines.append('  accept   ' + item['accept'])
         lines.append('  reject   ' + item['reject'])
-    if accepted:
+    fix = [item for item in accepted if item.get('seed') is None]
+    if fix:
         lines.append('')
-        lines.append(_plural(len(accepted), 'accepted list heal waits', 'accepted list heals wait')
+        lines.append(_plural(len(fix), 'accepted list heal waits', 'accepted list heals wait')
                      + ' for mendwright fix --apply' + store_flag(listing['store']) + ':')
-        for item in accepted:
+        for item in fix:
             when = item['acceptedAt']
             lines.append('  ' + _printable(item['key']) + '  ' + _printable(item['xpath']) + '  (accepted '
                          + (_when(when) if when else 'date unknown') + ')')
+    seeded = [item for item in accepted if item.get('seed') is not None]
+    if seeded:
+        lines.append('')
+        lines.append(_plural(len(seeded), 'accepted list heal waits', 'accepted list heals wait')
+                     + (" for you to put it in the seed file its key's selectors come from"
+                        if len(seeded) == 1 else " for you to put them in the seed files their "
+                        "keys' selectors come from") + ", which mendwright fix doesn't change:")
+        for item in seeded:
+            when = item['acceptedAt']
+            lines.append('  ' + _printable(item['key']) + '  ' + _printable(item['xpath'])
+                         + item['seed'] + '  (accepted ' + (_when(when) if when else 'date unknown')
+                         + ')')
     return lines
 
 
@@ -947,10 +987,7 @@ def _lists_edit(args, path, action):
                 if isinstance(c, dict)]
     except (ReportError, KeyError, AttributeError):
         role, rows = None, None
-    # No selector of the code is saved for the key: its selectors come from a seed file
-    # (see fixback._plan_list).
-    seeded = rows is not None and not any(
-        c.get('source') == 'code' and (c.get('status') or 'active') == 'active' for c in rows)
+    seeded = rows is not None and _from_seed(rows)
     now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
     what = ''
     if isinstance(evidence.get('count'), int):
@@ -990,7 +1027,9 @@ def cmd_lists(args):
     listing = collect_lists(path, data)
     if args.json:
         shown = dict(listing, proposed=[{k: v for k, v in item.items() if k != 'role'}
-                                        for item in listing['proposed']])
+                                        for item in listing['proposed']],
+                     accepted=[{k: v for k, v in item.items() if k != 'seed'}
+                               for item in listing['accepted']])
         lines = json.dumps(shown, indent=2, ensure_ascii=False).split('\n')
     else:
         lines = _lists_text(listing)

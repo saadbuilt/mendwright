@@ -444,7 +444,7 @@ No matching element for: cart (tried 1 candidate(s)).
   -> 'cart' matched 3 elements when its list fingerprint was recorded, and none of its selectors matches now. You accepted a list heal for it on 2026-11-02 10:20:00 UTC, //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')], which matches 3 elements now, but mendwright takes a list only from the selectors in your code. Write it there with: mendwright fix --apply. If the list can be empty here, remove nonempty=True.
 ```
 
-When the key's selectors come from a seed file, `mendwright fix` can't write it, since it changes only your code: the lookup says so, and says to put the new selector in the seed file in place of the old one. A seed file that holds the XPath of a list heal that waits takes it over, as your code does once `mendwright fix` wrote it.
+When the key's selectors come from a seed file, `mendwright fix` can't write it, since it changes only your code: the lookup, `mendwright lists` and `mendwright report` say so, and say to put the new selector in the seed file in place of the old one. A seed file that holds the XPath of a list heal that waits takes it over, as your code does once `mendwright fix` wrote it.
 
 When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty=True`, a proposed list heal is no longer proposed (an INFO line), and an accepted one is quarantined, with a WARNING and a `heal.quarantine` event: the list was not broken, or the key is used on more than one page. A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it. `mendwright fix` writes an accepted list heal only over those selectors, and leaves the key alone, saying why, when your last run passed other selectors for it (another page's, or one you fixed by hand), or when one of its selectors matched after the list heal was found. So `mendwright fix` never writes another list's selector over a selector that works.
 
@@ -1479,7 +1479,7 @@ Last applied heals, newest first:
     #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']
 ```
 
-A list heal that `heal.locator_all(..., nonempty=True)` proposed shows its status `proposed`, with `list of 3 under 'Shopping cart'; check it with: mendwright lists` under it, and an accepted one `list, accepted DATE; write it with: mendwright fix --apply`. The counts end with `, N held` when the journal has `heal.held` events. In `--format md`, a line under the table says how many list heals wait. `--format json` gives such a candidate `list`, `proposal` and `accepted`, and the counts a `held`.
+A list heal that `heal.locator_all(..., nonempty=True)` proposed shows its status `proposed`, with `list of 3 under 'Shopping cart'; check it with: mendwright lists` under it, and an accepted one `list, accepted DATE; write it with: mendwright fix --apply`, or, when the key's selectors come from a seed file, `list, accepted DATE; its selectors come from a seed file, which mendwright fix doesn't change, so put it there in place of .cart-item`. The counts end with `, N held` when the journal has `heal.held` events. In `--format md`, a line under the table says how many list heals wait. `--format json` gives such a candidate `list`, `proposal` and `accepted`, and the counts a `held`.
 
 `--format html` makes one page you can open in a browser or keep as a CI artifact:
 
@@ -1591,6 +1591,7 @@ cart  (div elements)  id 3f2a9c1d
 
 - `--store PATH` picks the file, as `report` finds it. The commands it prints get `--store "PATH"` when the store is not the default one, and a key with spaces or quotes is quoted for your shell.
 - A proposal whose heading or container is not the list's has `check` lines that say so. Read them, and look at the page, before you accept.
+- An accepted list heal of a key whose selectors come from a seed file is listed under `waits for you to put it in the seed file its key's selectors come from, which mendwright fix doesn't change`, with the selector it replaces.
 - A proposal that a mendwright 0.8.0 run wrote over has `no saved evidence`, and can't be accepted until a 0.9.0 run finds it again.
 - `--json` gives `{"store", "proposed": [{"key", "id", "xpath", "css", "proposal", "accept", "reject"}], "accepted": [{"key", "xpath", "css", "acceptedAt"}]}`, with the strings as stored.
 - `accept KEY ID` takes the proposal with that id, which changes whenever what `mendwright lists` shows changes, so you accept what you looked at. It replaces the key's other list heals, and changes no other row of the file.

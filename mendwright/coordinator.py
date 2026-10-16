@@ -777,7 +777,10 @@ class HealCoordinator:
                   + ' now, but mendwright takes a list only from ' + where
                   + ' If the list can be empty here, remove nonempty=True.')
         self.heal_reasons[selector_key] = reason
-        self._emit(logging.WARNING, repr(selector_key) + ' waits for mendwright fix: ' + reason)
+        self._emit(logging.WARNING, repr(selector_key) + (' waits for mendwright fix: '
+                                                          if seeded is None
+                                                          else ' waits for its seed file: ')
+                   + reason)
         return reason
 
     def retired_lists(self, selector_key, selector, count, changes, rows):

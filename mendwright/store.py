@@ -1180,8 +1180,10 @@ def _and(items):
     return ', '.join(items[:-1]) + ' and ' + items[-1] if len(items) > 1 else ''.join(items)
 
 
-def _pick(key, action, proposal_id, proposed, accepted, flag):
-    """The row of key that edit_list_heal() changes, or ListHealError."""
+def _pick(key, action, proposal_id, proposed, accepted, flag, seeded=False):
+    """The row of key that edit_list_heal() changes, or ListHealError. seeded: the key's
+    selectors come from a seed file, so an accepted one waits for a person, not mendwright
+    fix."""
     from .cli import _when, command_key
     word, note = command_key(key)
     if proposal_id is not None:
@@ -1202,8 +1204,9 @@ def _pick(key, action, proposal_id, proposed, accepted, flag):
         if accepted:
             when = accepted[0].get('acceptedAt')
             message += (' Its list heal was accepted on ' + (_when(when) if when else 'date unknown')
-                        + ' and waits for mendwright fix --apply; to drop it, run: mendwright '
-                        'lists reject ' + word + flag + note)
+                        + (' and waits for you to put it in the seed file its selectors come '
+                           'from' if seeded else ' and waits for mendwright fix --apply')
+                        + '; to drop it, run: mendwright lists reject ' + word + flag + note)
         raise ListHealError(message)
     ids = _ids(proposed)
     if not ids:
@@ -1233,7 +1236,7 @@ def edit_list_heal(path, key, action, proposal_id=None, *, now=None):
     the file gets heal.accepted, or heal.quarantine."""
     if action not in ('accept', 'reject'):
         raise ValueError('mendwright: edit_list_heal() takes accept or reject, got ' + repr(action))
-    from .cli import store_flag
+    from .cli import _from_seed, store_flag
     from .journal import Journal
     path = Path(_expand(path))
     shown = str(path)
@@ -1261,7 +1264,8 @@ def edit_list_heal(path, key, action, proposal_id=None, *, now=None):
                               key=_proposal_order, reverse=True)
             accepted = sorted((c for c in rows if c.get('status') == 'accepted'),
                               key=_proposal_order, reverse=True)
-            target = _pick(key, action, proposal_id, proposed, accepted, flag)
+            target = _pick(key, action, proposal_id, proposed, accepted, flag,
+                           _from_seed(entry.get('candidates') or ()))
             superseded = []
             if action == 'accept':
                 target['status'] = 'accepted'

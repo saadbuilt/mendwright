@@ -981,6 +981,7 @@ def test_lists_with_several_waiting_an_old_one_and_an_accepted_one(capsys, tmp_p
         _list_row(ROWS, "proposed", _evidence()),
         _list_row("//li[@class='line']", "proposed", None, css=None),
         others={"search": {"expectedRole": "li", "candidates": [
+            {"xpath": ".hit", "source": "code", "status": "active", "lastSucceededAt": None},
             _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None,
                       accepted="2026-10-30T08:00:00+00:00")]},
             "my cart": {"expectedRole": "div", "candidates": [
@@ -1016,6 +1017,26 @@ def test_lists_json(capsys, tmp_path):
                       "reject": "mendwright lists reject cart 3f2a9c1d" + flag}],
         "accepted": [{"key": "search", "xpath": HITS, "css": None,
                       "acceptedAt": "2026-10-30T08:00:00+00:00"}]}
+
+
+def test_lists_says_an_accepted_list_heal_of_a_key_from_a_seed_file_goes_there(capsys, tmp_path):
+    when = "2026-10-30T08:00:00+00:00"
+    store = _lists_store(
+        tmp_path / "s", _list_row(ROWS, "accepted", _evidence(), accepted=when),
+        others={"search": {"candidates": [
+            {"xpath": ".cart-item", "source": "seed", "status": "active", "lastSucceededAt": None},
+            _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None, accepted=when)]},
+            "wish": {"candidates": [_list_row(HITS, "accepted", None, css=None, accepted=when)]}})
+    code, out, _err = _lists(capsys, "--store", str(store))
+    assert code == 0 and out[-7:] == [
+        "",
+        '1 accepted list heal waits for mendwright fix --apply --store "' + str(store) + '":',
+        "  cart  " + ROWS + "  (accepted 2026-10-30 08:00:00 UTC)",
+        "",
+        "2 accepted list heals wait for you to put them in the seed files their keys' selectors "
+        "come from, which mendwright fix doesn't change:",
+        "  search  " + HITS + " in place of .cart-item  (accepted 2026-10-30 08:00:00 UTC)",
+        "  wish  " + HITS + "  (accepted 2026-10-30 08:00:00 UTC)"]
 
 
 def _rows_of(store, key="cart"):

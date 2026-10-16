@@ -1026,6 +1026,42 @@ def test_a_list_heal_of_a_key_from_a_seed_file_says_to_put_it_in_the_seed_file(t
     assert not [c for c in _rows(tmp_path).values() if c.get('list')]
 
 
+def test_lists_and_report_say_to_put_a_seed_key_s_accepted_list_heal_in_the_seed_file(
+        tmp_path, make_page, capsys, caplog):
+    from mendwright import cli
+    page, heal = _seeded(make_page, tmp_path, '.cart-item')
+    heal.locator_all('cart', nonempty=True)
+    page.set_html(cart(True, row='cart-row'))
+    with pytest.raises(AttentionRequired):
+        heal.locator_all('cart', nonempty=True)
+    store = str(tmp_path / 'o.json')
+    pid = _rows(tmp_path)[ROWS]['proposal']['id']
+    edit_list_heal(store, 'cart', 'accept', pid, now='2026-10-30T08:00:00+00:00')
+    assert cli.main(['lists', '--store', store]) == 0
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        "1 accepted list heal waits for you to put it in the seed file its key's selectors come "
+        "from, which mendwright fix doesn't change:",
+        '  cart  ' + ROWS + ' in place of .cart-item  (accepted 2026-10-30 08:00:00 UTC)']
+    note = ("list, accepted 2026-10-30 08:00:00 UTC; its selectors come from a seed file, which "
+            "mendwright fix doesn't change, so put it there in place of .cart-item")
+    for form in ('text', 'md', 'html'):
+        assert cli.main(['report', '--store', store, '--format', form]) == 0
+        out = capsys.readouterr().out
+        assert (note.replace("'", '&#x27;') if form == 'html' else note) in out
+        assert 'mendwright fix --apply' not in out
+    assert cli.main(['lists', 'accept', 'cart', pid, '--store', store]) == 1
+    assert capsys.readouterr().err.splitlines() == [
+        "mendwright lists: 'cart' has no list heal to check. Its list heal was accepted on "
+        '2026-10-30 08:00:00 UTC and waits for you to put it in the seed file its selectors come '
+        'from; to drop it, run: mendwright lists reject cart' + _flag(tmp_path)]
+    page, heal = _seeded(make_page, tmp_path, '.cart-item', page)
+    with caplog.at_level(logging.WARNING, logger='mendwright'):
+        with pytest.raises(AttentionRequired):
+            heal.locator_all('cart', nonempty=True)
+    assert "mendwright: 'cart' waits for its seed file: 'cart' matched 3 elements" in caplog.text
+    assert 'waits for mendwright fix' not in caplog.text
+
+
 def test_another_selector_of_the_key_retires_nothing(tmp_path, make_page):
     page, heal, pid = _proposed(make_page, tmp_path)
     page.set_html(cart(True, row='cart-row'))
