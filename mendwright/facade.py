@@ -1071,6 +1071,41 @@ class Healer:
         from .resolver import present
         return present(self.store, self._page, key)
 
+    def drift(self, keys: Iterable[str] | None = None, *, timeout_ms: int | None = None,
+              poll_ms: int = 200) -> Any:
+        """Check, on the page this healer is on, whether the selectors saved for keys still
+        find their elements, and what a run would do about the ones that don't, without
+        acting on the page, saving anything or asking a model. Returns a
+        mendwright.drift.DriftReport: one KeyDrift per key, with a verdict ('ok', 'ok-heal',
+        'wrong-role', 'would-heal', 'needs-model', 'refused', or one that says why the key
+        could not be judged) and the reason, in the run's own words.
+
+        keys=None checks the keys found on this page before (its page is their lastPage or
+        one of their pages). keys=[...] checks those wherever they were found: a key never
+        found on this page gets the page guard's refusal, as in a run, unless
+        heal_across_pages=True. timeout_ms (default: the healer's) is one wait for the whole
+        page, polled every poll_ms.
+
+        It writes nothing: no store write, no journal line, no fingerprint, no quarantine,
+        no canary. It changes nothing in heals, pending() or handled_interruptions, performs
+        no action, handles no interruption and dismisses no popup, and Playwright's overlay
+        handlers of this healer stay out of it. It never calls the provider. It logs one
+        INFO line. TypeError or ValueError for arguments that can never work (a single
+        string as keys, keys the store doesn't have), before anything touches the page."""
+        from . import drift as _drift
+        wanted = _drift.drift_keys(self.store, keys, timeout_ms, poll_ms)
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        skips, canaries = _drift.journal_evidence(_drift.store_journal(self.store))
+        with self._overlays.handling():
+            url = self._url()
+            if wanted is None:
+                wanted = _drift.keys_on_page(self.store, url)
+            report = _drift.probe_page(self, wanted, timeout_ms=timeout, poll_ms=poll_ms,
+                                       skips=skips, canaries=canaries,
+                                       optional=set(self._interruptions), url=url)
+        logger.info('mendwright: ' + report.summary())
+        return report
+
     # --- lists (see mendwright.lists) ------------------------------------------------
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
@@ -2273,15 +2308,16 @@ class Healer:
         except Exception:
             logger.debug('mendwright: could not save the fingerprint of %r', key, exc_info=True)
 
-    def _flow_context(self, key, url):
+    def _flow_context(self, key, url, *, quiet=False):
         """The heal context: the URL, and the pages the page guard compares (this page among
-        them while a step that key was found during runs, see _step_pages)."""
+        them while a step that key was found during runs, see _step_pages). quiet=True
+        leaves out the INFO line _step_pages() logs (heal.drift() logs one line only)."""
         try:
             meta = self.store.meta(key)
         except Exception:
             meta = {}
         return {'url': url, 'page': page_path(url), 'lastPage': meta.get('lastPage'),
-                'pages': self._step_pages(key, meta, page_path(url))}
+                'pages': self._step_pages(key, meta, page_path(url), quiet=quiet)}
 
     # --- healing -------------------------------------------------------------------
 
@@ -2299,10 +2335,12 @@ class Healer:
         self.coordinator._decline(key, reason)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
-    def _frame_plan(self, key, selector, frames):
+    def _frame_plan(self, key, selector, frames, coordinator=None):
         """(iframe selector, selector to save) when key can be followed into the one iframe
-        its selector matches in (see _follow_into_frame), else (None, why not)."""
-        coord = self.coordinator
+        its selector matches in (see _follow_into_frame), else (None, why not). coordinator,
+        when given, is the one whose disabled and dry_run settings count (heal.drift()'s
+        preview passes its own); else this healer's."""
+        coord = self.coordinator if coordinator is None else coordinator
         if getattr(coord, 'disabled', False):
             return None, 'healing is turned off by MENDWRIGHT_DISABLE=1'
         if coord.dry_run:
@@ -2525,7 +2563,7 @@ class Healer:
         if running is not None and path and path == running[1] and callable(setter):
             setter(key, running[0])
 
-    def _step_pages(self, key, meta, here):
+    def _step_pages(self, key, meta, here, quiet=False):
         """The pages the page guard compares for key: the ones saved with it, and, while
         run_steps() runs a step that key was found during before, this page too when it is
         the page that step showed on (its landmark, its url=) when it started. So a site
@@ -2540,7 +2578,7 @@ class Healer:
             return pages
         step = running[0]
         last = meta.get('lastPage')
-        if (here not in pages and here != last and (pages or last)
+        if (here not in pages and here != last and (pages or last) and not quiet
                 and not self.coordinator.heal_across_pages):
             self.coordinator._emit(logging.INFO, _steps.scope_message(key, step, here, last))
         return pages + [here]
