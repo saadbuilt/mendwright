@@ -53,6 +53,8 @@ A key is destructive only when you mark it:
 - the seed file marks it, or it is in `mendwright.open(destructive_keys=...)`. Nothing at run time can clear these.
 - `heal.locator(..., destructive=True)` marks it. This is saved in the override file, and `destructive=False` clears it.
 
+The key of a `heal.page.get_by_*()` call is the call, as `mendwright.get_by_key()` writes it. The same call written in another spelling, such as `get_by_role('button', name='Pay')`, marks it too. A string that isn't a call, such as `page.get_by_role('button', name='Pay')`, is a key of its own and marks nothing a call uses.
+
 mendwright doesn't guess which controls are destructive from the key, `text=` or the page. A key you don't mark can be healed onto any element that has its role, including a button that pays or deletes.
 
 A heal saved for a key before it was marked is quarantined, not acted on.

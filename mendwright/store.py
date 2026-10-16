@@ -12,7 +12,9 @@ sees it, and so is where the key's element was last found (``set_last_page``: la
 and pages) and the steps of run_steps() it was found during (``set_last_step``: steps).
 The file stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
-``set_meta(destructive=False)`` only clears the last of these.
+``set_meta(destructive=False)`` only clears the last of these. A key of ``destructive_keys``
+or of a seed file written as a get_by_* call in another spelling than mendwright's, such as
+get_by_role('button', name='Pay'), stands for the call's key (getby.canonical_key).
 
 Only a missing file reads as empty. A seed or override file that exists but is not
 valid JSON (a hand edit, a merge conflict) or is not a selector file raises
@@ -30,6 +32,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import getby
 from .fingerprint import valid as _valid_fingerprint
 from .lists import valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
@@ -279,7 +282,10 @@ class SelectorStore:
                  override=None):
         self._data = data
         self._override_path = Path(_expand(override_path))
-        self._destructive_keys = frozenset(destructive_keys)
+        # A key written as a get_by_* call in another spelling marks the call's key too.
+        destructive_keys = frozenset(destructive_keys)
+        self._destructive_keys = destructive_keys | {getby.canonical_key(k)
+                                                     for k in destructive_keys}
         # Injected in tests: the monotonic clock and sleep for lock waits and write
         # retries, and the wall clock compared with a lock file's mtime.
         self._clock = time.monotonic
@@ -923,6 +929,25 @@ def _expand(path):
     return os.path.expanduser(os.fspath(path))
 
 
+def _call_keys(data, path):
+    """A seed's data with each key written as a get_by_* call in another spelling than
+    mendwright's renamed to the call's key (getby.canonical_key), so its flags and
+    candidates apply to the call. Raises StoreReadError when two keys name one call."""
+    selectors = data.get('selectors')
+    if not isinstance(selectors, dict):
+        return data
+    renamed, spelled = {}, {}
+    for key, entry in selectors.items():
+        canonical = getby.canonical_key(key)
+        if canonical in spelled:
+            raise StoreReadError(getby.two_spellings_message(str(path), spelled[canonical], key))
+        spelled[canonical] = key
+        renamed[canonical] = entry
+    if renamed.keys() == selectors.keys():
+        return data
+    return dict(data, selectors=renamed)
+
+
 def load_store(seed_path, override_path, destructive_keys=frozenset()):
     """A SelectorStore over a read-only seed file and a writable override file.
 
@@ -930,8 +955,8 @@ def load_store(seed_path, override_path, destructive_keys=frozenset()):
     FileNotFoundError: its destructive flags would silently be lost. A missing override
     file is an empty store, created on the first write. A seed or override file that
     exists but is not valid JSON, or not a selector file, raises StoreReadError (a
-    ValueError) naming the file. Relative paths are read from the current directory, and
-    '~' is expanded."""
+    ValueError) naming the file, and so does a seed with two keys for one get_by_* call.
+    Relative paths are read from the current directory, and '~' is expanded."""
     override_path = _expand(override_path)
     if seed_path is None:
         seed = _empty()
@@ -942,7 +967,7 @@ def load_store(seed_path, override_path, destructive_keys=frozenset()):
                 'mendwright: seed file ' + seed_path + ' does not exist (relative paths are '
                 'read from ' + os.getcwd() + '). Pass an absolute path, or seed_path=None '
                 'for no seed.')
-        seed = _read_schema2(seed_path, destructive_keys)
+        seed = _call_keys(_read_schema2(seed_path, destructive_keys), seed_path)
     override, native = _read(override_path, destructive_keys)
     # Saved metadata is read only from a schema-2 override. A schema-1 file migrated here
     # has inferred metadata, not metadata someone set.

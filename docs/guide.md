@@ -332,7 +332,8 @@ heal = mendwright.open(page, heal_get_by=True, destructive_keys={pay},
                        expect_values={mendwright.get_by_key("get_by_test_id", "total"): "money"})
 ```
 
-A key matches one spelling of a call only: `destructive_keys={pay}` marks `page.get_by_role("button", name="Pay")`, and a test that writes `name=re.compile("pay", re.I)` or `exact=True` makes another key, which isn't marked.
+A key matches one call only: `destructive_keys={pay}` marks `page.get_by_role("button", name="Pay")`, and a test that writes `name=re.compile("pay", re.I)` or `exact=True` makes another key, which isn't marked.
+`destructive_keys=`, `expect_values=`, seed files and `heal.present()` read a key written as the same call in another spelling, such as `"get_by_role('button', name='Pay')"`, as the call's key, and two spellings of one call in `expect_values=` or a seed file raise an error. A string that isn't a call, such as `"page.get_by_role('button', name='Pay')"` from an INFO line, is a key of its own, and nothing a call does uses it.
 
 Some calls are never keys. They go to Playwright as written, with one INFO line per healer and call:
 

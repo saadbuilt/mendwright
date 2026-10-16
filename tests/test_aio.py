@@ -937,6 +937,7 @@ def test_an_async_call_acts_records_and_heals_from_its_fingerprint(make_page, tm
         assert await button.is_visible() is False       # the call as written
         await _sign_in(heal)
         assert await heal.present(CALL) is True         # the saved heal, while the call misses
+        assert await heal.present("get_by_role('button', name='Sign in')") is True
         return heal
 
     heal = run(main())

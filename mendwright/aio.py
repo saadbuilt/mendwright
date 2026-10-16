@@ -749,7 +749,7 @@ class AsyncHealer:
         as on Healer.present()."""
         async with self._turn():
             if getby.is_key(key):
-                return await self._present_get_by(key)
+                return await self._present_get_by(getby.canonical_key(key))
             store = self.store
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)

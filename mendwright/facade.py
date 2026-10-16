@@ -1118,10 +1118,11 @@ class Healer:
         No waiting and no healing. For the key of a get_by_* call (mendwright.get_by_key()),
         the call itself first: True when it matches one visible element, False when it
         matches several or one hidden one, and its saved heals only while it matches
-        nothing (see resolver.present_get_by)."""
+        nothing (see resolver.present_get_by). A call written in another spelling, such as
+        "get_by_role('button', name='Pay')", is read as the call's key."""
         from .resolver import present
         if getby.is_key(key):
-            return present_get_by(self.store, self._driver, key)
+            return present_get_by(self.store, self._driver, getby.canonical_key(key))
         return present(self.store, self._page, key)
 
     # --- heal.page.get_by_*(), with open(heal_get_by=True) (see mendwright.getby) -------

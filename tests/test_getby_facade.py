@@ -455,6 +455,62 @@ def test_destructive_call_keys_are_refused(tmp_path, make_page, stub_provider):
     assert provider.bundles == []
 
 
+# The call as Python writes it, in single quotes, as mendwright's own INFO lines do.
+PY_KEY = "get_by_role('button', name='Sign in')"
+
+
+def test_a_call_key_in_another_spelling_still_marks_the_call(tmp_path, make_page,
+                                                             stub_provider):
+    page = _page(make_page)
+    provider = stub_provider(HEAL)
+    heal = _open(page, tmp_path, provider, destructive_keys={PY_KEY})
+    _sign_in(heal)
+    page.set_html(RENAMED)
+    with pytest.raises(getby.GetByNotFound, match='is marked as a destructive control'):
+        _sign_in(heal)
+    assert heal.heals == [] and page.actions[-1][0] != 'xpath=' + HEAL
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {
+        PY_KEY: {'destructive': True, 'expectedRole': 'button', 'candidates': []}}}),
+        encoding='utf-8')
+    store = mendwright.load_store(str(seed), str(tmp_path / 'seeded.json'))
+    assert store.meta(KEY)['destructive'] is True and store.is_locked_destructive(KEY)
+    seeded = mendwright.open(page, provider=provider, store=store, heal_get_by=True, timeout_ms=0)
+    with pytest.raises(getby.GetByNotFound, match='is marked as a destructive control'):
+        _sign_in(seeded)
+    assert provider.bundles == []
+
+
+def test_expect_values_and_present_read_a_call_key_in_another_spelling(tmp_path, make_page,
+                                                                       stub_provider):
+    page = _page(make_page, _total_page('$12.00'))
+    heal = _open(page, tmp_path, stub_provider(HEAL), expect_values={"get_by_test_id('total')":
+                                                                     'money'})
+    assert heal.page.get_by_test_id('total').inner_text() == '$12.00'
+    page.set_html(_total_page('3 items', testid='order-total'))
+    with pytest.raises(AttentionRequired) as caught:
+        heal.page.get_by_test_id('total').inner_text()
+    assert not isinstance(caught.value, timeout_error)
+    assert [h.confirmed for h in heal.heals] == [False]
+
+    page, healed = _healed(make_page, tmp_path / 'b', stub_provider(HEAL))
+    assert healed.present(PY_KEY) is True          # the saved heal, while the call misses
+
+
+def test_two_spellings_of_one_call_key_are_refused(tmp_path, make_page, stub_provider):
+    with pytest.raises(ValueError) as caught:
+        _open(_page(make_page), tmp_path, stub_provider(HEAL),
+              expect_values={KEY: 'money', PY_KEY: 'money'})
+    assert str(caught.value) == getby.two_spellings_message('expect_values=', KEY, PY_KEY)
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {
+        KEY: {'candidates': []}, PY_KEY: {'destructive': True, 'candidates': []}}}),
+        encoding='utf-8')
+    with pytest.raises(mendwright.store.StoreReadError) as caught:
+        mendwright.load_store(str(seed), str(tmp_path / 'seeded.json'))
+    assert str(caught.value) == getby.two_spellings_message(str(seed), KEY, PY_KEY)
+
+
 def test_a_heal_saved_before_the_key_was_marked_is_quarantined_and_not_a_timeout_error(
         tmp_path, make_page, stub_provider):
     page, _first = _healed(make_page, tmp_path, stub_provider(HEAL))

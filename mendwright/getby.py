@@ -320,6 +320,15 @@ def is_key(key):
     return parse(key) is not None
 
 
+def canonical_key(key):
+    """The key mendwright saves a get_by_* call under, for a key written as that call in
+    any spelling parse() reads, such as get_by_role('button', name='Pay'); any other key
+    as it is. destructive_keys=, expect_values=, seed files and heal.present() read their
+    keys through it, so a mark written that way still applies to the call."""
+    call = parse(key)
+    return key if call is None else canonical(call)
+
+
 def build(ctx, call):
     """The Locator for call on ctx, a Page, Frame or FrameLocator: its public get_by_*
     method with the call's arguments."""
@@ -344,9 +353,9 @@ def get_by_key(method: str, /, *args, **kwargs) -> str:
 
         get_by_key("get_by_role", "button", name="Pay")   # 'get_by_role("button", name="Pay")'
 
-    A key matches one spelling of a call: name=re.compile("pay", re.I) or exact=True makes
-    another key. Raises ValueError for a method mendwright does not heal and for a call
-    that is never a key, and TypeError for arguments the method does not take."""
+    A key matches one call: name=re.compile("pay", re.I) or exact=True makes another key.
+    Raises ValueError for a method mendwright does not heal and for a call that is never a
+    key, and TypeError for arguments the method does not take."""
     if method not in METHODS:
         raise ValueError('mendwright.get_by_key(): ' + repr(method) + ' is not a get_by_* method '
                          'mendwright heals. Use one of ' + ', '.join(METHODS[:-1]) + ' or '
@@ -373,6 +382,12 @@ def not_healed_message(step, why):
 def through_message(key, why):
     """The DEBUG line for a call that goes to Playwright as written."""
     return key + ' ' + why + '; Playwright runs it as written.'
+
+
+def two_spellings_message(where, first, second):
+    """The error for two keys of ``where`` (expect_values=, a seed file) that name one call."""
+    return ('mendwright: ' + where + ' has two keys for the call ' + canonical_key(first) + ': '
+            + repr(first) + ' and ' + repr(second) + '. Keep one of them.')
 
 
 def reserved_key_message(key, entry):

@@ -120,6 +120,20 @@ def test_other_spellings_read_as_the_canonical_key():
     assert is_key('get_by_test_id("go")') and not is_key('#go') and not is_key(None)
 
 
+def test_canonical_key_reads_a_call_in_any_spelling_and_leaves_other_keys():
+    assert getby.canonical_key("get_by_role('button', name='Pay')") == (
+        'get_by_role("button", name="Pay")')
+    assert getby.canonical_key('get_by_role("button", name="Pay")') == (
+        'get_by_role("button", name="Pay")')
+    for key in ('#pay', 'pay_button', "page.get_by_role('button', name='Pay')",
+                "get_by_role('checkbox', checked=True)", None):
+        assert getby.canonical_key(key) is key
+    assert getby.two_spellings_message('expect_values=', 'get_by_test_id("t")',
+                                       "get_by_test_id('t')") == (
+        "mendwright: expect_values= has two keys for the call get_by_test_id(\"t\"): "
+        "'get_by_test_id(\"t\")' and \"get_by_test_id('t')\". Keep one of them.")
+
+
 @pytest.mark.parametrize('method, args, kwargs, why', [
     ('get_by_role', ('checkbox',), {'name': 'Terms', 'checked': True},
      'checked= picks the element by its state, which a saved selector cannot keep'),
