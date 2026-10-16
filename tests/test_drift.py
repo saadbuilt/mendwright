@@ -780,6 +780,21 @@ def test_keys_on_the_site_root(make_page, stub_provider, tmp_path, caplog):
     assert {k.page for k in report.keys} == {'/'}
 
 
+def test_a_key_found_on_a_page_and_on_the_site_root_is_checked_there_by_name(
+        make_page, stub_provider, tmp_path, caplog):
+    # A header link found on /signup, then on the home page: its saved address stays
+    # /signup's, so heal.drift() on the root leaves it to /signup, and checks it by name.
+    record(make_page, stub_provider, tmp_path)
+    record(make_page, stub_provider, tmp_path, url='https://shop.example/')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=V1,
+                         url='https://shop.example/')
+    assert drifted(heal, page, caplog).keys == ()
+    k = by_key(drifted(heal, page, caplog, ['email']))['email']
+    assert (k.verdict, k.page) == ('ok', '/signup')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=V1)
+    assert len(drifted(heal, page, caplog).keys) == len(KEYS)
+
+
 def test_keys_on_the_site_root_of_a_test_app_on_a_new_port(make_page, stub_provider, tmp_path,
                                                           caplog):
     # A live server on a random port: the store names last run's port. Other pages match

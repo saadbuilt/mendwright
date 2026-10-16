@@ -1081,8 +1081,9 @@ class Healer:
         could not be judged) and the reason, in the run's own words.
 
         keys=None checks the keys found on this page before (its page is their lastPage or
-        one of their pages; on the site root, the keys last found on a root of this host,
-        whatever its port). keys=[...] checks those wherever they were found: a key never
+        one of their pages; on the site root, the keys whose lastUrl is a root of this host,
+        whatever its port, which _remember_page saves only for a key found on no other
+        page). keys=[...] checks those wherever they were found: a key never
         found on this page gets the page guard's refusal, as in a run, unless
         heal_across_pages=True. timeout_ms (default: the healer's) is one wait for the whole
         page, polled every poll_ms.
