@@ -1003,25 +1003,28 @@ def test_a_monorepo_working_directory(world):
     assert '`tests/test_checkout.py:2`' not in body
 
 
-def test_no_git_hook_runs(world):
-    hooks = world.ws / '.git' / 'hooks'
-    for name in ('pre-commit', 'commit-msg', 'post-commit', 'pre-push', 'post-checkout',
-                 'prepare-commit-msg'):
-        (hooks / name).write_text('#!/bin/sh\necho ran > "' + str(world.tmp).replace('\\', '/')
-                                  + '/hook-' + name + '"\n', encoding='utf-8')
-        os.chmod(str(hooks / name), 0o755)
-    custom = world.tmp / 'custom-hooks'
-    custom.mkdir()
-    (custom / 'pre-commit').write_text('#!/bin/sh\necho ran > "' + str(world.tmp).replace('\\', '/')
-                                       + '/hook-custom"\n', encoding='utf-8')
-    os.chmod(str(custom / 'pre-commit'), 0o755)
-    git(world.ws, 'config', 'core.hooksPath', str(custom))
+HOOKS = ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-checkout',
+         'reference-transaction', 'pre-push', 'post-index-change')
+
+
+@pytest.mark.parametrize('where', ['.git/hooks', 'core.hooksPath'])
+def test_no_git_hook_runs(world, where):
+    # --no-verify only skips pre-commit and commit-msg: switch, commit and push run the others
+    # unless core.hooksPath points at an empty folder.
+    folder = world.ws / '.git' / 'hooks' if where == '.git/hooks' else world.tmp / 'custom-hooks'
+    folder.mkdir(exist_ok=True)
+    for name in HOOKS:
+        (folder / name).write_text('#!/bin/sh\necho ran > "' + str(world.tmp).replace('\\', '/')
+                                   + '/hook-' + name + '"\n', encoding='utf-8')
+        os.chmod(str(folder / name), 0o755)
+    if where == 'core.hooksPath':
+        git(world.ws, 'config', 'core.hooksPath', str(folder))
     world.run()
     assert world.result() == 'created'
     assert sorted(p.name for p in world.tmp.iterdir() if p.name.startswith('hook-')) == []
-    # The hooks are real: a plain git commit runs the one core.hooksPath names.
+    # The hooks are real: a plain git commit runs them.
     git(world.ws, 'commit', '-q', '--allow-empty', '-m', 'by hand')
-    assert (world.tmp / 'hook-custom').exists()
+    assert (world.tmp / 'hook-pre-commit').exists() and (world.tmp / 'hook-post-commit').exists()
 
 
 # --- publish: the same changes twice ------------------------------------------------------------
