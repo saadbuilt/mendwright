@@ -24,8 +24,13 @@ url and outer_html are expected as well. Optional, and absent from older custom 
 For lists (see mendwright.lists):
 
   handles(selector, frame_chain=())       a native handle for each element it matches
-  list_fingerprint(selector, frame_chain=())   the list fingerprint of what it matches
-                                          (LIST_JS), or None for fewer than two elements
+  list_fingerprint(selector, frame_chain=(), *, place=False)
+                                          the list fingerprint of what it matches
+                                          (LIST_JS, or LIST_PLACE_JS with place=True), or
+                                          None for fewer than two elements
+  list_items(selector, frame_chain=())    [{'tag', 'role', 'type', 'visible'}] for the
+                                          first 200 elements it matches (ITEMS_JS); a
+                                          driver error raises
 
 For open(dismiss=True) (see mendwright.dismiss), each on a handle() result and run where it
 lives (inside its frame chain on Selenium):
@@ -48,8 +53,11 @@ Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
 when a driver lacks the method, through driver_handles and driver_list_fingerprint, which
 fall back to [handle()] and None (a driver without list_fingerprint() records no list, so
-a list lookup that matches nothing gives []), and through the driver_popup_* helpers,
-which fall back to None or False: a driver without them never dismisses anything.
+a list lookup that matches nothing gives []; one whose list_fingerprint() takes no place=
+records no place, see driver_places), through driver_list_items, which gives None for a
+driver without list_items() (a list found with nonempty=True can't be checked then), and
+through the driver_popup_* helpers, which fall back to None or False: a driver without them
+never dismisses anything.
 """
 
 import inspect
@@ -155,19 +163,69 @@ def driver_handles(driver, selector, frame_chain=()):
     return [driver.handle(selector, frame_chain)]
 
 
-def driver_list_fingerprint(driver, selector, frame_chain=()):
+def _takes_place(method):
+    """True when a list_fingerprint() method takes place=: a parameter of that name, or a
+    ** parameter."""
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return 'place' in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def driver_places(driver):
+    """True when the driver can record where a list sits: its list_fingerprint() takes
+    place= (see driver_list_fingerprint)."""
+    method = getattr(driver, 'list_fingerprint', None)
+    return callable(method) and _takes_place(method)
+
+
+def driver_list_fingerprint(driver, selector, frame_chain=(), *, place=False):
     """driver.list_fingerprint(selector, frame_chain) when the driver has it, else None: the
-    list fingerprint (see mendwright.lists) of the elements the selector matches. Any error,
-    or a result that is not one, gives None."""
+    list fingerprint (see mendwright.lists) of the elements the selector matches. With
+    place=True, the list's label and where it sits as well, but only from a method that
+    takes place= (driver_places); any other is called as 0.8.0 called it, and its result has
+    no place. Any error, or a result that is not one, gives None."""
     from ..lists import valid
     method = getattr(driver, 'list_fingerprint', None)
     if not callable(method):
         return None
     try:
-        out = method(selector, frame_chain)
+        if place and _takes_place(method):
+            out = method(selector, frame_chain, place=True)
+        else:
+            out = method(selector, frame_chain)
     except Exception:
         return None
     return out if valid(out) else None
+
+
+def driver_list_items(driver, selector, frame_chain=()):
+    """driver.list_items(selector, frame_chain) when the driver has it: [{'tag', 'role',
+    'type', 'visible'}] for the first 200 elements the selector matches. None when the driver
+    lacks it. Errors propagate: the live check of a list fails on them."""
+    method = getattr(driver, 'list_items', None)
+    if not callable(method):
+        return None
+    return method(selector, frame_chain)
+
+
+def item_rows(raw):
+    """ITEMS_JS's result as list_items() rows: {'tag', 'role', 'type', 'visible'}, the role
+    computed with role_for(). Anything malformed in it is skipped; a result that is not a
+    list raises ValueError."""
+    if not isinstance(raw, list):
+        raise ValueError('mendwright: the read of a list gave ' + type(raw).__name__
+                         + ', not a list')
+    rows = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get('tag') or '').lower()
+        type_ = item.get('type') if isinstance(item.get('type'), str) else ''
+        rows.append({'tag': tag, 'role': role_for(tag, item.get('role'), type_ or None),
+                     'type': type_, 'visible': item.get('visible') is True})
+    return rows
 
 
 def driver_framed(driver, frame_selector):

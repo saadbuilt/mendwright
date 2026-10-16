@@ -54,7 +54,8 @@ import weakref
 from typing import Any, Callable, Iterable, Sequence
 
 from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers.base import _member, is_async_api, is_driver, looks_like_locator, unsupported_message
+from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
+                           unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -181,12 +182,14 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory and fingerprint), act_on for an
-    interruption's action, visible_match for the WARNING about a selector that matches
-    several elements, the popup methods of open(dismiss=True) (popup_probe and the others),
-    run() for any other callable, and wait() for a run= function of heal.interrupt().
-    describe, fingerprint, visible_match and the popup methods are None when the async
-    driver has none."""
+    handle, url, outer_html, describe, inventory and fingerprint, and for a list looked for
+    with nonempty=True list_items and list_fingerprint), act_on for an interruption's
+    action, visible_match for the WARNING about a selector that matches several elements,
+    the popup methods of open(dismiss=True) (popup_probe and the others), run() for any
+    other callable, and wait() for a run= function of heal.interrupt(). describe,
+    fingerprint, visible_match, list_items, list_fingerprint and the popup methods are None
+    when the async driver has none, and list_fingerprint takes no place= when the async
+    driver's does not."""
 
     timeout = 30.0
 
@@ -205,6 +208,13 @@ class SyncBridge:
             self.fingerprint = None
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
+        if not callable(_member(driver, 'list_items')):
+            self.list_items = None
+        method = _member(driver, 'list_fingerprint')
+        if not callable(method):
+            self.list_fingerprint = None
+        elif not _takes_place(method):
+            self.list_fingerprint = self._list_fingerprint_unplaced
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
@@ -286,6 +296,15 @@ class SyncBridge:
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
+
+    def list_items(self, selector, frame_chain=()):
+        return self.run(self._driver.list_items, selector, frame_chain)
+
+    def list_fingerprint(self, selector, frame_chain=(), *, place=False):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain, place=place)
+
+    def _list_fingerprint_unplaced(self, selector, frame_chain=()):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has

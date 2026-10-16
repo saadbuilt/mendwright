@@ -3,8 +3,10 @@
 FakePage is detected as a Playwright page by mendwright.open(). Its locators count real
 matches in the HTML, answer describe() (evaluate_all) like a browser would, and record
 every action instead of running it. No browser, no network, no clock. The fingerprint read
-answers only on a FakePage(..., fingerprints=True), and so does the read of a list's
-fingerprint (mendwright.lists.LIST_JS). Locators have nth() and all(). CSS is "#id" only,
+answers only on a FakePage(..., fingerprints=True), and so do the reads of a list's
+fingerprint (mendwright.lists.LIST_JS, and LIST_PLACE_JS with where the list sits); the
+read of a list's items for the live gate (ITEMS_JS) always answers. The page counts each
+kind of read. Locators have nth() and all(). CSS is "#id" only,
 and a selector needs its xpath= or css= prefix, unless the page is made with css=True, when
 cssselect matches the rest and a selector without a prefix is read as mendwright reads it.
 """
@@ -15,7 +17,7 @@ import lxml.html
 import pytest
 
 from mendwright.fingerprint import FINGERPRINT_JS, raw_of_element
-from mendwright.lists import LIST_JS, raw_of_elements
+from mendwright.lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS, items_of_elements, raw_of_elements
 
 # tests/test_pytest_plugin.py runs pytest inside pytest through the pytester fixture.
 pytest_plugins = ['pytester']
@@ -67,7 +69,17 @@ class FakeLocator:
     def evaluate_all(self, js):
         if js == LIST_JS:
             self._page.fingerprint_reads += 1
+            self._page.list_reads += 1
             return raw_of_elements(self._elements()) if self._page.fingerprints else None
+        if js == LIST_PLACE_JS:
+            self._page.fingerprint_reads += 1
+            self._page.place_reads += 1
+            if not self._page.fingerprints:
+                return None
+            return raw_of_elements(self._elements(), place=True)
+        if js == ITEMS_JS:
+            self._page.items_reads += 1
+            return items_of_elements(self._elements())
         if js == FINGERPRINT_JS:
             # The fingerprint read. Off unless the page was made with fingerprints=True, so
             # tests written before the fingerprint tier still see the model heal.
@@ -133,6 +145,9 @@ class FakePage:
         self.fingerprints = fingerprints   # answer mendwright's fingerprint read
         self.css = css                     # match CSS beyond "#id" with cssselect
         self.fingerprint_reads = 0
+        self.list_reads = 0       # LIST_JS
+        self.place_reads = 0      # LIST_PLACE_JS
+        self.items_reads = 0      # ITEMS_JS
         self.actions = []     # (selector, verb, args, kwargs) for every action run
         self.fail = {}        # verb -> exception the action raises
         self.results = {}     # verb -> value the action returns
