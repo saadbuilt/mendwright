@@ -430,7 +430,7 @@ def test_a_call_that_matches_in_an_iframe_is_not_healed_or_followed(tmp_path, ma
         "mendwright was opened on, but matches inside the iframe named 'payment'. mendwright "
         'did not look for it there, because mendwright does not follow a get_by_* call into an '
         'iframe, and did not ask a model to heal it. Open mendwright on that Frame instead: '
-        "heal = mendwright.open(page.frame(name='payment')).")
+        "heal = mendwright.open(page.frame(name='payment'), heal_get_by=True).")
     assert not any(c.get('frameXPath') for c in heal.store.candidates(key))
     assert heal.heals == []
 

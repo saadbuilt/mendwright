@@ -258,7 +258,8 @@ def test_a_call_inside_an_iframe_is_refused_and_heals_on_the_frame(tab, store_fi
         heal.page.get_by_role('button', name='Pay').click()
     assert ("mendwright did not look for it there, because mendwright does not follow a get_by_* "
             "call into an iframe" in str(caught.value))
-    assert "heal = mendwright.open(page.frame(name='payment'))" in str(caught.value)
+    assert ("heal = mendwright.open(page.frame(name='payment'), heal_get_by=True)."
+            in str(caught.value))
 
     inner = mendwright.open(frame, provider=provider, store_path=store_file, heal_get_by=True,
                             timeout_ms=FAST_MS)

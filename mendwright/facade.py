@@ -511,7 +511,8 @@ def _bare_url(url):
 
 
 def _frame_message(key, selector, frames, opener, why=None, selenium=False):
-    """Why a key whose selector matches only inside an iframe was not followed there."""
+    """Why a key whose selector matches only inside an iframe was not followed there. For
+    the key of a get_by_* call, the advice passes heal_get_by=True."""
     frame = frames[0]
     name, url = frame.get('name') or '', _bare_url(frame.get('url') or '')
     if selenium:
@@ -535,6 +536,8 @@ def _frame_message(key, selector, frames, opener, why=None, selenium=False):
         where, how = 'an iframe', 'the Frame from page.frames'
     if len(frames) > 1:
         where += ' (and ' + str(len(frames) - 1) + ' more)'
+    if getby.is_key(key):
+        how += ', heal_get_by=True'     # else heal.page.get_by_*() there would not heal
     because = why or 'nothing tells that iframe apart from the others on the page'
     return ("'" + key + "' is inside an iframe: " + selector + ' matches nothing in the page '
             'mendwright was opened on, but matches inside ' + where + '. mendwright did not '
