@@ -1,7 +1,7 @@
 """The `mendwright` command: demo, doctor, report, --version and --help.
 
-`mendwright fix` and `report --format html` have their own files: test_fix.py and
-test_report_html.py.
+`mendwright fix`, `report --format html` and `mendwright check` have their own files:
+test_fix.py, test_report_html.py and test_check.py.
 
 Every test calls mendwright.cli.main([...]) in-process (or runs `python -m mendwright` in a
 subprocess) and reads the output. Offline: no network, no model, no browser. The one

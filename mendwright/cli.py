@@ -4,11 +4,14 @@
     mendwright doctor    check the install, browser libraries, provider and store
     mendwright report    list the selectors and heals in an override store (text, md, json, html)
     mendwright fix       write healed selectors back into your code (a diff, or --apply)
+    mendwright model     download and set up mendwright's local selector model
+    mendwright check     load each key's last page and say which saved selectors broke
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
 Nothing here imports a browser library or calls a model, except `mendwright demo --live`,
-which asks the provider from the environment.
+which asks the provider from the environment. `mendwright check` launches a headless
+Playwright browser (see mendwright.drift_session), and calls no model either.
 """
 
 from __future__ import annotations
@@ -730,6 +733,358 @@ def cmd_fix(args):
     return 1 if result.errors else 0
 
 
+# --- check -----------------------------------------------------------------------------
+
+CHECK_FORMATS = ('text', 'md', 'json')
+WAIT_UNTIL = ('load', 'domcontentloaded', 'networkidle')
+MAX_WORKERS = 8
+
+
+class _Tripwire:
+    """The provider `mendwright check` gives the healers it opens when a provider is
+    configured: it names that provider for the texts, and raises on any call. The heal
+    preview never calls a provider (see mendwright.drift), so it never does either."""
+
+    _CALLED = 'mendwright check: a model call was attempted, which mendwright check never makes'
+
+    def __init__(self, name, model):
+        self.display_name = name
+        self.model = model
+
+    def propose(self, bundle):
+        raise RuntimeError(self._CALLED)
+
+    def report_outcome(self, key, xpath, success):
+        raise RuntimeError(self._CALLED)
+
+
+def _check_options(args):
+    """The checked and parsed options of `mendwright check`, as a dict. Raises
+    mendwright.drift.UsageError."""
+    from . import drift
+    from .facade import _env_timeout
+    origins = drift.parse_origins(args.origin) if args.origin else None
+    base_url = drift.parse_origin(args.base_url, '--base-url') if args.base_url else None
+    urls = {}
+    for value in args.url:
+        page, address = drift.parse_url(value)
+        urls[page] = address
+    viewport = None
+    if args.viewport is not None:
+        parts = args.viewport.lower().split('x')
+        try:
+            viewport = tuple(int(p) for p in parts) if len(parts) == 2 else None
+        except ValueError:
+            viewport = None
+        if viewport is None or not all(200 <= side <= 4000 for side in viewport):
+            raise drift.UsageError('--viewport takes WIDTHxHEIGHT with each side 200 to 4000, '
+                                   'such as 1280x720, got ' + repr(args.viewport) + '.')
+    if not 1 <= args.workers <= MAX_WORKERS:
+        raise drift.UsageError('--workers takes 1 to ' + str(MAX_WORKERS) + ', got '
+                               + str(args.workers) + '.')
+    if args.timeout_ms is not None and args.timeout_ms < 0:
+        raise drift.UsageError('--timeout-ms takes 0 or more, got ' + str(args.timeout_ms) + '.')
+    if args.nav_timeout_ms < 1000:
+        raise drift.UsageError('--nav-timeout-ms takes 1000 or more, got '
+                               + str(args.nav_timeout_ms) + '.')
+    return {
+        'origins': origins, 'base_url': base_url, 'urls': urls, 'viewport': viewport,
+        'pages': [drift.page_pattern(p, '--page') for p in args.page],
+        'skip_pages': [drift.page_pattern(p, '--skip-page') for p in args.skip_page],
+        'load_pages': [drift.page_pattern(p, '--load-page') for p in args.load_page],
+        'timeout_ms': args.timeout_ms if args.timeout_ms is not None else None,
+        'env_timeout': _env_timeout,
+    }
+
+
+def _select_keys(store, options, args):
+    """(selected keys, keys the filters left out). Raises UsageError for a --key pattern
+    that matches no key."""
+    import fnmatch
+    from . import drift
+    keys = drift.store_keys(store)
+    for pattern in args.key:
+        if not any(fnmatch.fnmatchcase(k, pattern) for k in keys):
+            raise drift.UsageError('--key ' + repr(pattern) + ' matches no key in the store.')
+    selected = [k for k in keys
+                if not args.key or any(fnmatch.fnmatchcase(k, p) for p in args.key)]
+    selected = [k for k in selected if not any(fnmatch.fnmatchcase(k, p) for p in args.skip_key)]
+    if options['pages'] or options['skip_pages']:
+        pages = {k: drift.key_page(store, k) for k in selected}
+        selected = [k for k in selected if not options['pages']
+                    or any(drift.page_matches(p, pages[k]) for p in options['pages'])]
+        selected = [k for k in selected
+                    if not any(drift.page_matches(p, pages[k]) for p in options['skip_pages'])]
+    chosen = set(selected)
+    return sorted(selected), sorted(k for k in keys if k not in chosen)
+
+
+def _sites_message(store):
+    from . import drift
+    counts = drift.store_origins(store)
+    text = ('name the site to load pages from: mendwright check loads only sites you name, '
+            'never one the store alone points to. ')
+    if not counts:
+        return text + 'The store was saved before 0.9.0 and records only paths. Pass --base-url URL.'
+    return (text + 'The store has pages on ' + drift.origins_sentence(counts) + '. Pass --origin '
+            'ORIGIN for each site to check, or --base-url URL to load every page from one site.')
+
+
+def _loading_line(pages, count, browser_text):
+    """'mendwright check: loading 4 pages from https://shop.example with ...'."""
+    by_origin = {}
+    for page in pages:
+        by_origin.setdefault(page.origin, set()).update(page.recorded)
+    sites = []
+    for origin, recorded in sorted(by_origin.items()):
+        others = sorted(r for r in recorded if r != origin)
+        if others:
+            sites.append('recorded on ' + ', '.join(others) + ', loaded from ' + origin)
+        else:
+            sites.append('from ' + origin)
+    from .drift import _listed
+    text = 'mendwright check: loading ' + str(count) + (' page ' if count == 1 else ' pages ')
+    text += _listed(sites)
+    return text + (',' if any(s.startswith('recorded') for s in sites) else '') + ' with ' \
+        + browser_text + '.'
+
+
+def _storage_state_problem(path):
+    """Why the storage state file at path cannot be used, or None. Its content is never
+    shown."""
+    try:
+        with open(path, encoding='utf-8') as handle:
+            data = json.load(handle)
+    except OSError as exc:
+        return exc.strerror or type(exc).__name__
+    except ValueError:
+        return 'it is not JSON'
+    if not isinstance(data, dict) or not ('cookies' in data or 'origins' in data):
+        return 'it is not a storage state: an object with "cookies" or "origins"'
+    return None
+
+
+def _page_sleep(page, stop):
+    """How the engine waits between polls on a page the worker loaded: through the page,
+    which owns its Playwright, and with KeyboardInterrupt once the stop event is set."""
+    import time
+    wait = getattr(page, 'wait_for_timeout', None)
+
+    def sleep(ms):
+        if stop is not None and stop.is_set():
+            raise KeyboardInterrupt
+        if callable(wait):
+            wait(max(ms, 1))
+        else:
+            time.sleep(ms / 1000.0)
+    return sleep
+
+
+def _run_pages(pages, make_session, check, workers):
+    """check(session, page, stop) for each of pages, in up to workers threads, each with
+    its own session (sync Playwright is per thread). Results in the order of pages. With
+    one worker it runs here. On Ctrl+C the workers stop between pages (and the engine
+    between polls), each closes its own browser, and they are waited for up to 10 seconds
+    before KeyboardInterrupt goes on."""
+    import queue
+    import threading
+    import time
+    results = [None] * len(pages)
+    if workers <= 1 or len(pages) == 1:
+        session = make_session()
+        try:
+            session.start()
+            for index, page in enumerate(pages):
+                results[index] = check(session, page, None)
+        finally:
+            session.close()
+        return results
+    stop = threading.Event()
+    todo = queue.Queue()
+    for index in range(len(pages)):
+        todo.put(index)
+    failures = []
+
+    def work():
+        session = make_session()
+        try:
+            session.start()
+            while not stop.is_set():
+                try:
+                    index = todo.get_nowait()
+                except queue.Empty:
+                    return
+                results[index] = check(session, pages[index], stop)
+        except BaseException as exc:      # handed to the main thread below
+            failures.append(exc)
+            stop.set()
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=work, name='mendwright-check-' + str(n), daemon=True)
+               for n in range(min(workers, len(pages)))]
+    for thread in threads:
+        thread.start()
+    try:
+        while any(thread.is_alive() for thread in threads):
+            for thread in threads:
+                thread.join(0.2)
+    except KeyboardInterrupt:
+        stop.set()
+        deadline = time.monotonic() + 10
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        raise
+    if failures:
+        raise failures[0]
+    return results
+
+
+def cmd_check(args, session_factory=None):
+    """`mendwright check`. session_factory(**options) makes the browser session of one
+    worker (mendwright.drift_session.PlaywrightSession by default); tests pass a fake."""
+    import time
+    from . import drift
+    from .drift_session import PlaywrightSession, SetupError
+    from .facade import _NullProvider, _env_flag, fingerprint_setting
+    from .facade import open as open_healer
+    from .journal import NullJournal
+    from .store import StoreReadError, load_store
+
+    def usage(text):
+        _err('mendwright check: ' + text)
+        return 2
+
+    def cannot(text):
+        _err('mendwright check: ' + _scrub(text).replace('mendwright: ', '', 1))
+        return 4
+
+    try:
+        options = _check_options(args)
+    except drift.UsageError as exc:
+        return usage(str(exc))
+    problems = _settings_problems()
+    if problems:
+        return usage(_scrub(problems[0]).replace('mendwright: ', '', 1))
+    path = _find_store('check', args)
+    if path is None:
+        return 4
+    try:
+        store = load_store(args.seed, path, destructive_keys=set(args.destructive_key),
+                           read_only=True)
+    except (StoreReadError, OSError) as exc:
+        return cannot(str(exc))
+    events = _read_journal(os.path.join(os.path.dirname(path), 'journal.jsonl')) or []
+    skips, canaries = drift.journal_evidence(events)
+    if not drift.store_keys(store):
+        _out('The store has no keys yet, so nothing was checked.')
+        return 0 if args.allow_unchecked else 3
+    try:
+        keys, filtered = _select_keys(store, options, args)
+        if options['origins'] is None and options['base_url'] is None:
+            raise drift.UsageError(_sites_message(store))
+        plan = drift.plan_check(store, keys, origins=options['origins'],
+                                base_url=options['base_url'], urls=options['urls'],
+                                load_pages=options['load_pages'], filtered=filtered)
+        if not plan.pages and any(why in ('filtered', 'other-site') for _k, why in plan.left_out):
+            counts = drift.store_origins(store)
+            raise drift.UsageError(
+                'no key is left after --key, --skip-key, --page, --skip-page and --origin.'
+                + (' The store has pages on ' + drift.origins_sentence(counts) + '.'
+                   if counts else ''))
+    except drift.UsageError as exc:
+        return usage(str(exc))
+
+    fingerprint = fingerprint_setting(args.fingerprint)
+    dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
+    info = _provider_info()
+    if info['configured']:
+        provider = _Tripwire(info['name'], info['model'])
+    else:
+        reason = info['reason'] or ''
+        if reason and 'provider=' not in reason:
+            reason = reason.rstrip('.') + '. Alternatively, pass provider=... to mendwright.open().'
+        provider = _NullProvider(reason or None)
+    timeout_ms = options['timeout_ms']
+    if timeout_ms is None:
+        timeout_ms = options['env_timeout']()
+    if timeout_ms is None:
+        timeout_ms = 10000
+    headless = not args.headed
+    browser_text = 'Playwright ' + args.browser + (' (headless)' if headless else ' (headed)')
+    started = time.monotonic()
+
+    to_load = [page for page in plan.pages if page.address]
+    loaded = []
+    if to_load:
+        if args.storage_state:
+            problem = _storage_state_problem(args.storage_state)
+            if problem:
+                return cannot('could not use the storage state file ' + args.storage_state + ' ('
+                              + problem + '). Save one with context.storage_state(path=...).')
+        for note in plan.notes:
+            _err(note)
+        _err(_loading_line(to_load, len(to_load), browser_text))
+        factory = session_factory or PlaywrightSession
+
+        def make_session():
+            return factory(browser=args.browser, headless=headless, viewport=options['viewport'],
+                           storage_state=args.storage_state,
+                           nav_timeout_ms=args.nav_timeout_ms, scrub=_scrub)
+
+        def healer(page):
+            return open_healer(page, store=store, journal=NullJournal(), provider=provider,
+                               fingerprint=fingerprint, timeout_ms=timeout_ms,
+                               destructive_keys=set(args.destructive_key))
+
+        def check_one(session, page, stop):
+            visit = session.visit(page.address, args.wait_until)
+            try:
+                return drift.check_visit(
+                    visit, page, store, open_healer=healer, timeout_ms=timeout_ms,
+                    cookies=args.cookies, skips=skips, canaries=canaries,
+                    sleep=_page_sleep(visit.page, stop), nav_ms=args.nav_timeout_ms,
+                    scrub=_scrub, dry_run=dry_run)
+            finally:
+                visit.close()
+
+        try:
+            loaded = _run_pages(to_load, make_session, check_one, args.workers)
+        except SetupError as exc:
+            return cannot(str(exc))
+        except KeyboardInterrupt:
+            _err('mendwright check: interrupted.')
+            return 130
+    elif plan.notes:
+        for note in plan.notes:
+            _err(note)
+    done = dict(zip([id(p) for p in to_load], loaded, strict=True))
+    results = [done[id(page)] if page.address else drift.skipped_page(store, page, dry_run)
+               for page in plan.pages]
+    run = drift.CheckRun(
+        plan=plan, pages=results, store_path=path, browser=args.browser, headless=headless,
+        seconds=time.monotonic() - started, fingerprint=fingerprint, dry_run=dry_run,
+        provider={'name': info['name'], 'model': info['model']} if info['configured'] else None,
+        fail_on=args.fail_on, strict=args.strict, allow_unchecked=args.allow_unchecked,
+        version=_version())
+    code = run.decide_exit()
+    if args.format == 'json':
+        lines = drift.format_json(run)
+    elif args.format == 'md':
+        lines = drift.format_md(run, quiet=args.quiet)
+    else:
+        lines = drift.format_text(run, quiet=args.quiet)
+    if args.out:
+        target = _write_text_file('check', args.out, ''.join(line + '\n' for line in lines))
+        if target is None:
+            return 4
+        _out('Wrote ' + target)
+    else:
+        for line in lines:
+            _out(line)
+    return code
+
+
 # --- model -----------------------------------------------------------------------------
 
 def cmd_model_install(args):
@@ -832,6 +1187,83 @@ def build_parser():
     fix.add_argument('--apply', action='store_true',
                      help='write the changes (default: print the diff only)')
     fix.set_defaults(handler=cmd_fix)
+
+    check = sub.add_parser(
+        'check', help="look for drift before a run: load each key's last page and check its "
+                      'saved selectors',
+        description="Open the page where each key in the store was last found, in a headless "
+                    'Playwright browser, on a site you name with --origin or --base-url, and '
+                    'look at its saved selectors the way a run does. Nothing is clicked, typed '
+                    'or saved, and no model is asked. Each key gets one result: ok, ok (heal), '
+                    'wrong role, would heal, needs model, refused, or not checked with the '
+                    'reason. Exits 0 when no key broke, 1 when one did, 3 when some could not '
+                    "be checked, 2 for a usage error and 4 when the store or browser can't be "
+                    'opened.')
+    sites = check.add_mutually_exclusive_group()
+    sites.add_argument('--origin', action='append', metavar='ORIGIN[=ACTUAL]',
+                       help='load the pages recorded on ORIGIN (scheme://host[:port]), from '
+                            'ACTUAL when given; can be given more than once')
+    sites.add_argument('--base-url', metavar='URL',
+                       help='load every page from this origin, whatever origin was recorded')
+    check.add_argument('--store', metavar='PATH',
+                       help='the override store file (default: MENDWRIGHT_STORE, else '
+                            './.mendwright/overrides.json); journal.jsonl is read from the '
+                            'same folder')
+    check.add_argument('--seed', metavar='PATH', help='a seed file read under the store')
+    check.add_argument('--destructive-key', action='append', default=[], metavar='KEY',
+                       help='a key your run passes to open(destructive_keys=...)')
+    check.add_argument('--url', action='append', default=[], metavar='PAGE=URL',
+                       help="the address to load for a stored page, such as "
+                            "'/orders/*=https://shop.example/orders/1001'")
+    check.add_argument('--load-page', action='append', default=[], metavar='PATTERN',
+                       help='load pages matching PATTERN even when their path reads as an '
+                            'action, such as /account/sign-out')
+    check.add_argument('--key', action='append', default=[], metavar='PATTERN',
+                       help='check only the keys matching this glob')
+    check.add_argument('--skip-key', action='append', default=[], metavar='PATTERN',
+                       help='leave out the keys matching this glob')
+    check.add_argument('--page', action='append', default=[], metavar='PATTERN',
+                       help='check only the keys whose page matches this path pattern')
+    check.add_argument('--skip-page', action='append', default=[], metavar='PATTERN',
+                       help='leave out the keys whose page matches this path pattern')
+    check.add_argument('--browser', choices=BROWSERS, default='chromium',
+                       help='the Playwright browser (default: chromium)')
+    check.add_argument('--headed', action='store_true', help='show the browser')
+    check.add_argument('--viewport', metavar='WxH',
+                       help="the window size (default: Playwright's 1280x720)")
+    check.add_argument('--storage-state', metavar='FILE',
+                       help='a Playwright storage state for every page, read and never written')
+    check.add_argument('--cookies', choices=('reject', 'accept'),
+                       help='close a consent banner with the cookies= preset first, the only '
+                            'click mendwright check makes')
+    check.add_argument('--timeout-ms', type=int, metavar='MS',
+                       help='how long each page waits for its keys (default: '
+                            'MENDWRIGHT_TIMEOUT_MS, else 10000)')
+    check.add_argument('--nav-timeout-ms', type=int, default=30000, metavar='MS',
+                       help='the limit of each navigation (default: 30000)')
+    check.add_argument('--wait-until', choices=WAIT_UNTIL, default='load',
+                       help='when a navigation counts as done (default: load)')
+    check.add_argument('--workers', type=int, default=1, metavar='N',
+                       help='pages checked at once, 1 to 8, each in its own browser (default: 1)')
+    tier = check.add_mutually_exclusive_group()
+    tier.add_argument('--fingerprint', dest='fingerprint', action='store_true', default=None,
+                      help='look for heals from memory (default: as a run, '
+                           'MENDWRIGHT_FINGERPRINT, else on)')
+    tier.add_argument('--no-fingerprint', dest='fingerprint', action='store_false', default=None,
+                      help="don't look for heals from memory")
+    check.add_argument('--fail-on', choices=('drift', 'unhealable'), default='drift',
+                       help='exit 1 for any key that broke (drift, the default), or only for '
+                            "what a run can't get past alone (unhealable)")
+    check.add_argument('--strict', action='store_true',
+                       help='also count keys that match only through a saved heal')
+    check.add_argument('--allow-unchecked', action='store_true',
+                       help="don't exit 3 for keys that could not be checked")
+    check.add_argument('--format', choices=CHECK_FORMATS, default='text',
+                       help='output format (default: text)')
+    check.add_argument('--out', metavar='FILE', help='write the report to FILE')
+    check.add_argument('--quiet', action='store_true',
+                       help='list only the keys that are not ok, and the summary')
+    check.set_defaults(handler=cmd_check)
 
     model = sub.add_parser(
         'model', help="download and set up mendwright's local selector model",
