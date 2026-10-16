@@ -423,6 +423,51 @@ def test_flow_a_read_handles_a_cookie_banner_over_the_page_first(engine, tmp_pat
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [(banner, key)]
 
 
+_ROWS = "<ul><li class='row'>Ada</li><li class='row'>Grace</li><li class='row'>Linus</li></ul>"
+
+
+@pytest.mark.parametrize('read', ['locator', 'locator_all'])
+def test_flow_a_read_handles_a_cookie_banner_once_per_lookup(engine, tmp_path, read):
+    # As on the sync healer: a banner that opens after the first read stays up through the
+    # next reads of the same proxy (the first resolves it), or of the other elements of the
+    # same list, until a new lookup's read handles it.
+    async def show_banner(page):
+        await page.evaluate("html => { document.getElementById('consent').textContent = 'none';"
+                            " document.body.insertAdjacentHTML('beforeend', html); }",
+                            _COOKIE_BANNER)
+
+    async def main():
+        page = await engine.page(_SIGNUP + _ROWS)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('cookies', '#cookie-accept')
+            await show_banner(page)
+            if read == 'locator':
+                items, key = [heal.locator('create', '#create')] * 3, 'create'
+            else:
+                items, key = await heal.locator_all('rows', 'li.row'), 'rows'
+            texts = [await items[0].inner_text()]
+            consents = [await page.text_content('#consent')]
+            await show_banner(page)
+            texts += [await item.inner_text() for item in items[1:]]
+            consents.append(await page.text_content('#consent'))
+            handled = [(e.key, e.before) for e in heal.handled_interruptions]
+            texts.append(await heal.page.text_content('#create'))
+            consents.append(await page.text_content('#consent'))
+            return heal, key, texts, consents, handled
+        finally:
+            await _close(page)
+
+    heal, key, texts, consents, handled = engine.run(main())
+    rows = ['Create account'] * 3 if read == 'locator' else ['Ada', 'Grace', 'Linus']
+    assert texts == rows + ['Create account']
+    assert consents == ['accepted', 'none', 'accepted']
+    assert handled == [('cookies', key)]
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key),
+                                                                       ('cookies', '#create')]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
     async def main():

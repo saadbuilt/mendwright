@@ -659,7 +659,8 @@ class AsyncHealer:
             self._core._prime(key, roles, code, None, None)
             natives = await self._list(key, roles, timeout, poll_ms, optional)
             healed = self._core._healed(key) if natives else None
-        return [_guarded(self, key, native, timeout, healed, expect) for native in natives]
+        due = [True]    # one check of the interruptions for the reads of the whole list
+        return [_guarded(self, key, native, timeout, healed, expect, due) for native in natives]
 
     def _list_known(self, key):
         return self._core._list_known(key)
@@ -1314,9 +1315,9 @@ class AsyncActionProxy:
 
     Interruptions are handled before an action and after an interception error, as on
     ActionProxy, and so are popups with open(dismiss=True). Interruptions are handled
-    before a read of the Locator too (LOCATOR_READS). A skipped step (.present is
-    False once resolved) does nothing. With expect_value=, a read of an element found
-    through a heal is checked as on ActionProxy."""
+    before the first read of the Locator too (LOCATOR_READS), as on ActionProxy. A
+    skipped step (.present is False once resolved) does nothing. With expect_value=, a
+    read of an element found through a heal is checked as on ActionProxy."""
 
     # Whether an action's outcome goes to the heal canary, as on ActionProxy: off for an
     # element mendwright did not resolve itself, or one of a list (see _guarded).
@@ -1330,6 +1331,7 @@ class AsyncActionProxy:
         self._present = True
         self._healed = None     # set once resolved, as on ActionProxy
         self._expect = None
+        self._reads_due = [True]    # as on ActionProxy: see _before_read
 
     @property
     def key(self) -> str:
@@ -1388,6 +1390,7 @@ class AsyncActionProxy:
         healer = self._healer
         timeout, poll_ms = self._plan[4], self._plan[5]
         budget = await healer._before_action(self._key, timeout, poll_ms)
+        self._reads_due[0] = False      # its reads need not look again (see _before_read)
         await healer._dismiss_before(self._key, native, verb, budget, timeout, poll_ms)
         with healer._core._running(self._key, budget, timeout, poll_ms):
             try:
@@ -1501,8 +1504,8 @@ class AsyncActionProxy:
 
     def __getattr__(self, name: str) -> Any:
         # Reads and anything else not in ACTIONS go to the native Locator. Before the
-        # proxy is resolved, a method call resolves it first. A Locator's reads handle
-        # interruptions first, as on ActionProxy.
+        # proxy is resolved, a method call resolves it first. A Locator's first read handles
+        # interruptions first, as on ActionProxy (see _before_read).
         native = self.__dict__.get('_native', _UNRESOLVED)
         if native is not _UNRESOLVED:
             if not self.__dict__.get('_present', True) and not name.startswith('__'):
@@ -1544,9 +1547,14 @@ class AsyncActionProxy:
 
     async def _before_read(self):
         """ActionProxy._before_read(), awaited: handle the registered interruptions the
-        page shows before a read of the Locator (LOCATOR_READS), as before an action."""
+        page shows before a read of the Locator (LOCATOR_READS), as before an action, once
+        per lookup: on the first read once the proxy is resolved, unless an action of it
+        came first, and once for all the elements of a list."""
         __tracebackhide__ = True
-        await self._healer._before_action(self._key, self._plan[4], self._plan[5])
+        due = self._reads_due
+        if due[0]:
+            await self._healer._before_action(self._key, self._plan[4], self._plan[5])
+            due[0] = False
 
     async def _checked(self, verb, args, value):
         """value, read with verb(*args), through AsyncHealer._check_value()."""
@@ -1561,17 +1569,20 @@ class AsyncActionProxy:
         return '<AsyncActionProxy key=' + repr(self._key) + ' native=' + native + '>'
 
 
-def _guarded(healer, key, native, timeout_ms=None, healed=None, expect=None):
+def _guarded(healer, key, native, timeout_ms=None, healed=None, expect=None, due=None):
     """An AsyncActionProxy on a Locator mendwright did not resolve, for heal.page's
     guard-only locators with open(dismiss=True) (see mendwright.proxies.GuardedLocator), and
     for the elements of a list (AsyncHealer.locator_all): its actions get the checks of
     AsyncActionProxy._act, and nothing is healed, confirmed or saved. healed and expect are
     the heal a list was found through and the check its elements' reads must pass, which
-    can only refuse the heal (see Healer._check_value)."""
+    can only refuse the heal (see Healer._check_value). due, when given, is shared by the
+    elements of one lookup (see AsyncActionProxy._before_read)."""
     timeout = healer.timeout_ms if timeout_ms is None else timeout_ms
     proxy = AsyncActionProxy(healer, key, ((), None, None, None, timeout, 200, False, None))
     proxy._native = native
     proxy._canary = False
     proxy._healed = healed
     proxy._expect = expect
+    if due is not None:
+        proxy._reads_due = due
     return proxy

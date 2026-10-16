@@ -184,6 +184,46 @@ def test_a_read_handles_a_cookie_banner_over_the_page_first(tab, store_file, stu
     assert _flow_events(store_file) == [('flow.interrupt', banner, key)]
 
 
+_ROWS = page('<p>Consent: <span id="consent">none</span></p>'
+             '<p>Price: <span id="price">$10.00</span></p>'
+             '<ul><li class="row">Ada</li><li class="row">Grace</li><li class="row">Linus</li>'
+             '</ul>' + _SCRIPT, 'rows')
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('read', ['locator', 'locator_all'])
+def test_a_read_handles_a_cookie_banner_once_per_lookup(tab, store_file, stub_provider, read):
+    # The check before a read queries the page for each registered interruption, so it runs
+    # once per lookup, as the lookup's scroll did on 0.7.0: a banner that opens after the
+    # first read stays up through the next reads of the same proxy, or of the other
+    # elements of the same list, until a new lookup's read handles it.
+    tab.load(_ROWS)
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.interrupt('cookies', '#cookie-accept')
+    show = "document.body.insertAdjacentHTML('beforeend', " + json.dumps(_BANNER) + ')'
+    tab.js(show)
+    if read == 'locator':
+        items, key = [_step(heal, 'price', '#price')] * 3, 'price'
+    else:
+        items = heal.locator_all('rows', 'li.row', timeout_ms=FAST_MS, poll_ms=POLL_MS)
+        key = 'rows'
+
+    first = items[0].inner_text()
+    assert tab.text('#consent') == 'accepted'
+    tab.js("document.getElementById('consent').textContent = 'none'")
+    tab.js(show)
+    later = [item.inner_text() for item in items[1:]]
+
+    expected = ['$10.00'] * 3 if read == 'locator' else ['Ada', 'Grace', 'Linus']
+    assert [first] + later == expected
+    assert tab.text('#consent') == 'none'               # still up
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key)]
+    assert heal.page.text_content('#price') == '$10.00'
+    assert tab.text('#consent') == 'accepted'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key),
+                                                                       ('cookies', '#price')]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_the_cookies_preset_on_a_onetrust_banner(tab, store_file, stub_provider, choice, outcome):
     tab.load(_ONETRUST)

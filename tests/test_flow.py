@@ -381,6 +381,49 @@ def test_a_read_handles_a_banner_over_the_page_first(side, tmp_path, caplog, stu
         ('flow.interrupt', 'cookies', key)]
 
 
+class QueryCountingPage(FlowPage):
+    """A FlowPage that keeps each selector it is queried with."""
+
+    def __init__(self, html, **kwargs):
+        self.queries = []
+        super().__init__(html, **kwargs)
+
+    def query(self, selector):
+        self.queries.append(selector)
+        return super().query(selector)
+
+
+def test_a_read_handles_interruptions_once_per_lookup(side, tmp_path, stub_provider):
+    # The check before a read queries the page for each registered interruption, so it runs
+    # once per lookup, as the lookup's scroll did on 0.7.0: before the first read of a
+    # proxy, unless one of its actions came first. Each read of heal.page is a lookup.
+    page = QueryCountingPage('<html><body>' + BANNER + SIGNUP + '</body></html>')
+    heal = side.open(page, provider=stub_provider('//never'), store_path=_store(tmp_path))
+    heal.interrupt('cookies', '#cookie-accept')
+
+    def checks():
+        return sum(1 for selector in page.queries if 'cookie-accept' in selector)
+
+    email, after = side.locate('email', '#email'), []
+    for _ in range(4):
+        assert side.act(email, 'get_attribute', 'name') == 'email'
+        after.append(checks())
+    assert page.by_id('banner') is None and after[0] > 0
+    assert after == [after[0]] * 4                  # the first read looked, the others not
+
+    nxt = side.locate('next', '#next')
+    side.act(nxt, 'click')
+    clicked = checks()
+    side.act(nxt, 'get_attribute', 'type')
+    assert checks() == clicked                      # the click looked already
+
+    side.act(heal.page, 'get_attribute', '#email', 'name')
+    once = checks()
+    side.act(heal.page, 'get_attribute', '#email', 'name')
+    assert once > clicked and checks() - once == once - clicked
+    assert heal.handled_interruptions == [InterruptionEvent('cookies', 'email')]
+
+
 def test_a_banner_that_hides_the_element_is_handled_on_a_miss_before_any_heal(side, tmp_path,
                                                                               stub_provider):
     hidden = SIGNUP.replace('<form>', '<form id="form" style="display: none">')
@@ -846,6 +889,23 @@ def test_what_a_run_function_raises_is_raised_as_it_is(side, tmp_path, caplog, s
     assert [(e['key'], e['before'], e['action'], e['function'], e['outcome'], e['error'])
             for e in _events(tmp_path)] == [
         ('relogin', 'email', 'run', 'relogin', 'failed', 'ValueError')]
+
+
+def test_a_read_whose_check_raised_looks_again_on_the_next_read(side, tmp_path, stub_provider):
+    # A proxy's reads look for interruptions once per lookup, but only a check that returned
+    # counts: after the run= function raised, the next read of the same proxy calls it again,
+    # as the next action would.
+    page = _page(RELOGIN + SIGNUP)
+    heal = side.open(page, provider=stub_provider('//never'), store_path=_store(tmp_path))
+    calls, error = [], ValueError('wrong password')
+    heal.interrupt('relogin', '#relogin', run=_relogin(side, calls, fail=error))
+    email = side.locate('email', '#email')
+
+    for _ in range(2):
+        with pytest.raises(ValueError) as caught:
+            side.act(email, 'get_attribute', 'name')
+        assert caught.value is error
+    assert len(calls) == 2
 
 
 def test_an_attention_required_from_a_run_function_is_not_taken_for_a_miss(side, tmp_path,
