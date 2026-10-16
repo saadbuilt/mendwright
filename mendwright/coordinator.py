@@ -6,7 +6,7 @@ submitted, keys marked destructive are never healed, a key is not healed on a pa
 it was never found (a change in the flow, see mendwright.flow), and a failed canary
 quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
-try_heal_list() heals a selector for a list of elements in the same way (see mendwright.lists).
+A list whose selectors all match nothing is never healed (see decline_list).
 """
 
 import contextlib
@@ -14,9 +14,8 @@ import logging
 import time
 
 from . import fingerprint as _fingerprint
-from . import lists as _lists
-from .capture import build_bundle, build_list_bundle
-from .client import DEFAULT_AUTH_HEADER, apply, apply_list
+from .capture import build_bundle
+from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
 from .fit import fit_bundle, has_position
 from .flow import flow_change_message, journal_event
@@ -62,6 +61,19 @@ def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
             "could act on a live account. Fix the selector in your code or seed file by hand.")
+
+
+def _list_missing_message(selector_key, count):
+    """Why a list whose selectors all match nothing is not healed (see decline_list). count
+    is how many elements the list had when its list fingerprint was recorded."""
+    had = (str(count) + ' elements' if isinstance(count, int) and not isinstance(count, bool)
+           and count >= 2 else 'two or more elements')
+    return ("'" + selector_key + "' matched " + had + ' when its list fingerprint was recorded, '
+            'and none of its selectors matches now. Either the list is empty at this point, or '
+            "its selector broke: mendwright can't tell the two apart, since the items of an "
+            "emptied list can show in another list, such as a cart's in Saved for later, so it "
+            'never heals a list that matches nothing. If the selector broke, change it in your '
+            'code.')
 
 
 class HealCoordinator:
@@ -374,156 +386,17 @@ class HealCoordinator:
         return None, ("the fingerprint match for '" + selector_key + "', " + match.xpath
                       + ", failed mendwright's checks (" + str(reason) + ')'), True
 
-    def try_heal_list(self, selector_key, meta, broken_candidates, context, row=None):
-        """Heal a list key (see mendwright.lists) whose selectors all match nothing, and
-        apply the new XPath. Returns it (truthy), or None/False with the reason recorded
-        (see ``explain``).
-
-        What stops a heal of one element stops it first: a key marked destructive, a page
-        the key was never found on, an unknown role, no provider when the fingerprint tier is
-        off, and the guard. With fingerprint=True the key's list fingerprint is looked for
-        among the page's repeated groups (lists.find). When that is not confident, the
-        provider is shown the groups (build_list_bundle) and may pick one by its xpath; any
-        other answer is rejected, and it is asked once more. What either picks goes through
-        the list gate (client.apply_list). Dry run checks and applies nothing, and the rate
-        limit counts a provider's attempt as for one element."""
-        if meta.get('destructive'):
-            return self._decline(selector_key, _destructive_message(selector_key))
-        moved = self._flow_change(selector_key, context)
-        if moved:
-            return self._decline(selector_key, moved)
-        role = meta.get('expectedRole')
-        unavailable = getattr(self.provider, 'unavailable_reason', None)
-        unavailable = unavailable if isinstance(unavailable, str) and unavailable else None
-        summary = getattr(self.provider, 'unavailable_summary', None)
-        summary = summary if isinstance(summary, str) else None
-        if unavailable and not self.fingerprint:
-            return self._decline(selector_key, unavailable, logged=summary)
-        if not role or role == 'unknown':
-            return self._decline(selector_key, 'mendwright ' + _role_needed(selector_key))
-        if not self.guard():
-            return self._decline(selector_key,
-                "a transaction guard is currently blocking heals (a payment or registration "
-                "submission is pending), so mendwright did not try to heal. Run the step again "
-                "once the guard allows heals.")
-        started = self.clock()
-        html = self.html_provider()
-        self.journal.requested(selector_key, list=True)
-        match = _lists.find(meta.get('listFingerprint'), html, role,
-                            visible=self._live_any if self.driver is not None else None)
-        note = ''
-        if self.fingerprint:
-            applied, note = self._list_fingerprint_tier(selector_key, meta, broken_candidates,
-                                                        html, match, started)
-            if applied is not None:
-                return applied
-        if unavailable:
-            return self._decline(
-                selector_key, note + ', and no model provider is configured to try instead. '
-                + unavailable, logged=(note + ', and ' + summary) if summary else None)
-        lead = note + ', and ' if note else ''
-        if not match.groups:
-            return self._decline(selector_key, lead + 'the page has no repeated group of '
-                                 + str(role) + ' elements to ask a model about')
-        if self.guardrails is not None and not self.guardrails.allow(selector_key):
-            self.journal.rejected(selector_key, reason='rate/spend cap', list=True)
-            return self._decline(selector_key,
-                "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
-                "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
-                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).")
-        bundle, shown = build_list_bundle(selector_key, meta, broken_candidates,
-                                          [_lists.describe(g) for g in match.groups], context,
-                                          row)
-        twins = {g.xpath: g.css for g in match.groups}
-        asked = note + ', so the model was asked: ' if note else ''
-        reason = 'no proposal'
-        for _ in range(2):  # the first pick + one more after a rejection
-            proposal = self.provider.propose(bundle)
-            if not proposal:
-                error = self._provider_error()
-                self.journal.rejected(selector_key, reason='no proposal', error=error or None,
-                                      list=True)
-                if error:
-                    return self._decline(selector_key,
-                        asked + type(self.provider).__name__ + " returned no selector for '"
-                        + selector_key + "': " + error)
-                return self._decline(selector_key,
-                    asked + "the model returned no usable selector for '" + selector_key
-                    + "'. Try a different or stronger model, or repair the selector by hand.")
-            picked = str(proposal.get('xpath') or '').strip()
-            self.journal.proposed(selector_key, xpath=picked,
-                                  reasoning=proposal.get('reasoning'), list=True)
-            real = shown.get(picked) or shown.get(picked[len('xpath='):].strip())
-            if real is None:
-                reason = ('it is not the xpath of one of the groups listed; copy one of them '
-                          'exactly')
-            elif self.dry_run:
-                ok = _lists.validate(real, html, role).ok
-                self._emit(logging.INFO, '[heal dry-run] key=' + selector_key + ' proposed='
-                           + real + ' (list) valid=' + str(ok) + ' (not applied)')
-                return self._decline(selector_key,
-                    "dry-run mode is on, so the group the model picked for '" + selector_key
-                    + "' was checked but not applied. Turn off dry_run to let mendwright apply "
-                    "and retry.", level=logging.INFO)
-            else:
-                applied, reason, count = apply_list(self.store, selector_key, real, html, meta,
-                                                    driver=self.driver, css=twins.get(real))
-                if applied:
-                    self._record_applied(selector_key, broken_candidates, applied, started,
-                                         type(self.provider).__name__, self._provider_model(),
-                                         'model', items=count)
-                    return applied
-            self.journal.rejected(selector_key, xpath=picked, reason=reason, list=True)
-            bundle = dict(bundle, rejectedXpath=picked, rejectReason=reason)
-        self._decline(selector_key,
-            asked + "no group the model picked for '" + selector_key + "' passed mendwright's "
-            "list gate (last reason: " + str(reason) + "). The gate requires an xpath without "
-            "positions that matches 2 or more elements of the items' role, none inside another, "
-            "with at least one visible on the live page.")
-        return None
-
-    def _list_fingerprint_tier(self, selector_key, meta, broken_candidates, html, match,
-                               started):
-        """try_heal_list()'s first tier: (applied, note). applied is the xpath applied, False
-        when dry run declined the heal, or None to go on to the model; note says why the tier
-        did not heal."""
-        if not match.xpath:
-            return None, ("the list fingerprint match for '" + selector_key + "' was not "
-                          'confident: ' + match.reason)
-        reasoning = ('list fingerprint score ' + format(match.score, '.2f') + ', next best '
-                     + format(match.runner_up, '.2f') + ', ' + str(match.count) + ' elements')
-        self.journal.proposed(selector_key, xpath=match.xpath, reasoning=reasoning,
-                              source=FINGERPRINT_PROVIDER, list=True)
-        if self.dry_run:
-            ok = _lists.validate(match.xpath, html, meta.get('expectedRole')).ok
-            self._emit(logging.INFO, '[heal dry-run] key=' + selector_key + ' proposed='
-                       + match.xpath + ' (list fingerprint) valid=' + str(ok) + ' (not applied)')
-            return self._decline(selector_key,
-                "dry-run mode is on, so the list fingerprint match for '" + selector_key
-                + "' was checked but not applied. Turn off dry_run to let mendwright apply and "
-                "retry.", level=logging.INFO), ''
-        applied, reason, count = apply_list(self.store, selector_key, match.xpath, html, meta,
-                                            driver=self.driver, css=match.css)
-        if applied:
-            self._record_applied(selector_key, broken_candidates, applied, started,
-                                 FINGERPRINT_PROVIDER, None, FINGERPRINT_PROVIDER, items=count)
-            return applied, ''
-        self.journal.rejected(selector_key, xpath=match.xpath, reason=reason,
-                              source=FINGERPRINT_PROVIDER, list=True)
-        return None, ("the list fingerprint match for '" + selector_key + "', " + match.xpath
-                      + ", failed mendwright's checks (" + str(reason) + ')')
-
-    def _live_any(self, xpath):
-        """For the list fingerprint tier: False when none of the elements xpath matches on
-        the live page is visible, True when one is, None when the page could not be read."""
-        from .drivers.base import driver_list_items
-        try:
-            items = driver_list_items(self.driver, xpath)
-        except Exception:
-            return None
-        if items is None:
-            return None
-        return any(item.get('visible') for item in items)
+    def decline_list(self, selector_key, meta):
+        """Decline to heal list key, whose selectors all match nothing (see
+        Healer.locator_all), and return the reason, recorded and logged as for any heal that
+        did not apply (see ``explain``). mendwright never heals such a list: an emptied list
+        whose items show in another list on the page now, such as a cart's in Saved for
+        later, can be the same page as a redesign but for a class name or a heading's text.
+        So nothing is looked for on the page, no model is asked and nothing is saved."""
+        lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
+        self._decline(selector_key, _list_missing_message(
+            selector_key, lfp.get('count') if isinstance(lfp, dict) else None))
+        return self.explain(selector_key)
 
     def _live_visible(self, xpath):
         """For the fingerprint tier: False when xpath does not reach one visible element on
@@ -534,20 +407,17 @@ class HealCoordinator:
             return None
 
     def _record_applied(self, selector_key, broken_candidates, applied, started, provider,
-                        model, source, items=None):
-        """Journal, remember and log a heal that was applied. items is how many elements a
-        list heal matches (None for one element)."""
+                        model, source):
+        """Journal, remember and log a heal that was applied."""
         seconds = max(0.0, self.clock() - started)
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
-                             source=source if source != 'model' else None,
-                             list=True if items is not None else None, items=items)
+                             source=source if source != 'model' else None)
         self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
         self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
                            'new': applied, 'confirmed': None, 'source': source})
-        self._log_applied(selector_key, broken_candidates, applied, seconds, provider, source,
-                          items)
+        self._log_applied(selector_key, broken_candidates, applied, seconds, provider, source)
 
     def _flow_change(self, selector_key, context):
         """The reason to decline when the current page is not one the key was found on,
@@ -580,7 +450,7 @@ class HealCoordinator:
         return ''
 
     def _log_applied(self, selector_key, broken_candidates, applied, seconds, provider,
-                     source='model', items=None):
+                     source='model'):
         old = _old_selectors(broken_candidates)
         timing = ' (' + provider + ', ' + format(seconds, '.1f') + 's)'
         if source == 'intent':
@@ -593,9 +463,8 @@ class HealCoordinator:
             was = old[0]
         else:
             was = old[0] + ' (+' + str(len(old) - 1) + ' more)'
-        what = repr(selector_key) if items is None else (
-            'the list ' + repr(selector_key) + ' (' + str(items) + ' elements)')
-        self._emit(logging.WARNING, 'healed ' + what + ': ' + was + ' -> ' + applied + timing)
+        self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
+                   + applied + timing)
 
     def confirm(self, selector_key, xpath, success, reason=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
@@ -616,9 +485,17 @@ class HealCoordinator:
             self.store.quarantine(selector_key, xpath)
             self.journal.quarantine(selector_key, xpath=xpath, reason=reason)
 
-    def confirm_pending(self, selector_key, success, reason=None):
+    def is_pending(self, selector_key, xpath):
+        """True when xpath is the heal of selector_key this process applied and has not
+        confirmed yet."""
+        return xpath is not None and self.pending.get(selector_key) == xpath
+
+    def confirm_pending(self, selector_key, success, reason=None, xpath=None):
         """Report the action outcome for a just-healed key, then clear its marker.
-        A failed action quarantines the healed candidate so it can't outrank the seed."""
+        A failed action quarantines the healed candidate so it can't outrank the seed.
+        With xpath, only when the key's heal waiting is the one that applied xpath."""
+        if xpath is not None and self.pending.get(selector_key) != xpath:
+            return
         xpath = self.pending.pop(selector_key, None)
         if xpath is not None:
             self.confirm(selector_key, xpath, success, reason)

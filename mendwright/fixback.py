@@ -133,6 +133,20 @@ def _active(entry):
     return out
 
 
+def _latest(candidates):
+    """The one of candidates that succeeded most recently."""
+    return max(candidates, key=lambda c: _text(c.get('lastSucceededAt')))
+
+
+def _written(candidate, old):
+    """What a heal would be written as in place of the selectors old: its CSS form when it
+    has one and they are all CSS, else its XPath (see Fix.for_old)."""
+    css = candidate.get('css')
+    if isinstance(css, str) and css and all(classify(s) == CSS for s in old):
+        return css
+    return candidate['xpath']
+
+
 def plan_fixes(store, events, *, include_unconfirmed=False):
     """The Plan for a store (schema-2 dict) and its journal events (oldest first, or an
     empty list). The key is fixed when its best active selector, the one that succeeded most
@@ -180,6 +194,35 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  'come from a seed file, or locator() was called without one), '
                                  'so there is no string in your code to replace. Update the seed '
                                  'file by hand, or pass the healed selector to heal.locator().'))
+            continue
+        lists = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is True]
+        ones = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is not True]
+        if lists and ones:
+            # heal.locator_all(key, ...) and a heal.page shortcut or heal.driver.find_element()
+            # share the key, and each healed: the newer one is no fix for the other's call.
+            plan.skipped.append((key, 'it has a heal of the list (heal.locator_all()) and a heal '
+                                 'of one element under the same key, and one selector in your '
+                                 'code cannot be both, so mendwright cannot tell which one goes '
+                                 'where. Change the selectors by hand, or give the list a key of '
+                                 'its own: the list to ' + _written(_latest(lists), old)
+                                 + ', the element to ' + _written(_latest(ones), old)))
+            continue
+        if best.get('list') is True:
+            # Only a build of 0.8.0 before its release saved list heals, and one can be another
+            # list that holds the items of an emptied one (see Healer.locator_all).
+            plan.skipped.append((key, 'its heal is a heal of a list (heal.locator_all()), which '
+                                 "mendwright no longer makes or uses: it can't tell a list that "
+                                 'was emptied from one whose selector broke, so the heal can be '
+                                 'another list. If the selector broke, change it by hand.'))
+            continue
+        if entry.get('listFingerprint') is not None:
+            # heal.locator_all() looks the key up as a list, and the heal is of one element
+            # (heal.locator(), a heal.page shortcut or heal.driver.find_element() under the same
+            # key): written into the list call, it would make the list that one element.
+            plan.skipped.append((key, 'heal.locator_all() looks it up as a list, and its heal is '
+                                 'of one element, so written into the list call it would make the '
+                                 'list match that one element. Give the list a key of its own, or '
+                                 'change the selector by hand to: ' + new))
             continue
         bare = [s for s in old if _BARE_WORD.match(s)]
         if bare:

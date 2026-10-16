@@ -3,10 +3,6 @@ model's reply into a proposal dict {xpath, fallbacks, reasoning}.
 
 The model may also answer {"xpath": null, "reason": "..."} when no element on the page is
 the one the step means (the step moved to another page, or the element was removed).
-
-A bundle for a list heal ({'list': True, ..., 'groups': [...]}, see mendwright.lists) gets
-build_list_prompt() instead: the model picks one of the repeated groups of the page by its
-xpath, or says that none is the list. The reply is parsed the same way.
 parse_proposal() returns None for that reply, as for any reply without an xpath, and
 not_here_reason() returns the model's reason, which the providers put in last_error.
 
@@ -26,8 +22,6 @@ _MAX = 60000
 
 def build_prompt(bundle):
     """Return {'system', 'user'} for a chat/messages request. Pure function of the bundle."""
-    if bundle.get('list'):
-        return build_list_prompt(bundle)
     destructive = bool(bundle.get('destructive'))
     expected_role = bundle.get('expectedRole')
     expected_text = bundle.get('expectedText') or []
@@ -58,45 +52,6 @@ def build_prompt(bundle):
          if bundle.get('rejectReason') else '') +
         '\nDOM inventory (redacted):\n' + json.dumps(bundle.get('inventory') or [])[:_MAX] +
         '\nHTML snapshot (redacted):\n' + str(bundle.get('html') or '')[:_MAX]
-    )
-    return {'system': system, 'user': user}
-
-
-def build_list_prompt(bundle):
-    """Return {'system', 'user'} for a list heal: the bundle's groups, each with its xpath, how
-    many items it has, its container and its first items. Pure function of the bundle."""
-    role = bundle.get('expectedRole')
-    system = (
-        'You repair ONE broken web-automation selector for a LIST of elements. On an earlier '
-        'run it matched every item of a list, such as the cards of a product grid, and now it '
-        'matches nothing. Below are the groups of elements that repeat on the page now, each '
-        'with its xpath. Reply with ONLY a JSON object: {"xpath":"...","reasoning":"..."}, '
-        'where xpath is the xpath of the group whose items are the items of that list, copied '
-        "exactly. Each item's role must be '" + str(role) + "'. If no group is that list, for "
-        'example because the list is empty now or moved to another page, reply '
-        '{"xpath":null,"reason":"..."} instead. Do not pick a group that is only similar, '
-        'such as another list elsewhere on the page.'
-    )
-    lines = []
-    for number, group in enumerate(bundle.get('groups') or [], 1):
-        if not isinstance(group, dict):
-            continue
-        lines.append('[' + str(number) + '] ' + str(group.get('xpath')))
-        lines.append('    ' + str(group.get('count')) + ' items in ' + str(group.get('container')))
-        for item in group.get('items') or []:
-            lines.append('    item: ' + str(item))
-    user = (
-        'key: ' + str(bundle.get('key')) +
-        '\nitemRole: ' + str(role) +
-        (('\nintent: ' + str(bundle.get('intent'))) if bundle.get('intent') else '') +
-        (('\npage: ' + str(bundle.get('page'))) if bundle.get('page') else '') +
-        (('\nlast found on page: ' + str(bundle.get('lastPage'))) if bundle.get('lastPage') else '') +
-        (('\nitems when it last matched: ' + str(bundle.get('count'))) if bundle.get('count') else '') +
-        '\nbroken candidates:\n' + '\n'.join(bundle.get('candidates') or []) +
-        (('\nYour previous proposal ' + str(bundle.get('rejectedXpath')) + ' was rejected: '
-          + str(bundle.get('rejectReason')) + '. Pick a DIFFERENT group.')
-         if bundle.get('rejectReason') else '') +
-        '\nrepeated groups (redacted):\n' + '\n'.join(lines)[:_MAX]
     )
     return {'system': system, 'user': user}
 

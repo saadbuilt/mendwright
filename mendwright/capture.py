@@ -11,11 +11,6 @@ The key's saved fingerprint (mendwright.fingerprint) goes into the bundle only f
 that asks for it with ``wants_fingerprint = True``, which LocalModelProvider does: a model on
 your own machine. It is redacted the same way.
 
-The bundle for a list heal (build_list_bundle, see mendwright.lists) has no page HTML and no
-inventory: it lists the page's repeated groups, each with its xpath, its container's
-opening tag and its first two items, redacted the same way. A list fingerprint never goes
-into a bundle.
-
 The HTML that goes into the bundle is also cleaned first. Scripts, styles, <noscript>,
 <template>, comments, the inside of <svg> and everything in <head> except <title> are
 removed, and runs of whitespace are collapsed. Real pages are often mostly inline
@@ -188,31 +183,3 @@ def build_bundle(key, meta, broken_candidates, inventory, html, context, row=Non
         # The element the key matched last time, redacted like the expected text.
         bundle['fingerprint'] = _redact_tree(fp, forms)
     return bundle
-
-
-def build_list_bundle(key, meta, broken_candidates, groups, context, row=None):
-    """The redacted bundle for a list heal (see mendwright.lists): what build_bundle() gives
-    for the step, without the page and the inventory, with 'list': True, the number of items
-    the list had when it last matched, and the page's repeated groups (lists.describe()),
-    redacted as the HTML is. Returns (bundle, xpaths): xpaths maps each group's xpath as the
-    bundle shows it to the real one, so a reply can be read back. The list fingerprint never
-    goes into it."""
-    forms = _secret_forms(_secret_values(row))
-    bundle = build_bundle(key, dict(meta, fingerprint=None, expectedText=[]), broken_candidates,
-                          [], None, context, row)
-    for field in ('inventory', 'html', 'expectedText', 'destructive'):
-        bundle.pop(field, None)
-    lfp = meta.get('listFingerprint')
-    bundle['list'] = True
-    bundle['count'] = lfp.get('count') if isinstance(lfp, dict) else None
-    shown, xpaths = [], {}
-    for group in groups:
-        xpath = _redact_text(group['xpath'], forms)
-        if xpath in xpaths:
-            continue
-        xpaths[xpath] = group['xpath']
-        shown.append({'xpath': xpath, 'count': group['count'],
-                      'container': _redact_text(group['container'], forms),
-                      'items': [_redact_text(item, forms) for item in group['items']]})
-    bundle['groups'] = shown
-    return bundle, xpaths

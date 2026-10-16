@@ -26,8 +26,6 @@ For lists (see mendwright.lists):
   handles(selector, frame_chain=())       a native handle for each element it matches
   list_fingerprint(selector, frame_chain=())   the list fingerprint of what it matches
                                           (LIST_JS), or None for fewer than two elements
-  list_items(selector, frame_chain=())    [{'tag', 'role', 'visible'}] for what it matches
-                                          (ITEMS_JS), at most 200
 
 For open(dismiss=True) (see mendwright.dismiss), each on a handle() result and run where it
 lives (inside its frame chain on Selenium):
@@ -48,11 +46,10 @@ lives (inside its frame chain on Selenium):
 
 Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
-when a driver lacks the method, through driver_handles, driver_list_fingerprint and
-driver_list_items, which fall back to [handle()], None and None (a driver without
-list_fingerprint() records no list, so none is ever healed), and through the
-driver_popup_* helpers, which fall back to None or False: a driver without them never
-dismisses anything.
+when a driver lacks the method, through driver_handles and driver_list_fingerprint, which
+fall back to [handle()] and None (a driver without list_fingerprint() records no list, so
+a list lookup that matches nothing gives []), and through the driver_popup_* helpers,
+which fall back to None or False: a driver without them never dismisses anything.
 """
 
 import inspect
@@ -171,38 +168,6 @@ def driver_list_fingerprint(driver, selector, frame_chain=()):
     except Exception:
         return None
     return out if valid(out) else None
-
-
-def driver_list_items(driver, selector, frame_chain=()):
-    """driver.list_items(selector, frame_chain) when the driver has it: [{'tag', 'role',
-    'visible'}] for the elements the selector matches. None when the driver lacks it or the
-    read failed, or for a result that is not a list. InvalidSelector propagates."""
-    from ..selectors import InvalidSelector
-    method = getattr(driver, 'list_items', None)
-    if not callable(method):
-        return None
-    try:
-        out = method(selector, frame_chain)
-    except InvalidSelector:
-        raise
-    except Exception:
-        return None
-    return out if isinstance(out, list) else None
-
-
-def item_rows(raw):
-    """ITEMS_JS's result as list_items() rows: {'tag', 'role', 'visible'}, the role computed
-    with role_for(). Anything malformed is skipped; a non-list gives None."""
-    if not isinstance(raw, list):
-        return None
-    rows = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        tag = str(item.get('tag') or '').lower()
-        rows.append({'tag': tag, 'role': role_for(tag, item.get('role'), item.get('type')),
-                     'visible': item.get('visible') is True})
-    return rows
 
 
 def driver_framed(driver, frame_selector):

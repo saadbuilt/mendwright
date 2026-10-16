@@ -27,7 +27,8 @@ real driver's.
 
 Lists: Locator.all() on heal.page.locator(selector) and driver.find_elements() give what
 the real call gives. They never wait, heal or save anything, so a list that matches nothing
-is [] at once. heal.locator_all() is what heals a list (see mendwright.lists). With
+is [] at once. heal.locator_all() records a list, and raises for one that had items and
+matches nothing; it never heals one either (see Healer.locator_all). With
 open(dismiss=True), the Locators all() gives are GuardedLocators.
 
 The reads (get_attribute, text_content, input_value, is_checked, ...), set_input_files
@@ -157,7 +158,7 @@ class HealingLocator(_Proxy):
 
     def all(self):
         """Locator.all(): a Locator for each element the selector matches, as Playwright
-        gives them, never healed and with nothing saved (heal.locator_all() heals a list).
+        gives them, never healed and with nothing saved (nor does heal.locator_all() heal one).
         With open(dismiss=True), each one is a GuardedLocator."""
         return _items(self, self._mw_target.all())
 
@@ -570,7 +571,8 @@ class HealingDriver(_Proxy):
 
     def find_elements(self, by=BY_ID, value=None):
         """The real driver's find_elements(by, value), not healed and with nothing saved,
-        with each element wrapped as a HealingElement. heal.locator_all() heals a list."""
+        with each element wrapped as a HealingElement. heal.locator_all() never heals a list
+        either."""
         healer, key = self._mw_healer, _by_key(by, value)
         return [_found(healer, el, key) for el in self._mw_target.find_elements(by, value)]
 

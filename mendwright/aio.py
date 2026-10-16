@@ -30,8 +30,7 @@ Every safety decision is made by the sync core, unchanged:
   handling an interruption does. heal.step() and run_steps() (see mendwright.steps) look
   at the landmarks on the event loop and await each step's function.
 - Lists (locator_all(), see mendwright.lists) and expect_value= (see mendwright.values)
-  work as on the sync Healer. A list is looked up on the event loop and healed in a worker
-  thread, as one element is.
+  work as on the sync Healer. A list is looked up on the event loop, and never healed.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -182,12 +181,12 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory, fingerprint, and list_items for a list
-    heal), act_on for an interruption's action, visible_match for the WARNING about a
-    selector that matches several elements, the popup methods of open(dismiss=True)
-    (popup_probe and the others), run() for any other callable, and wait() for a run=
-    function of heal.interrupt(). describe, fingerprint, visible_match, list_items and the
-    popup methods are None when the async driver has none."""
+    handle, url, outer_html, describe, inventory and fingerprint), act_on for an
+    interruption's action, visible_match for the WARNING about a selector that matches
+    several elements, the popup methods of open(dismiss=True) (popup_probe and the others),
+    run() for any other callable, and wait() for a run= function of heal.interrupt().
+    describe, fingerprint, visible_match and the popup methods are None when the async
+    driver has none."""
 
     timeout = 30.0
 
@@ -206,8 +205,6 @@ class SyncBridge:
             self.fingerprint = None
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
-        if not callable(_member(driver, 'list_items')):
-            self.list_items = None    # the list gate counts the elements only
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
@@ -289,9 +286,6 @@ class SyncBridge:
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
-
-    def list_items(self, selector, frame_chain=()):
-        return self.run(self._driver.list_items, selector, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
@@ -643,23 +637,21 @@ class AsyncHealer:
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
                     role: Role | None = None, timeout_ms: int | None = None, poll_ms: int = 200,
-                    optional: bool = False, expect_value: Any = None):
+                    optional: bool = False):
         """Healer.locator_all(), awaited: ``await heal.locator_all(key, selector)`` gives an
-        AsyncActionProxy for each element of the list, resolved, healing the selector when
-        it matches nothing any more, with expect_value= checked on the elements' reads as
-        there. Argument errors raise here, before anything is awaited."""
+        AsyncActionProxy for each element of the list, resolved. A list whose selectors all
+        match nothing is never healed, as there. Argument errors raise here, before anything
+        is awaited."""
         roles, code = _locator_args(key, selector, role, None)
-        expect = expectation(expect_value, key) or self._core._expect_values.get(key)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional), expect)
+        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional))
 
-    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional, expect=None):
+    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional):
         __tracebackhide__ = True  # pytest shows the caller
         async with self._turn():
             natives = await self._list(key, roles, code, timeout, poll_ms, optional)
-            healed = self._core._healed(key) if natives else None
         due = [True]    # one check of the interruptions for the reads of the whole list
-        return [_guarded(self, key, native, timeout, healed, expect, due) for native in natives]
+        return [_guarded(self, key, native, timeout, due) for native in natives]
 
     async def _list_look(self, key, runnable):
         """Healer._list_look(), awaited."""
@@ -688,9 +680,8 @@ class AsyncHealer:
             await self._sleep(poll_ms / 1000.0)
 
     async def _list(self, key, roles, code, timeout, poll_ms, optional=False):
-        """Healer._list(), awaited, under the lock (see _turn): the heal runs the sync
-        Healer's code in a worker thread through SyncBridge, as a heal of one element does.
-        What a lookup that matches at once saves costs one write of the store, as there."""
+        """Healer._list(), awaited, under the lock (see _turn). What a lookup that matches at
+        once saves costs one write of the store, as there."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
         with _batched(self.store):
@@ -698,7 +689,7 @@ class AsyncHealer:
             found = await self._list_look(key, core._list_runnable(key))
             if found is not None:
                 return await self._list_found(key, roles, found)
-        if optional or not core._list_heals(key):
+        if optional or not core._list_waits(key):
             return []
         try:
             found = await self._resolve_step(
@@ -709,15 +700,7 @@ class AsyncHealer:
         except AttentionRequired as exc:
             if _raised_by_run(exc):
                 raise   # a run= function's own, not a miss of this list
-            try:
-                await _in_thread(core._heal_list, key, exc, await _url(self._driver))
-            except AttentionRequired:
-                # The list may have come while mendwright looked for it.
-                found = await self._list_look(key, core._list_runnable(key))
-                if found is None:
-                    raise
-            else:
-                found = await self._list_attempt(key, 0, poll_ms)
+            raise core._list_missing(key, exc) from exc
         with _batched(self.store):
             return await self._list_found(key, roles, found)
 
@@ -1051,10 +1034,10 @@ class AsyncHealer:
         if xpath is None:
             return
         coordinator = self.coordinator
-        if coordinator.pending.get(key) == xpath:
+        if coordinator.is_pending(key, xpath):
             # A heal from earlier in this process. A gateway provider reports the outcome
             # over HTTP.
-            await _in_thread(coordinator.confirm_pending, key, False)
+            await _in_thread(coordinator.confirm_pending, key, False, None, xpath)
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -1199,11 +1182,10 @@ class AsyncHealer:
             if key in self.coordinator.pending:
                 await _in_thread(self.coordinator.confirm_pending, key, bool(success))
 
-    async def _check_value(self, key, healed, verb, args, value, expect, confirms=True):
+    async def _check_value(self, key, healed, verb, args, value, expect):
         """Healer._check_value(), with the canary report in a worker thread and under the
         lock (see _turn): value when it passes expect or key was not found through a heal,
-        else the heal is quarantined and AttentionRequired raised. confirms False (the
-        elements of a list) leaves a heal that passes unconfirmed."""
+        else the heal is quarantined and AttentionRequired raised."""
         __tracebackhide__ = True  # pytest shows the caller
         if healed is None or expect is None:
             return value
@@ -1211,9 +1193,8 @@ class AsyncHealer:
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
         async with self._turn():
-            if coordinator.pending.get(key) == healed:
-                if confirms or not ok:
-                    await _in_thread(coordinator.confirm_pending, key, ok, reason)
+            if coordinator.is_pending(key, healed):
+                await _in_thread(coordinator.confirm_pending, key, ok, reason, healed)
             elif not ok:
                 self.store.quarantine(key, healed)
                 coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1484,8 +1465,10 @@ class AsyncActionProxy:
 
     def confirm(self, success: bool) -> AsyncActionProxy:
         """Confirm (True) or quarantine (False) a heal for this key, from a check of your
-        own. Sync, like ActionProxy.confirm()."""
-        self._healer.coordinator.confirm_pending(self._key, bool(success))
+        own. An element of heal.locator_all() reports nothing, as ActionProxy.confirm()
+        says. Sync, like ActionProxy.confirm()."""
+        if self._canary:
+            self._healer.coordinator.confirm_pending(self._key, bool(success))
         return self
 
     def __getattr__(self, name: str) -> Any:
@@ -1546,7 +1529,7 @@ class AsyncActionProxy:
         """value, read with verb(*args), through AsyncHealer._check_value()."""
         __tracebackhide__ = True  # pytest shows the caller
         return await self._healer._check_value(self._key, self._healed, verb, args, value,
-                                               self._expect, self._canary)
+                                               self._expect)
 
     def __repr__(self) -> str:
         if self._native is not _UNRESOLVED and not self._present:
@@ -1555,20 +1538,16 @@ class AsyncActionProxy:
         return '<AsyncActionProxy key=' + repr(self._key) + ' native=' + native + '>'
 
 
-def _guarded(healer, key, native, timeout_ms=None, healed=None, expect=None, due=None):
+def _guarded(healer, key, native, timeout_ms=None, due=None):
     """An AsyncActionProxy on a Locator mendwright did not resolve, for heal.page's
     guard-only locators with open(dismiss=True) (see mendwright.proxies.GuardedLocator), and
     for the elements of a list (AsyncHealer.locator_all): its actions get the checks of
-    AsyncActionProxy._act, and nothing is healed, confirmed or saved. healed and expect are
-    the heal a list was found through and the check its elements' reads must pass, which
-    can only refuse the heal (see Healer._check_value). due, when given, is shared by the
-    elements of one lookup (see AsyncActionProxy._before_read)."""
+    AsyncActionProxy._act, and nothing is healed, confirmed or saved. due, when given, is
+    shared by the elements of one lookup (see AsyncActionProxy._before_read)."""
     timeout = healer.timeout_ms if timeout_ms is None else timeout_ms
     proxy = AsyncActionProxy(healer, key, ((), None, None, None, timeout, 200, False, None))
     proxy._native = native
     proxy._canary = False
-    proxy._healed = healed
-    proxy._expect = expect
     if due is not None:
         proxy._reads_due = due
     return proxy

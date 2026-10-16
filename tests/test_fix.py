@@ -268,6 +268,66 @@ def test_a_heal_that_ties_with_its_code_selector_wins_and_one_that_never_matched
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
 
 
+LIST_TILE = "//div[contains(concat(' ', normalize-space(@class), ' '), ' tile ')]"
+
+
+@pytest.mark.parametrize('first_card', ["2026-10-02T09:30:00+00:00", "2026-10-02T09:30:07+00:00"])
+def test_a_key_with_a_list_heal_and_a_heal_of_one_element_is_left_alone(root, capsys, first_card):
+    # heal.locator_all('.card', '.card') and heal.page.inner_text('.card') share a key, and
+    # each healed: one string in the code cannot take both, whichever succeeded last.
+    entry = {"expectedRole": "div", "candidates": [
+        cand(".card", "code", T0), dict(cand(LIST_TILE, "heal", T1), list=True, css="div.tile"),
+        dict(cand("//div[@id='p1']", "heal", first_card), css="#p1")]}
+    write_store(root, {".card": entry}, [canary(".card", LIST_TILE), canary(".card", "//div[@id='p1']")])
+    text = 'cards = page.locator(".card").all()\nfirst = page.inner_text(".card")\n'
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .card: it has a heal of the list (heal.locator_all()) and a heal of one element "
+            "under the same key, and one selector in your code cannot be both, so mendwright "
+            "cannot tell which one goes where. Change the selectors by hand, or give the list "
+            "a key of its own: the list to div.tile, the element to #p1") in out.splitlines()
+
+
+def test_a_key_whose_heal_is_a_list_heal_is_left_alone(root, capsys):
+    # Only a build of 0.8.0 before its release saved list heals, and this one is the items
+    # saved for later that a cart's lookup took once the cart was emptied.
+    saved = "//div[contains(concat(' ', normalize-space(@class), ' '), ' saved-item ')]"
+    entry = {"expectedRole": "div", "candidates": [
+        cand(".cart-item", "code", T0), dict(cand(saved, "heal", T1), list=True, css="div.saved-item")]}
+    write_store(root, {".cart-item": entry}, [canary(".cart-item", saved)])
+    text = 'for row in heal.locator_all(".cart-item", ".cart-item"):\n    row.click()\n'
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .cart-item: its heal is a heal of a list (heal.locator_all()), which mendwright no "
+            "longer makes or uses: it can't tell a list that was emptied from one whose selector "
+            "broke, so the heal can be another list. If the selector broke, change it by "
+            "hand.") in out.splitlines()
+
+
+def test_a_heal_of_one_element_is_never_written_into_a_list_s_key(root, capsys):
+    # heal.locator_all('.cart-item', '.cart-item') recorded the list, and
+    # heal.page.inner_text('.cart-item') healed onto one row saved for later once the cart
+    # was emptied: written back, the cart's loop would take that row.
+    saved = "//div[@id='saved-1']"
+    entry = {"expectedRole": "div", "listFingerprint": {"version": 1},
+             "candidates": [cand(".cart-item", "code", T0), dict(cand(saved, "heal", T1), css="#saved-1")]}
+    write_store(root, {".cart-item": entry}, [canary(".cart-item", saved)])
+    text = ('for row in heal.locator_all(".cart-item", ".cart-item"):\n    row.click()\n'
+            'first = heal.page.inner_text(".cart-item")\n')
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .cart-item: heal.locator_all() looks it up as a list, and its heal is of one "
+            "element, so written into the list call it would make the list match that one "
+            "element. Give the list a key of its own, or change the selector by hand to: "
+            + saved) in out.splitlines()
+
+
 def test_every_old_code_selector_of_a_key_is_replaced(root, capsys):
     confirmed_project(root, "k", ["#a", "//button[@id='b']"], EMAIL, role="input")
     source = write(root, "test_a.py", "heal.locator('k', ['#a', \"//button[@id='b']\"])\n")
