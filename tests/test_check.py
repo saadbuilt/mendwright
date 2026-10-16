@@ -524,6 +524,70 @@ def test_cookies_reject_closes_the_banner_with_one_click(make_page, store_dir, c
     assert browser.sessions[0].pages[0].add_locator_handler_calls == []
 
 
+def _late_banner_page(make_page):
+    """A consent script that shows its wall a moment after the page loaded: the banner
+    appears once the key was looked for, and the form shows once a button closed it."""
+    hidden = "<form style='display:none'><input id='email'></form>"
+    shown = "<form><input id='email'></form>"
+
+    def make(html, url):
+        page = make_page(hidden, url=url, fingerprints=True)
+        real, state = page.query, {'banner': False}
+
+        def query(selector):
+            if page.actions:
+                page.set_html(shown)
+            elif not state['banner'] and selector.endswith('#email'):
+                state['banner'] = True
+                page.set_html(BANNER + hidden)
+            return real(selector)
+        page.query = query
+        return page
+    return make
+
+
+def test_cookies_reject_closes_a_banner_shown_after_the_page_loaded(make_page, store_dir,
+                                                                    capsys):
+    # A run misses the key, handles the banner and looks again (Healer._resolve_step), so
+    # it finds the key with no heal. check does the same.
+    path = record(make_page, store_dir, pages={SHOP + '/signup': (V1, [('email', '#email', 'input')])})
+    site = {SHOP + '/signup': ('', 200, SHOP + '/signup', _late_banner_page(make_page))}
+    browser = Browser(make_page, site)
+    code, out, _err = run_check(_args(path, '--cookies', 'reject'), browser, capsys)
+    assert code == 0, out
+    assert 'ok             email' in out
+    [click] = browser.actions
+    assert click[1] == 'click' and 'onetrust-reject-all-handler' in click[0]
+    assert 'Closed the cookie banner with the cookies="reject" preset.' in out
+
+
+def test_a_banner_that_keeps_coming_back_leaves_the_page_unchecked(make_page, store_dir,
+                                                                   capsys):
+    hidden = "<form style='display:none'><input id='email'></form>"
+
+    def make(html, url):
+        page = make_page(BANNER + hidden, url=url, fingerprints=True)
+        real, seen = page.query, {'clicks': 0}
+
+        def query(selector):
+            if len(page.actions) > seen['clicks']:          # a click closes it for now
+                seen['clicks'] = len(page.actions)
+                page.set_html(hidden)
+            elif selector.endswith('#email'):               # and the page shows it again
+                page.set_html(BANNER + hidden)
+            return real(selector)
+        page.query = query
+        return page
+    path = record(make_page, store_dir, pages={SHOP + '/signup': (V1, [('email', '#email', 'input')])})
+    browser = Browser(make_page, {SHOP + '/signup': ('', 200, SHOP + '/signup', make)})
+    code, out, _err = run_check(_args(path, '--cookies', 'reject', '--format', 'json'), browser,
+                                capsys)
+    assert code == 3, out
+    [key] = json.loads(out)['keys']
+    assert key['verdict'] == 'unreachable' and key['detail'] == 'interruption-loop'
+    assert len(browser.actions) == 3
+
+
 def test_without_cookies_a_banner_is_noted_and_left_alone(make_page, store_dir, capsys):
     path = record(make_page, store_dir, pages={SHOP + '/signup': (V1, [
         ('email', '#email', 'input'), ('accept_terms', '#accept-terms', 'checkbox')])})

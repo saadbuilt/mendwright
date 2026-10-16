@@ -1234,8 +1234,8 @@ def build_parser():
     check.add_argument('--storage-state', metavar='FILE',
                        help='a Playwright storage state for every page, read and never written')
     check.add_argument('--cookies', choices=('reject', 'accept'),
-                       help='close a consent banner with the cookies= preset first, the only '
-                            'click mendwright check makes')
+                       help='close a consent banner with the cookies= preset first, and again '
+                            'when keys miss: the only click mendwright check makes')
     check.add_argument('--timeout-ms', type=int, metavar='MS',
                        help='how long each page waits for its keys (default: '
                             'MENDWRIGHT_TIMEOUT_MS, else 10000)')

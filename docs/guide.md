@@ -1434,7 +1434,7 @@ Make that sign-in for `mendwright check` alone, with its own state file, not the
 
 `mendwright check` asks whether an element is visible, not whether it is on top, so a banner over an element changes no result.
 When a key of a page misses and the [`cookies=` preset](#cookie-banners) finds a banner, the page gets a note. Nothing is clicked.
-A banner that hides the whole page until it is answered needs `--cookies reject` (or `accept`): the preset closes it once before the keys are looked at, as a run does, and `handled interruption 'cookie_banner' before '<check>'` is logged. That is the only click `mendwright check` makes. No Playwright overlay handler is registered, and interruptions registered in your code are unknown to it.
+A banner that hides the whole page until it is answered needs `--cookies reject` (or `accept`): the preset closes it before the keys are looked at, and again when keys miss, for a banner a consent script shows a moment after the page loaded, as a run does after a miss. Each time, `handled interruption 'cookie_banner' before '<check>'` is logged. That is the only click `mendwright check` makes. No Playwright overlay handler is registered, and interruptions registered in your code are unknown to it.
 
 ### Iframes, lists, steps and optional keys
 
@@ -1474,7 +1474,7 @@ The rest:
 | `--headed` | headless | Show the browser. |
 | `--viewport WxH` | 1280x720 | The window size, each side 200 to 4000. A responsive page shows other elements at other sizes. |
 | `--storage-state FILE` | none | A Playwright storage state for every page. |
-| `--cookies {reject,accept}` | none | Close a consent banner with the preset first. |
+| `--cookies {reject,accept}` | none | Close a consent banner with the preset first, and again when keys miss. |
 | `--timeout-ms MS` | `MENDWRIGHT_TIMEOUT_MS`, else 10000 | How long each page waits for its keys once it has loaded. |
 | `--nav-timeout-ms MS` | 30000 | The limit of each navigation, 1000 or more. |
 | `--wait-until` | `load` | `load`, `domcontentloaded` or `networkidle`. |

@@ -519,7 +519,7 @@ def _url_of(driver):
 
 def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms=200,
                sleep=None, fresh=False, gate=None, skips=None, canaries=None, optional=(),
-               opener='mendwright.open', who='heal.drift()', url=None,
+               opener='mendwright.open', who='heal.drift()', url=None, retry=None,
                clock=time.monotonic) -> DriftReport:
     """Look at each key's saved selectors on the page core (a sync Healer; the async
     healer passes its own core) is on, and give each one a verdict (see KeyDrift).
@@ -535,6 +535,9 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     last flow.skip journal event, canaries (key, selector) to its last heal canary, and
     optional are keys registered with heal.interrupt(): a key a run skips is 'optional'.
     opener names the open() a message tells to use, and who what the texts call this check.
+    retry(), when given, runs after a wait that left keys missing, as a run handles its
+    interruptions after a miss (`mendwright check --cookies`): while it returns True, the
+    keys still missing get one more wait.
 
     Calls only count, is_visible, describe, url, outer_html, frame_matches and framed on the
     page (and, in a preview, the read-only probes of the fingerprint tier and of apply()).
@@ -558,18 +561,24 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
         elif not k.runnable:
             _unrunnable(k, store, dry_run)
 
-    # The poll: one wait for the page.
-    started = clock()
-    while True:
-        waiting = [k for k in work if k.result is None and not k.resolved]
-        for k in waiting:
-            _look(driver, k)
-            if not k.runnable and not k.resolved:
-                _unrunnable(k, store, dry_run)
-        waiting = [k for k in work if k.result is None and not k.resolved]
-        if not waiting or (clock() - started) * 1000.0 >= timeout_ms:
-            break
-        sleep(poll_ms)
+    def poll():
+        started = clock()
+        while True:
+            waiting = [k for k in work if k.result is None and not k.resolved]
+            for k in waiting:
+                _look(driver, k)
+                if not k.runnable and not k.resolved:
+                    _unrunnable(k, store, dry_run)
+            waiting = [k for k in work if k.result is None and not k.resolved]
+            if not waiting or (clock() - started) * 1000.0 >= timeout_ms:
+                return waiting
+            sleep(poll_ms)
+
+    # The poll: one wait for the page, and one more after each interruption retry() handled,
+    # as Healer._resolve_step tries a step again.
+    waiting = poll()
+    while waiting and retry is not None and retry():
+        waiting = poll()
 
     for k in work:
         if k.result is None and k.resolved:
@@ -1583,21 +1592,33 @@ def check_visit(visit, plan, store, *, open_healer, timeout_ms, poll_ms=200, coo
         keys, expected = stay, final
     heal = open_healer(page)
     notes = []
+    retry = None
     if cookies:
         heal._interruptions[COOKIE_BANNER_KEY] = cookie_preset(cookies)
-        budget, handled = Budget(), False
-        try:
-            while heal._interrupt('<check>', budget, timeout_ms, poll_ms, only=COOKIE_BANNER_KEY):
-                handled = True
-        except InterruptionLoop as exc:
-            return stop('interruption-loop', str(exc).replace('mendwright: ', '', 1))
-        if handled:
-            notes.append('closed the cookie banner with the cookies="' + cookies + '" preset.')
-    with heal._overlays.handling():
-        report = probe_page(heal, keys, timeout_ms=timeout_ms, poll_ms=poll_ms, sleep=sleep,
-                            fresh=True, gate=page_gate(heal._driver, expected, plan.page),
-                            skips=skips, canaries=canaries, opener='mendwright.open',
-                            who='mendwright check')
+        budget, handled = Budget(), []
+
+        def banner():
+            # The preset, as a run handles it: before the wait, and again after a miss, for
+            # a banner a consent script shows a moment after the page loaded.
+            if heal._interrupt('<check>', budget, timeout_ms, poll_ms, only=COOKIE_BANNER_KEY):
+                handled.append(True)
+                return True
+            return False
+
+        retry = banner
+    try:
+        if retry is not None:
+            while retry():
+                pass
+        with heal._overlays.handling():
+            report = probe_page(heal, keys, timeout_ms=timeout_ms, poll_ms=poll_ms, sleep=sleep,
+                                fresh=True, gate=page_gate(heal._driver, expected, plan.page),
+                                skips=skips, canaries=canaries, opener='mendwright.open',
+                                who='mendwright check', retry=retry)
+    except InterruptionLoop as exc:
+        return stop('interruption-loop', str(exc).replace('mendwright: ', '', 1))
+    if cookies and handled:
+        notes.append('closed the cookie banner with the cookies="' + cookies + '" preset.')
     missed = [k for k in report.keys if k.verdict not in ('ok', 'ok-heal', 'wrong-role')]
     if not cookies and missed and any(k.verdict != 'unreachable' for k in missed):
         for choice in ('reject', 'accept'):

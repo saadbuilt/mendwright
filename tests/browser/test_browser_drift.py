@@ -352,6 +352,34 @@ def test_check_a_consent_wall(site, store, capsys):
     assert clicks == [{'type': ['click'], 'id': ['didomi-notice-disagree-button']}]
 
 
+LATE_WALL = ("""<form id="signup" style="display:none"><input id="email" name="email"
+  type="email"></form>
+<script>setTimeout(function () {
+  var wall = document.createElement('div');
+  wall.innerHTML = %s;
+  document.body.appendChild(wall.firstElementChild);
+}, 400);</script>""" % json.dumps(CONSENT_WALL.split('<form')[0].strip()))
+
+
+def test_check_a_consent_wall_shown_after_load(site, store, capsys):
+    # Consent scripts often show their wall a moment after `load`. A run misses the key,
+    # handles the banner and looks again; check does the same, and saves nothing.
+    _need('chromium')
+    site.pages['/signup'] = page("<form id='signup'><input id='email' name='email' "
+                                 "type='email'></form>")
+    record(site, store, '/signup', [('email', '#email', 'input')])
+    site.pages['/signup'] = page(LATE_WALL)
+    before = _unchanged(store)
+    site.requests.clear()
+    code, out, err = run_check(capsys, '--store', store, '--origin', site.origin,
+                               '--timeout-ms', '1500', '--cookies', 'reject')
+    assert code == 0, out + err
+    assert 'Closed the cookie banner with the cookies="reject" preset.' in out
+    clicks = [e for e in site.events() if e['type'] == ['click']]
+    assert clicks == [{'type': ['click'], 'id': ['didomi-notice-disagree-button']}]
+    assert _unchanged(store) == before                  # no journal, no lock file, no write
+
+
 FRAMED = page('<h1>Sign up</h1><iframe id="consent-frame" width="600" height="200" srcdoc="'
               + page('<label><input type="checkbox" id="accept-terms" name="terms"> I accept '
                      'the terms and conditions</label>').replace('&', '&amp;').replace('"', '&quot;')
