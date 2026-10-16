@@ -356,3 +356,31 @@ def test_a_write_whose_read_stays_refused_leaves_the_file_alone(tmp_path, monkey
     monkeypatch.undo()
     assert (tmp_path / 'o.json').read_text(encoding='utf-8') == before
     assert any('could not save' in r.getMessage() for r in caplog.records)
+
+
+# --- the key of a heal.page.get_by_*() call ---------------------------------------------------
+
+def test_a_call_key_with_quotes_round_trips_through_the_file(tmp_path):
+    key = 'get_by_text("Say \\"hi\\" to C:\\\\")'
+    store = _load(tmp_path)
+    store.set_code_candidates(key, [key])
+    store.record_success(key, key)
+    store.add_candidate(key, "//p[@id='greeting']")
+    store.set_meta(key, role='p')
+    text = (tmp_path / 'o.json').read_text(encoding='utf-8')
+    assert json.dumps(key) in text            # the inner quotes escaped by JSON, as any string
+    again = _load(tmp_path)
+    assert again.meta(key)['expectedRole'] == 'p'
+    assert {c['xpath'] for c in again.candidates(key)} == {key, "//p[@id='greeting']"}
+    assert _saved(tmp_path)['schema'] == 2
+
+
+def test_a_store_0_8_0_wrote_loads_unchanged(tmp_path):
+    data = {'schema': 2, 'selectors': {'login': {
+        'expectedRole': 'button', 'lastPage': '/login', 'pages': ['/login'],
+        'candidates': [{'xpath': '#login', 'source': 'code', 'addedAt': '2026-10-16T09:00:00+00:00',
+                        'lastSucceededAt': '2026-10-16T09:00:00+00:00', 'status': 'active'}]}}}
+    (tmp_path / 'o.json').write_text(json.dumps(data), encoding='utf-8')
+    store = _load(tmp_path)
+    assert [c['xpath'] for c in store.candidates('login')] == ['#login']
+    assert store.meta('login')['lastPage'] == '/login'

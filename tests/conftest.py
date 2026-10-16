@@ -7,8 +7,20 @@ answers only on a FakePage(..., fingerprints=True), and so does the read of a li
 fingerprint (mendwright.lists.LIST_JS). Locators have nth() and all(). CSS is "#id" only,
 and a selector needs its xpath= or css= prefix, unless the page is made with css=True, when
 cssselect matches the rest and a selector without a prefix is read as mendwright reads it.
+
+Its get_by_role(), get_by_text(), get_by_label(), get_by_placeholder(), get_by_alt_text(),
+get_by_title() and get_by_test_id() give FakeGetBy locators, which match the way Playwright
+does, near enough for the tests: a role from role= or the element's tag, a name from
+aria-label, aria-labelledby, a <label> or the text, matched as a case-insensitive part of
+it, or whole with exact=True, or by a regular expression; elements hidden from the
+accessibility tree (aria-hidden, inert, display: none) left out of get_by_role(), while
+one with data-invisible stays in it and is not visible, as a zero-size element. Their
+actions need one visible element, and raise a strict mode violation or a timeout, as
+Playwright's do. Each call is recorded in page.get_by_calls, and page.reject = {method:
+message} makes the browser reject that method's calls when they run.
 """
 
+import inspect
 import re
 
 import lxml.html
@@ -35,6 +47,8 @@ def _hidden(el):
     while el is not None:
         style = (el.get('style') or '').replace(' ', '').lower()
         if 'display:none' in style or el.get('hidden') is not None:
+            return True
+        if el.get('data-invisible') is not None:    # in the accessibility tree, not visible
             return True
         el = el.getparent()
     return False
@@ -101,6 +115,8 @@ class FakeLocator:
         return (els[0].get('value') or '') if els else ''
 
     def __getattr__(self, verb):
+        if verb.startswith('get_by_'):     # a get_by_* call inside this locator's elements
+            return lambda *args, **kwargs: FakeGetBy(self._page, verb, args, kwargs, scope=self)
         if verb not in ACTIONS:
             raise AttributeError("'FakeLocator' object has no attribute " + repr(verb))
 
@@ -125,6 +141,296 @@ class FakeNth(FakeLocator):
         return els[self._index:self._index + 1]
 
 
+# --- get_by_* -------------------------------------------------------------------------------
+
+class FakeError(Exception):
+    """Stands in for playwright's Error."""
+
+
+class FakeTimeout(FakeError):
+    """Stands in for playwright's TimeoutError."""
+
+
+def _norm(text):
+    return ' '.join((text or '').split())
+
+
+def _tag(el):
+    return el.tag.lower() if isinstance(el.tag, str) else ''
+
+
+_INPUT_ROLES = {'button': 'button', 'submit': 'button', 'reset': 'button', 'image': 'button',
+                'checkbox': 'checkbox', 'radio': 'radio', 'search': 'searchbox',
+                'range': 'slider', 'number': 'spinbutton', 'text': 'textbox',
+                'email': 'textbox', 'tel': 'textbox', 'url': 'textbox'}
+_TAG_ROLES = {'button': 'button', 'textarea': 'textbox', 'select': 'combobox', 'nav': 'navigation',
+              'li': 'listitem', 'ul': 'list', 'ol': 'list', 'main': 'main', 'dialog': 'dialog',
+              'table': 'table', 'tr': 'row', 'option': 'option'}
+
+
+def aria_role(el):
+    """The element's ARIA role, from role= or its tag, as Playwright gives it."""
+    explicit = (el.get('role') or '').split()
+    if explicit:
+        return explicit[0].lower()
+    tag = _tag(el)
+    if tag == 'a':
+        return 'link' if el.get('href') is not None else None
+    if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+        return 'heading'
+    if tag == 'img':
+        return 'img' if el.get('alt') != '' else None
+    if tag == 'input':
+        return _INPUT_ROLES.get((el.get('type') or 'text').lower())
+    return _TAG_ROLES.get(tag)
+
+
+def _level(el):
+    tag = _tag(el)
+    if el.get('aria-level'):
+        return int(el.get('aria-level'))
+    return int(tag[1]) if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6') else None
+
+
+def _out_of_tree(el):
+    """Hidden from the accessibility tree: aria-hidden, inert or not displayed. An element
+    with data-invisible stays in it, as a zero-size one does in a browser, while
+    is_visible() says it is not visible."""
+    node = el
+    while node is not None:
+        style = (node.get('style') or '').replace(' ', '').lower()
+        if ((node.get('aria-hidden') or '').lower() == 'true' or node.get('inert') is not None
+                or 'display:none' in style or node.get('hidden') is not None):
+            return True
+        node = node.getparent()
+    return False
+
+
+def _by_id(doc, ident):
+    found = doc.xpath('//*[@id=$i]', i=ident)
+    return found[0] if found else None
+
+
+def _label_text(doc, el):
+    """The text of the <label> of a form field: its for= label, or the one around it."""
+    if el.get('id'):
+        for label in doc.iter('label'):
+            if label.get('for') == el.get('id'):
+                return _norm(label.text_content())
+    node = el.getparent()
+    while node is not None:
+        if _tag(node) == 'label':
+            return _norm(node.text_content())
+        node = node.getparent()
+    return None
+
+
+def accessible_name(doc, el):
+    """The element's accessible name, near enough to the browser's."""
+    if el.get('aria-labelledby'):
+        parts = [_by_id(doc, i) for i in el.get('aria-labelledby').split()]
+        return _norm(' '.join(p.text_content() for p in parts if p is not None))
+    if el.get('aria-label'):
+        return _norm(el.get('aria-label'))
+    tag = _tag(el)
+    if tag in ('input', 'textarea', 'select'):
+        if tag == 'input' and (el.get('type') or '').lower() in ('button', 'submit', 'reset'):
+            return _norm(el.get('value'))
+        return _label_text(doc, el) or _norm(el.get('placeholder') or el.get('title'))
+    if tag == 'img':
+        return _norm(el.get('alt'))
+    return _norm(el.text_content()) or _norm(el.get('title'))
+
+
+def text_matches(wanted, text, exact=False):
+    """Playwright's text match: part of the text, case-insensitive; the whole text with
+    exact=True; re.search for a regular expression."""
+    if text is None:
+        return False
+    text = _norm(text)
+    if isinstance(wanted, re.Pattern):
+        return wanted.search(text) is not None
+    if exact:
+        return text == _norm(wanted)
+    return _norm(wanted).lower() in text.lower()
+
+
+def _fields(doc):
+    return [el for el in doc.iter() if _tag(el) in ('input', 'textarea', 'select')]
+
+
+def get_by_elements(doc, method, args, kwargs):
+    """The elements of doc a get_by_* call matches."""
+    exact = bool(kwargs.get('exact'))
+    if method == 'get_by_role':
+        role = args[0] if args else kwargs['role']
+        name, level = kwargs.get('name'), kwargs.get('level')
+        out = []
+        for el in doc.iter():
+            if not isinstance(el.tag, str) or aria_role(el) != role:
+                continue
+            if not kwargs.get('include_hidden') and _out_of_tree(el):
+                continue
+            if level is not None and _level(el) != level:
+                continue
+            if name is not None and not text_matches(name, accessible_name(doc, el), exact):
+                continue
+            out.append(el)
+        return out
+    value = args[0] if args else kwargs.get('text', kwargs.get('test_id'))
+    if method == 'get_by_text':
+        found = [el for el in doc.iter() if isinstance(el.tag, str)
+                 and _tag(el) not in ('html', 'head', 'title', 'script', 'style')
+                 and text_matches(value, el.text_content(), exact)]
+        # The deepest elements that hold the text, as Playwright's text engine gives them.
+        return [el for el in found
+                if not any(other is not el and other in el.iterdescendants() for other in found)]
+    if method == 'get_by_label':
+        return [el for el in _fields(doc)
+                if text_matches(value, _label_text(doc, el) or el.get('aria-label'), exact)]
+    if method == 'get_by_test_id':
+        return [el for el in doc.iter() if isinstance(el.tag, str) and el.get('data-testid') is not None
+                and (value.search(el.get('data-testid')) if isinstance(value, re.Pattern)
+                     else el.get('data-testid') == value)]
+    attr = {'get_by_placeholder': 'placeholder', 'get_by_alt_text': 'alt',
+            'get_by_title': 'title'}[method]
+    return [el for el in doc.iter() if isinstance(el.tag, str) and el.get(attr) is not None
+            and text_matches(value, el.get(attr), exact)]
+
+
+_VISIBLE_ACTIONS = ACTIONS - {'set_input_files', 'focus'}
+
+
+# Playwright's signatures (1.53), which the fake's get_by_* check as Playwright does.
+def _role(role, *, checked=None, disabled=None, expanded=None, include_hidden=None, level=None,
+          name=None, pressed=None, selected=None, exact=None):
+    pass
+
+
+def _text(text, *, exact=None):
+    pass
+
+
+def _test_id(test_id):
+    pass
+
+
+PLAYWRIGHT_SIGNATURES = {'get_by_role': inspect.signature(_role),
+                         'get_by_test_id': inspect.signature(_test_id)}
+for _method in ('get_by_text', 'get_by_label', 'get_by_placeholder', 'get_by_alt_text',
+                'get_by_title'):
+    PLAYWRIGHT_SIGNATURES[_method] = inspect.signature(_text)
+
+
+class FakeGetBy(FakeLocator):
+    """A locator from a FakePage get_by_* call (see the module docstring)."""
+
+    def __init__(self, page, method, args, kwargs, scope=None):
+        parts = [repr(a) for a in args] + [k + '=' + repr(v) for k, v in kwargs.items()]
+        super().__init__(page, method + '(' + ', '.join(parts) + ')')
+        self._call = (method, args, kwargs)
+        self._scope = scope
+
+    def _elements(self):
+        method, args, kwargs = self._call
+        self._page.trips += 1
+        if method in self._page.reject:
+            raise FakeError(self._page.reject[method])
+        found = get_by_elements(self._page._doc, method, args, kwargs)
+        if self._scope is not None:
+            inside = self._scope._elements()
+            found = [el for el in found if any(el in s.iterdescendants() for s in inside)]
+        return found
+
+    def _one(self, verb):
+        els = self._elements()
+        if len(els) > 1:
+            raise FakeError('Locator.' + verb + ': Error: strict mode violation: '
+                            + self._selector + ' resolved to ' + str(len(els)) + ' elements')
+        if not els or (verb in _VISIBLE_ACTIONS and _hidden(els[0])):
+            raise FakeTimeout('Locator.' + verb + ': Timeout 30000ms exceeded.')
+        return els[0]
+
+    def get_attribute(self, name, **kwargs):
+        return self._one('get_attribute').get(name)
+
+    def inner_text(self, **kwargs):
+        return _norm(self._one('inner_text').text_content())
+
+    def text_content(self, **kwargs):
+        return self._one('text_content').text_content()
+
+    def input_value(self, **kwargs):
+        return self._one('input_value').get('value') or ''
+
+    def is_hidden(self, **kwargs):
+        return not self.is_visible()
+
+    # What builds another locator: real fake locators, never healed.
+
+    def locator(self, selector):
+        return FakeChain(self._page, self._selector + ' >> ' + selector,
+                         lambda: [e for e in self._page.query(selector)
+                                  if any(e in s.iterdescendants() for s in self._elements())])
+
+    def frame_locator(self, selector):
+        return self._page
+
+    def nth(self, index):
+        return FakeChain(self._page, self._selector + '.nth(' + str(index) + ')',
+                         lambda: self._elements()[index:index + 1] if index >= 0
+                         else self._elements()[index:][:1])
+
+    @property
+    def first(self):
+        return self.nth(0)
+
+    @property
+    def last(self):
+        return self.nth(-1)
+
+    def filter(self, has_text=None, **kwargs):
+        return FakeChain(self._page, self._selector + '.filter()',
+                         lambda: [e for e in self._elements()
+                                  if has_text is None or has_text in e.text_content()])
+
+    def and_(self, other):
+        return FakeChain(self._page, self._selector + ' & ' + other._selector,
+                         lambda: [e for e in self._elements()
+                                  if any(e is o for o in other._elements())])
+
+    def or_(self, other):
+        return FakeChain(self._page, self._selector + ' | ' + other._selector,
+                         lambda: self._elements() + [o for o in other._elements()
+                                                     if not any(o is e for e in self._elements())])
+
+    def __getattr__(self, verb):
+        if verb.startswith('get_by_'):
+            return lambda *args, **kwargs: FakeGetBy(self._page, verb, args, kwargs, scope=self)
+        if verb not in ACTIONS:
+            raise AttributeError("'FakeGetBy' object has no attribute " + repr(verb))
+
+        def action(*args, **kwargs):
+            self._one('focus' if kwargs.get('force') else verb)    # force=True: hidden is fine
+            self._page.actions.append((self._selector, verb, args, kwargs))
+            error = self._page.fail.get(verb)
+            if error is not None:
+                raise error
+            return self._page.results.get(verb)
+        return action
+
+
+class FakeChain(FakeGetBy):
+    """A locator built from a FakeGetBy (.first, .filter(), .and_(), ...)."""
+
+    def __init__(self, page, name, find):
+        FakeLocator.__init__(self, page, name)
+        self._find = find
+
+    def _elements(self):
+        return self._find()
+
+
 class FakePage:
     """Playwright-shaped page over an lxml DOM. set_html() stands in for a navigation."""
 
@@ -138,6 +444,9 @@ class FakePage:
         self.results = {}     # verb -> value the action returns
         self.queries = []     # every selector looked up
         self.describes = 0    # describe() round trips (evaluate_all calls)
+        self.get_by_calls = []   # (method, args, kwargs) of every get_by_* call
+        self.reject = {}      # get_by_* method -> the error the browser gives for its calls
+        self.trips = 0        # page queries of the get_by_* locators
         self.set_html(html)
 
     def set_html(self, html):
@@ -189,6 +498,23 @@ class FakePage:
     def evaluate(self, js, arg=None):
         return []
 
+    def _get_by(self, method, args, kwargs):
+        PLAYWRIGHT_SIGNATURES[method].bind(*args, **kwargs)     # TypeError, as Playwright's
+        self.get_by_calls.append((method, args, kwargs))
+        return FakeGetBy(self, method, args, kwargs)
+
+
+def _page_get_by(method):
+    def get_by(self, *args, **kwargs):
+        return self._get_by(method, args, kwargs)
+    get_by.__name__ = method
+    return get_by
+
+
+for _method in ('get_by_role', 'get_by_text', 'get_by_label', 'get_by_placeholder',
+                'get_by_alt_text', 'get_by_title', 'get_by_test_id'):
+    setattr(FakePage, _method, _page_get_by(_method))
+
 
 class StubProvider:
     """Proposes a fixed xpath (or nothing) and records every call. No network."""
@@ -224,7 +550,7 @@ def stub_provider():
 # some of them set (a key, or a *_BASE_URL for a proxy), so every test starts without them.
 _ENV_SETTINGS = (
     'MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE',
-    'MENDWRIGHT_FINGERPRINT',
+    'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY',
     'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL',

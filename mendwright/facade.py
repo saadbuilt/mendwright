@@ -16,7 +16,9 @@ or not at all run through heal.step() and heal.run_steps() (see mendwright.steps
 
 Lists of elements, such as the cards of a product grid, heal through heal.locator_all()
 (see mendwright.lists), and expect_value= checks what a read through a heal returns (see
-mendwright.values).
+mendwright.values). With open(heal_get_by=True), Playwright's get_by_* calls on heal.page
+are looked up and healed too, under keys written as the calls (see mendwright.getby and
+Healer._get_by_locator).
 """
 
 from __future__ import annotations
@@ -34,8 +36,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
+from . import getby
 from .client import _stored_status, add_heal
-from .coordinator import HealCoordinator, resolve_with_heal
+from .coordinator import DISABLED_REASON, HealCoordinator, resolve_with_heal
 from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, expect_control,
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
@@ -59,7 +62,8 @@ from .journal import Journal
 from .limits import Guardrails, RateLimiter
 from .lists import item_role, valid as valid_list
 from .providers import GatewayProvider
-from .resolver import _no_match_message, _split_runnable, resolve
+from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runnable,
+                       present_get_by, resolve, resolve_get_by)
 from .roles import infer_role, role_choices
 from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
                         normalize)
@@ -249,6 +253,24 @@ def fingerprint_setting(fingerprint=None):
     return True if env is None else env
 
 
+def get_by_setting(heal_get_by=None):
+    """Whether heal.page's get_by_* calls are looked up and healed (see
+    Healer._get_by_locator): the heal_get_by= argument when it is not None, else
+    MENDWRIGHT_HEAL_GET_BY (1 or 0), else off. MENDWRIGHT_DISABLE=1 leaves it as it is: the
+    calls are looked up, and nothing heals. Raises ValueError for a MENDWRIGHT_HEAL_GET_BY
+    that is not a flag."""
+    if heal_get_by is not None:
+        return bool(heal_get_by)
+    return bool(_env_flag('MENDWRIGHT_HEAL_GET_BY'))
+
+
+def _get_by_choice(heal_get_by, entry):
+    """Raise TypeError for a heal_get_by= other than True, False or None."""
+    if heal_get_by is not None and not isinstance(heal_get_by, bool):
+        raise TypeError(entry + ' takes heal_get_by=True, heal_get_by=False or heal_get_by=None, '
+                        'got heal_get_by=' + repr(heal_get_by) + '.')
+
+
 def _env_timeout():
     raw = os.environ.get('MENDWRIGHT_TIMEOUT_MS')
     if raw is None or not raw.strip():
@@ -288,7 +310,8 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
          timeout_ms: int | None = None, cookies: str | None = None,
          heal_across_pages: bool = False, fingerprint: bool | None = None,
-         dismiss: bool = False, expect_values: dict | None = None) -> Healer:
+         dismiss: bool = False, expect_values: dict | None = None,
+         heal_get_by: bool | None = None) -> Healer:
     """Wrap a live page or driver into a Healer.
 
     - The driver is detected from the object (sync Playwright, camoufox, patchright,
@@ -332,12 +355,23 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     - expect_values={key: check} sets expect_value= (see Healer.locator) for those keys on
       every lookup, also on those heal.page and heal.driver make, whose key is the selector
       (by=value for heal.driver). See mendwright.values.
+    - heal_get_by=True (or MENDWRIGHT_HEAL_GET_BY=1) looks up Playwright's get_by_role()
+      and the other get_by_* calls on heal.page too, under a key written as the call, such
+      as 'get_by_role("button", name="Sign in")' (mendwright.get_by_key() builds one for
+      destructive_keys= and expect_values=). A call that matches nothing for timeout_ms is
+      healed from the fingerprint mendwright recorded when it last matched, never by a
+      model, and the miss raises an AttentionRequired that is also Playwright's
+      TimeoutError. A call that matches several elements, or one hidden element, goes to
+      Playwright as written. Off by default (None reads the environment), and then
+      heal.page's get_by_* are the real ones. On Selenium it does nothing. See
+      Healer._get_by_locator.
 
     Settings an argument leaves at None come from the environment:
     MENDWRIGHT_STORE (store_path, default ./.mendwright/overrides.json),
-    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000) and MENDWRIGHT_DRY_RUN=1 (dry_run).
-    MENDWRIGHT_DISABLE=1 turns healing off: selectors still resolve, nothing is healed and
-    no provider is called, even one passed as provider=.
+    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000), MENDWRIGHT_DRY_RUN=1 (dry_run) and
+    MENDWRIGHT_HEAL_GET_BY=1 (heal_get_by). MENDWRIGHT_DISABLE=1 turns healing off:
+    selectors still resolve, nothing is healed and no provider is called, even one passed
+    as provider=.
 
     Heals are written to journal.jsonl next to the store. A direct in-process provider
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
@@ -347,7 +381,9 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
     preset = _cookie_preset(cookies, 'mendwright.open()')
     _dismiss_choice(dismiss, 'mendwright.open()')
+    _get_by_choice(heal_get_by, 'mendwright.open()')
     checks = expectations(expect_values)
+    heal_get_by = get_by_setting(heal_get_by)
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
         driver, provider=provider, store=store, store_path=store_path, guard=guard,
@@ -358,6 +394,7 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     healer = Healer(page, driver, store, coord, timeout_ms=timeout_ms)
     healer._dismiss_on = dismiss
     healer._expect_values = checks
+    healer._heal_get_by = heal_get_by
     if preset is not None:
         healer._interruptions[preset.key] = preset
         healer._watch(preset)
@@ -401,9 +438,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     fingerprint = fingerprint_setting(fingerprint)
 
     if _env_flag('MENDWRIGHT_DISABLE'):
-        provider = _NullProvider(
-            'healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not repaired. '
-            'Unset MENDWRIGHT_DISABLE to let mendwright heal again.')
+        provider = _NullProvider(DISABLED_REASON)
     elif provider is None:
         try:
             from .providers import auto_provider
@@ -476,7 +511,8 @@ def _bare_url(url):
 
 
 def _frame_message(key, selector, frames, opener, why=None, selenium=False):
-    """Why a key whose selector matches only inside an iframe was not followed there."""
+    """Why a key whose selector matches only inside an iframe was not followed there. For
+    the key of a get_by_* call, the advice passes heal_get_by=True."""
     frame = frames[0]
     name, url = frame.get('name') or '', _bare_url(frame.get('url') or '')
     if selenium:
@@ -500,6 +536,8 @@ def _frame_message(key, selector, frames, opener, why=None, selenium=False):
         where, how = 'an iframe', 'the Frame from page.frames'
     if len(frames) > 1:
         where += ' (and ' + str(len(frames) - 1) + ' more)'
+    if getby.is_key(key):
+        how += ', heal_get_by=True'     # else heal.page.get_by_*() there would not heal
     because = why or 'nothing tells that iframe apart from the others on the page'
     return ("'" + key + "' is inside an iframe: " + selector + ' matches nothing in the page '
             'mendwright was opened on, but matches inside ' + where + '. mendwright did not '
@@ -519,10 +557,14 @@ def latest_success(store, key):
 _NOT_FOLLOWED = object()
 
 
-def _locator_args(key, selector, role, inline_xpath, intent=None):
+def _locator_args(key, selector, role, inline_xpath, intent=None, entry='heal.locator()'):
     """locator()'s argument checks, which touch neither the page nor the store: returns
     (roles, code), the accepted roles for role= and the selectors from _code_selectors().
-    Raises TypeError for an intent= that is not a non-empty string."""
+    Raises TypeError for an intent= that is not a non-empty string, and ValueError for a key
+    written as a get_by_* call, which is how mendwright names a heal.page.get_by_*() call
+    (entry is the method named in that message)."""
+    if isinstance(key, str) and getby.is_key(key):
+        raise ValueError(getby.reserved_key_message(key, entry))
     if intent is not None and (not isinstance(intent, str) or not intent.strip()):
         raise TypeError('mendwright: intent= for ' + repr(key) + ' takes a description of the '
                         'element in words, got ' + repr(intent) + ". For example, intent='the "
@@ -780,6 +822,10 @@ class Healer:
         self._several_seen: set = set()
         # open(expect_values=...): key -> the check a read through a heal must pass.
         self._expect_values: dict = {}
+        # open(heal_get_by=True): heal.page's get_by_* calls are looked up and healed (see
+        # _get_by_locator). The calls that are never keys, logged once each (_note_get_by).
+        self._heal_get_by = False
+        self._get_by_noted: set = set()
         _register(self)
 
     @property
@@ -795,9 +841,11 @@ class Healer:
         set_input_files and focus work on hidden elements in Playwright, so for those a
         selector that matches a hidden element or several, with no saved heal that finds
         the element, goes to the real page as written; only one that matches nothing is
-        healed. is_visible(selector) answers at once and never heals. Everything else, and
-        a locator built with options or chained from another one, is the real page's, not
-        healed. Interruptions (interrupt(), open(cookies=...)) are handled before the
+        healed. is_visible(selector) answers at once and never heals. With
+        open(heal_get_by=True), get_by_role() and the other get_by_* calls on it are looked
+        up and healed too (see _get_by_locator); otherwise they are the real page's.
+        Everything else, and a locator built with options or chained from another one, is
+        the real page's, not healed. Interruptions (interrupt(), open(cookies=...)) are handled before the
         actions of those locators all the same, on Playwright 1.42 and later, but not
         before page.mouse, page.keyboard or an action with force=True: see interrupt().
         For any other page or driver it is the object mendwright was opened on."""
@@ -1067,9 +1115,146 @@ class Healer:
 
     def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
-        No waiting and no healing."""
+        No waiting and no healing. For the key of a get_by_* call (mendwright.get_by_key()),
+        the call itself first: True when it matches one visible element, False when it
+        matches several or one hidden one, and its saved heals only while it matches
+        nothing (see resolver.present_get_by). A call written in another spelling, such as
+        "get_by_role('button', name='Pay')", is read as the call's key."""
         from .resolver import present
+        if getby.is_key(key):
+            return present_get_by(self.store, self._driver, getby.canonical_key(key))
         return present(self.store, self._page, key)
+
+    # --- heal.page.get_by_*(), with open(heal_get_by=True) (see mendwright.getby) -------
+
+    def _get_by_locator(self, call, target, *, timeout_ms=None, poll_ms=200):
+        """The ActionProxy an action or a waiting read of a heal.page.get_by_*() call runs
+        on: call is its GetByCall, target the real Locator. The key is the call
+        (getby.canonical), such as 'get_by_role("button", name="Sign in")'.
+
+        A. One look first, before anything is written: a call the browser rejects (level=
+           on a button), or that matches several elements or one hidden element (unless the
+           key's role is checkbox), is not broken: it goes to Playwright as written
+           (_get_by_through), with nothing saved and no saved heal used. A call that
+           matches nothing has the registered interruptions handled now, before the wait: a
+           modal cookie banner can hide the rest of the page from the accessibility tree.
+        B. The lookup (resolver.resolve_get_by): the call itself first, as the key's code
+           selector, and a saved heal only while the call matches nothing. A miss handles
+           the registered interruptions and tries again. A call that starts to match
+           several elements or a hidden one during the wait goes to Playwright at once.
+        C. After a miss: a call that matches only inside an iframe is not followed there,
+           and no heal of it is either; else the coordinator heals it from its fingerprint
+           only (HealCoordinator._heal_get_by). What it cannot find or heal is raised as a
+           getby.GetByNotFound, which is also Playwright's TimeoutError, so an except
+           TimeoutError around an optional step still works. InterruptionLoop, what a run=
+           function raised and the refusal of a heal on a key marked destructive are raised
+           as they are.
+        D. After a match, as locator() does: the role, the page and the fingerprint are
+           saved. An action on the element the call itself found reports nothing to the
+           heal canary; one on a heal's element does."""
+        __tracebackhide__ = True  # pytest shows the caller
+        key = getby.canonical(call)
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        budget = Budget()
+        with self._running(key, budget, timeout, poll_ms):
+            state, why = self._get_by_state(key)
+            if state is None:
+                return self._get_by_through(key, target, timeout, why)
+            early = state[0] == 0 and bool(self._others(key)) and self._interrupt(
+                key, budget, timeout, poll_ms)
+            # The page changed when an interruption was handled: look at the call again.
+            first = [None if early else state]
+            self._prime(key, None, [key], None, None)
+
+            def attempt(wait=timeout):
+                # Playwright's overlay handlers stay out of the lookup, as in locator().
+                with self._overlays.handling():
+                    return resolve_get_by(self.store, self._driver, key, timeout_ms=wait,
+                                          poll_ms=poll_ms, first=first.pop() if first else None)
+
+            try:
+                try:
+                    native = self._resolve_step(key, attempt, budget, timeout, poll_ms)
+                except InterruptionLoop:
+                    raise
+                except AttentionRequired as exc:
+                    if _raised_by_run(exc):
+                        raise
+                    self._get_by_frames(key, exc, 'mendwright.open')
+                    native = self._heal(key, exc, attempt)
+            except InterruptionLoop:
+                raise   # the page is blocked: a heal would not help
+            except AttentionRequired as exc:
+                if _raised_by_run(exc):
+                    raise   # a run= function's own, not a miss of this step
+                raise getby.not_found_error(exc) from exc
+            if native is THROUGH:
+                return self._get_by_through(key, target, timeout, getby.STARTED_TO_MATCH)
+            self._await_runs(budget, poll_ms)
+        self._check_healed_target(key)
+        self._learn(key, None)
+        self._remember_page(key)
+        fp_target = self._fingerprint_target(key)
+        if fp_target is not None:
+            self._keep_fingerprint(key, fp_target, driver_fingerprint(
+                self._driver, fp_target, self._winner_target(key)[1]))
+        proxy = ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
+                            healed=self._healed(key), expect=self._expect_values.get(key))
+        proxy._canary = proxy._healed is not None
+        return proxy
+
+    def _get_by_state(self, key):
+        """Step A of _get_by_locator: ((count, visible), '') of the call key on the page now,
+        or (None, why) when it goes to Playwright as written. One round trip, two when it
+        matches one element."""
+        require_visible = _require_visible(self.store, key)
+        try:
+            count = self._driver.count(key)
+            visible = None
+            if count == 1 and require_visible:
+                visible = bool(self._driver.is_visible(key))
+        except InvalidSelector:
+            return None, getby.REJECTED
+        if count >= 2:
+            return None, 'matches ' + str(count) + ' elements'
+        if count == 1 and require_visible and not visible:
+            return None, getby.HIDDEN
+        return (count, visible), ''
+
+    def _get_by_through(self, key, target, timeout_ms, why):
+        """An ActionProxy on the real Locator of a get_by_* call that goes to Playwright as
+        written: its action handles the registered interruptions and, with
+        open(dismiss=True), a popup over the element first, and Playwright raises its own
+        error (a strict mode violation, its wait and timeout, a selector error). Nothing is
+        saved, no saved heal is used, and it reports nothing to the heal canary."""
+        logger.debug('mendwright: ' + getby.through_message(key, why))
+        proxy = ActionProxy(self, key, target, timeout_ms=timeout_ms)
+        proxy._canary = False
+        return proxy
+
+    def _get_by_frames(self, key, exc, opener):
+        """Step C1 of _get_by_locator: when the call itself matches inside an iframe (a
+        driver with frame_matches()), raise the AttentionRequired that says mendwright does
+        not follow a get_by_* call there. Only the call is looked for, not its heals or seed
+        rows: nothing of a call key is followed into an iframe."""
+        __tracebackhide__ = True
+        finder = getattr(self._driver, 'frame_matches', None)
+        if not callable(finder):
+            return
+        try:
+            frames = finder(key)
+        except Exception:
+            return
+        if frames:
+            self._frame_stop(key, exc, key, frames, opener, getby.NOT_FOLLOWED)
+
+    def _note_get_by(self, step, why):
+        """Log, once per healer and call, that heal.page's get_by_* call ``step`` is never a
+        key (see getby.call_of) and goes to Playwright as written."""
+        if step in self._get_by_noted:
+            return
+        self._get_by_noted.add(step)
+        self.coordinator._emit(logging.INFO, getby.not_healed_message(step, why))
 
     # --- lists (see mendwright.lists) ------------------------------------------------
 
@@ -1104,7 +1289,7 @@ class Healer:
         or quarantine nothing, as their confirm() does. Raises InvalidSelector, TypeError or
         ValueError for arguments that can never work, before anything touches the page."""
         __tracebackhide__ = True  # pytest shows the caller
-        roles, code = _locator_args(key, selector, role, None)
+        roles, code = _locator_args(key, selector, role, None, entry='heal.locator_all()')
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         natives = self._list(key, roles, code, timeout, poll_ms, optional)
         due = [True]    # one check of the interruptions for the reads of the whole list

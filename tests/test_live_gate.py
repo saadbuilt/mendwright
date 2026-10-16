@@ -166,3 +166,57 @@ def test_no_driver_is_static_only(tmp_path):
     applied, _ = apply(_store(tmp_path), 'k', {'xpath': CHECKBOX_XP}, CHECKBOX_HTML,
                        {'expectedRole': 'checkbox'})
     assert applied == CHECKBOX_XP
+
+
+# --- the ARIA role of a heal of a get_by_role() call --------------------------------------
+
+class RoleDriver(DescribingDriver):
+    """A live page that also says whether Playwright gives the element an ARIA role."""
+
+    def __init__(self, described, answer, count=1, visible=True):
+        super().__init__(described, count, visible)
+        self.answer = answer
+        self.asked = []
+
+    def role_match(self, selector, role, level=None, frame_chain=()):
+        self.asked.append((selector, role, level, frame_chain))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def _button():
+    return {'tag': 'button', 'role': 'button', 'text': 'Settings',
+            'outer_html': "<button id='settings'>Settings</button>"}
+
+
+def test_a_get_by_role_heal_must_have_the_calls_aria_role():
+    from mendwright.gate import live_reason
+    from mendwright.getby import ROLE_UNREADABLE, parse
+
+    meta = {'expectedRole': 'button'}
+    tab = parse('get_by_role("tab", name="Settings")')
+    heading = parse('get_by_role("heading", name="Cart", level=2)')
+    driver = RoleDriver(_button(), True)
+    assert live_reason(driver, "//button[@id='settings']", meta, call=tab) == ''
+    assert driver.asked == [("//button[@id='settings']", 'tab', None, ())]
+    assert live_reason(RoleDriver(_button(), False), '//b', meta, call=tab) == (
+        "live element role mismatch: Playwright does not give it the ARIA role 'tab'")
+    assert live_reason(RoleDriver(_button(), False), '//b', meta, call=heading) == (
+        "live element role mismatch: Playwright does not give it the ARIA role 'heading' at "
+        'level 2')
+    assert live_reason(RoleDriver(_button(), None), '//b', meta, call=tab) == ROLE_UNREADABLE
+    assert live_reason(RoleDriver(_button(), RuntimeError('gone')), '//b', meta,
+                       call=tab) == ROLE_UNREADABLE
+    assert live_reason(DescribingDriver(_button()), '//b', meta, call=tab) == ROLE_UNREADABLE
+
+
+def test_no_call_or_another_method_asks_no_role():
+    from mendwright.gate import live_reason
+    from mendwright.getby import parse
+
+    meta = {'expectedRole': 'button'}
+    for call in (None, parse('get_by_text("Settings")'), parse('get_by_test_id("settings")')):
+        driver = RoleDriver(_button(), False)
+        assert live_reason(driver, '//b', meta, call=call) == ''
+        assert driver.asked == []          # no extra round trip

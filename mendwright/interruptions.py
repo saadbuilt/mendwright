@@ -41,6 +41,7 @@ from typing import Callable
 
 import lxml.html
 
+from . import getby
 from .candidates import xpath_literal
 from .css import css_selectors, css_string
 from .roles import role_choices
@@ -107,10 +108,13 @@ def make_interruption(key, selector, *, action=None, args=(), role=None, run=Non
     (the proxy verbs); None is a click. run is a function that handles the interruption
     itself, instead of action and args. awaits=False (the sync healer) rejects an async
     function, which it could not await. Raises TypeError, ValueError or InvalidSelector,
-    each naming the fix, before anything touches the page."""
+    each naming the fix, before anything touches the page. A key written as a get_by_*
+    call is how mendwright names a heal.page.get_by_*() call, and is refused."""
     if not isinstance(key, str) or not key.strip():
         raise TypeError('mendwright: heal.interrupt() needs a key, a non-empty name such as '
                         "'cookies', got " + repr(key) + '.')
+    if getby.is_key(key):
+        raise ValueError(getby.reserved_key_message(key, 'heal.interrupt()'))
     items = list(selector) if isinstance(selector, (list, tuple)) else [selector]
     if not items:
         raise ValueError('mendwright: heal.interrupt(' + repr(key) + ', []) got an empty list. '

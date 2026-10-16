@@ -30,7 +30,7 @@ import inspect
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..lists import LIST_JS
 from ..lists import from_raw as list_from_raw
-from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
+from ..selectors import CSS, GET_BY, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
                    POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
                    frame_selector, inventory_rows, is_async_api)
@@ -78,15 +78,17 @@ def selenium_locator(selector):
     """(by, value) for driver.find_elements() for a mendwright selector.
 
     Raises TypeError for a non-string, and InvalidSelector for an empty selector, bad
-    XPath, or a Playwright engine selector (which Selenium cannot run)."""
-    kind = check_syntax(selector)
+    XPath, a Playwright engine selector or a Playwright get_by_* call (which Selenium cannot
+    run; only a hand-made seed file can bring a call here)."""
+    kind = check_syntax(selector, calls=True)
     if kind == XPATH:
         return _by(), strip_prefix(selector)
     if kind == CSS:
         return _by_css(), strip_prefix(selector)
+    what = 'Playwright get_by_* call' if kind == GET_BY else 'Playwright selector'
     raise InvalidSelector.build(
         selector, kind,
-        repr(selector.strip()) + ' is a Playwright selector, and Selenium cannot run it.',
+        repr(selector.strip()) + ' is a ' + what + ', and Selenium cannot run it.',
         "Use an XPath such as \"//button[normalize-space()='Save']\" or a CSS selector "
         "such as 'button#save', or keep it and pass a Playwright page to mendwright.open().")
 

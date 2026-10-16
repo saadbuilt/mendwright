@@ -34,6 +34,8 @@ from decimal import Decimal
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .getby import canonical_key, two_spellings_message, warn_on_object
+
 # The checks expect_value= takes by name, and how a message says a value is not one.
 NAMES = {
     'money': 'is not money',
@@ -460,20 +462,28 @@ def expectation(spec: Any, key: Any = None) -> Expectation | None:
 
 def expectations(specs: Any) -> dict:
     """{key: Expectation} for open(expect_values=...): a mapping of keys to what
-    expect_value= takes. Raises TypeError or ValueError for anything else."""
+    expect_value= takes. A key written as a get_by_* call in another spelling than
+    mendwright's, such as get_by_test_id('total'), is saved under the call's key
+    (getby.canonical_key). Raises TypeError or ValueError for anything else, and ValueError
+    for two keys that name one call."""
     if specs is None:
         return {}
     if not hasattr(specs, 'items'):
         raise TypeError('mendwright: expect_values= takes a dict of keys to checks, such as '
                         "{'#price': 'money'}, got " + type(specs).__name__ + '.')
-    out = {}
+    out, spelled = {}, {}
     for key, spec in specs.items():
         if not isinstance(key, str) or not key:
             raise TypeError('mendwright: expect_values= takes keys as strings, got '
                             + repr(key) + '.')
+        warn_on_object('expect_values=', key)
+        canonical = canonical_key(key)
+        if canonical in spelled:
+            raise ValueError(two_spellings_message('expect_values=', spelled[canonical], key))
+        spelled[canonical] = key
         found = expectation(spec, key)
         if found is not None:
-            out[key] = found
+            out[canonical] = found
     return out
 
 

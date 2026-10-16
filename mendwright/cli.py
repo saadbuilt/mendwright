@@ -40,7 +40,7 @@ PROVIDER_VARS = (
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
-                 'MENDWRIGHT_FINGERPRINT')
+                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY')
 _SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
 
 REPORT_FORMATS = ('text', 'md', 'json', 'html')
@@ -143,6 +143,16 @@ def _fingerprint_info():
     return {'enabled': True, 'source': 'default'}
 
 
+def _get_by_info():
+    """Whether mendwright.open() looks up and heals heal.page's get_by_* calls by default,
+    what decides it, and whether one can heal: only with the fingerprint tier on."""
+    problem, env = _flag_problem('MENDWRIGHT_HEAL_GET_BY')
+    enabled = problem is None and bool(env)
+    source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and env is not None else 'default'
+    return {'enabled': enabled, 'source': source,
+            'heals': enabled and _fingerprint_info()['enabled']}
+
+
 def _provider_info():
     """Which provider auto_provider() picks, or why none is configured. No key values."""
     from .providers import GatewayProvider, auto_provider
@@ -239,7 +249,8 @@ def _env_info():
 def _settings_problems():
     from .facade import _env_timeout
     problems = []
-    for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT'):
+    for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
+                 'MENDWRIGHT_HEAL_GET_BY'):
         problem, _ = _flag_problem(name)
         if problem:
             problems.append(problem)
@@ -263,6 +274,7 @@ def collect_doctor():
         'browser_libraries': _browser_libraries(),
         'provider': _provider_info(),
         'fingerprint': _fingerprint_info(),
+        'get_by': _get_by_info(),
         'store': _store_info(),
         'env': _env_info(),
         'problems': [_scrub(p) for p in _settings_problems()],
@@ -326,6 +338,23 @@ def _doctor_text(d):
     else:
         lines.append(_wrap('off (MENDWRIGHT_FINGERPRINT=0), so only a model provider can repair '
                            'a broken selector. Unset MENDWRIGHT_FINGERPRINT to turn it on.'))
+    lines.append('')
+
+    g = d.get('get_by') or {}
+    lines.append('get_by_* locators')
+    if g.get('heals'):
+        lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that '
+                           'matches nothing is healed from its fingerprint, never by a model.'))
+    elif g.get('enabled'):
+        lines.append(_wrap('routed (MENDWRIGHT_HEAL_GET_BY=1), but the fingerprint tier is off, '
+                           'so a get_by_* call that breaks is reported, not healed.'))
+    else:
+        why = 'default' if g.get('source') != 'MENDWRIGHT_HEAL_GET_BY' else 'MENDWRIGHT_HEAL_GET_BY=0'
+        lines.append(_wrap('not healed (' + why + '): heal.page.get_by_role() and the other '
+                           'get_by_* calls go to Playwright as written. Set '
+                           'MENDWRIGHT_HEAL_GET_BY=1, or pass heal_get_by=True to '
+                           'mendwright.open(), to heal a call that matches nothing from its '
+                           'fingerprint.'))
     lines.append('')
 
     s = d['store']

@@ -692,8 +692,8 @@ def test_the_options_are_listed_in_help(project):
     result = run(project, '--help')
     text = result.stdout.str()
     for name in ('--mendwright-page-fixture', '--mendwright-store', '--mendwright-dry-run',
-                 '--mendwright-disable', '--mendwright-strict', 'mendwright_page_fixture',
-                 'mendwright_store'):
+                 '--mendwright-disable', '--mendwright-strict', '--mendwright-heal-get-by',
+                 'mendwright_page_fixture', 'mendwright_store'):
         assert name in text
 
 
@@ -720,3 +720,41 @@ def test_under_xdist_the_summary_is_printed_once(project, monkeypatch):
     text = result.stdout.str()
     assert '::test_terms  ' + TERMS_LINE in text
     assert '::test_go  ' + GO_LINE in text
+
+
+
+# --- --mendwright-heal-get-by -----------------------------------------------------------------
+
+def test_heal_get_by_option_sets_the_variable_for_the_run_and_the_header_says_so(project):
+    project.makepyfile("""
+        import os
+
+        def test_it(heal):
+            assert os.environ.get('MENDWRIGHT_HEAL_GET_BY') == '1'
+            assert heal._heal_get_by is True
+    """)
+    result = run(project, '--mendwright-heal-get-by')
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(['mendwright: store .mendwright?overrides.json, mode heal, '
+                                 'get_by_* healed (no provider*'])
+    assert 'MENDWRIGHT_HEAL_GET_BY' not in os.environ    # put back after the run
+    result = run(project)
+    result.assert_outcomes(failed=1)
+    assert 'get_by_* healed' not in result.stdout.str()
+
+
+def test_strict_mode_names_fix_for_a_call_heal():
+    from mendwright.pytest_plugin import _Session
+
+    class Config:
+        def getoption(self, name):
+            return name == 'mendwright_strict'
+
+    session = _Session(Config())
+    record = {'key': 'get_by_role("button", name="Sign in")', 'old': ['get_by_role("button", '
+              'name="Sign in")'], 'new': "//button[@id='login']"}
+    message = session._strict_message([record])
+    assert message.splitlines()[-1] == (
+        'For a get_by_* call, run mendwright fix to see the healed selector and where the call '
+        'is; it does not change the call itself.')
+    assert 'For a get_by_* call' not in session._strict_message([dict(record, key='login')])
