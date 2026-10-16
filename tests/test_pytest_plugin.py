@@ -247,6 +247,7 @@ def test_a_heal_of_one_element_of_a_list_s_key_is_confirmed_and_the_list_reports
     # heal.locator_all('.card', ...) and heal.page.inner_text('.card') share a key: the first
     # card heals through the model, the list is never healed, and its elements' confirm()
     # does not report the card's heal.
+    pytest.importorskip('cssselect')     # the inner test's fake page matches '.card' with it
     project.makeconftest(_conftest() + GRID)
     project.makepyfile('''
         import pytest
