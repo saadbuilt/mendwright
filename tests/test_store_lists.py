@@ -275,3 +275,13 @@ def test_what_mendwright_lists_accept_and_reject_refuse(tmp_path, monkeypatch):
     path.write_text(json.dumps({'selectors': [{'key': 'cart', 'xpath': CODE}]}), encoding='utf-8')
     with pytest.raises(ListHealError, match=r'written by an older mendwright \(schema 1\)'):
         edit_list_heal(path, 'cart', 'reject')
+
+
+def test_an_accepted_list_heal_whose_css_form_the_code_passes_is_done(tmp_path):
+    store = _store(tmp_path)
+    store.propose_list_heal('cart', ROWS, css='div.cart-row', proposal=evidence())
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', '3f2a9c1d')
+    run = load_store(None, str(tmp_path / 'o.json'))       # mendwright fix wrote div.cart-row
+    run.set_code_candidates('cart', ['div.cart-row'])
+    assert run.list_heals('cart') == [] and _rows(tmp_path)[ROWS]['status'] == 'superseded'
+    assert [c['xpath'] for c in run.candidates('cart')] == ['div.cart-row']

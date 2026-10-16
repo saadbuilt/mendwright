@@ -526,7 +526,8 @@ class SelectorStore:
         Each one becomes an active candidate with source 'code' (a healed or retired
         candidate with the same text is taken over and made active again; a list heal taken
         over drops its "list" mark, proposal and acceptedAt, as mendwright fix put it in the
-        code). Older 'code' candidates that are no longer passed get status 'superseded':
+        code; an accepted list heal whose CSS form is passed is superseded, for the same
+        reason). Older 'code' candidates that are no longer passed get status 'superseded':
         they stay in the file but are not resolved. Seed and heal candidates stay as
         fallbacks. For the rest of this process, candidates() lists these selectors first,
         in this order. The override file is written only when something changed."""
@@ -555,6 +556,12 @@ class SelectorStore:
         for c in entry['candidates']:
             if (c.get('source') == 'code' and c['xpath'] not in wanted
                     and c.get('status', 'active') == 'active'):
+                c['status'] = 'superseded'
+                self._dirty.add((key, c['xpath']))
+                changed = True
+            elif (c.get('list') is True and c.get('status') == 'accepted'
+                  and c['xpath'] not in wanted and c.get('css') in wanted):
+                # mendwright fix wrote the list heal's CSS form into the code: done with it.
                 c['status'] = 'superseded'
                 self._dirty.add((key, c['xpath']))
                 changed = True
