@@ -1841,7 +1841,7 @@ Each message starts with `mendwright:`. A notice or a warning leaves the job gre
 | is a link or points outside it | Upload the files themselves, not links to them. |
 | over the action's limit | Move the old journal aside, or stop carrying it from run to run. |
 | there is no journal.jsonl next to the store | Upload `journal.jsonl` with `overrides.json`: without it no heal counts as confirmed. |
-| mendwright fix could not finish | The files it wrote were put back. Fix what the errors above say. |
+| mendwright fix could not finish | The tracked files it wrote were put back, and the message names any file git does not track, which keeps the change. Fix what the errors above say. |
 | has commits that this action did not make | Merge or close the pull request, or delete the branch, and the next run starts it again. |
 | changed while this run worked on it | Nothing: another run pushed meanwhile, and the next run picks it up. |
 | git push to ... was refused | Give the job `contents: write`, or pass a token that can push. A ruleset that protects `mendwright/**` or asks for signed commits also refuses it. |

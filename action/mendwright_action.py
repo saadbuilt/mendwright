@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -710,6 +711,60 @@ def _repo_prefix(action, wd):
     return '' if not rel or rel.startswith('..') else rel + '/'
 
 
+def _same_file(top, a, b):
+    try:
+        return os.path.samefile(os.path.join(top, a), os.path.join(top, b))
+    except (OSError, ValueError):
+        return False
+
+
+def _fold(path):
+    return unicodedata.normalize('NFC', path).casefold()
+
+
+def git_name(top, path, changed):
+    """The name git gives the file path (repository-relative, with /) among changed (git's
+    names), or None: the same text, or, where the file system ignores case, the same file
+    written in another case, such as Tests/a.py for git's tests/a.py."""
+    if path in changed:
+        return path
+    for name in changed:
+        if _fold(name) == _fold(path) and _same_file(top, name, path):
+            return name
+    return None
+
+
+def _stop_after_errors(action, wd, written, first):
+    """F11: put back the tracked files mendwright fix wrote, and stop. git cannot put back a
+    file it does not track, so the message names those."""
+    start = 'mendwright: mendwright fix could not finish (' + first + '). '
+    end = ' The other errors are above.'
+    tracked, kept, failed = [], [], None
+    if written:
+        top = os.path.realpath(action.git('-C', wd, 'rev-parse', '--show-toplevel')[1].strip())
+        changed = _porcelain_paths(action.git('-C', top, 'status', '--porcelain=v1', '-z',
+                                              '--untracked-files=no')[1])
+        names = [(path, git_name(top, path, changed)) for path in written]
+        tracked = [name for _, name in names if name]
+        kept = [path for path, name in names if not name]
+    if tracked:
+        code, _, err = action.git('-C', top, 'checkout', '--', *tracked, check=False)
+        if code != 0:
+            failed = _first_error(err, action.secrets())
+    if failed is not None:
+        raise Stop(start + 'Nothing was pushed, but git could not put back the files it wrote ('
+                   + failed + ').' + end)
+    if not kept:
+        raise Stop(start + 'The files it wrote were put back and nothing was pushed.' + end)
+
+    def refusal(shown):
+        return (start + ('The tracked files it wrote were put back and n' if tracked else 'N')
+                + 'othing was pushed, but git does not track ' + ', '.join(shown) + ', so '
+                + ('it keeps' if len(kept) == 1 else 'they keep') + " mendwright fix's changes."
+                + end)
+    raise Stop(refusal(kept), summary=refusal([md_code(p) for p in kept]))
+
+
 def run_fix(action, argv):
     """mendwright.cli.main(argv), with its stdout and stderr captured: (code, text)."""
     if action.action_path not in sys.path:
@@ -761,12 +816,7 @@ def cmd_fix(action):
     prefix = _repo_prefix(action, wd)
     written = [prefix + f['path'] for f in data.get('files') or () if f.get('written')]
     if data.get('errors'):
-        if written:
-            action.git('-C', wd, 'checkout', '--', *[f['path'] for f in data['files']
-                                                     if f.get('written')], check=False)
-        raise Stop('mendwright: mendwright fix could not finish (' + str(data['errors'][0])
-                   + '). The files it wrote were put back and nothing was pushed. The other '
-                   'errors are above.')
+        _stop_after_errors(action, wd, written, str(data['errors'][0]))
     import mendwright.cli
     import mendwright.fixback
     store_data = mendwright.cli._read_store(store)

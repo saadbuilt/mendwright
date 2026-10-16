@@ -890,6 +890,59 @@ def test_errors_in_fix_put_the_files_back_and_stop(world, monkeypatch):
     assert 'publish' not in world.steps
 
 
+def _fix_fails_on_one_file(world, monkeypatch):
+    world.new_commit('.gitignore', 'generated/\n')
+    world.new_commit('tests/test_other.py', 'X = "#search-box"\n')
+    world.write('generated/test_gen.py', 'G = "#accept-terms"\n')    # written, not tracked
+    world.upload({'accept_terms': heal('#accept-terms', TERMS, role='checkbox'),
+                  'search': heal('#search-box', SEARCH)},
+                 confirmed('accept_terms', TERMS) + confirmed('search', SEARCH))
+    from mendwright import fixback
+    real = fixback._write_atomic
+
+    def flaky(change):
+        if change.shown.endswith('test_other.py'):
+            raise OSError(13, 'Permission denied')
+        real(change)
+
+    monkeypatch.setattr(fixback, '_write_atomic', flaky)
+
+
+FAILED_WRITE = ('mendwright: mendwright fix could not finish (tests/test_other.py was not changed: '
+                'Permission denied. Close the file in other programs, or edit it by hand, then run '
+                'again.). ')
+
+
+def test_errors_in_fix_put_back_the_tracked_files_and_name_the_untracked_ones(world, monkeypatch):
+    _fix_fails_on_one_file(world, monkeypatch)
+    world.run()
+    assert world.steps['fix'][0] == 1 and 'publish' not in world.steps
+    assert notices(world, 'fix', 'error') == [
+        FAILED_WRITE + "The tracked files it wrote were put back and nothing was pushed, but git "
+        "does not track generated/test_gen.py, so it keeps mendwright fix's changes. The other "
+        "errors are above."]
+    assert git(world.ws, 'status', '--porcelain', '--untracked-files=no') == ''
+    assert (world.ws / 'tests' / 'test_checkout.py').read_text(encoding='utf-8') == TEST_FILE
+    assert '`generated/test_gen.py`' in world.summary()
+
+
+def test_a_put_back_that_git_refuses_is_not_called_done(world, monkeypatch):
+    _fix_fails_on_one_file(world, monkeypatch)
+    real = ma.Action.git
+
+    def no_checkout(self, *args, **kwargs):
+        if 'checkout' in args:
+            return 1, '', 'error: unable to unlink old \'tests/test_checkout.py\': Permission denied\n'
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ma.Action, 'git', no_checkout)
+    world.run()
+    assert notices(world, 'fix', 'error') == [
+        FAILED_WRITE + "Nothing was pushed, but git could not put back the files it wrote (error: "
+        "unable to unlink old 'tests/test_checkout.py': Permission denied). The other errors are "
+        "above."]
+
+
 def test_the_fix_step_works_without_the_token(world):
     world.run(until='fix')
     act = world.actions['fix']
