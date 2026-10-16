@@ -1519,6 +1519,52 @@ def proposal_id(key, xpath, css, evidence):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]
 
 
+def _ordinal(n):
+    if 10 <= n % 100 <= 20:
+        return str(n) + 'th'
+    return str(n) + {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+
+
+def place_text(count, side, alike=False):
+    """Where a list or a group sat, as mendwright lists and mendwright fix print it: '3
+    elements under 'Shopping cart', in <section class="cart">', with ', the 2nd of 2 alike'
+    when alike and its container was one of several alike. side is the 'was' or 'now' of a
+    proposal (see proposal_evidence)."""
+    side = side if isinstance(side, dict) else {}
+    text = (str(count) + ' element' + ('' if count == 1 else 's')
+            if isinstance(count, int) and not isinstance(count, bool) else 'its elements')
+    if side.get('label'):
+        text += ' under ' + repr(_printable(side['label']))
+    if side.get('container'):
+        text += (', in ' if side.get('label') else ' in ') + _printable(side['container'])
+    shown = side.get('alike')
+    if (alike and isinstance(shown, list) and len(shown) == 2
+            and all(isinstance(n, int) for n in shown) and shown[1] > 1):
+        text += ', the ' + _ordinal(shown[0]) + ' of ' + str(shown[1]) + ' alike'
+    return text
+
+
+def differs_lines(evidence):
+    """What is not the same between where the list was and where the group found is, one
+    sentence for each of evidence['differs'], as mendwright lists and mendwright fix print
+    them."""
+    was = evidence.get('was') if isinstance(evidence.get('was'), dict) else {}
+    now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
+    differs = evidence.get('differs') if isinstance(evidence.get('differs'), list) else []
+
+    def label(side):
+        return repr(_printable(side['label'])) if side.get('label') else 'no heading'
+
+    def box(side):
+        return _printable(side['container']) if side.get('container') else '<body>'
+    out = []
+    if 'heading' in differs:
+        out.append('The heading is not the same: ' + label(was) + ' then, ' + label(now) + ' now.')
+    if 'container' in differs:
+        out.append('The container is not the same: ' + box(was) + ' then, ' + box(now) + ' now.')
+    return out
+
+
 __all__ = ['LIST_JS', 'LIST_PLACE_JS', 'ITEMS_JS', 'STATE_WORDS', 'Group', 'ListMatch', 'find',
            'from_raw', 'group_xpath', 'groups', 'item_role', 'items_of_elements', 'of_elements',
            'placed', 'proposal_evidence', 'proposal_id', 'raw_of_elements', 'shown_container',

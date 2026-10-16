@@ -116,12 +116,6 @@ def repr_key(selector_key):
     return "'" + str(selector_key) + "'"
 
 
-def _ordinal(n):
-    if 10 <= n % 100 <= 20:
-        return str(n) + 'th'
-    return str(n) + {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
-
-
 def _place(label, container):
     """', under 'LABEL', in CONTAINER', for what of them there is."""
     return ((', under ' + repr(label) if label else '')
@@ -634,7 +628,7 @@ class HealCoordinator:
         alike = now.get('alike') or [1, 1]
         here = _place(now['label'], now['container'])
         if alike[1] > 1:
-            here += ', the ' + _ordinal(alike[0]) + ' of ' + str(alike[1]) + ' alike'
+            here += ', the ' + _lists._ordinal(alike[0]) + ' of ' + str(alike[1]) + ' alike'
         if here:
             here += ','
         differs = ''

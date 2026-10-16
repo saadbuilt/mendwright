@@ -748,7 +748,8 @@ def cmd_fix(args):
              '--path value; nothing was changed.')
         return 1
     events = _read_journal(os.path.join(os.path.dirname(path), 'journal.jsonl'))
-    plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed)
+    plan = fixback.plan_fixes(store, events or [], include_unconfirmed=args.include_unconfirmed,
+                              store_path=path)
     result = fixback.build_result(plan, paths, _flatten(args.glob))
     if args.apply:
         fixback.apply_result(result)

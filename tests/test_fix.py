@@ -302,10 +302,10 @@ def test_a_key_whose_heal_is_a_list_heal_is_left_alone(root, capsys):
     code, out, _err = run(capsys, "--apply")
     assert code == 0 and source.read_text(encoding="utf-8") == text
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
-    assert ("  .cart-item: its heal is a heal of a list (heal.locator_all()), which mendwright no "
-            "longer makes or uses: it can't tell a list that was emptied from one whose selector "
-            "broke, so the heal can be another list. If the selector broke, change it by "
-            "hand.") in out.splitlines()
+    assert ("  .cart-item: its heal is a list heal saved by a build of 0.8.0 before its release, "
+            "which nobody checked: it can be another list that holds the items of an emptied one. "
+            "If the selector broke, change it by hand, or run the test with nonempty=True to have "
+            "one proposed.") in out.splitlines()
 
 
 def test_a_heal_of_one_element_is_never_written_into_a_list_s_key(root, capsys):
@@ -1052,3 +1052,102 @@ def test_a_real_heal_is_written_back_and_then_wins_on_the_next_run(root, capsys,
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+
+
+# --- list heals that heal.locator_all(..., nonempty=True) proposed ---------------------------------
+
+ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]"
+T2 = "2026-10-03T10:00:00+00:00"
+
+
+def list_row(xpath, status, pid="3f2a9c1d", at=T1, accepted=None, css="div.cart-row",
+             differs=()):
+    row = dict(cand(xpath, "heal", None, status=status), list=True, css=css, proposal={
+        "id": pid, "at": at, "by": "fingerprint", "page": "/cart", "count": 3, "found": 3,
+        "recorded": 3, "score": 0.86, "next": 0.31,
+        "was": {"selectors": [".cart-item"], "count": 3, "label": "Your bag",
+                "container": '<section class="cart">', "items": ["Blue mug"]},
+        "now": {"label": "Shopping cart" if differs else "Your bag",
+                "container": '<section class="cart">', "alike": [1, 1], "items": ["Blue mug"]},
+        "differs": list(differs)})
+    if accepted:
+        row["acceptedAt"] = accepted
+    return row
+
+
+def cart_key(*rows, code=(".cart-item",), **extra):
+    entry = {"expectedRole": "div", "listFingerprint": {"v": 1, "count": 3, "items": []},
+             "candidates": [cand(c, "code", T0) for c in code] + list(rows)}
+    entry.update(extra)
+    return entry
+
+
+CART_TEST = 'for row in heal.locator_all("cart", ".cart-item", nonempty=True):\n    row.click()\n'
+
+
+@pytest.mark.parametrize("flag", [(), ("--include-unconfirmed",)])
+def test_a_proposed_list_heal_is_left_alone_with_the_command_that_accepts_it(root, capsys, flag):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "proposed"))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply", *flag)
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: its list heal waits for you to check it. Run mendwright lists, then: "
+            "mendwright lists accept cart 3f2a9c1d") in out.splitlines()
+
+
+def test_an_accepted_list_heal_is_written_into_the_list_call(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2,
+                                                 differs=("heading",)))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0
+    assert source.read_text(encoding="utf-8") == CART_TEST.replace('".cart-item", nonempty',
+                                                                   '"div.cart-row", nonempty')
+    lines = out.splitlines()
+    assert "cart  (div)  list heal, accepted 2026-10-03 10:00:00 UTC" in lines
+    assert "  was  .cart-item" in lines and "  now  div.cart-row" in lines
+    assert "       3 elements under 'Shopping cart', in <section class=\"cart\">" in lines
+    assert ("  check  The heading is not the same: 'Your bag' then, 'Shopping cart' now."
+            in lines)
+
+
+def test_an_accepted_list_heal_is_written_as_an_xpath_into_an_xpath(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2),
+                                        code=("//div[@class='cart-item']",))})
+    text = 'rows = heal.locator_all("cart", "//div[@class=\'cart-item\']", nonempty=True)\n'
+    source = write(root, "test_cart.py", text)
+    assert run(capsys, "--apply")[0] == 0
+    assert ROWS in source.read_text(encoding="utf-8") and '"cart"' in source.read_text("utf-8")
+
+
+def test_an_accepted_list_heal_with_a_newer_proposal_is_left_alone(root, capsys):
+    write_store(root, {"cart": cart_key(
+        list_row(ROWS, "accepted", accepted=T1),
+        list_row("//li[@class='line']", "proposed", pid="9b8c7d6e", at=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: a newer list heal waits for you to check it, so mendwright can't tell which "
+            "one you want. Run mendwright lists, then accept or reject it.") in out.splitlines()
+
+
+def test_what_keeps_a_heal_out_of_the_code_keeps_an_accepted_list_heal_out(root, capsys):
+    accepted = list_row(ROWS, "accepted", accepted=T2)
+    write_store(root, {
+        "pay": cart_key(accepted, destructive=True),
+        "seeded": cart_key(accepted, code=()),
+        "word": cart_key(accepted, code=("div",)),
+        "both": cart_key(accepted, cand("//div[@id='p1']", "heal", T1))})
+    write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    lines = out.splitlines()
+    assert code == 0 and out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  pay: it is marked destructive, so its heals are never written into code. Fix the "
+            "selector by hand.") in lines
+    assert any(line.startswith("  seeded: no selector from your code is saved for it")
+               and line.endswith("Update the seed file by hand, to: " + ROWS) for line in lines)
+    assert any(line.startswith("  word: its old selector 'div' is a bare word") for line in lines)
+    assert ("  both: it has a heal of the list (heal.locator_all()) and a heal of one element "
+            "under the same key, and one selector in your code cannot be both, so mendwright "
+            "cannot tell which one goes where. Change the selectors by hand, or give the list a "
+            "key of its own: the list to div.cart-row, the element to //div[@id='p1']") in lines

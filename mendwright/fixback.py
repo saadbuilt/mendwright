@@ -11,6 +11,8 @@ What it will and will not touch:
 - Only keys whose most recently successful active selector came from a heal, and (unless
   asked) only heals that journal.jsonl shows a canary success for (the pytest plugin writes
   one when the test that made the heal passes, and an expect= or confirm(True) check does too).
+- A list heal that heal.locator_all(..., nonempty=True) proposed only once a person accepted
+  it with mendwright lists accept, and never one that waits for a person to check it.
 - A CSS selector in your code gets the heal's CSS form (mendwright.css) when it has one;
   otherwise the healed XPath.
 - Never a key marked destructive, never a heal that sits inside an iframe, and never a key
@@ -86,6 +88,9 @@ class Fix:
     confirmed: bool             # a canary success for this selector is in the journal
     role: str | None = None
     css: str | None = None      # a CSS selector for the same element (see mendwright.css)
+    list: bool = False          # an accepted list heal (see heal.locator_all(nonempty=True))
+    accepted: str | None = None  # when a person accepted it (acceptedAt), for a list heal
+    proposal: dict | None = None  # the evidence it was accepted on, for a list heal
 
     def for_old(self, selector):
         """What replaces one old selector: the CSS form for a CSS selector when there is
@@ -147,10 +152,30 @@ def _written(candidate, old):
     return candidate['xpath']
 
 
-def plan_fixes(store, events, *, include_unconfirmed=False):
+def _list_heals(entry, status):
+    """The list heals of a store entry that have status ('proposed' or 'accepted'), the
+    newest first: by acceptedAt for accepted ones, then by the proposal's time and when it
+    was added."""
+    rows = [c for c in entry.get('candidates') or ()
+            if isinstance(c, dict) and isinstance(c.get('xpath'), str) and c['xpath']
+            and c.get('list') is True and c.get('status') == status]
+
+    def newest(c):
+        proposal = c.get('proposal') if isinstance(c.get('proposal'), dict) else {}
+        return (_text(c.get('acceptedAt')), _text(proposal.get('at')), _text(c.get('addedAt')))
+    return sorted(rows, key=newest, reverse=True)
+
+
+def _proposal_id(c):
+    proposal = c.get('proposal') if isinstance(c.get('proposal'), dict) else {}
+    return proposal.get('id') if isinstance(proposal.get('id'), str) else None
+
+
+def plan_fixes(store, events, *, include_unconfirmed=False, store_path=None):
     """The Plan for a store (schema-2 dict) and its journal events (oldest first, or an
     empty list). The key is fixed when its best active selector, the one that succeeded most
-    recently, came from a heal."""
+    recently, came from a heal, or when a person accepted a list heal for it (see
+    _plan_list). store_path, when given, is named in the commands the reasons print."""
     selectors = store.get('selectors') if isinstance(store, dict) else None
     selectors = selectors if isinstance(selectors, dict) else {}
     canary = _canary_state(events)
@@ -167,6 +192,9 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
 
     for key in sorted(active):
         entry, candidates = selectors[key], active[key]
+        if _list_heals(entry, 'accepted') or _list_heals(entry, 'proposed'):
+            _plan_list(plan, key, entry, candidates, store_path)
+            continue
         if not candidates:
             continue
         # The one that succeeded most recently. Timestamps have a one second resolution, so
@@ -210,10 +238,11 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
         if best.get('list') is True:
             # Only a build of 0.8.0 before its release saved list heals, and one can be another
             # list that holds the items of an emptied one (see Healer.locator_all).
-            plan.skipped.append((key, 'its heal is a heal of a list (heal.locator_all()), which '
-                                 "mendwright no longer makes or uses: it can't tell a list that "
-                                 'was emptied from one whose selector broke, so the heal can be '
-                                 'another list. If the selector broke, change it by hand.'))
+            plan.skipped.append((key, 'its heal is a list heal saved by a build of 0.8.0 before '
+                                 'its release, which nobody checked: it can be another list that '
+                                 'holds the items of an emptied one. If the selector broke, '
+                                 'change it by hand, or run the test with nonempty=True to have '
+                                 'one proposed.'))
             continue
         if entry.get('listFingerprint') is not None:
             # heal.locator_all() looks the key up as a list, and the heal is of one element
@@ -254,6 +283,90 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
         plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None,
                               css))
 
+    _claim(plan, claims)
+    return plan
+
+
+def _plan_list(plan, key, entry, candidates, store_path):
+    """Plan key, which has a list heal that was proposed for heal.locator_all(...,
+    nonempty=True) or accepted: the newest accepted one is written, under the rules that keep
+    a heal out of the code; a proposed one, or an accepted one with a newer proposal next to
+    it, is left alone with what to run."""
+    from .cli import command_key, store_flag
+    flag = store_flag(store_path) if store_path else ''
+    word, note = command_key(key)
+    accepted = _list_heals(entry, 'accepted')
+    proposed = _list_heals(entry, 'proposed')
+    if not accepted:
+        pid = _proposal_id(proposed[0])
+        plan.skipped.append((key, 'its list heal waits for you to check it. Run mendwright lists'
+                             + flag + (', then: mendwright lists accept ' + word + ' ' + pid + flag
+                                       + note if pid else '')))
+        return
+    row = accepted[0]
+    new = row['xpath']
+    when = _text(row.get('acceptedAt'))
+    newer = [c for c in proposed if not when or _text(
+        (c.get('proposal') if isinstance(c.get('proposal'), dict) else {}).get('at')) > when]
+    if newer:
+        plan.skipped.append((key, "a newer list heal waits for you to check it, so mendwright "
+                             "can't tell which one you want. Run mendwright lists" + flag
+                             + ', then accept or reject it.'))
+        return
+    if entry.get('destructive') is True:
+        plan.skipped.append((key, 'it is marked destructive, so its heals are never written '
+                             'into code. Fix the selector by hand.'))
+        return
+    if row.get('frameXPath'):
+        plan.skipped.append((key, 'its healed selector runs inside the iframe '
+                             + str(row['frameXPath']) + ', and a selector in your code runs in '
+                             'the page itself. Change the selector and the frame handling by '
+                             'hand.'))
+        return
+    old = list(dict.fromkeys(c['xpath'] for c in candidates
+                             if c.get('source') == 'code' and c['xpath'] != new))
+    if not old:
+        plan.skipped.append((key, 'no selector from your code is saved for it (its selectors '
+                             'come from a seed file, or locator_all() was called without one), '
+                             'so there is no string in your code to replace. Update the seed '
+                             'file by hand, to: ' + new))
+        return
+    ones = [c for c in candidates if c.get('source') == 'heal' and c.get('list') is not True]
+    if ones:
+        plan.skipped.append((key, 'it has a heal of the list (heal.locator_all()) and a heal '
+                             'of one element under the same key, and one selector in your '
+                             'code cannot be both, so mendwright cannot tell which one goes '
+                             'where. Change the selectors by hand, or give the list a key of '
+                             'its own: the list to ' + _written(row, old) + ', the element to '
+                             + _written(_latest(ones), old)))
+        return
+    bare = [s for s in old if _BARE_WORD.match(s)]
+    if bare:
+        plan.skipped.append((key, 'its old selector ' + repr(bare[0]) + ' is a bare word, and '
+                             'other strings in your code can be the same word (a role= '
+                             'value, a dict entry), so mendwright cannot tell which ones '
+                             'are the selector. Change it by hand to: ' + new))
+        return
+    css = row.get('css') if isinstance(row.get('css'), str) and row.get('css') else None
+    by = next((b for prefix, b in _DRIVER_KEYS if key.startswith(prefix)), None)
+    if (by and classify(new) == XPATH and all(classify(s) == CSS for s in old)
+            and not (css and by == 'By.CSS_SELECTOR')):
+        plan.skipped.append((key, 'it comes from driver.find_element(' + by + ', ...) through '
+                             'heal.driver, and ' + by + ' cannot run the healed XPath. '
+                             'Change the call by hand to: find_element(By.XPATH, '
+                             + repr(new) + ')'
+                             + (', or find_element(By.CSS_SELECTOR, ' + repr(css) + ')'
+                                if css else '')))
+        return
+    role = entry.get('expectedRole')
+    proposal = row.get('proposal') if isinstance(row.get('proposal'), dict) else None
+    plan.fixes.append(Fix(key, new, old, True, role if isinstance(role, str) else None, css,
+                          list=True, accepted=when or None, proposal=proposal))
+
+
+def _claim(plan, claims):
+    """Fill the plan's new_for, keys_for and ambiguous from its fixes and from claims, the
+    keys that use each selector from code or a seed."""
     by_key = {fix.key: fix for fix in plan.fixes}
     for fix in plan.fixes:
         for selector in fix.old:
@@ -267,7 +380,6 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                 plan.new_for.pop(selector, None)
             elif selector not in plan.ambiguous:
                 plan.new_for[selector] = fix.for_old(selector)
-    return plan
 
 
 # --- finding files -----------------------------------------------------------------------
@@ -989,13 +1101,22 @@ def format_lines(result, *, apply):
             if fix.key not in fixed:
                 continue
             lines.append('')
-            lines.append(fix.key + ('  (' + fix.role + ')' if fix.role else '') + '  '
-                         + ('healed, confirmed' if fix.confirmed
-                            else 'healed, NOT confirmed'))
+            if fix.list:
+                from .cli import _when
+                state = 'list heal, accepted ' + (_when(fix.accepted) if fix.accepted
+                                                  else 'date unknown')
+            else:
+                state = 'healed, confirmed' if fix.confirmed else 'healed, NOT confirmed'
+            lines.append(fix.key + ('  (' + fix.role + ')' if fix.role else '') + '  ' + state)
             for selector in fix.old:
                 lines.append('  was  ' + selector)
             for selector in fix.written():
                 lines.append('  now  ' + selector)
+            if fix.list and fix.proposal:
+                from .lists import differs_lines, place_text
+                lines.append('       ' + place_text(fix.proposal.get('count'),
+                                                    fix.proposal.get('now'), alike=True))
+                lines.extend('  check  ' + line for line in differs_lines(fix.proposal))
             places = ['  ' + r.path + ':' + str(r.line) for c in result.changes
                       for r in c.replacements if fix.key in r.keys]
             lines.extend(places)
