@@ -59,7 +59,8 @@ SKIP_DIRS = frozenset({
     '__pycache__', '.tox', '.nox', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.eggs',
     'site-packages', '.claude', '.github',
 })
-# A folder never scanned even when --path names it or a folder inside it.
+# A folder never scanned even when --path names it or a folder inside it, in any case or
+# through a link (see _in_github).
 NEVER_SCANNED = '.github'
 DEFAULT_GLOBS = ('*.py',)
 MAX_FILE_BYTES = 2 * 1024 * 1024        # larger files are not source code worth scanning
@@ -368,10 +369,32 @@ def _is_link(path):
     return bool(tag) and tag == getattr(stat, 'IO_REPARSE_TAG_MOUNT_POINT', 0xA0000003)
 
 
+def _parts(path):
+    return [p for p in path.replace('\\', '/').split('/') if p not in ('', '.')]
+
+
+def _in_github(root):
+    """True when the path root is inside a .github folder: as written, or once the links on
+    the way are followed (a link or junction to .github, a short name on Windows). Folder
+    names are compared without case, as Windows and macOS compare them. Only the part of the
+    real path below the current folder's own real path counts, so a project checked out in a
+    folder named .github is still scanned."""
+    if any(p.lower() == NEVER_SCANNED for p in _parts(os.path.normpath(root))):
+        return True
+    real = _parts(os.path.realpath(root))
+    here = _parts(os.path.realpath(os.getcwd()))
+    same = 0
+    while (same < min(len(real), len(here))
+           and os.path.normcase(real[same]) == os.path.normcase(here[same])):
+        same += 1
+    return any(p.lower() == NEVER_SCANNED for p in real[same:])
+
+
 def collect_files(paths, extra_globs=()):
     """(files, errors): the source files under ``paths`` (folders are walked, a file path is
     taken as it is), in a stable order. Folders in SKIP_DIRS, symbolic links and Windows
-    junctions are skipped, and a path inside a .github folder is skipped even when named."""
+    junctions are skipped, and a path inside a .github folder is skipped even when named,
+    also through a link or in another case."""
     globs = list(DEFAULT_GLOBS) + [g for g in extra_globs if g not in DEFAULT_GLOBS]
     files, errors, seen = [], [], set()
 
@@ -382,7 +405,7 @@ def collect_files(paths, extra_globs=()):
             files.append(os.path.abspath(path))
 
     for root in paths:
-        if NEVER_SCANNED in os.path.normpath(root).replace('\\', '/').split('/'):
+        if _in_github(root):
             if not os.path.exists(root):
                 errors.append('no such file or folder: ' + root + '. Check the --path value.')
             continue
@@ -391,7 +414,8 @@ def collect_files(paths, extra_globs=()):
         elif os.path.isdir(root):
             for folder, dirs, names in os.walk(root):
                 dirs[:] = sorted(d for d in dirs
-                                 if d not in SKIP_DIRS and not d.endswith('.egg-info')
+                                 if d not in SKIP_DIRS and d.lower() != NEVER_SCANNED
+                                 and not d.endswith('.egg-info')
                                  and not _is_link(os.path.join(folder, d)))
                 for name in sorted(names):
                     path = os.path.join(folder, name)

@@ -1182,6 +1182,54 @@ def test_github_folders_are_never_scanned(root, capsys):
     assert code == 1 and "no such file or folder: .github/nope" in err
 
 
+def _folder_link(target, link):
+    """link as a symbolic link to the folder target, else a Windows junction, else skip."""
+    try:
+        os.symlink(str(target), str(link), target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    winapi = pytest.importorskip("_winapi")
+    if not hasattr(winapi, "CreateJunction"):
+        pytest.skip("neither symbolic links nor junctions can be made here")
+    winapi.CreateJunction(str(target), str(link))
+
+
+def test_a_path_that_leads_into_github_through_a_link_or_another_case_is_not_scanned(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    script = write(root, ".github/scripts/x.py", 'x = "#save"\n')
+    workflow = write(root, ".github/workflows/ci.yml", 'run: echo "#save"\n')
+    _folder_link(root / ".github", root / "gh")
+    try:
+        for args in (("--path", "gh"), ("--path", "gh/scripts"), ("--path", "gh/scripts/x.py"),
+                     ("--path", "gh/workflows", "--glob", "*.yml")):
+            code, out, err = run(capsys, "--apply", *args)
+            assert (code, err) == (0, ""), (args, err)
+            for path in (script, workflow):
+                assert "#save" in path.read_text(encoding="utf-8"), (args, path)
+        if (root / ".GitHub").exists():         # a file system that ignores case
+            code, out, err = run(capsys, "--apply", "--path", ".GitHub", "--glob", "*.yml")
+            assert (code, err) == (0, "")
+            for path in (script, workflow):
+                assert "#save" in path.read_text(encoding="utf-8"), path
+    finally:
+        if os.path.islink(str(root / "gh")):
+            os.unlink(str(root / "gh"))
+        else:
+            os.rmdir(str(root / "gh"))          # removes the junction, not its target
+
+
+def test_a_project_inside_a_folder_named_github_is_still_scanned(tmp_path, capsys, monkeypatch):
+    # An organisation's .github repository is checked out at .../.github/.github on a runner.
+    project = tmp_path / ".github"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    confirmed_project(project, "k", "#save", "//b[@id='y']")
+    source = write(project, "tests/test_a.py", 'x = "#save"\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+
+
 # --- the command line --------------------------------------------------------------------
 
 def test_fix_help_lists_the_options(capsys):

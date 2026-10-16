@@ -1673,7 +1673,7 @@ Which strings it changes:
 Each rewritten Python file must still parse, have the same structure, and differ only in the planned strings, or it isn't written.
 The original quote style and prefix are kept where they can hold the new selector, and a BOM, a coding comment and the line endings are kept.
 A file is written through a temporary file next to it and then replaced, and a file that changed since it was read is not overwritten.
-`.git`, `.github`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files. A `.github` folder holds your workflows and local actions, so it is skipped even when `--path` names it.
+`.git`, `.github`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files. A `.github` folder holds your workflows and local actions, so it is skipped even when `--path` names it, leads into it through a link or junction, or names it in another case such as `.GitHub`.
 
 `--format json` prints one JSON document and nothing else on stdout, for scripts such as the [GitHub Action](#open-a-pull-request-with-the-fixes). Errors still go to stderr. Cut down:
 
