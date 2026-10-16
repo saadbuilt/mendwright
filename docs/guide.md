@@ -8,6 +8,7 @@ Contents:
 - [Configuration](#configuration)
 - [Heals without a model](#heals-without-a-model)
 - [No changes per step](#no-changes-per-step)
+- [get_by locators](#get_by-locators)
 - [Describing an element with intent=](#describing-an-element-with-intent)
 - [Checking what a read returns](#checking-what-a-read-returns)
 - [Lists](#lists)
@@ -54,6 +55,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 | `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
 | `expect_values` | none | `{key: check}`: what a read of each key must return when it goes through a heal, as `expect_value=` of `heal.locator()` says, also for the lookups of `heal.page` and `heal.driver`, whose key is the selector (`by=value` on `heal.driver`). See [Checking what a read returns](#checking-what-a-read-returns). |
+| `heal_get_by` | `MENDWRIGHT_HEAL_GET_BY`, else off | `True` looks up and heals `heal.page.get_by_role()` and the other `get_by_*` calls too, from their fingerprints only. On Selenium it does nothing. See [get_by locators](#get_by-locators). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -131,6 +133,7 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
 | `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=`. The fingerprint tier is off too. |
 | `MENDWRIGHT_FINGERPRINT` | `0` turns the fingerprint tier off, the default for `fingerprint=` |
+| `MENDWRIGHT_HEAL_GET_BY` | `1` heals `heal.page.get_by_*` calls, the default for `heal_get_by=` (see [get_by locators](#get_by-locators)) |
 | `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway`, `local` or `ollama`: use that provider instead of detecting one |
 | `MENDWRIGHT_GATEWAY` | Gateway URL, which selects `GatewayProvider` |
 | `MENDWRIGHT_LOCAL_MODEL` | The Ollama name of mendwright's local selector model, which selects `LocalModelProvider` |
@@ -244,7 +247,7 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 - `locator(selector).all()` gives what Playwright gives, as in 0.7.0. It never waits, heals or saves anything, so a list that matches nothing is `[]` at once, and a loop that waits for toasts to go away works as before. `heal.locator_all()` records a list and raises when it matches nothing (see [Lists](#lists)). With `dismiss=True`, its elements are `GuardedLocator`s.
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
-- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators, `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
+- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators unless you pass `heal_get_by=True` (see [get_by locators](#get_by-locators)), `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
 - From Playwright 1.42, interruptions are still handled before the actions of those locators (`click`, `fill`, `check`, `hover` and so on) and before `expect(...)`, `wait_for_selector()` and `Locator.wait_for()`, but not before `page.mouse`, `page.keyboard`, `dispatch_event()` or an action with `force=True`: see [Interruptions](#interruptions). With `dismiss=True`, the locators among them come back as guard-only proxies whose actions look for interruptions and popups first: see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about).
 - The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
 - `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
@@ -269,6 +272,156 @@ On a Playwright healer, `heal.driver` is still mendwright's own driver object.
 - When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The actions of the elements of the other `By` values and of `find_elements()` confirm and quarantine nothing. A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
 
 On a Selenium healer, `heal.page` is still the WebDriver.
+
+## get_by locators
+
+```python
+page = mendwright.open(page, heal_get_by=True).page
+page.get_by_role("button", name="Sign in").click()   # healed when the button is renamed
+```
+
+With `heal_get_by=True`, `get_by_role()`, `get_by_text()`, `get_by_label()`, `get_by_placeholder()`, `get_by_alt_text()`, `get_by_title()` and `get_by_test_id()` on `heal.page` are looked up and healed the way `heal.page.locator(selector)` is.
+A call that matches nothing is healed from the fingerprint mendwright recorded when the call last matched, never by a model.
+
+### Turning it on
+
+Pass `heal_get_by=True` to `mendwright.open()` or `mendwright.aio.open()`, set `MENDWRIGHT_HEAL_GET_BY=1` for every healer that doesn't pass it, or run `pytest --mendwright-heal-get-by`, which sets the variable for the run.
+It is off by default. Off, `heal.page.get_by_*` are Playwright's own locators, as in 0.8.0 (with `dismiss=True`, `GuardedLocator`s), and nothing about them is saved.
+On Selenium the argument is accepted and does nothing: `heal.driver` has no `get_by_*`.
+
+What changes when it is on:
+
+- A call that matches nothing waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds or a timeout set with `page.set_default_timeout()`, which mendwright can't read. Pass `timeout=` on the action for a slow page.
+- When the element can't be found or healed, the error is an `AttentionRequired` that is also Playwright's `TimeoutError` (`mendwright.getby.GetByNotFound`), so `except TimeoutError` still catches it.
+- The registered [interruptions](#interruptions) are handled by the step, and logged and journaled before the call's key, such as `before 'get_by_role("button", name="Continue")'`, instead of `'<page action>'`.
+- The store gets a row for each call that matched, with its role, its pages and its fingerprint, as for any key.
+
+`MENDWRIGHT_DISABLE=1` leaves the calls looked up, and nothing heals.
+
+### The key
+
+A call is saved under a key written as the call, with its strings in double quotes:
+
+| Call on `heal.page` | Key |
+|---|---|
+| `get_by_role("button", name="Sign in")` | `get_by_role("button", name="Sign in")` |
+| `get_by_role(role="button", name="Sign in", exact=False)` | `get_by_role("button", name="Sign in")` |
+| `get_by_role("button", name="Sign in", exact=True)` | `get_by_role("button", name="Sign in", exact=True)` |
+| `get_by_role("heading", name="Cart", level=2)` | `get_by_role("heading", name="Cart", level=2)` |
+| `get_by_role("button", name=re.compile(r"sign\s?in", re.I))` | `get_by_role("button", name=re.compile("sign\\s?in", re.IGNORECASE))` |
+| `get_by_role("navigation")` | `get_by_role("navigation")` |
+| `get_by_role("button", exact=True)` | `get_by_role("button")` |
+| `get_by_text("Free shipping")` | `get_by_text("Free shipping")` |
+| `get_by_text('Say "hi"')` | `get_by_text("Say \"hi\"")` |
+| `get_by_label("Email", exact=True)` | `get_by_label("Email", exact=True)` |
+| `get_by_placeholder("you@example.com")` | `get_by_placeholder("you@example.com")` |
+| `get_by_alt_text("Logo")` | `get_by_alt_text("Logo")` |
+| `get_by_title("Close")` | `get_by_title("Close")` |
+| `get_by_test_id("login")` | `get_by_test_id("login")` |
+
+- `exact=False`, `exact=None` and `include_hidden=False` are left out, and so is `exact=True` where it changes nothing: for a regular expression, and for `get_by_role()` without `name=`. The options of `get_by_role()` come in the order `name`, `exact`, `level`, and a role passed as `role=`, or a text as `text=`, gives the same key.
+- The text is kept as written, so a call that differs only in case or spacing is another key.
+- In `overrides.json` and `journal.jsonl` the inner quotes are escaped by JSON, as in `"get_by_role(\"button\", name=\"Sign in\")"`. `mendwright report` and the messages show the key as it is.
+- A string written as a call is how mendwright names a `heal.page.get_by_*()` call, so `heal.locator()`, `heal.locator_all()` and `heal.interrupt()` raise `ValueError` for one as a key, and they and `heal.step(when=...)` raise `InvalidSelector` for one as a selector. `heal.page.locator()` hands such a string to Playwright as written, as before.
+
+`mendwright.get_by_key()` builds the key of a call, for `destructive_keys=`, `expect_values=`, seed files and `heal.present()`:
+
+```python
+pay = mendwright.get_by_key("get_by_role", "button", name="Pay")   # 'get_by_role("button", name="Pay")'
+heal = mendwright.open(page, heal_get_by=True, destructive_keys={pay},
+                       expect_values={mendwright.get_by_key("get_by_test_id", "total"): "money"})
+```
+
+A key matches one spelling of a call only: `destructive_keys={pay}` marks `page.get_by_role("button", name="Pay")`, and a test that writes `name=re.compile("pay", re.I)` or `exact=True` makes another key, which isn't marked.
+
+Some calls are never keys. They go to Playwright as written, with one INFO line per healer and call:
+
+```text
+INFO mendwright: page.get_by_role('checkbox', name='Terms', checked=True) is not healed: checked= picks the element by its state, which a saved selector cannot keep. It goes to Playwright as written.
+```
+
+They are `get_by_role()` with `checked=`, `disabled=`, `expanded=`, `pressed=` or `selected=` (a heal is an XPath, which can't say "the checked one"), or with `include_hidden=True`; a call with an empty role, name or text; arguments that are not text, a regular expression or a whole number; a regular expression with flags other than `re.IGNORECASE`, `re.MULTILINE` and `re.DOTALL`; an argument this version of mendwright doesn't read, such as one a later Playwright adds; and a key longer than 1,000 characters.
+
+### When a call heals
+
+- Only when it matches nothing for `timeout_ms`.
+- Only from its fingerprint, which mendwright records each time the call matches one element while the fingerprint tier is on (see [Heals without a model](#heals-without-a-model)). So turn the flag on while the suite passes, and keep the store between CI runs (see [Keep heals between runs](#keep-heals-between-runs)). A call with no fingerprint in the store, one that never matched or matched only with the tier off, is not healed: a call that never matched is more often a mistake in the call than a redesign.
+- Never by a model, a gateway or a local model, even when one is configured, so no page leaves your machine for a call. A call names its element by role and words, and when it breaks those are what changed: a model given the old call could only guess a new name. The fingerprint holds what survives a redesign, such as ids, test ids, names, classes and ancestors, and the tier needs a strong sign of identity before it proposes anything.
+- A call that matches several elements, one hidden element (unless its role is checkbox), or that the browser rejects, such as `level=` on a button, is not broken. Playwright runs it as written and raises its own error: a strict mode violation, its wait and timeout, or the selector error. Nothing is saved and no saved heal is used, also when the call starts to match several elements while mendwright waits.
+- A saved heal answers only while the call matches nothing:
+
+| The call matches | A saved heal matches one element | What happens |
+|---|---|---|
+| one visible element (or one of role checkbox) | anything | the call's element |
+| nothing | yes | the heal's element, at once |
+| nothing | no | it waits `timeout_ms`, then heals from the fingerprint or raises |
+| several, one hidden, or the browser rejects it | anything | Playwright runs the call as written |
+
+- When the call matches nothing, the registered interruptions are handled before the wait: a modal cookie banner can hide the rest of the page from the accessibility tree, and `get_by_role()` matches nothing until it is gone.
+
+A heal logs one line, and its journal events are those of any [fingerprint heal](#heals-without-a-model):
+
+```text
+WARNING mendwright: healed 'get_by_role("button", name="Sign in")': get_by_role("button", name="Sign in") -> //button[@id='login'] (fingerprint, 0.0s)
+```
+
+When the call isn't healed, the line after `->` says why, for example:
+
+```text
+No matching element for: get_by_role("button", name="Sign in") (tried 1 candidate(s)).
+  -> mendwright heals a get_by_* call only from the fingerprint it records each time the call matches one element, and 'get_by_role("button", name="Sign in")' has none in this store: it has not matched one element here while the fingerprint tier was on. A call that never matched is more often a mistake in the call than a redesign. Check its arguments against the page.
+```
+
+A fingerprint match that wasn't confident, or failed a check, ends with `mendwright asks no model to heal a get_by_* call: the call names its element by role and words, and those are what changed, so a model could only guess. Change the call by hand.`
+
+### What a heal must pass
+
+A heal of a call goes through the checks of any fingerprint heal: one match of the element's role in the captured HTML, not quarantined, and one visible match on the live page that still has the role. The role is the one mendwright read from the element the call matched, as for a selector without `role=`.
+For a `get_by_role()` call, Playwright must also give the healed element the call's ARIA role, and the call's `level=` when it has one, by its own matcher on the live page. mendwright's role is mostly the tag, so a `<button role="tab">` that is no longer a tab, or an `<a>` that lost its `href`, would pass it. One that Playwright doesn't give the role is refused with `live element role mismatch: Playwright does not give it the ARIA role 'tab'`, and one it can't be asked about is refused too.
+
+### What stays unhealed
+
+Only a call made directly on `heal.page` heals. These go to Playwright as in 0.8.0, the real locator, or with `dismiss=True` a `GuardedLocator`, and nothing about them is saved:
+
+- a call chained from a locator: `heal.page.get_by_role(...).get_by_text(...)`, `heal.page.locator("#form").get_by_role(...)`, or `.locator(...)` after a call. The inner call matches inside the outer one's elements, and a heal is checked on the whole page, so it could land outside the container, on the Save button of another dialog.
+- `.first`, `.last` and `.nth()`: the call matches several elements by design, and a heal can't keep "the second Save".
+- `.filter()`, `.and_()` and `.or_()`, a second matcher that one saved XPath would drop.
+- `heal.page.frame_locator("#pay").get_by_role(...)`. Open mendwright on the frame instead: `mendwright.open(page.frame(name="pay"), heal_get_by=True).page.get_by_role(...)` heals. A call that matches nothing on the page but matches inside an iframe raises, saying so; mendwright doesn't follow it there.
+- `heal.page.native.get_by_*`, the page passed to `open()`, `heal.page.main_frame.get_by_*` and `page.frames[i].get_by_*`
+- a call that is never a key (above)
+
+`expect()`, `wait_for()`, `count()`, `all()`, `is_hidden()` and `is_visible()` answer for the call as written, and so does a call passed as an argument, such as `drag_to(page.get_by_role(...))`.
+`is_visible()` on a call never answers from a heal, unlike `heal.page.locator(selector).is_visible()`: it is how a test asks whether the page shows something with that role and those words, and a heal of another element must not answer that. So `if page.get_by_role("button", name="Next").is_visible():` skips the branch once the button is renamed, while `page.get_by_role("button", name="Next").click()` heals.
+The reads that wait for the element, such as `inner_text()` and `is_checked()`, heal like the actions, and with `expect_values=` a read through a heal is checked (see [Checking what a read returns](#checking-what-a-read-returns)).
+
+### Steps that may not be there
+
+- An optional step written as `try: ... except TimeoutError:` still works, since a miss raises a `TimeoutError`. But a call that has a fingerprint can be healed before that, when the fingerprint finds a confident match for the missing element, and the step then acts on it. Write an optional step as `heal.locator(key, selector, optional=True)` (see [Optional steps](#optional-steps)), or through `heal.page.native`.
+- A step of your own on a cookie banner that mendwright handles, such as `page.get_by_role("button", name="Accept all").click()`, finds the banner gone, waits `timeout_ms`, and raises: the fingerprint finds no confident match for the banner's button on a page without the banner. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there.
+
+### mendwright fix and calls
+
+[`mendwright fix`](#mendwright-fix) never rewrites a call, with `--apply` or without. It lists it under "Left alone", with its healed selector and the Python lines that make a call with the same literal arguments:
+
+```text
+Left alone:
+  get_by_role("button", name="Sign in"): it is a heal.page.get_by_role() call, and mendwright fix does not rewrite calls: from the code it cannot tell whether a call with these arguments runs on heal.page or inside another locator, where it may still find the element it was written for. Its healed selector, confirmed, is //button[@id='login']. Change the call's arguments by hand to the element's new role or words, or replace it with page.locator("//button[@id='login']"). Calls with these arguments: tests/test_login.py:12, tests/test_login.py:40.
+```
+
+From the code it can't tell a call on `heal.page`, which was healed, from one with the same arguments inside another locator, which still finds its own element. The arguments are often variables or constants that other calls share. And an XPath in place of the call swaps the role and words you chose for the most brittle form.
+
+### What it costs
+
+Each action or healed read of a call looks at the call first, in one round trip, two when it matches one element, then scrolls it into view: three more than Playwright's own call, as for `heal.page.locator(selector)`. The first lookup of a call on a healer also reads the element's role and fingerprint. Registered interruptions and `dismiss=True` add their usual checks before an action.
+On a page of 2,000 elements, `heal.page.get_by_role("button", name="Continue").click()` took about 50 ms more than Playwright's own call in Chromium (the median of 50 clicks: about 80 ms against 34 ms), since Playwright's role engine reads the page for each query. Firefox and camoufox were close to that, patchright took about 70 ms more, and WebKit about 210 ms more.
+
+### Limits
+
+- A call whose element is inside a shadow root isn't healed once renamed: the fingerprint tier scores the captured HTML, and `page.content()` leaves shadow trees out.
+- A call with no fingerprint in the store isn't healed (see above).
+- `page.set_default_timeout()` isn't read: a missing call waits `timeout_ms`.
+- `get_by_test_id()` uses the test id attribute set with `playwright.selectors.set_test_id_attribute()`, and the key doesn't say which one.
+- `get_by_role()` matches part of the name unless `exact=True`, so after a redesign the call itself can find a different element ("Save" matches "Save draft") without mendwright noticing: it doesn't second-guess the code's own match. Pass `exact=True` for a name that another control could contain.
 
 ## Describing an element with intent=
 
@@ -551,8 +704,9 @@ def mendwright_provider():
 | `--mendwright-dry-run` | Sets `MENDWRIGHT_DRY_RUN=1` for the run |
 | `--mendwright-disable` | Sets `MENDWRIGHT_DISABLE=1` for the run |
 | `--mendwright-strict` | Fails every test that needed a heal |
+| `--mendwright-heal-get-by` | Sets `MENDWRIGHT_HEAL_GET_BY=1` for the run, so `heal.page.get_by_*` calls heal (see [get_by locators](#get_by-locators)) |
 
-The dry-run flag also reaches Healers that tests open themselves, unless that code passes `dry_run=`. The disable flag reaches all of them, and no argument overrides it.
+The dry-run flag also reaches Healers that tests open themselves, unless that code passes `dry_run=`, and so does the get_by flag, unless it passes `heal_get_by=`. The disable flag reaches all of them, and no argument overrides it.
 
 ### Confirmation
 
@@ -590,6 +744,8 @@ mendwright --mendwright-strict: this test passed only because 1 selector was hea
   accept_terms: //input[@id='terms'] -> //input[@id='terms-v2']
 Update the selector in your code to the new one, or run without --mendwright-strict to let heals pass.
 ```
+
+For a `get_by_*` call, the message ends with `For a get_by_* call, run mendwright fix to see the healed selector and where the call is; it does not change the call itself.`
 
 Strict mode only fires on the run that makes the heal.
 It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`), a dismissed popup (`flow.dismiss`) or steps that came in another order (`flow.step`, see [Steps in any order](#steps-in-any-order)) don't fail a test.
@@ -783,7 +939,7 @@ On Selenium, the elements `heal.driver` returns look for registered interruption
 - `ActionChains` actions and the elements that `execute_script()` or `switch_to.active_element` return are Selenium's own, so nothing is checked before their actions.
 - After the script calls `switch_to.frame()` itself, mendwright looks for interruptions in that frame only, and a banner on the page around the frame is out of reach. When a click there is intercepted, the WARNING says so. Find the element from the page without switching instead: `heal.driver` follows a selector into an iframe one level down (see [Iframes](#iframes)).
 
-On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` also register each interruption with `page.add_locator_handler()`. Playwright then checks for it before each locator or selector action on the page (`click`, `fill`, `check`, `hover` and so on), and again each time an action that waits (for a disabled button, say) tries once more, and hands over to mendwright when the page shows it. So it is handled before the actions mendwright does not route as well: `get_by_role()` and the other `get_by_*` locators, chained locators, `.first` and `.nth()`, and the page's own selector methods, on `heal.page` or on the page itself. A banner that opens while an action waits is handled at once, instead of after the action's timeout.
+On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` also register each interruption with `page.add_locator_handler()`. Playwright then checks for it before each locator or selector action on the page (`click`, `fill`, `check`, `hover` and so on), and again each time an action that waits (for a disabled button, say) tries once more, and hands over to mendwright when the page shows it. So it is handled before the actions mendwright does not route as well: `get_by_role()` and the other `get_by_*` locators, chained locators, `.first` and `.nth()`, and the page's own selector methods, on `heal.page` or on the page itself. A banner that opens while an action waits is handled at once, instead of after the action's timeout. With `heal_get_by=True`, mendwright routes the `get_by_*` calls of `heal.page` itself: their actions handle the interruptions first and log them before the call's key, as `heal.locator()`'s do (see [get_by locators](#get_by-locators)).
 
 - Playwright runs no handler before `page.mouse` and `page.keyboard` actions, `dispatch_event()`, or an action with `force=True`, so those get no such help.
 - Such an action has no key, so the WARNING line and the journal event say `before '<page action>'`. One that happens during the action of a step mendwright routes, such as a banner that opens while its click waits, is logged before that step and counts toward its 3. Playwright's handler stays out of mendwright's own lookup, whose scroll runs the check too, as it stays out of mendwright's own clicks on a banner: the step handles what the page shows itself, before its action or read.
@@ -792,7 +948,7 @@ On a Playwright `Page`, from Playwright 1.42, `heal.interrupt()` and `cookies=` 
 - `heal.interrupt(key, None)` removes an interruption from the healer, `cookie_banner` included, and its handler from the page (Playwright 1.44 and later) once no other healer of the page has registered it. A healer you stop using is not freed at once, because it refers to itself (through `heal.page`, for one): Python frees it when its garbage collector next runs, and until then its handler still acts. When the page outlives the healer, such as a page shared between tests, call `heal.interrupt(key, None)` for each key once you are done with it.
 - Playwright runs the check at least twice per action, as it finds the element and as it acts, and again while it waits or retries. So each registered interruption costs at least two queries of the page per action. With `cookies=`, on a page of 2,000 elements in Chromium, that added 15 to 50 ms to each action.
 - A selector the browser cannot parse would fail every action on the page in that check, with an error that names the interruption's selector. `heal.interrupt()` checks XPath without a browser but leaves CSS to the browser (`'button:contains("Close")'` passes it), so mendwright tries each CSS or Playwright selector once on the page when it registers the handler. One the browser rejects is left out, with a WARNING that names it.
-- Playwright also runs the check before an auto-waiting assertion, `wait_for_selector()`, `Locator.wait_for()`, an element screenshot and `aria_snapshot()`, on the page itself too. So `expect(page.locator("#cookie-banner")).to_be_visible()` and `page.wait_for_selector("#cookie-banner")` fail once the banner is registered: mendwright closes it first, and the wait runs out. A step of your own that clicks the banner through a locator mendwright does not route, such as `page.get_by_role("button", name="Accept all").click()`, now finds it gone and waits out its timeout. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there. Likewise, a read through `heal.locator()` of an element inside the banner under another key, such as its text, closes the banner first and then waits out its timeout: read it from the real page (`heal.page.native`) instead.
+- Playwright also runs the check before an auto-waiting assertion, `wait_for_selector()`, `Locator.wait_for()`, an element screenshot and `aria_snapshot()`, on the page itself too. So `expect(page.locator("#cookie-banner")).to_be_visible()` and `page.wait_for_selector("#cookie-banner")` fail once the banner is registered: mendwright closes it first, and the wait runs out. A step of your own that clicks the banner through a locator mendwright does not route, such as `page.get_by_role("button", name="Accept all").click()`, now finds it gone and waits out its timeout. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there. With `heal_get_by=True`, a `heal.page.get_by_*` step on the banner waits `timeout_ms` and raises instead, since no heal is found for an element that is gone (see [Steps that may not be there](#steps-that-may-not-be-there)): the same advice holds. Likewise, a read through `heal.locator()` of an element inside the banner under another key, such as its text, closes the banner first and then waits out its timeout: read it from the real page (`heal.page.native`) instead.
 - A `Frame` has no `add_locator_handler()`, so a healer opened on one, and Playwright before 1.42, keep the checks above only.
 
 When one is there and visible, mendwright performs its action (or calls its `run=` function), waits up to 2 seconds (or the step's `timeout_ms`, when that is shorter) for it to go away, logs one WARNING line, writes a `flow.interrupt` journal event, and tries the step again.
@@ -924,6 +1080,7 @@ What it can't do:
 
 On Playwright, with `dismiss=True`, the locators `heal.page` doesn't heal are guarded too: `get_by_role()` and the other `get_by_*` locators, a locator built with options, chained locators, `frame_locator()`, `and_()`, `or_()`, `.first`, `.last`, `.nth()` and `.filter()`, and the locators `heal.page.locator(selector).all()` gives.
 They come back as `GuardedLocator`s, the real locators with the checks above and the interruption checks before their actions. They aren't healed and nothing about them is saved. They pass `isinstance()` checks, so `expect()` takes them, and `.native` is the real locator. Log lines name their step after the calls that built it, such as `"page.get_by_role('button', name='Continue')"`. With `dismiss=False` they are the real locators, as before.
+With `heal_get_by=True`, the `get_by_*` calls of `heal.page` are no longer `GuardedLocator`s: they heal, and their actions get the same checks, logged before the call's key (see [get_by locators](#get_by-locators)). The locators chained from them still are, with the names above.
 On Selenium, the elements `heal.driver` finds are covered whatever `By` found them (see [No changes per step](#no-changes-per-step)), inside iframes too.
 
 The look costs one browser round trip before each action, and none before `focus()` and `set_input_files()`, which work on a covered element.
@@ -1155,6 +1312,13 @@ A key is destructive, and never healed, when you mark it in one of these ways:
 heal.locator("pay", "#pay", destructive=True).click()
 ```
 
+A `heal.page.get_by_*` call has no `destructive=`: mark its key with `mendwright.get_by_key()` in `destructive_keys=`, or in a seed file. With the pytest `heal` fixture, which passes no `destructive_keys=`, use a seed file, or a `heal` fixture of your own in `conftest.py` (see [get_by locators](#get_by-locators)):
+
+```python
+heal = mendwright.open(page, heal_get_by=True,
+                       destructive_keys={mendwright.get_by_key("get_by_role", "button", name="Pay")})
+```
+
 mendwright doesn't guess this from the key, from `text=` or from the page.
 A key you don't mark can be healed onto any element that has its role, including a button that pays or deletes. Mark every step like that.
 
@@ -1190,6 +1354,7 @@ The real file is a single line; it is wrapped here.
 - Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)).
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
+- The key of a `heal.page.get_by_*()` call is written as the call, and so is its `code` candidate: `"get_by_role(\"button\", name=\"Sign in\")"`, with the inner quotes escaped by JSON (see [get_by locators](#get_by-locators)). A seed file may hold such keys, to mark one destructive, say, and such candidates, which run as calls on Playwright and are dropped with an `InvalidSelector` on Selenium.
 
 Writes take a lock file (`overrides.json.lock`), merge with what other processes wrote since the last read, and replace the file atomically.
 On a conflict, `quarantined` wins and `destructive: true` wins.
@@ -1338,6 +1503,11 @@ Fingerprint healing (no model)
   MENDWRIGHT_FINGERPRINT=0, or pass fingerprint=False to mendwright.open(), to turn it
   off.
 
+get_by_* locators
+  not healed (default): heal.page.get_by_role() and the other get_by_* calls go to
+  Playwright as written. Set MENDWRIGHT_HEAL_GET_BY=1, or pass heal_get_by=True to
+  mendwright.open(), to heal a call that matches nothing from its fingerprint.
+
 Store (where mendwright.open() saves heals)
   C:\work\shop\.mendwright\overrides.json
   (default, relative to this folder; set MENDWRIGHT_STORE to change it)
@@ -1346,6 +1516,7 @@ Store (where mendwright.open() saves heals)
 ```
 
 `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
+With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
 
 ### mendwright report
 
@@ -1430,6 +1601,7 @@ Which keys it changes:
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - Never a key with a heal of a list, saved with `"list": true` by builds of 0.8.0 before its release: mendwright no longer heals lists (see [Lists](#lists)), and such a heal can be another list. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
 - Never a key that `heal.locator_all()` looks up as a list when its heal is of one element, from `heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key: written into the list call, it would make the list that one element. The reason names the healed selector.
+- Never a `heal.page.get_by_*()` call, whose key is written as the call: it is listed with its healed selector and the lines that make the call (see [mendwright fix and calls](#mendwright-fix-and-calls)). No string equal to a call's text is rewritten either.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
 
 Which strings it changes:
@@ -1503,6 +1675,10 @@ The first line names the key. The line after `->` says why there was no heal:
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |
 | is inside an iframe ... mendwright did not look for it there | The reason says why (a destructive key, several iframes or elements, an iframe inside an iframe, or one nothing tells apart). Open mendwright on the frame (see [Iframes](#iframes)) |
+| does not follow a get_by_* call into an iframe | The call matches only inside an iframe. Open mendwright on that frame with `heal_get_by=True`: `mendwright.open(page.frame(name="..."), heal_get_by=True)`. See [get_by locators](#get_by-locators). |
+| heals a get_by_* call only from the fingerprint it records | The call never matched one element in this store while the fingerprint tier was on. Check its arguments against the page: a typo in the name, or a role such as `"btn"` that no element has. |
+| asks no model to heal a get_by_* call | The fingerprint found no confident match for the call's element, or its pick failed a check. Change the call by hand to the element's new role or words. |
+| Playwright does not give it the ARIA role | The element the fingerprint found no longer has the call's role, or level. Change the call by hand. |
 | rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` |
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
 | turned off by MENDWRIGHT_DISABLE=1 | Unset it, or drop `--mendwright-disable` |
@@ -1516,6 +1692,7 @@ To remove it by hand, delete the candidate from `overrides.json`. `mendwright re
 
 `InvalidSelector` is a `ValueError`. It is raised at once, without waiting out the timeout or asking a model, for an empty selector, a broken XPath or a Playwright selector on Selenium, which are caught before any browser call, and for CSS the browser rejects, which is caught on the first probe.
 It isn't an `AttentionRequired`, so no model is asked.
+One that says `is a get_by_* call, not a selector` got a string written as a `get_by_*` call, such as `'get_by_role("button", name="Go")'`, as a selector of `heal.locator()`, `heal.locator_all()`, `heal.interrupt()` or `heal.step(when=...)`. Call `heal.page.get_by_role(...)` on `mendwright.open(page, heal_get_by=True)` instead, or pass an XPath, CSS or Playwright selector (see [get_by locators](#get_by-locators)).
 
 ### TypeError
 
