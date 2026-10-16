@@ -143,7 +143,7 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
 
 Flags take `1`, `true`, `yes` or `on`, and `0`, `false`, `no`, `off` or empty.
-Any other value makes `open()` raise `ValueError` (for `MENDWRIGHT_DRY_RUN`, only when `dry_run=` isn't passed).
+Any other value makes `open()` raise `ValueError` (for `MENDWRIGHT_DRY_RUN`, only when `dry_run=` isn't passed, and for `MENDWRIGHT_HEAL_GET_BY`, only when `heal_get_by=` isn't).
 
 ## Heals without a model
 
