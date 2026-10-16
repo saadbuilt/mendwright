@@ -201,6 +201,35 @@ def test_url_must_name_a_selected_page_on_a_loaded_site(tmp_path):
                                'https://other.example.')
 
 
+
+def test_url_on_the_recorded_side_of_a_mapping_says_where_its_pages_load_from(tmp_path):
+    # Adding --origin https://shop.example would load production, which the mapping is there
+    # to avoid: the advice is to give the --url on the site the pages load from.
+    store = _store(tmp_path, {'b': ('/orders/*', 'https://shop.example/orders/*', None)})
+    origins = {'https://shop.example': 'https://staging.shop.example'}
+    with pytest.raises(UsageError) as info:
+        plan_check(store, ['b'], origins=origins,
+                   urls={'/orders/*': 'https://shop.example/orders/1001?tab=2'})
+    assert str(info.value) == (
+        '--url https://shop.example/orders/1001?... is on https://shop.example, and this check '
+        'loads the pages recorded there from https://staging.shop.example. Give the --url on '
+        'https://staging.shop.example, such as https://staging.shop.example/orders/1001.')
+    [page] = plan_check(store, ['b'], origins=origins, urls={
+        '/orders/*': 'https://staging.shop.example/orders/1001'}).pages
+    assert page.address == 'https://staging.shop.example/orders/1001'
+
+
+def test_an_origin_named_twice_with_two_sites_is_a_usage_error():
+    assert drift.parse_origins(['https://shop.example', 'https://shop.example']) == {
+        'https://shop.example': 'https://shop.example'}
+    with pytest.raises(UsageError) as info:
+        drift.parse_origins(['https://shop.example=https://staging.shop.example',
+                             'https://shop.example'])
+    assert str(info.value) == ('--origin names https://shop.example twice, loaded from '
+                               'https://staging.shop.example and from https://shop.example. '
+                               'Give it once.')
+
+
 def test_a_key_with_no_page_is_left_out(tmp_path):
     store = _store(tmp_path, {'draft': (None, None, None),
                               'home': (None, 'https://shop.example/', None)})

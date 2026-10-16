@@ -1361,7 +1361,7 @@ Every page is loaded once, and its keys wait for their elements up to `--timeout
 - `--origin https://shop.example=https://staging.shop.example` loads the pages recorded on the first origin from the second, such as production's pages from staging.
 - `--base-url http://127.0.0.1:8000` loads every page from that origin, whatever origin was recorded, for a test app that starts on a new port each run. It also builds the address of a key saved before 0.9.0 from its `lastPage`. When the store has pages on more than one host, it says so on stderr, since those may be different sites.
 
-An origin is `scheme://host[:port]` with `http` or `https`, and nothing after it.
+An origin is `scheme://host[:port]` with `http` or `https`, and nothing after it. One recorded origin can be loaded from one site only: naming it twice with two sites is a usage error.
 The store is a file from a cache or a commit, so `mendwright check` never loads a site the store alone points to: a store from somewhere else can't send your browser, with the session of your storage state file, to another host, a local file or a cloud metadata address.
 With neither flag it exits 2 and lists the sites the store has pages on.
 
@@ -1378,7 +1378,7 @@ A page whose address has a `*` can't be loaded as it is. Give it an address that
 mendwright check --origin https://shop.example --url '/orders/*=https://shop.example/orders/1001'
 ```
 
-`--url PAGE=URL` wins over the saved address and over `--base-url`. Its `URL` must be on a site the check loads, and may have a query, which the reports print as `?...`.
+`--url PAGE=URL` wins over the saved address and over `--base-url`. Its `URL` must be on a site the check loads (with `--origin https://shop.example=https://staging.shop.example`, on staging), and may have a query, which the reports print as `?...`.
 A key saved before 0.9.0 has only its path: `--base-url` loads it from the stored `lastPage`, which is lower case. It does so only for a path as mendwright saves one. A `lastPage` that holds anything else, such as user info, a port or a query (`@169.254.169.254/latest/`), is `not checked`, so it can't make the address name another host. A server that tells paths apart by case answers 404, which is reported as such. Run your tests once with 0.9.0 and the address is saved.
 
 Some sites change state on a GET. `mendwright check` doesn't load a page whose path reads as an action, as `dismiss=True` doesn't click a button by its words: one whose path has a word `logout`, `logoff`, `signout`, `signoff`, `unsubscribe`, `optout`, `delete`, `remove`, `cancel`, `confirm`, `verify`, `activate`, `deactivate`, `reset`, `approve`, `accept`, `decline`, `reject`, `revoke`, `disconnect`, `unlink`, `leave`, `purge`, `destroy`, `empty`, `clear` or `close`, or the words `log out`, `log off`, `sign out`, `sign off` or `opt out` in a row. Words are split on `/`, `-`, `_`, `.`, `+` and `~` and compared whole, so `/order-confirmation` and `/blog/clearance-sale` load, and `/account/close-account`, `/cart/empty` and `/account/sign-out` don't. So does `/products/close-up-lens`, which is no action: pass `--load-page '/products/*'` for pages like it. A `--url` value is never refused.

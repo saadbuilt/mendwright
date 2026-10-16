@@ -1105,7 +1105,13 @@ def parse_origins(values):
     out = {}
     for value in values or ():
         recorded, _, actual = value.partition('=')
-        out[parse_origin(recorded)] = parse_origin(actual) if actual else parse_origin(recorded)
+        recorded = parse_origin(recorded)
+        actual = parse_origin(actual) if actual else recorded
+        if out.get(recorded, actual) != actual:
+            # The last one would win without a word, and load a site the first kept away.
+            raise UsageError('--origin names ' + recorded + ' twice, loaded from '
+                             + out[recorded] + ' and from ' + actual + '. Give it once.')
+        out[recorded] = actual
     return out
 
 
@@ -1332,6 +1338,13 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
                              'found there. Pages of the selected keys: ' + (shown or 'none')
                              + '.')
         origin = origin_of(address)
+        if origin not in loaded and origin in origins:
+            # The recorded side of --origin RECORDED=ACTUAL: its pages load from ACTUAL.
+            actual = origins[origin]
+            raise UsageError('--url ' + shown_address(address) + ' is on ' + origin + ', and '
+                             'this check loads the pages recorded there from ' + actual
+                             + '. Give the --url on ' + actual + ', such as '
+                             + shown_address(actual + (urlsplit(address).path or '/')) + '.')
         if origin not in loaded:
             raise UsageError('--url ' + shown_address(address) + ' is on ' + str(origin)
                              + ", which this check doesn't load. Add --origin " + str(origin)
