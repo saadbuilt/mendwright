@@ -869,12 +869,12 @@ def _lists_text(listing):
         lines.append('')
         evidence = item['proposal']
         if evidence is None:
-            lines.append(item['key'] + role + '  no saved evidence')
+            lines.append(_printable(item['key']) + role + '  no saved evidence')
             lines.append('  why      an older mendwright wrote the store after it was found. Run '
                          'the test again with mendwright 0.9.0 to find it anew.')
             lines.append('  reject   ' + item['reject'])
             continue
-        lines.append(item['key'] + role + '  id ' + _printable(evidence['id']))
+        lines.append(_printable(item['key']) + role + '  id ' + _printable(evidence['id']))
         was = evidence.get('was') if isinstance(evidence.get('was'), dict) else {}
         now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
         page = evidence.get('page')
@@ -893,9 +893,9 @@ def _lists_text(listing):
                      + place_text(was.get('count'), was))
         if was.get('items'):
             lines.append('           first items: ' + _shown_items(was['items']))
-        lines.append('  now      ' + item['xpath'])
+        lines.append('  now      ' + _printable(item['xpath']))
         if item['css']:
-            lines.append('           as CSS: ' + item['css'])
+            lines.append('           as CSS: ' + _printable(item['css']))
         lines.append('           ' + place_text(evidence.get('count'), now, alike=True))
         if isinstance(evidence.get('found'), int) and isinstance(evidence.get('recorded'), int):
             lines.append('           they hold ' + str(evidence['found']) + ' of the '
@@ -916,7 +916,7 @@ def _lists_text(listing):
                      + ' for mendwright fix --apply' + store_flag(listing['store']) + ':')
         for item in accepted:
             when = item['acceptedAt']
-            lines.append('  ' + item['key'] + '  ' + item['xpath'] + '  (accepted '
+            lines.append('  ' + _printable(item['key']) + '  ' + _printable(item['xpath']) + '  (accepted '
                          + (_when(when) if when else 'date unknown') + ')')
     return lines
 
