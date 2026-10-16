@@ -1,17 +1,21 @@
-"""The acceptance matrix of list heals (heal.locator_all()) for two kinds of page change that
-look alike to a list fingerprint, collected from the 0.8.0 reviews and their repro scripts:
+"""The acceptance matrix of list lookups (heal.locator_all()) whose selectors match nothing any
+more, collected from the 0.8.0 reviews, their repro scripts and the verifier's cases. Two kinds
+of page change look alike there:
 
-- MUST REFUSE: the list was emptied while another list on the page now holds its items (a
-  cart whose items all moved to Saved for later, an Active list whose tasks were all
-  completed). Nothing may be healed or saved, no element of the other list returned,
-  AttentionRequired raised, a model is never shown the other list or allowed to pick it,
-  and a fresh open() on the same store raises again.
-- MUST HEAL: the list is still there after a redesign (its item class renamed in place, its
-  container renamed or moved), next to a look-alike that is not it. It heals onto the right
-  elements from the list fingerprint, with no model call.
+- EMPTIED: the list was emptied while another list on the page now holds its items (a cart
+  whose items all moved to Saved for later, an Active list whose tasks were all completed,
+  notifications marked read, a search with no results that recommends the same products).
+- REDESIGN: the list is still there, with its items' class, its container or its heading
+  renamed, sometimes next to a look-alike that is not it.
 
-Offline: conftest's lxml-backed FakePage (make_page), and WrongPicker, a stub model that takes the other
-list whenever it is shown it. One test per case, with the case as its id."""
+No rule on the page's markup tells them apart: two pairs below are the same page but for a
+class name and a heading's text. So mendwright heals neither. Each raises AttentionRequired
+naming both possibilities, with no word of optional=True, saves nothing, returns no element,
+and asks no model (WrongPicker, a stub model that takes the other list whenever it is shown
+it, is never asked), and a fresh open() on the same store raises again. A redesign is fixed in
+the code, and the list is found again.
+
+Offline: conftest's lxml-backed FakePage (make_page). One test per case, with the case as its id."""
 
 import asyncio
 import json
@@ -185,6 +189,41 @@ def plain(cart_cls, cart_items, saved_items):
 
 SAVED_LI = "//li[@class='saved-item']"
 
+
+def rows(cls, items, tag='div', button='Delete'):
+    """The rows of the verifier's pages (matrixcheck/new_cases.py)."""
+    return ''.join('<' + tag + " class='" + cls + "'><a href='/p/" + s + "'>" + n + "</a><span "
+                   "class='price'>" + p + "</span><button class='delete'>" + button + '</button></'
+                   + tag + '>' for n, s, p in items)
+
+
+def page(body):
+    return '<html><body>' + body + '</body></html>'
+
+
+def todomvc(cls):
+    """TodoMVC's list: one <ul class='todo-list'>, where a completed task gets class='completed'."""
+    def item(task):
+        return ('<li' + (" class='" + cls + "'" if cls else '') + "><div class='view'><input "
+                "class='toggle' type='checkbox'><label>" + task + "</label><button class='destroy'>"
+                '</button></div></li>')
+    return page("<section class='todoapp'><h1>todos</h1><ul class='todo-list'>"
+                + ''.join(item(t) for t in TASKS) + '</ul></section>')
+
+
+def tasks(heading, cls):
+    """One section of tasks, rendered only while it has some (the verifier's E2)."""
+    return page("<div class='app'><section class='group'><h2>" + heading + "</h2><ul class='tasks'>"
+                + rows(cls, ITEMS, 'li', 'Remove') + '</ul></section></div>')
+
+
+def mail(tab, cls, button):
+    """One lazily rendered tab panel, reused for the Inbox and the Archive (the verifier's E8)."""
+    return page("<div class='mail'><div role='tablist'><button id='t-in' role='tab'>Inbox</button>"
+                "<button id='t-ar' role='tab'>Archive</button></div><div class='panel' "
+                "role='tabpanel' aria-labelledby='" + tab + "'><ul class='msgs'>"
+                + rows(cls, ITEMS, 'li', button) + '</ul></div></div>')
+
 REFUSE = [
     pytest.param(cart(True), cart(False), '.cart-item', SAVED_ROWS, id='cart-class-only'),
     pytest.param(cart(True, cart_attrs="aria-label='Cart'"),
@@ -264,6 +303,90 @@ REFUSE = [
                  '.cart-item', SAVED_LI, id='plain-ul-is-active-to-is-empty'),
     pytest.param(plain('cart grid', ITEMS, []), plain('cart flex items-center', [], ITEMS),
                  '.cart-item', SAVED_LI, id='plain-ul-utility-classes-swapped'),
+    pytest.param(todomvc(''), todomvc('completed'), '.todo-list li:not(.completed)',
+                 "//li[@class='completed']", id='todomvc-every-task-completed'),
+    pytest.param(todomvc('todo'), todomvc('done'), 'li.todo', "//li[@class='done']",
+                 id='todo-class-swapped-for-done'),
+    # The verifier's (matrixcheck/new_cases.py): the other list, its heading included, is
+    # rendered only once it has items, and the list's own heading changes or goes away.
+    pytest.param(page("<main><h1>Shopping Cart</h1><section class='cart'>" + rows('cart-item', ITEMS)
+                      + '</section></main>'),
+                 page("<main><h1>Your cart is empty</h1><section class='cart'><p>Nothing here.</p>"
+                      "</section><h2>Saved for later (3 items)</h2><section class='saved'>"
+                      + rows('saved-item', ITEMS) + '</section></main>'),
+                 '.cart-item', SAVED_ROWS, id='E1-cart-heading-changes-saved-shown-once-it-has-items'),
+    pytest.param(page("<main><h1>Shopping Cart</h1><section class='cart'>" + rows('cart-item', ITEMS)
+                      + "</section><h2>Saved for later (0 items)</h2><section class='saved'><p>None"
+                      '</p></section></main>'),
+                 page("<main><h1>Your cart is empty</h1><section class='cart'><p>Nothing here.</p>"
+                      "</section><h2>Saved for later (3 items)</h2><section class='saved'>"
+                      + rows('saved-item', ITEMS) + '</section></main>'),
+                 '.cart-item', SAVED_ROWS, id='E1b-saved-section-there-when-recorded'),
+    pytest.param(page("<main><div class='page'><section class='cart'><h2>Cart</h2>"
+                      + rows('cart-item', ITEMS) + '</section></div></main>'),
+                 page("<main><div class='page'><div class='empty-cart'><h2>Your cart is empty</h2>"
+                      "</div><section class='saved'><h2>Saved for later</h2>"
+                      + rows('saved-item', ITEMS) + '</section></div></main>'),
+                 '.cart-item', SAVED_ROWS, id='E1c-cart-section-replaced-by-an-empty-state'),
+    pytest.param(tasks('Active', 'todo'), tasks('Completed', 'done-item'), 'li.todo',
+                 "//li[@class='done-item']", id='E2-active-section-only-while-it-has-tasks'),
+    pytest.param(tasks('Active', 'todo').replace("class='group'", "class='active-tasks'"),
+                 tasks('Completed', 'done-item').replace("class='group'", "class='completed-tasks'"),
+                 'li.todo', "//li[@class='done-item']", id='E2b-sections-of-their-own-classes'),
+    pytest.param(page("<div class='panel'><h2>Notifications</h2><button>Mark all as read</button>"
+                      "<div class='section'><h3>New</h3><ul>"
+                      + rows('notif unread', ITEMS, 'li', 'Dismiss') + '</ul></div></div>'),
+                 page("<div class='panel'><h2>Notifications</h2><button>Mark all as read</button>"
+                      "<div class='section'><h3>Earlier</h3><ul>"
+                      + rows('notif read', ITEMS, 'li', 'Dismiss') + '</ul></div></div>'),
+                 '.notif.unread', "//li[@class='notif read']", id='E3-notifications-marked-read'),
+    pytest.param(page("<main><h1>3 results for mug</h1><ul class='results'>"
+                      + rows('result', ITEMS, 'li', 'Add') + '</ul></main>'),
+                 page("<main><h1>No results for mugz</h1><h2>Popular right now</h2><ul class='recs'>"
+                      + rows('rec', ITEMS, 'li', 'Add') + '</ul></main>'),
+                 '.result', "//li[@class='rec']", id='E4-no-results-recommends-the-same-products'),
+    pytest.param(page("<main><h1>Products</h1><div class='grid'>" + rows('card', ITEMS)
+                      + '</div><nav>1 2</nav></main>'),
+                 page("<main><h1>Products</h1><p>No more products.</p><nav>1 2</nav><h2>Recently "
+                      "viewed</h2><div class='strip'>" + rows('mini', ITEMS) + '</div></main>'),
+                 '.card', "//div[@class='mini']", id='E5-last-page-empty-recently-viewed'),
+    pytest.param(page("<main><div class='grid'>" + rows('card', ITEMS) + '</div><nav>1 2</nav></main>'),
+                 page("<main><p>No more products.</p><nav>1 2</nav><h2>Recently viewed</h2>"
+                      "<div class='strip'>" + rows('mini', ITEMS) + '</div></main>'),
+                 '.card', "//div[@class='mini']", id='E5b-last-page-empty-no-heading'),
+    pytest.param(page("<header class='top'>Shop</header><aside class='drawer'><h2>Your bag</h2><ul "
+                      "class='lines'>" + rows('line', ITEMS, 'li', 'Remove') + '</ul></aside><main>'
+                      '<h1>Home</h1></main>'),
+                 page("<header class='top'>Shop</header><main><h1>Home</h1></main><div class='modal'>"
+                      "<h2>Order summary</h2><ul class='summary'>"
+                      + rows('summary-line', ITEMS, 'li', 'Remove') + '</ul></div>'),
+                 '.line', "//li[@class='summary-line']", id='E6-bag-drawer-gone-items-in-a-modal'),
+    pytest.param(page("<header class='top'>Shop</header><aside class='drawer'><h2>Your bag</h2><ul "
+                      "class='lines'>" + rows('line', ITEMS, 'li', 'Remove') + '</ul></aside><main>'
+                      '<h1>Home</h1></main>'),
+                 page("<header class='top'>Shop</header><aside class='drawer'><h2>Your bag</h2><p>"
+                      "Empty</p></aside><main><h1>Home</h1></main><div class='modal'><h2>Order "
+                      "summary</h2><ul class='summary'>" + rows('summary-line', ITEMS, 'li', 'Remove')
+                      + '</ul></div>'),
+                 '.line', "//li[@class='summary-line']", id='E6b-bag-drawer-stays-empty'),
+    pytest.param(page("<div class='layout'><main><h1>Cart (3)</h1><ul class='cart'>"
+                      + rows('cart-line', ITEMS, 'li') + '</ul></main></div>'),
+                 page("<div class='layout'><main><h1>Cart is empty</h1></main><aside class='wishlist'>"
+                      "<h2>Wishlist</h2><ul class='wish'>" + rows('wish-line', ITEMS, 'li')
+                      + '</ul></aside></div>'),
+                 '.cart-line', "//li[@class='wish-line']", id='E7-cart-moved-to-a-new-wishlist'),
+    pytest.param(mail('t-in', 'inbox-row', 'Archive'), mail('t-ar', 'archive-row', 'Delete'),
+                 '.inbox-row', "//li[@class='archive-row']", id='E8-one-tab-panel-reused-for-archive'),
+    pytest.param(page("<div class='board'><section class='col'><h2>To do</h2>"
+                      + rows('card todo', ITEMS) + "</section><section class='col'><h2>Done</h2>"
+                      '</section></div>'),
+                 page("<div class='board'><section class='col'><h2>To do</h2></section><section "
+                      "class='col'><h2>Done</h2>" + rows('card done', ITEMS) + '</section></div>'),
+                 '.card.todo', "//div[@class='card done']", id='E9-kanban-cards-all-done'),
+    pytest.param(page("<main><section class='cart'>" + rows('cart-item', ITEMS) + '</section></main>'),
+                 page("<main><section class='cart'><p>Empty</p></section><section class='saved'>"
+                      + rows('saved-item', ITEMS) + '</section></main>'),
+                 '.cart-item', SAVED_ROWS, id='E10-no-headings-saved-shown-once-it-has-items'),
 ]
 
 
@@ -302,7 +425,34 @@ def shop(heading, grid, card, items=ITEMS):
 RESULTS = results('list', 'results', 'result')
 HELP = "//aside//li"
 
-HEAL = [
+
+def results_v(item, ul_attrs="class='results'", head='<h2>Results</h2>', wrap=None):
+    """The verifier's search results, under h1 Shop and an h2, with a footer list of links."""
+    ul = '<ul ' + ul_attrs + '>' + rows(item, ITEMS, 'li', 'Add') + '</ul>'
+    if wrap:
+        ul = wrap[0] + ul + wrap[1]
+    return page('<main><h1>Shop</h1>' + head + ul + "<footer><ul class='links'><li><a href='/help'>"
+                "Help</a></li><li><a href='/faq'>FAQ</a></li></ul></footer></main>")
+
+
+def bootstrap(card_cls, heading):
+    """A Bootstrap page: the cards in div.container > div.row, and a footer with the same."""
+    return page("<div class='container'>" + heading + "<div class='row'>" + rows(card_cls, ITEMS)
+                + "</div></div><footer><div class='container'><div class='row'><div class='col'>About"
+                "</div><div class='col'>Help</div></div></div></footer>")
+
+
+def orders(row_cls, article):
+    """A table of orders, moved with its heading into an <article><header> (the verifier's R10)."""
+    body = ''.join("<tr class='" + row_cls + "'><td><a href='/o/" + s + "'>" + n + '</a><span>' + p
+                   + '</span><button>Delete</button></td></tr>' for n, s, p in ITEMS)
+    table = "<table class='orders'><tbody>" + body + '</tbody></table>'
+    if article:
+        return page("<main><article class='card'><header><h2>Orders</h2></header>" + table
+                    + '</article></main>')
+    return page('<main><h2>Orders</h2>' + table + '</main>')
+
+REDESIGN = [
     pytest.param(cart(True), cart(True, row='cart-row'), '.cart-item', "//div[@class='cart-row']",
                  SAVED_ROWS, id='cart-rows-renamed-in-place'),
     pytest.param(cart(True), cart(True, cart_cls='basket', row='basket-row'), '.cart-item',
@@ -338,6 +488,80 @@ HEAL = [
     pytest.param(shop('Cart (3)', 'grid', 'card'),
                  shop('Cart (4)', 'grid', 'row', ITEMS + [FORK]), '.card', "//div[@class='row']",
                  None, id='count-in-heading-changes-rows-renamed'),
+    pytest.param(shop('Shop', 'grid', 'card'),
+                 shop('Shop', 'grid', 'tile').replace("<div class='grid'>",
+                                                      "<h2>Featured</h2><div class='catalog'>"),
+                 '.card', "//div[@class='tile']", None, id='under-a-new-heading-old-one-stays'),
+    pytest.param(todomvc('todo'), todomvc('task'), 'li.todo', "//li[@class='task']", None,
+                 id='todomvc-items-renamed-in-place'),
+    pytest.param(tasks('Active', 'todo'), tasks('To do', 'task'), 'li.todo', "//li[@class='task']",
+                 None, id='tasks-heading-and-items-renamed'),
+    # The verifier's (matrixcheck/new_cases.py).
+    pytest.param(results_v('result'), results_v('hit', "class='results' aria-label='Search results'"),
+                 '.result', "//li[@class='hit']", '//footer//li', id='R1-list-gains-an-aria-label'),
+    pytest.param(results_v('result'),
+                 results_v('hit', wrap=("<section aria-label='Search results'>", '</section>')),
+                 '.result', "//li[@class='hit']", '//footer//li', id='R1b-wrapped-in-a-labelled-section'),
+    pytest.param(results_v('result'),
+                 results_v('hit', wrap=("<div class='layout'><aside class='filters'><h3>Filters</h3>"
+                                        "<label><input type='checkbox'> In stock</label></aside>"
+                                        "<div class='col'>", '</div></div>')),
+                 '.result', "//li[@class='hit']", '//footer//li', id='R2-a-filter-sidebar-added'),
+    pytest.param(results_v('result'), results_v('hit', head=''), '.result', "//li[@class='hit']",
+                 '//footer//li', id='R3-subheading-dropped'),
+    pytest.param(results_v('result'),
+                 results_v('hit', head="<div class='toolbar'><div class='title'><h2>Results</h2>"
+                                       '</div><button>Sort</button></div>'),
+                 '.result', "//li[@class='hit']", '//footer//li', id='R3b-heading-in-a-toolbar'),
+    pytest.param(page("<main><div><p>Free shipping</p></div><h1>Shop</h1><div class='grid'>"
+                      + rows('card', ITEMS) + '</div></main>'),
+                 page("<main><div><p>Free shipping</p></div><h1>Shop</h1><div><div class='grid'>"
+                      + rows('tile', ITEMS) + '</div></div></main>'),
+                 '.card', "//div[@class='tile']", None, id='R4-grid-wrapped-in-a-bare-div'),
+    pytest.param(page("<main class='sc-a1b2c3'><div class='sc-x9y8z7'><p>Free shipping</p></div>"
+                      "<h1>Shop</h1><div class='grid'>" + rows('card', ITEMS) + '</div></main>'),
+                 page("<main class='sc-a1b2c3'><div class='sc-x9y8z7'><p>Free shipping</p></div>"
+                      "<h1>Shop</h1><div class='sc-q5w6e7'><div class='grid'>" + rows('tile', ITEMS)
+                      + '</div></div></main>'),
+                 '.card', "//div[@class='tile']", None, id='R4b-styled-components-wrapper'),
+    pytest.param(page("<main><div><ul>" + rows('item', ITEMS, 'li') + '</ul></div></main><footer>'
+                      "<div><ul><li><a href='/help'>Help</a></li><li><a href='/faq'>FAQ</a></li>"
+                      '</ul></div></footer>'),
+                 page("<main><div><ul>" + rows('product', ITEMS, 'li') + '</ul></div></main><footer>'
+                      "<div><ul><li><a href='/help'>Help</a></li><li><a href='/faq'>FAQ</a></li>"
+                      '</ul></div></footer>'),
+                 '.item', "//li[@class='product']", '//footer//li', id='R5-renamed-in-place-footer-alike'),
+    pytest.param(bootstrap('product-card', ''), bootstrap('card', ''), '.product-card',
+                 "//div[@class='card']", "//div[@class='col']", id='R5b-bootstrap-row-no-heading'),
+    pytest.param(bootstrap('product-card', '<h2>Products</h2>'), bootstrap('card', '<h2>Products</h2>'),
+                 '.product-card', "//div[@class='card']", "//div[@class='col']",
+                 id='R5b-bootstrap-row-with-a-heading'),
+    pytest.param(page("<header><div class='container'><div class='row'><div class='col'>Logo</div>"
+                      "</div></div></header><main><h1>Shop</h1><div class='product-list'>"
+                      + rows('product-card', ITEMS) + '</div></main>'),
+                 page("<header><div class='container'><div class='row'><div class='col'>Logo</div>"
+                      "</div></div></header><main><h1>Shop</h1><div class='container'><div class='row'>"
+                      + rows('card', ITEMS) + '</div></div></main>'),
+                 '.product-card', "//div[@class='card']", None, id='R6-bootstrap-grid-moved-into-a-row'),
+    pytest.param(page("<main><h1>Products</h1><div class='grid'>" + rows('card', ITEMS) + '</div></main>'),
+                 page("<main><h1>Products</h1><div role='tablist'><button id='tab-all' role='tab'>All"
+                      "</button><button id='tab-new' role='tab'>New</button></div><div role='tabpanel' "
+                      "aria-labelledby='tab-all'><div class='grid'>" + rows('tile', ITEMS)
+                      + '</div></div></main>'),
+                 '.card', "//div[@class='tile']", None, id='R7-grid-moved-into-a-tab-panel'),
+    pytest.param(page("<main><h2>Featured</h2><div class='grid'>" + rows('card', ITEMS) + '</div></main>'),
+                 page("<main><h2>Featured products</h2><div class='grid'>" + rows('tile', ITEMS)
+                      + '</div></main>'),
+                 '.card', "//div[@class='tile']", None, id='R8-heading-renamed'),
+    pytest.param(page("<main><h1>Shop</h1><div class='grid'>" + rows('card', ITEMS) + "</div><div "
+                      "class='m-only' style='display:none'><div class='mgrid'>" + rows('mcard', ITEMS)
+                      + '</div></div></main>'),
+                 page("<main><h1>Shop</h1><div class='grid'>" + rows('tile', ITEMS) + "</div><div "
+                      "class='m-only' style='display:none'><div class='mgrid'>" + rows('mtile', ITEMS)
+                      + '</div></div></main>'),
+                 '.card', "//div[@class='tile']", "//div[@class='mtile']", id='R9-hidden-mobile-copy'),
+    pytest.param(orders('order', False), orders('order-row', True), '.order',
+                 "//tr[@class='order-row']", None, id='R10-into-an-article-with-a-header'),
 ]
 
 
@@ -350,47 +574,89 @@ def _refused(root, page, provider, key):
     return str(info.value)
 
 
+def _not_healed(tmp_path, make_page, before, after, key, other):
+    """Record the list on before, then look it up on after with WrongPicker, which takes the
+    elements other matches, as the model: it must raise, saving and journaling no heal,
+    naming both possibilities and asking no model, and so must a fresh open() on the same
+    store. Returns the message."""
+    page = make_page(before, url='https://shop.test/x', fingerprints=True, css=True)
+    model = WrongPicker(page, other)
+    heal = _open(page, tmp_path, model)
+    assert len(heal.locator_all(key, key)) >= 3              # recorded as a list
+    page.set_html(after)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator_all(key, key)
+    message = str(info.value)
+    assert heal.heals == []
+    assert _saved_heals(tmp_path, key) == []
+    assert not [e for e in _journal(tmp_path) if e['event'] == 'heal.applied']
+    assert EMPTY_OR_BROKEN in message, message
+    assert 'optional=True' not in message
+    assert model.bundles == []                             # no model is asked
+    # The next run, on the same store, refuses again: nothing was saved to replay.
+    again = make_page(after, url='https://shop.test/x', fingerprints=True, css=True)
+    assert EMPTY_OR_BROKEN in _refused(tmp_path, again, model, key)
+    assert _saved_heals(tmp_path, key) == [] and model.bundles == []
+    return message
+
+
 @pytest.mark.parametrize('before, after, key, other', REFUSE)
 def test_an_emptied_list_is_not_healed_onto_another_list(tmp_path, make_page, before, after, key,
                                                          other):
-    for with_model in (False, True):
-        root = tmp_path / ('model' if with_model else 'none')
-        page = make_page(before, url='https://shop.test/cart', fingerprints=True, css=True)
-        model = WrongPicker(page, other) if with_model else None
-        heal = _open(page, root, model)
-        assert len(heal.locator_all(key, key)) >= 3              # recorded as a list
-        page.set_html(after)
-        assert len(lxml.html.fromstring(after).xpath(other)) >= 3   # the other list has them
-        with pytest.raises(AttentionRequired) as info:
-            heal.locator_all(key, key)
-        message = str(info.value)
-        assert heal.heals == []
-        assert _saved_heals(root, key) == []
-        assert not [e for e in _journal(root) if e['event'] == 'heal.applied']
-        assert EMPTY_OR_BROKEN in message, message
-        assert 'optional=True' not in message
-        if model is not None:
-            assert model.picked == []                          # never shown the other list
-        # The next run, on the same store, refuses again: nothing was saved to replay.
-        again = make_page(after, url='https://shop.test/cart', fingerprints=True, css=True)
-        assert EMPTY_OR_BROKEN in _refused(root, again, model, key)
-        assert _saved_heals(root, key) == []
+    assert len(lxml.html.fromstring(after).xpath(other)) >= 3   # the other list has the items
+    _not_healed(tmp_path, make_page, before, after, key, other)
 
 
-@pytest.mark.parametrize('before, after, key, wanted, wrong', HEAL)
-def test_a_redesigned_list_heals_onto_the_list(tmp_path, make_page, before, after, key, wanted,
-                                               wrong):
-    page = make_page(before, url='https://shop.test/x', fingerprints=True, css=True)
-    model = WrongPicker(page, wrong) if wrong else None        # would take the look-alike
-    heal = _open(page, tmp_path, model)
-    assert len(heal.locator_all(key, key)) >= 3
-    page.set_html(after)
-    got = heal.locator_all(key, key)
-    want = [' '.join(el.text_content().split()) for el in lxml.html.fromstring(after).xpath(wanted)]
-    assert len(want) >= 3 and [item.inner_text() for item in got] == want
-    assert [h.source for h in heal.heals] == ['fingerprint']
-    assert model is None or model.bundles == []                 # no model call
-    assert len(_saved_heals(tmp_path, key)) == 1
+@pytest.mark.parametrize('before, after, key, wanted, other', REDESIGN)
+def test_a_redesigned_list_is_not_healed_either_and_its_new_selector_finds_it(
+        tmp_path, make_page, before, after, key, wanted, other):
+    # other is a look-alike on the page, which the stub model would take; else it takes the list.
+    doc = lxml.html.fromstring(after)
+    _not_healed(tmp_path, make_page, before, after, key,
+                other if other and doc.xpath(other) else wanted)
+    # Fixed in the code, the list is found again.
+    page = make_page(after, url='https://shop.test/x', fingerprints=True, css=True)
+    heal = _open(page, tmp_path)
+    got = heal.locator_all(key, wanted)
+    want = [' '.join(el.text_content().split()) for el in doc.xpath(wanted)]
+    assert len(want) >= 3 and [' '.join(item.inner_text().split()) for item in got] == want
+    assert heal.heals == []
+
+
+@pytest.mark.parametrize('before, emptied, redesigned, swaps', [
+    pytest.param(todomvc('todo'), todomvc('done'), todomvc('task'), [('done', 'task')],
+                 id='todo-class-swapped-for-done-or-renamed-to-task'),
+    pytest.param(tasks('Active', 'todo'), tasks('Completed', 'done-item'), tasks('To do', 'task'),
+                 [('done-item', 'task'), ('Completed', 'To do')],
+                 id='active-tasks-all-completed-or-section-redesigned'),
+])
+def test_an_emptied_list_and_a_redesign_can_be_the_same_page(tmp_path, make_page, before, emptied,
+                                                            redesigned, swaps):
+    # The page after the list was emptied is the page after a redesign but for one class name,
+    # and a heading's text: only what the words mean tells them apart, so a rule on the markup
+    # that heals the redesign heals the emptied list too. mendwright heals neither.
+    for old, new in swaps:
+        emptied = emptied.replace(old, new)
+    assert emptied == redesigned
+    _not_healed(tmp_path, make_page, before, redesigned, 'li.todo', "//li[@class='task']")
+
+
+def test_a_list_heal_an_earlier_build_saved_is_never_used(tmp_path, make_page):
+    # A build of 0.8.0 before its release healed the emptied cart onto the items saved for
+    # later and saved it, marked "list": true. A list lookup uses no heal, so it raises.
+    saved = "//div[contains(concat(' ', normalize-space(@class), ' '), ' saved-item ')]"
+    page = make_page(cart(True), url='https://shop.test/cart', fingerprints=True, css=True)
+    heal = _open(page, tmp_path)
+    assert len(heal.locator_all('.cart-item', '.cart-item')) == 3
+    heal.store.add_candidate('.cart-item', saved, list_heal=True)
+    heal.store.record_success('.cart-item', saved)
+    assert _saved_heals(tmp_path, '.cart-item') == [saved]
+    page.set_html(cart(False))
+    assert len(lxml.html.fromstring(cart(False)).xpath(saved)) == 3
+    for run in (heal, _open(page, tmp_path)):
+        with pytest.raises(AttentionRequired, match=EMPTY_OR_BROKEN):
+            run.locator_all('.cart-item', '.cart-item')
+        assert run.heals == []
 
 
 def test_async_an_emptied_cart_is_not_healed_onto_the_items_saved_for_later(tmp_path, make_page):
@@ -401,31 +667,17 @@ def test_async_an_emptied_cart_is_not_healed_onto_the_items_saved_for_later(tmp_
                                          store_path=str(tmp_path / 'o.json'), timeout_ms=0)
         assert len(await heal.locator_all('.cart-item', '.cart-item')) == 3
         sync.set_html(cart(False))
-        with pytest.raises(AttentionRequired) as info:
+        with pytest.raises(AttentionRequired) as emptied:
             await heal.locator_all('.cart-item', '.cart-item')
-        sync.set_html(cart(True, row='cart-row'))           # a redesign heals
-        rows = await heal.locator_all('.cart-item', '.cart-item')
-        return heal, model, str(info.value), [await r.inner_text() for r in rows]
-    heal, model, message, texts = asyncio.run(main())
-    assert EMPTY_OR_BROKEN in message and model.picked == []
+        sync.set_html(cart(True, row='cart-row'))           # a redesign is not healed either
+        with pytest.raises(AttentionRequired) as redesigned:
+            await heal.locator_all('.cart-item', '.cart-item')
+        rows = await heal.locator_all('.cart-item', '.cart-row')   # fixed in the code
+        return heal, model, emptied, redesigned, [await r.inner_text() for r in rows]
+    heal, model, emptied, redesigned, texts = asyncio.run(main())
+    assert EMPTY_OR_BROKEN in str(emptied.value) and EMPTY_OR_BROKEN in str(redesigned.value)
+    assert model.bundles == [] and heal.heals == []
     assert texts == ['Blue mug$12.00Delete', 'Red mug$13.00Delete', 'Tea pot$29.00Delete']
-    assert [h.source for h in heal.heals] == ['fingerprint']
-
-
-def test_a_list_put_under_a_new_heading_while_its_old_one_stays_is_refused(tmp_path, make_page):
-    # The fail-closed side of the label test: the old heading is still on the page, so the
-    # grid under another heading may be another list, and nothing is healed.
-    page = make_page(shop('Shop', 'grid', 'card'), fingerprints=True, css=True)
-    heal = _open(page, tmp_path)
-    assert len(heal.locator_all('.card', '.card')) == 3
-    page.set_html(shop('Shop', 'grid', 'tile').replace("<div class='grid'>",
-                                                       "<h2>Featured</h2><div class='catalog'>"))
-    with pytest.raises(AttentionRequired) as info:
-        heal.locator_all('.card', '.card')
-    assert ("The one most like the list (3 elements) is under 'Featured', and the list was "
-            "under 'Shop', which is still on the page. So either the list is empty at this point, "
-            "or its selector broke") in str(info.value)
-    assert heal.heals == []
 
 
 def test_the_guide_quotes_the_refusal_of_an_emptied_list(tmp_path, make_page):
@@ -439,24 +691,3 @@ def test_the_guide_quotes_the_refusal_of_an_emptied_list(tmp_path, make_page):
     with pytest.raises(AttentionRequired) as info:
         heal.locator_all('cart', '.cart-item')
     assert str(info.value) in path.read_text(encoding='utf-8')
-
-
-def test_a_list_fingerprint_saved_without_where_the_list_was_heals_nothing(tmp_path, make_page):
-    # One an earlier 0.8.0 build saved can't tell another list from the list: no heal, and no
-    # model is shown the groups, until a run in which the list matches records it anew.
-    page = make_page(cart(True), url='https://shop.test/cart', fingerprints=True, css=True)
-    model = WrongPicker(page, SAVED_ROWS)
-    heal = _open(page, tmp_path, model)
-    assert len(heal.locator_all('cart', '.cart-item')) == 3
-    old = dict(heal.store.meta('cart')['listFingerprint'])
-    del old['place'], old['label']
-    heal.store.set_meta('cart', list_fingerprint=old)
-    page.set_html(cart(True, row='cart-row'))                # even a redesign
-    with pytest.raises(AttentionRequired, match='saved by an earlier build, which did not record '
-                                                'where the list was or its label'):
-        heal.locator_all('cart', '.cart-item')
-    assert heal.heals == [] and model.bundles == []
-    page.set_html(cart(True))
-    again = _open(page, tmp_path, model)                     # the next run, where it matches
-    assert len(again.locator_all('cart', '.cart-item')) == 3
-    assert 'place' in again.store.meta('cart')['listFingerprint']

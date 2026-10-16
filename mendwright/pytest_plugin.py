@@ -494,14 +494,13 @@ class _Tracker:
         """Confirm the heals of this test that are still waiting for an outcome."""
         for coordinator, heal in self._found:
             key = heal.get('key')
-            is_pending = getattr(coordinator, 'is_pending', None)
-            if heal.get('confirmed') is not None or not callable(is_pending):
+            pending = getattr(coordinator, 'pending', None)
+            if heal.get('confirmed') is not None or not isinstance(pending, dict):
                 continue
-            if not is_pending(key, heal.get('new')):
-                continue   # already reported, or replaced by a later heal of the same kind
+            if pending.get(key) != heal.get('new'):
+                continue   # already reported, or replaced by a later heal of the same key
             try:
-                # xpath picks the heal: a key can have a list heal and a heal of one element.
-                coordinator.confirm_pending(key, True, xpath=heal.get('new'))
+                coordinator.confirm_pending(key, True)
             except Exception:
                 logger.warning('mendwright: could not confirm the heal for %r', key,
                                exc_info=True)

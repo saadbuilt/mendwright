@@ -599,9 +599,9 @@ class SelectorStore:
         existing candidate to the page, None leaves it where it is. css is a CSS selector
         checked to match the same element as a healed XPath (see mendwright.css), saved for
         mendwright fix and never run: '' drops one saved before, None leaves it. list_heal
-        True marks a heal of a list (see mendwright.lists), saved as "list": true: the list
-        lookups of the key try only the heals marked so, and skip the heals of one element.
-        False clears the mark, None leaves it."""
+        True marks a heal of a list, saved as "list": true, as a build of 0.8.0 before its
+        release did: list lookups use no heal (see Healer.locator_all), and mendwright fix
+        writes none of these back. False clears the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         if not found:

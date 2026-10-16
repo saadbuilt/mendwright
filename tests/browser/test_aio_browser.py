@@ -1228,9 +1228,7 @@ def _shop(cls):
     return "<main id='content'><div id='grid'>" + cards + "</div></main>"
 
 
-def test_a_list_heals(engine, tmp_path):
-    tile = "//div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')]"
-
+def test_a_list_whose_selector_broke_is_not_healed(engine, tmp_path):
     async def main():
         page = await engine.page(_shop('product-card'))
         try:
@@ -1239,15 +1237,21 @@ def test_a_list_heals(engine, tmp_path):
             await heal.locator_all('cards', '.product-card')
             await page.set_content(_shop('product-tile'))
             items = await heal.page.locator('.product-card').all()   # never healed
-            cards = await heal.locator_all('cards', '.product-card')
+            try:
+                await heal.locator_all('cards', '.product-card')
+                error = ''
+            except AttentionRequired as exc:
+                error = str(exc)
+            cards = await heal.locator_all('cards', '.product-tile')   # fixed in the code
             names = [await c.native.locator('h3').inner_text() for c in cards]
-            return heal, first, len(items), names
+            return heal, first, len(items), error, names
         finally:
             await page.context.close()
 
-    heal, first, found, names = engine.run(main())
+    heal, first, found, error, names = engine.run(main())
     assert first == 3 and found == 0 and names == ['Blue mug', 'Red mug', 'Tea pot']
-    assert [(h.key, h.new, h.source) for h in heal.heals] == [('cards', tile, 'fingerprint')]
+    assert 'the list is empty at this point, or its selector broke' in error
+    assert heal.heals == []
 
 
 def test_a_read_that_heals_onto_the_wrong_number_is_refused(engine, tmp_path):

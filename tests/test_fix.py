@@ -290,6 +290,24 @@ def test_a_key_with_a_list_heal_and_a_heal_of_one_element_is_left_alone(root, ca
             "a key of its own: the list to div.tile, the element to #p1") in out.splitlines()
 
 
+def test_a_key_whose_heal_is_a_list_heal_is_left_alone(root, capsys):
+    # Only a build of 0.8.0 before its release saved list heals, and this one is the items
+    # saved for later that a cart's lookup took once the cart was emptied.
+    saved = "//div[contains(concat(' ', normalize-space(@class), ' '), ' saved-item ')]"
+    entry = {"expectedRole": "div", "candidates": [
+        cand(".cart-item", "code", T0), dict(cand(saved, "heal", T1), list=True, css="div.saved-item")]}
+    write_store(root, {".cart-item": entry}, [canary(".cart-item", saved)])
+    text = 'for row in heal.locator_all(".cart-item", ".cart-item"):\n    row.click()\n'
+    source = write(root, "test_a.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  .cart-item: its heal is a heal of a list (heal.locator_all()), which mendwright no "
+            "longer makes or uses: it can't tell a list that was emptied from one whose selector "
+            "broke, so the heal can be another list. If the selector broke, change it by "
+            "hand.") in out.splitlines()
+
+
 def test_every_old_code_selector_of_a_key_is_replaced(root, capsys):
     confirmed_project(root, "k", ["#a", "//button[@id='b']"], EMAIL, role="input")
     source = write(root, "test_a.py", "heal.locator('k', ['#a', \"//button[@id='b']\"])\n")

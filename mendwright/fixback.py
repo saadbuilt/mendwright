@@ -207,6 +207,14 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
                                  'its own: the list to ' + _written(_latest(lists), old)
                                  + ', the element to ' + _written(_latest(ones), old)))
             continue
+        if best.get('list') is True:
+            # Only a build of 0.8.0 before its release saved list heals, and one can be another
+            # list that holds the items of an emptied one (see Healer.locator_all).
+            plan.skipped.append((key, 'its heal is a heal of a list (heal.locator_all()), which '
+                                 "mendwright no longer makes or uses: it can't tell a list that "
+                                 'was emptied from one whose selector broke, so the heal can be '
+                                 'another list. If the selector broke, change it by hand.'))
+            continue
         bare = [s for s in old if _BARE_WORD.match(s)]
         if bare:
             plan.skipped.append((key, 'its old selector ' + repr(bare[0]) + ' is a bare word, and '

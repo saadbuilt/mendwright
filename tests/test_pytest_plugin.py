@@ -243,30 +243,34 @@ def grid():
 '''
 
 
-def test_a_list_heal_and_a_heal_of_one_element_of_one_key_are_both_confirmed(project):
-    # heal.locator_all('.card', ...) and heal.page.inner_text('.card') share a key, and both
-    # heal in one test: the list through its list fingerprint, the first card through the model.
+def test_a_heal_of_one_element_of_a_list_s_key_is_confirmed_and_the_list_reports_nothing(project):
+    # heal.locator_all('.card', ...) and heal.page.inner_text('.card') share a key: the first
+    # card heals through the model, the list is never healed, and its elements' confirm()
+    # does not report the card's heal.
     project.makeconftest(_conftest() + GRID)
     project.makepyfile('''
+        import pytest
         import mendwright
 
         def test_grid(grid):
             heal = mendwright.open(grid, store_path='grid/overrides.json', timeout_ms=0)
             assert len(heal.locator_all('.card', '.card')) == 3
             grid.redesign()
-            assert len(heal.locator_all('.card', '.card')) == 3
             assert heal.page.inner_text('.card').startswith('Blue mug')
+            with pytest.raises(mendwright.AttentionRequired):
+                heal.locator_all('.card', '.card')
+            cards = heal.locator_all('.card', '.tile')
+            cards[0].confirm(False)
+            assert len(cards) == 3
     ''')
     result = run(project)
     result.assert_outcomes(passed=1)
     journal = project.path / 'grid' / 'journal.jsonl'
     canaries = sorted((e['xpath'], e['success']) for e in events(journal)
                       if e['event'] == 'heal.canary')
-    assert canaries == [("//div[@id='p1']", True),
-                        ("//div[contains(concat(' ', normalize-space(@class), ' '), ' tile ')]",
-                         True)]
-    result.stdout.fnmatch_lines(['mendwright: 2 selectors healed in 1 test (2 confirmed by '
-                                 'passing tests)'])
+    assert canaries == [("//div[@id='p1']", True)]
+    result.stdout.fnmatch_lines(['mendwright: 1 selector healed in 1 test (1 confirmed by a '
+                                 'passing test)'])
 
 
 # --- strict mode ---------------------------------------------------------------------

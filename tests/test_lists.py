@@ -1,12 +1,13 @@
-"""Lists (mendwright.lists): heal.locator_all() heals a list selector that matches nothing
-any more, and heal.page.locator(selector).all() and heal.driver.find_elements() give what
-the real call gives, as in 0.7.0. Offline: the lxml-backed FakePage from conftest
-(fingerprints=True answers the list fingerprint read), a stub provider, and the fake
-Selenium driver of test_proxies.py."""
+"""Lists (mendwright.lists): heal.locator_all() gives the elements of a list and records a
+list fingerprint, and never heals a list whose selectors all match nothing (see
+test_lists_emptied.py for why), and heal.page.locator(selector).all() and
+heal.driver.find_elements() give what the real call gives, as in 0.7.0. Offline: the
+lxml-backed FakePage from conftest (fingerprints=True answers the list fingerprint read), a
+stub provider, and the fake Selenium driver of test_proxies.py."""
 
 import asyncio
 import json
-import re
+import logging
 import time
 
 import lxml.html
@@ -14,7 +15,7 @@ import pytest
 
 import mendwright
 import mendwright.aio
-from mendwright import AttentionRequired, HealEvent, LocalModelProvider, lists
+from mendwright import AttentionRequired, LocalModelProvider, lists
 from mendwright.capture import build_list_bundle
 from mendwright.client import apply_list
 from mendwright.gate import list_live_reason
@@ -50,6 +51,14 @@ V2 = shop(grid('product-tile'))                     # the card class changed
 TILE = "//div[contains(concat(' ', normalize-space(@class), ' '), ' product-tile ')]"
 CARDS = "//div[contains(@class,'product-card')]"
 NEW_PRODUCTS = [('Lamp', '$40.00'), ('Chair', '$90.00'), ('Desk', '$250.00'), ('Sofa', '$900.00')]
+# What a lookup of the list 'cards', recorded with 4 cards, raises when none of its selectors
+# matches.
+MISSING = ("No matching element for: cards (tried 1 candidate(s)).\n  -> 'cards' matched 4 "
+           'elements when its list fingerprint was recorded, and none of its selectors matches '
+           'now. Either the list is empty at this point, or its selector broke: mendwright '
+           "can't tell the two apart, since the items of an emptied list can show in another "
+           "list, such as a cart's in Saved for later, so it never heals a list that matches "
+           'nothing. If the selector broke, change it in your code.')
 
 
 def _lfp(html=V1, xpath=CARDS):
@@ -355,42 +364,27 @@ def test_the_store_keeps_a_list_fingerprint(tmp_path):
         store.set_meta('cards', list_fingerprint={'v': 1})
 
 
-# --- Healer.locator_all() ---------------------------------------------------------------------
-
-def test_a_grid_whose_card_class_changed_heals_as_a_list(tmp_path, make_page, stub_provider):
+def test_a_grid_whose_card_class_changed_is_not_healed(tmp_path, make_page, stub_provider, caplog):
     page = make_page(V1, fingerprints=True)
-    provider = stub_provider(None)
+    provider = stub_provider(TILE)                       # it would pick the new cards
     heal = _open(page, tmp_path, provider)
     cards = heal.locator_all('cards', CARDS)
     assert [c.inner_text() for c in cards] == [n + p + 'Add to cart' for n, p in PRODUCTS]
     assert heal.store.meta('cards')['expectedRole'] == 'div'
     page.set_html(V2)
-    cards = heal.locator_all('cards', CARDS)
+    with caplog.at_level(logging.WARNING, logger='mendwright'):
+        with pytest.raises(AttentionRequired) as info:
+            heal.locator_all('cards', CARDS)
+    assert str(info.value) == MISSING
+    assert [r.getMessage() for r in caplog.records if 'did not heal' in r.getMessage()] == [
+        "mendwright: did not heal 'cards': " + MISSING.split('  -> ')[1]]
+    assert heal.heals == [] and heal.pending() == {} and provider.bundles == []
+    assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
+    assert not [e for e in _journal(tmp_path) if e['event'].startswith('heal.')]
+    # Fixed in the code, the list is found and recorded for its new selector.
+    cards = heal.locator_all('cards', TILE)
     assert len(cards) == 4 and cards[3].inner_text() == 'Tea pot$29.00Add to cart'
-    assert heal.heals == [HealEvent('cards', (CARDS,), TILE, None, 'fingerprint')]
-    assert heal.pending() == {'cards': TILE} and provider.bundles == []
-    applied = [e for e in _journal(tmp_path) if e['event'] == 'heal.applied'][0]
-    assert applied['list'] is True and applied['items'] == 4 and applied['source'] == 'fingerprint'
-    cards[0].click()
-    assert page.actions[-1][1] == 'click'
-    assert heal.pending() == {'cards': TILE}           # an item's action confirms nothing
-    assert len(heal.locator_all('cards', CARDS)) == 4   # the saved heal, no new heal
-    assert len(heal.heals) == 1
-
-
-def test_a_list_that_would_heal_to_one_element_is_refused(tmp_path, make_page, stub_provider):
-    page = make_page(V1, fingerprints=True)
-    heal = _open(page, tmp_path)                       # no provider: the fingerprint only
-    heal.locator_all('cards', CARDS)
-    page.set_html(shop(card('product-tile', *PRODUCTS[0]) + "<div class='banner'><p>Sale!</p></div>"))
-    with pytest.raises(AttentionRequired) as info:
-        heal.locator_all('cards', CARDS)
-    message = str(info.value)
-    assert message.startswith('No matching element for: cards')
-    assert "the list fingerprint match for 'cards' was not confident" in message
-    assert 'mendwright never heals a list onto one element' in message
-    assert 'no model provider is configured' in message
-    assert heal.heals == []
+    assert heal.store.meta('cards')['listFingerprint']['items'][0]['classes'] == ['product-tile']
 
 
 def test_a_list_never_seen_with_items_is_empty_at_once(tmp_path, make_page):
@@ -413,71 +407,21 @@ def test_an_optional_list_is_never_healed(tmp_path, make_page, stub_provider):
     assert heal.heals == []
 
 
-def test_a_model_picks_one_of_the_groups(tmp_path, make_page, stub_provider):
-    page = make_page(V1, fingerprints=True)
-    provider = stub_provider("//div[@id='nope']")       # not a listed group
-    heal = _open(page, tmp_path, provider)
+@pytest.mark.parametrize('setting', ['dry run', 'destructive', 'another page', 'guard'])
+def test_what_would_stop_a_heal_changes_nothing_for_a_list(tmp_path, make_page, setting):
+    # No heal is tried, so the reason is the same with each of them.
+    page = make_page(V1, url='https://shop.example/shop', fingerprints=True)
+    heal = _open(page, tmp_path, dry_run=setting == 'dry run',
+                 guard=(lambda: False) if setting == 'guard' else None)
     heal.locator_all('cards', CARDS)
-    page.set_html(shop(grid('product-tile', NEW_PRODUCTS), grid="class='catalog'"))
+    if setting == 'destructive':
+        heal.store.set_meta('cards', destructive=True)
+    if setting == 'another page':
+        page.url = 'https://shop.example/cart'
+    page.set_html(V2)
     with pytest.raises(AttentionRequired) as info:
         heal.locator_all('cards', CARDS)
-    assert ('so the model was asked: no group the model picked for \'cards\' passed '
-            "mendwright's list gate (last reason: it is not the xpath of one of the groups "
-            'listed; copy one of them exactly)') in str(info.value)
-    bundle = provider.bundles[0]
-    assert bundle['list'] is True and bundle['count'] == 4 and bundle['expectedRole'] == 'div'
-    assert 'html' not in bundle and 'inventory' not in bundle and 'fingerprint' not in bundle
-    assert bundle['candidates'] == [CARDS]
-    assert bundle['groups'][0] == {
-        'xpath': TILE, 'count': 4, 'container': '<div class="catalog">',
-        'items': ['<div class="product-tile">Lamp$40.00Add to cart</div>',
-                  '<div class="product-tile">Chair$90.00Add to cart</div>']}
-    assert provider.bundles[1]['rejectedXpath'] == "//div[@id='nope']"
-
-    provider.xpath = TILE
-    cards = heal.locator_all('cards', CARDS)
-    assert len(cards) == 4 and heal.heals[-1] == HealEvent('cards', (CARDS,), TILE, None, 'model')
-
-
-def test_a_model_s_pick_of_one_element_is_refused(tmp_path, make_page, stub_provider):
-    page = make_page(V1, fingerprints=True)
-    heal = _open(page, tmp_path, stub_provider(None))
-    heal.locator_all('cards', CARDS)
-    page.set_html(shop(grid('product-tile', NEW_PRODUCTS), grid="class='catalog'"))
-    real = heal.coordinator.try_heal_list
-    shown = {}
-
-    def capture(key, meta, broken, context, row=None):
-        shown['groups'] = lists.find(meta['listFingerprint'], page.content(), 'div').groups
-        return real(key, meta, broken, context, row)
-    heal.coordinator.try_heal_list = capture
-    heal.coordinator.provider.xpath = '//h1'
-    with pytest.raises(AttentionRequired, match='not the xpath of one of the groups listed'):
-        heal.locator_all('cards', CARDS)
-    assert all(len(g.members) >= 2 for g in shown['groups'])
-
-
-def test_what_stops_a_list_heal(tmp_path, make_page, stub_provider):
-    page = make_page(V1, fingerprints=True)
-    heal = _open(page, tmp_path, stub_provider(None), dry_run=True)
-    heal.locator_all('cards', CARDS)
-    page.set_html(V2)
-    with pytest.raises(AttentionRequired, match="dry-run mode is on, so the list fingerprint match"):
-        heal.locator_all('cards', CARDS)
-    heal.store.set_meta('cards', destructive=True)
-    with pytest.raises(AttentionRequired, match="'cards' is marked as a destructive control"):
-        heal.locator_all('cards', CARDS)
-
-
-def test_the_page_guard_stops_a_list_heal(tmp_path, make_page):
-    page = make_page(V1, url='https://shop.example/shop', fingerprints=True)
-    heal = _open(page, tmp_path)
-    heal.locator_all('cards', CARDS)
-    page.url = 'https://shop.example/cart'
-    page.set_html(V2)
-    with pytest.raises(AttentionRequired, match="'cards' was last found on /shop, and this page "
-                                                'is /cart'):
-        heal.locator_all('cards', CARDS)
+    assert str(info.value) == MISSING and heal.heals == []
 
 
 def test_the_local_model_declines_a_list():
@@ -542,17 +486,20 @@ def test_heal_page_locator_all_is_the_real_one_and_saves_nothing(
     assert again.page.locator('.product-card').all() == []
 
 
-def test_heal_page_locator_all_never_heals_a_list_heal_locator_all_recorded(
+def test_heal_page_locator_all_never_waits_for_a_list_heal_locator_all_recorded(
         tmp_path, make_page, stub_provider):
     page = make_page(V1, fingerprints=True, css=True)
     provider = stub_provider(TILE)
     heal = _open(page, tmp_path, provider, timeout_ms=60000)
     assert len(heal.locator_all('.product-card', '.product-card')) == 4
     page.set_html(V2)
+    started = time.monotonic()
     assert heal.page.locator('.product-card').all() == []    # no wait, no heal, no model
+    assert time.monotonic() - started < 5
     assert heal.heals == [] and provider.bundles == []
-    assert len(heal.locator_all('.product-card', '.product-card', timeout_ms=0)) == 4
-    assert heal.page.locator('.product-card').all() == []    # not through the list heal
+    with pytest.raises(AttentionRequired, match='the list is empty at this point, or its '
+                                                'selector broke'):
+        heal.locator_all('.product-card', '.product-card', timeout_ms=0)
     assert len(heal.page.locator('.product-tile').all()) == 4
 
 
@@ -705,7 +652,7 @@ class _Page(AsyncFakePage):
         return _Locator(self, selector)
 
 
-def test_async_lists_heal(tmp_path, make_page):
+def test_async_lists(tmp_path, make_page):
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
@@ -713,26 +660,29 @@ def test_async_lists_heal(tmp_path, make_page):
         assert len(await heal.locator_all('cards', CARDS)) == 4
         assert len(await heal.page.locator('.product-card').all()) == 4
         sync.set_html(V2)
-        cards = await heal.locator_all('cards', CARDS)
+        with pytest.raises(AttentionRequired) as info:
+            await heal.locator_all('cards', CARDS)
         items = await heal.page.locator('.product-card').all()
-        return heal, [await c.inner_text() for c in cards], items
-    heal, texts, items = asyncio.run(main())
+        cards = await heal.locator_all('cards', '.product-tile')     # fixed in the code
+        return heal, info.value, [await c.inner_text() for c in cards], items
+    heal, error, texts, items = asyncio.run(main())
+    assert str(error) == MISSING
     assert texts[0] == 'Blue mug$12.00Add to cart' and items == []
-    assert [h.new for h in heal.heals] == [TILE]
-    assert heal.pending() == {'cards': TILE}
+    assert heal.heals == [] and heal.pending() == {}
     assert heal.store.candidates('.product-card') == []      # heal.page saved nothing
 
 
-def test_a_list_of_links_with_role_heals(tmp_path, make_page):
+def test_a_list_of_links_keeps_its_role(tmp_path, make_page):
     v1 = ("<html><body><ul id='menu'><li><a class='m' href='/a'>A</a></li><li><a class='m' "
           "href='/b'>B</a></li><li><a class='m' href='/c'>C</a></li></ul></body></html>")
     page = make_page(v1, fingerprints=True)
     heal = _open(page, tmp_path)
-    assert len(heal.locator_all('menu', "//a[@class='m']", role='link')) == 3
-    page.set_html(v1.replace("class='m'", "class='menu-link'"))
     links = heal.locator_all('menu', "//a[@class='m']", role='link')
     assert [link.get_attribute('href') for link in links] == ['/a', '/b', '/c']
     assert heal.store.meta('menu')['expectedRole'] == 'link'
+    page.set_html(v1.replace("class='m'", "class='menu-link'"))
+    with pytest.raises(AttentionRequired, match="'menu' matched 3 elements"):
+        heal.locator_all('menu', "//a[@class='m']", role='link')
 
 
 def test_a_saved_list_heal_needs_no_list_fingerprint_read_again(tmp_path, make_page):
@@ -776,11 +726,12 @@ def test_a_heal_of_one_card_never_answers_for_the_list(tmp_path, stub_provider, 
     web.set_html(V2)
     provider.xpath = "//div[@class='product-tile'][h3='Blue mug']"
     if order == 'find_elements first':
-        assert len(heal.locator_all(key, selector)) == 4
+        with pytest.raises(AttentionRequired, match='its selector broke'):
+            heal.locator_all(key, selector)
     assert heal.driver.find_element('css selector', '.product-card').text.startswith('Blue mug')
-    found = heal.locator_all(key, selector)
-    assert [e.native.text[:7] for e in found] == ['Blue mu', 'Red mug', 'Green m', 'Tea pot']
-    assert sorted(h.source for h in heal.heals) == ['fingerprint', 'model']
+    with pytest.raises(AttentionRequired, match='its selector broke'):
+        heal.locator_all(key, selector)                   # not through the card's heal
+    assert [h.source for h in heal.heals] == ['model'] and len(provider.bundles) == 1
 
 
 def test_a_heal_page_shortcut_s_heal_never_answers_for_the_list(tmp_path, make_page, stub_provider):
@@ -791,7 +742,8 @@ def test_a_heal_page_shortcut_s_heal_never_answers_for_the_list(tmp_path, make_p
     page.set_html(V2)
     provider.xpath = "//div[@class='product-tile'][h3='Red mug']"
     heal.page.click('.product-card')                      # a heal of one card
-    assert len(heal.locator_all('.product-card', '.product-card')) == 4
+    with pytest.raises(AttentionRequired, match='its selector broke'):
+        heal.locator_all('.product-card', '.product-card')
 
 
 def test_a_list_that_is_still_loading_is_not_healed_onto_its_placeholders(tmp_path):
@@ -799,32 +751,34 @@ def test_a_list_that_is_still_loading_is_not_healed_onto_its_placeholders(tmp_pa
     heal = _open(web, tmp_path)
     heal.locator_all('cards', '.product-card')
     web.set_html(shop(_skeleton() * 4))
-    with pytest.raises(AttentionRequired, match='so the list may still be loading'):
+    with pytest.raises(AttentionRequired, match='the list is empty at this point, or its '
+                                                'selector broke'):
         heal.locator_all('cards', '.product-card')
     assert heal.heals == []
     assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
 
 
-def test_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
-    page = make_page(V1, fingerprints=True, css=True)
-    heal = _open(page, tmp_path)
-    assert len(heal.locator_all('cards', '.product-card')) == 4
-    page.set_html(shop(''))                               # the grid is loading
-    capture = heal.coordinator.html_provider
+def _arriving(page, after):
+    """page, whose cards arrive on the third lookup of a selector."""
+    query, looks = page.query, []
 
-    def cards_arrive():
-        page.set_html(V1)                                 # as the page is captured
-        return capture()
-    heal.coordinator.html_provider = cards_arrive
-    assert len(heal.locator_all('cards', '.product-card')) == 4
-    assert heal.heals == []
-    assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
-    store = _store(tmp_path / 'b', code=CARDS)
-    applied, reason, _count = apply_list(store, 'cards', TILE, V2, store.meta('cards'),
-                                         driver=LiveDriver(shop(grid('product-tile') + grid('product-card'))))
-    assert applied is None and reason == ('the selector in your code, ' + CARDS + ', matches 4 '
-                                          'elements on the live page now, so the list needs no '
-                                          'heal')
+    def arriving(selector):
+        looks.append(selector)
+        if len(looks) == 3:
+            page.set_html(after)
+        return query(selector)
+    page.query = arriving
+    return looks
+
+
+def test_a_list_that_comes_while_mendwright_waits_for_it_is_used(tmp_path, make_page):
+    page = make_page(V1, fingerprints=True, css=True)
+    heal = _open(page, tmp_path, timeout_ms=5000)
+    assert len(heal.locator_all('cards', '.product-card', poll_ms=1)) == 4
+    page.set_html(shop(''))                               # the grid is loading
+    looks = _arriving(page, V1)
+    assert len(heal.locator_all('cards', '.product-card', poll_ms=1)) == 4
+    assert len(looks) >= 3 and heal.heals == []
 
 
 class CountingDriver(ListDriver):
@@ -853,22 +807,20 @@ class CountingDriver(ListDriver):
 
 
 @pytest.mark.parametrize('off', ['fingerprint=False', 'MENDWRIGHT_DISABLE=1'])
-def test_with_list_heals_off_a_list_that_matches_nothing_is_empty_at_once(
+def test_with_the_fingerprint_tier_off_a_list_that_matches_nothing_is_empty_at_once(
         tmp_path, make_page, monkeypatch, off):
     page = make_page(V1, fingerprints=True, css=True)
-    first = _open(page, tmp_path)
-    first.locator_all('cards', CARDS)
-    page.set_html(V2)
-    assert len(first.locator_all('cards', CARDS)) == 4    # healed and saved
+    _open(page, tmp_path).locator_all('cards', CARDS)       # recorded with 4 cards
     kwargs = {'fingerprint': False}
     if off == 'MENDWRIGHT_DISABLE=1':
         monkeypatch.setenv('MENDWRIGHT_DISABLE', '1')
         kwargs = {}
     heal = _open(page, tmp_path, timeout_ms=60000, **kwargs)   # it would wait a minute
-    assert len(heal.locator_all('cards', CARDS)) == 4     # the saved list heal still answers
-    page.set_html(shop(grid('product-row')))
+    assert len(heal.locator_all('cards', CARDS)) == 4
+    page.set_html(V2)
+    started = time.monotonic()
     assert heal.locator_all('cards', CARDS) == []
-    assert heal.heals == []
+    assert time.monotonic() - started < 5 and heal.heals == []
 
     web = ListDriver(V1)
     _open(web, tmp_path / 'driver').locator_all('cards', '.product-card')
@@ -877,7 +829,7 @@ def test_with_list_heals_off_a_list_that_matches_nothing_is_empty_at_once(
     assert driver.locator_all('cards', '.product-card') == []
 
 
-def test_async_list_heals_are_off_with_the_fingerprint_tier(tmp_path, make_page):
+def test_async_a_list_is_empty_at_once_with_the_fingerprint_tier_off(tmp_path, make_page):
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         first = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
@@ -892,67 +844,19 @@ def test_async_list_heals_are_off_with_the_fingerprint_tier(tmp_path, make_page)
     assert empty == [] and heal.heals == []
 
 
-def test_a_guard_stops_a_list_heal(tmp_path, make_page):
-    page = make_page(V1, fingerprints=True)
-    allowed = [True]
-    heal = _open(page, tmp_path, guard=lambda: allowed[0])
-    heal.locator_all('cards', CARDS)
-    page.set_html(V2)
-    allowed[0] = False
-    with pytest.raises(AttentionRequired, match='a transaction guard is currently blocking heals'):
-        heal.locator_all('cards', CARDS)
-    assert heal.heals == []
-    allowed[0] = True
-    assert len(heal.locator_all('cards', CARDS)) == 4
-
-
-def test_a_list_heal_of_this_run_is_not_recorded_until_confirmed(tmp_path, make_page):
-    page = make_page(V1, fingerprints=True)
-    heal = _open(page, tmp_path)
-    heal.locator_all('cards', CARDS)
-    recorded = heal.store.meta('cards')['listFingerprint']
-    page.set_html(V2)
-    heal.locator_all('cards', CARDS)                      # heals
-    heal.locator_all('cards', CARDS)                      # through the heal, still pending
-    assert heal.pending() == {'cards': TILE}
-    assert heal.store.meta('cards')['listFingerprint'] == recorded
-
-
-def test_the_reads_of_a_list_found_through_a_heal_are_checked(tmp_path, make_page):
-    page = make_page(V1, fingerprints=True)
-    heal = _open(page, tmp_path)
-    assert heal.locator_all('cards', CARDS, expect_value='money')[0].inner_text() == (
-        'Blue mug$12.00Add to cart')                      # the code's selector: never checked
-    page.set_html(V2)
-    cards = heal.locator_all('cards', CARDS, expect_value=re.compile('mug|pot'))
-    assert [c.inner_text()[:7] for c in cards] == ['Blue mu', 'Red mug', 'Green m', 'Tea pot']
-    assert heal.pending() == {'cards': TILE}              # a read that passes confirms nothing
-    cards = heal.locator_all('cards', CARDS, expect_value='money')
-    with pytest.raises(AttentionRequired, match="'cards' was healed to " + re.escape(TILE)
-                       + r", and its inner_text\(\) there is 'Blue mug\$12.00Add to cart', "
-                       'which is not money'):
-        cards[0].inner_text()
-    assert heal.store.status('cards', TILE) == 'quarantined' and heal.pending() == {}
-    canary = [e for e in _journal(tmp_path) if e['event'] == 'heal.canary']
-    assert [(e['success'], e['reason']) for e in canary] == [
-        (False, 'expect_value: inner_text() is not money')]
-
-
-def test_open_expect_values_check_the_reads_of_heal_locator_all_lists(tmp_path, make_page):
+def test_the_reads_of_a_list_s_elements_are_never_checked(tmp_path, make_page):
+    # No list is found through a heal, so there is nothing to check its reads against, and
+    # heal.locator_all() takes no expect_value=.
     page = make_page(V1, fingerprints=True, css=True)
     heal = _open(page, tmp_path, expect_values={'.product-card': 'money'})
-    assert heal.locator_all('.product-card', '.product-card')[0].inner_text().startswith('Blue')
-    page.set_html(V2)
     items = heal.locator_all('.product-card', '.product-card')
-    with pytest.raises(AttentionRequired, match="'.product-card' was healed to"):
-        items[1].inner_text()
-    assert heal.store.status('.product-card', TILE) == 'quarantined'
-    # heal.page's Locator.all() is never healed, so its reads are never checked.
-    page.set_html(V1)
+    assert items[0].inner_text() == 'Blue mug$12.00Add to cart'       # not money, and no error
+    with pytest.raises(TypeError, match='expect_value'):
+        heal.locator_all('.product-card', '.product-card', expect_value='money')
     assert heal.page.locator('.product-card').all()[0].inner_text().startswith('Blue')
 
 
-def test_async_lists_optional_reads_and_item_actions(tmp_path, make_page):
+def test_async_lists_optional_and_item_actions(tmp_path, make_page):
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
@@ -960,18 +864,15 @@ def test_async_lists_optional_reads_and_item_actions(tmp_path, make_page):
         await heal.locator_all('cards', CARDS)
         sync.set_html(V2)
         assert await heal.locator_all('cards', CARDS, optional=True) == []
-        assert heal.heals == []
-        cards = await heal.locator_all('cards', CARDS, expect_value=re.compile('mug|pot'))
+        cards = await heal.locator_all('cards', '.product-tile')
         assert await cards[0].inner_text() == 'Blue mug$12.00Add to cart'
         await cards[1].click(expect=lambda: True)         # an item's action confirms nothing
-        pending = heal.pending()
-        cards = await heal.locator_all('cards', CARDS, expect_value='money')
-        with pytest.raises(AttentionRequired, match="'cards' was healed to"):
-            await cards[2].inner_text()
-        return heal, sync, pending
-    heal, sync, pending = asyncio.run(main())
-    assert pending == {'cards': TILE} and sync.actions[-1][1] == 'click'
-    assert heal.store.status('cards', TILE) == 'quarantined' and heal.pending() == {}
+        cards[2].confirm(False)                           # nor does its confirm()
+        with pytest.raises(TypeError, match='expect_value'):
+            heal.locator_all('cards', CARDS, expect_value='money')
+        return heal, sync
+    heal, sync = asyncio.run(main())
+    assert sync.actions[-1][1] == 'click' and heal.heals == [] and heal.pending() == {}
 
 
 def test_async_heal_page_locator_all_is_the_real_one_and_saves_nothing(
@@ -993,22 +894,17 @@ def test_async_heal_page_locator_all_is_the_real_one_and_saves_nothing(
     assert heal.heals == [] and provider.bundles == []
 
 
-def test_async_a_list_that_comes_while_mendwright_looks_for_it_is_not_healed(tmp_path, make_page):
+def test_async_a_list_that_comes_while_mendwright_waits_for_it_is_used(tmp_path, make_page):
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
-                                         timeout_ms=0)
-        await heal.locator_all('cards', CARDS)
+                                         timeout_ms=5000)
+        await heal.locator_all('cards', CARDS, poll_ms=1)
         sync.set_html(shop(''))                           # the grid is loading
-        capture = heal.coordinator.html_provider
-
-        def cards_arrive():
-            sync.set_html(V1)                             # as the page is captured
-            return capture()
-        heal.coordinator.html_provider = cards_arrive
-        return heal, await heal.locator_all('cards', CARDS)
-    heal, cards = asyncio.run(main())
-    assert len(cards) == 4 and heal.heals == []
+        looks = _arriving(sync, V1)
+        return heal, looks, await heal.locator_all('cards', CARDS, poll_ms=1)
+    heal, looks, cards = asyncio.run(main())
+    assert len(cards) == 4 and len(looks) >= 3 and heal.heals == []
 
 
 # --- lists and the run= functions of heal.interrupt() -----------------------------------------
@@ -1078,10 +974,10 @@ def test_async_an_attention_required_from_a_run_function_is_not_taken_for_a_list
     assert heal.heals == []
 
 
-def test_async_a_run_function_s_list_lookups_and_checked_reads_skip_the_lock(tmp_path, make_page):
+def test_async_a_run_function_s_list_lookups_skip_the_lock(tmp_path, make_page):
     # The step that runs the function holds the healer's lock while it waits for it, so the
-    # function's list lookups, and the checked reads of a list found through a heal, go ahead
-    # without the lock, as its other calls do. Taking it would wait for that step forever.
+    # function's list lookups go ahead without the lock, as its other calls do. Taking it
+    # would wait for that step forever.
     async def main():
         sync = make_page(V1, fingerprints=True, css=True)
         heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
@@ -1090,8 +986,8 @@ def test_async_a_run_function_s_list_lookups_and_checked_reads_skip_the_lock(tmp
         seen = []
 
         async def relogin(page):
-            cards = await heal.locator_all('cards', CARDS, expect_value=re.compile('mug|pot'))
-            seen.append([await card.inner_text() for card in cards])   # through the heal
+            cards = await heal.locator_all('cards', '.product-tile')
+            seen.append([await card.inner_text() for card in cards])
             seen.append(len(await page.locator('.product-tile').all()))
             sync.set_html(V2)                             # signed in again: the popup is gone
 
@@ -1101,28 +997,13 @@ def test_async_a_run_function_s_list_lookups_and_checked_reads_skip_the_lock(tmp
         return heal, seen, sync.actions
     heal, seen, actions = asyncio.run(main())
     assert seen == [[n + p + 'Add to cart' for n, p in PRODUCTS], 4]
-    assert actions[-1][1] == 'click'
-    assert [(h.key, h.new) for h in heal.heals] == [('cards', TILE)]
+    assert actions[-1][1] == 'click' and heal.heals == []
     assert [(e.key, e.before) for e in heal.handled_interruptions] == [('relogin', 'heading')]
 
 
-# --- a list heal and a heal of one element under one key -------------------------------------
+# --- a list and a heal of one element under one key ------------------------------------------
 
 FIRST = "//div[contains(@class,'product-tile')][h3='Blue mug']"
-
-
-def _both(tmp_path, make_page, stub_provider):
-    """A healer whose key '.product-card' has, in this run, a list heal (heal.locator_all())
-    and a heal of the first card (a heal.page shortcut, through the model)."""
-    page = make_page(V1, fingerprints=True, css=True)
-    provider = stub_provider(FIRST)
-    heal = _open(page, tmp_path, provider)
-    assert len(heal.locator_all('.product-card', '.product-card')) == 4
-    page.set_html(V2)
-    cards = heal.locator_all('.product-card', '.product-card')     # the list heal
-    assert heal.page.inner_text('.product-card').startswith('Blue mug')   # the first card's
-    assert [(h.new, h.source) for h in heal.heals] == [(TILE, 'fingerprint'), (FIRST, 'model')]
-    return heal, cards, provider
 
 
 def _canaries(tmp_path):
@@ -1130,31 +1011,25 @@ def _canaries(tmp_path):
                   if e['event'] == 'heal.canary')
 
 
-def test_a_list_heal_and_a_heal_of_one_element_of_one_key_are_confirmed_each_on_its_own(
+def test_a_list_never_takes_the_heal_of_one_element_of_its_key_and_its_elements_report_nothing(
         tmp_path, make_page, stub_provider):
-    heal, _cards, provider = _both(tmp_path, make_page, stub_provider)
-    assert heal.pending() == {'.product-card': FIRST}     # one key: the element's heal shows
-    assert heal.confirm_all(True) == 2
-    assert [(h.new, h.confirmed) for h in heal.heals] == [(TILE, True), (FIRST, True)]
-    assert _canaries(tmp_path) == sorted([(TILE, True), (FIRST, True)])
-    assert heal.pending() == {} and heal.confirm_all(True) == 0
-    assert provider.outcomes == [('.product-card', FIRST, True)]   # the model's own heal only
-
-
-def test_a_list_element_s_confirm_and_failed_read_are_the_list_heal_s(
-        tmp_path, make_page, stub_provider):
-    heal, cards, _provider = _both(tmp_path, make_page, stub_provider)
-    cards[1].confirm(True)                                 # an element of the list says so
-    assert [(h.new, h.confirmed) for h in heal.heals] == [(TILE, True), (FIRST, None)]
+    # heal.locator_all('.product-card', ...) and heal.page.inner_text('.product-card') share
+    # a key, and the first card healed, through the model.
+    page = make_page(V1, fingerprints=True, css=True)
+    provider = stub_provider(FIRST)
+    heal = _open(page, tmp_path, provider)
+    assert len(heal.locator_all('.product-card', '.product-card')) == 4
+    page.set_html(V2)
+    assert heal.page.inner_text('.product-card').startswith('Blue mug')   # the first card's
+    with pytest.raises(AttentionRequired, match='its selector broke'):
+        heal.locator_all('.product-card', '.product-card')
+    cards = heal.locator_all('.product-card', '.product-tile')     # fixed in the code
+    assert len(cards) == 4
+    cards[1].confirm(True)                                 # no heal of the list to report
+    cards[0].confirm(False)                                # and the card's heal is not its
     assert heal.pending() == {'.product-card': FIRST}
-    heal.confirm_all(False)                               # the test failed: the element's heal
-    assert heal.store.status('.product-card', FIRST) == 'quarantined'
-    assert heal.store.status('.product-card', TILE) == 'active'
-
-    heal, _cards, _provider = _both(tmp_path / 'b', make_page, stub_provider)
-    cards = heal.locator_all('.product-card', '.product-card', expect_value='money')
-    with pytest.raises(AttentionRequired, match="'.product-card' was healed to " + re.escape(TILE)):
-        cards[0].inner_text()
-    assert heal.store.status('.product-card', TILE) == 'quarantined'
     assert heal.store.status('.product-card', FIRST) == 'active'
-    assert heal.pending() == {'.product-card': FIRST}
+    assert [(h.new, h.confirmed) for h in heal.heals] == [(FIRST, None)]
+    assert heal.confirm_all(True) == 1
+    assert _canaries(tmp_path) == [(FIRST, True)] and heal.pending() == {}
+    assert provider.outcomes == [('.product-card', FIRST, True)]

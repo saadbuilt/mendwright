@@ -1,16 +1,16 @@
 """The acceptance matrix of tests/test_lists_emptied.py on real browsers, on every engine (see
-conftest.py), for the cases a real DOM can change: what the browser records of where a list
-is and of its label must be what lxml computes from the captured HTML, an emptied list is
-never healed onto the other list that holds its items now (a cart whose items all moved to
-Saved for later, an Active list whose tasks were all completed), and a redesigned list next
-to a look-alike still heals onto the list, with no model call.
+conftest.py), for the cases a real DOM can change. An emptied list whose items another list
+holds now (a cart whose items all moved to Saved for later, an Active list whose tasks were all
+completed, notifications marked read) is never healed onto that list, so a loop that deletes
+the rows of the list deletes none of the other list's. A redesigned list is not healed either:
+its lookup raises the same, and the selector fixed in the code finds it. No model is asked.
 """
 
 import lxml.html
 import pytest
 
 import mendwright
-from mendwright import AttentionRequired, lists
+from mendwright import AttentionRequired
 from mendwright.drivers import wrap
 from mw_engines import FAST_MS, POLL_MS, SELENIUM, page, saved_candidates
 
@@ -26,11 +26,12 @@ def _cls(name):
     return "//*[contains(concat(' ', normalize-space(@class), ' '), ' " + name + " ')]"
 
 
-def rows(cls, items):
-    # Delete removes the row, as a real cart's button does.
-    return ''.join('<div class="' + cls + '"><a href="#' + s + '">' + n + '</a><span class="price">'
-                   + p + '</span><button type="button" class="delete" '
-                   'onclick="this.parentElement.remove()">Delete</button></div>' for n, s, p in items)
+def rows(cls, items, tag='div', button='Delete'):
+    # The button removes the row, as a real cart's Delete does.
+    return ''.join('<' + tag + ' class="' + cls + '"><a href="#' + s + '">' + n + '</a><span '
+                   'class="price">' + p + '</span><button type="button" class="delete" '
+                   'onclick="this.parentElement.remove()">' + button + '</button></' + tag + '>'
+                   for n, s, p in items)
 
 
 def cart(full, cart_cls='cart', saved_cls='saved', row='cart-item', headings=True):
@@ -42,26 +43,21 @@ def cart(full, cart_cls='cart', saved_cls='saved', row='cart-item', headings=Tru
                 'cart')
 
 
-def _li(cls, items):
-    return ''.join('<li class="' + cls + '"><a href="#' + s + '">' + n + '</a><span>' + p
-                   + '</span></li>' for n, s, p in items)
-
-
 def react(cart_items, saved_items):
     """The cart's <ul class="items"> is rendered only while it has items."""
-    inside = ('<ul class="items">' + _li('cart-item', cart_items) + '</ul>') if cart_items else (
+    inside = ('<ul class="items">' + rows('cart-item', cart_items, 'li') + '</ul>') if cart_items else (
         '<p class="empty">Your cart is empty.</p>')
-    saved = ('<ul class="items">' + _li('saved-item', saved_items) + '</ul>') if saved_items else ''
+    saved = ('<ul class="items">' + rows('saved-item', saved_items, 'li') + '</ul>') if saved_items else ''
     return page('<main><h1>Cart</h1><div class="cart">' + inside + '</div><h2>Saved for later</h2>'
                 '<div class="saved">' + saved + '</div></main>', 'cart')
 
 
 def react_section(cart_items, saved_items):
     """All of Saved for later, its heading included, is rendered only while it has items."""
-    inside = ('<ul class="items">' + _li('cart-item', cart_items) + '</ul>') if cart_items else (
+    inside = ('<ul class="items">' + rows('cart-item', cart_items, 'li') + '</ul>') if cart_items else (
         '<p class="empty">Your cart is empty.</p>')
     saved = ('<h2>Saved for later</h2><div class="saved"><ul class="items">'
-             + _li('saved-item', saved_items) + '</ul></div>') if saved_items else ''
+             + rows('saved-item', saved_items, 'li') + '</ul></div>') if saved_items else ''
     return page('<main><h1>Cart</h1><div class="cart">' + inside + '</div>' + saved + '</main>',
                 'cart')
 
@@ -70,7 +66,8 @@ def todo(active, done, row='todo'):
     """Two <ul class="tasks">, each in a section of its own."""
     def items(cls, tasks):
         return ''.join('<li class="' + cls + '"><input type="checkbox"><label>' + t
-                       + '</label><button type="button">Remove</button></li>' for t in tasks)
+                       + '</label><button type="button" onclick="this.parentElement.remove()">'
+                       'Remove</button></li>' for t in tasks)
     return page('<div class="app"><section class="pending"><h2>Active</h2><ul class="tasks">'
                 + items(row, active) + '</ul></section><section class="completed"><h2>Completed'
                 '</h2><ul class="tasks">' + items('done-item', done) + '</ul></section></div>',
@@ -79,9 +76,29 @@ def todo(active, done, row='todo'):
 
 def plain(cart_cls, cart_items, saved_items):
     """Two <ul>s and no heading; the cart's classes change when it empties."""
-    inside = _li('cart-item', cart_items) or '<p>Your cart is empty.</p>'
+    inside = rows('cart-item', cart_items, 'li') or '<p>Your cart is empty.</p>'
     return page('<main><ul class="' + cart_cls + '">' + inside + '</ul><ul class="saved">'
-                + _li('saved-item', saved_items) + '</ul></main>', 'cart')
+                + rows('saved-item', saved_items, 'li') + '</ul></main>', 'cart')
+
+
+# The verifier's real-browser cases (matrixcheck/real_new.py): the other list, its heading
+# included, is rendered only once it has items, and the list's own heading changes.
+E1_BEFORE = page('<main><h1>Shopping Cart</h1><section class="cart">' + rows('cart-item', ITEMS)
+                 + '</section></main>', 'cart')
+E1_AFTER = page('<main><h1>Your cart is empty</h1><section class="cart"><p>Nothing here.</p>'
+                '</section><h2>Saved for later (3 items)</h2><section class="saved">'
+                + rows('saved-item', ITEMS) + '</section></main>', 'cart')
+
+
+def tasks(heading, cls):
+    return page('<div class="app"><section class="group"><h2>' + heading + '</h2><ul class="tasks">'
+                + rows(cls, ITEMS, 'li', 'Remove') + '</ul></section></div>', 'todo')
+
+
+def notifications(heading, cls):
+    return page('<div class="panel"><h2>Notifications</h2><button type="button">Mark all as read'
+                '</button><div class="section"><h3>' + heading + '</h3><ul>'
+                + rows(cls, ITEMS, 'li', 'Dismiss') + '</ul></div></div>', 'notifications')
 
 
 def results(results_cls, section_cls, item_cls):
@@ -138,28 +155,43 @@ def _text(tab, item):
     return item.text if tab.family == SELENIUM else item.inner_text()
 
 
+def _press(tab, item):
+    """Click the button of a row, as a loop that deletes the rows of a list does."""
+    if tab.family == SELENIUM:
+        item.native.find_element('css selector', 'button').click()
+    else:
+        item.native.locator('button').click()
+
+
 def _count(tab, xpath):
     return len(lxml.html.fromstring(wrap(tab.target).outer_html()).xpath(xpath))
 
 
-@pytest.mark.parametrize('html, xpath', [
-    pytest.param(cart(True), _cls('cart-item'), id='cart'),
-    pytest.param(cart(False), _cls('saved-item'), id='saved'),
-    pytest.param(react(ITEMS, []), _cls('cart-item'), id='react'),
-    pytest.param(todo(TASKS, []), _cls('todo'), id='todo'),
-    pytest.param(plain('cart grid', ITEMS, []), _cls('cart-item'), id='plain'),
-    pytest.param(page('<section aria-labelledby="t"><div><span role="heading">Picks</span></div>'
-                      '<template><h2>no</h2></template><noscript><h2>no</h2></noscript>'
-                      + rows('pick', ITEMS) + '</section><h3 id="t">Our picks</h3>'
-                      '<svg><g><text>x</text></g></svg>'), _cls('pick'), id='labels'),
-])
-def test_the_browser_records_where_a_list_is_as_lxml_computes_it(tab, html, xpath):
-    tab.load(html)
-    driver = wrap(tab.target)
-    live = driver.list_fingerprint(xpath)
-    captured = lists.of_elements(lxml.html.fromstring(driver.outer_html()).xpath(xpath))
-    assert live == captured
-    assert live['place']['chain'] and 'label' in live
+def _not_healed(tab, store_file, before, after, key, other):
+    """Record the list on before, then run a loop that deletes its rows on after: the lookup
+    raises before the loop deletes anything, nothing of other is touched, no heal is saved
+    and no model asked, and the next run raises again. Returns the message."""
+    tab.load(before)
+    model = WrongPicker(tab, other)
+    heal = _open(tab, store_file, model)
+    assert len(heal.locator_all('list', key, poll_ms=POLL_MS)) >= 3
+    tab.load(after)
+    there = _count(tab, other)
+    deleted = 0
+    with pytest.raises(AttentionRequired) as info:
+        for row in heal.locator_all('list', key, poll_ms=POLL_MS):
+            _press(tab, row)
+            deleted += 1
+    message = str(info.value)
+    assert EMPTY_OR_BROKEN in message and 'optional=True' not in message
+    assert deleted == 0 and _count(tab, other) == there    # nothing of the other list went
+    assert heal.heals == [] and model.bundles == []
+    assert [x for x, c in saved_candidates(store_file, 'list').items() if c['source'] == 'heal'] == []
+    again = _open(tab, store_file, model)
+    with pytest.raises(AttentionRequired, match=EMPTY_OR_BROKEN):
+        again.locator_all('list', key, poll_ms=POLL_MS)
+    assert model.bundles == []
+    return message
 
 
 @pytest.mark.parametrize('before, after, key, other', [
@@ -174,48 +206,36 @@ def test_the_browser_records_where_a_list_is_as_lxml_computes_it(tab, html, xpat
                  id='todo-two-ul-tasks'),
     pytest.param(plain('cart grid', ITEMS, []), plain('cart flex items-center', [], ITEMS),
                  _cls('cart-item'), _cls('saved-item'), id='plain-ul-no-heading'),
+    pytest.param(E1_BEFORE, E1_AFTER, _cls('cart-item'), _cls('saved-item'),
+                 id='E1-cart-heading-changes-saved-shown-once-it-has-items'),
+    pytest.param(tasks('Active', 'todo'), tasks('Completed', 'done-item'), _cls('todo'),
+                 _cls('done-item'), id='E2-active-section-only-while-it-has-tasks'),
+    pytest.param(notifications('New', 'notif unread'), notifications('Earlier', 'notif read'),
+                 _cls('unread'), _cls('read'), id='E3-notifications-marked-read'),
 ])
 def test_an_emptied_list_is_not_healed_onto_another_list(tab, store_file, before, after, key,
                                                          other):
-    tab.load(before)
-    model = WrongPicker(tab, other)
-    heal = _open(tab, store_file, model)
-    assert len(heal.locator_all('list', key, poll_ms=POLL_MS)) >= 3
-    tab.load(after)
-    moved = _count(tab, other)
-    assert moved >= 3
-    with pytest.raises(AttentionRequired) as info:      # so a loop over it deletes nothing
-        heal.locator_all('list', key, poll_ms=POLL_MS)
-    assert EMPTY_OR_BROKEN in str(info.value) and 'optional=True' not in str(info.value)
-    assert heal.heals == [] and model.picked == []
-    assert _count(tab, other) == moved                    # nothing of the other list was touched
-    assert [x for x, c in saved_candidates(store_file, 'list').items() if c['source'] == 'heal'] == []
-    # The next run refuses again: nothing was saved to replay.
-    again = _open(tab, store_file, model)
-    with pytest.raises(AttentionRequired, match=EMPTY_OR_BROKEN):
-        again.locator_all('list', key, poll_ms=POLL_MS)
+    _not_healed(tab, store_file, before, after, key, other)
 
 
-@pytest.mark.parametrize('before, after, key, wanted, wrong', [
+@pytest.mark.parametrize('before, after, key, wanted', [
     pytest.param(cart(True), cart(True, row='cart-row'), _cls('cart-item'), _cls('cart-row'),
-                 _cls('saved-item'), id='cart-rows-renamed-in-place'),
+                 id='cart-rows-renamed-in-place'),
     pytest.param(results('list', 'results', 'result'),
                  results('list list--grid', 'search-results', 'hit'), _cls('result'), _cls('hit'),
-                 '//aside//li', id='results-gain-modifier-section-renamed-aside-list'),
-    pytest.param(catalog(False), catalog(True), _cls('card'), _cls('tile'), '//footer//a',
+                 id='results-gain-modifier-section-renamed-aside-list'),
+    pytest.param(catalog(False), catalog(True), _cls('card'), _cls('tile'),
                  id='grid-to-catalog-grid--3-tile-footer-grid'),
 ])
-def test_a_redesigned_list_heals_onto_the_list(tab, store_file, before, after, key, wanted, wrong):
-    tab.load(before)
-    model = WrongPicker(tab, wrong)
-    heal = _open(tab, store_file, model)
-    assert len(heal.locator_all('list', key, poll_ms=POLL_MS)) == 3
-    tab.load(after)
-    got = heal.locator_all('list', key, poll_ms=POLL_MS)
+def test_a_redesigned_list_is_not_healed_either_and_its_new_selector_finds_it(
+        tab, store_file, before, after, key, wanted):
+    _not_healed(tab, store_file, before, after, key, wanted)
+    heal = _open(tab, store_file)
+    got = heal.locator_all('list', wanted, poll_ms=POLL_MS)    # fixed in the code
     names = [n for n, _, _ in ITEMS]
     assert [_text(tab, item).split('$')[0].strip() for item in got] == names
-    assert [h.source for h in heal.heals] == ['fingerprint'] and model.bundles == []
-    if wanted == _cls('hit'):                            # the healed elements are the results
+    assert heal.heals == []
+    if wanted == _cls('hit'):                            # the elements are the results
         if tab.family == SELENIUM:
             got[1].native.find_element('css selector', 'a').click()
         else:

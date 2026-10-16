@@ -50,9 +50,9 @@ Callers should go through driver_act_on, driver_describe, driver_inventory and
 driver_fingerprint below, which fall back to getattr(native, verb)(...), None, [] and None
 when a driver lacks the method, through driver_handles, driver_list_fingerprint and
 driver_list_items, which fall back to [handle()], None and None (a driver without
-list_fingerprint() records no list, so none is ever healed), and through the
-driver_popup_* helpers, which fall back to None or False: a driver without them never
-dismisses anything.
+list_fingerprint() records no list, so a list lookup that matches nothing gives []), and
+through the driver_popup_* helpers, which fall back to None or False: a driver without them
+never dismisses anything.
 """
 
 import inspect
