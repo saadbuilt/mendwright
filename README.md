@@ -222,8 +222,9 @@ mendwright.exceptions.AttentionRequired: No matching element for: pay (tried 1 c
 ```
 
 `mendwright doctor` checks the install, the provider and the store path. `mendwright report` lists each key with its selectors and recent heals; `--format md` prints a Markdown table you can append to `$GITHUB_STEP_SUMMARY`, and `--format html --out report.html` writes one self-contained page.
-`mendwright fix` puts confirmed heals back into your code: it prints a diff of the string literals it would change, and `--apply` writes them. `mendwright lists` shows the list heals `heal.locator_all(..., nonempty=True)` proposed, for you to accept or reject.
+`mendwright fix` puts confirmed heals back into your code: it prints a diff of the string literals it would change, and `--apply` writes them.
 In GitHub Actions, mendwright's own action does that for you: after your tests, it opens a pull request with the confirmed heals and keeps it up to date. See [CI](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#open-a-pull-request-with-the-fixes).
+`mendwright lists` shows the list heals `heal.locator_all(..., nonempty=True)` proposed, for you to accept or reject; `mendwright fix` and the action write the ones you accepted.
 `mendwright check --base-url https://your.site` loads the page each key was last found on and says which keys broke, which a run would heal from memory and which need a model, without acting on the page, saving anything or calling a model. It exits 1 when a key broke ([guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#checking-for-drift-before-a-run)).
 
 ## Compatibility

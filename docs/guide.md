@@ -1573,7 +1573,7 @@ The step fails the job when `mendwright check` exits 1 (a key broke) or 3 (a key
 
 mendwright's GitHub Action runs `mendwright fix --apply` for you in CI and opens a pull request with the result.
 It runs in a job of its own after your test job, takes the store and journal from that job's artifact, changes the commit the tests ran on, and opens one pull request into the branch the tests ran on, on the branch `mendwright/fix/<base>`, or updates the one it opened before.
-It writes only heals your tests confirmed. It never pushes over a commit it did not make, and it never merges, approves or turns on auto-merge: a person merges the pull request.
+It writes only heals your tests confirmed, and the list heals you accepted with [`mendwright lists`](#mendwright-lists), never a `heal.page.get_by_*()` call. It never pushes over a commit it did not make, and it never merges, approves or turns on auto-merge: a person merges the pull request.
 
 ```yaml
 name: tests
