@@ -529,6 +529,13 @@ def _check_checkout(action, decision, notices):
     prefix = action.input('branch-prefix')
     wd = action.working_directory()
     if mode == 'fix':
+        # G13 before G6: every base starts with an empty prefix, which would skip each run.
+        code = action.git('check-ref-format', '--branch', prefix + base, check=False)[0]
+        if not prefix.endswith('/') or code != 0:
+            raise Stop('mendwright: branch-prefix ' + repr(prefix) + " must end with '/' and make "
+                       'a valid branch name with the base branch, ' + (
+                           'and git check-ref-format refused ' + repr(prefix + base) if code != 0
+                           else 'such as mendwright/fix/') + '.')
         if base.startswith(prefix):
             raise _skip('mendwright: skipped: ' + base + ' is a branch this action writes.')
         default, public = _repo_info(action, _event(action))
@@ -539,11 +546,6 @@ def _check_checkout(action, decision, notices):
                         'only-default-branch is true, so pull requests go into ' + default
                         + ' only. Set only-default-branch: false to open them for other branches '
                         'too.')
-        code = action.git('check-ref-format', '--branch', prefix + base, check=False)[0]
-        if not prefix.endswith('/') or code != 0:
-            raise Stop('mendwright: branch-prefix ' + repr(prefix) + " must end with '/' and make "
-                       'a valid branch name with the base branch, and git check-ref-format '
-                       'refused ' + repr(prefix + base) + '.')
     code, out, _ = action.git('-C', wd, 'rev-parse', '--is-inside-work-tree', check=False)
     if code != 0 or out.strip() != 'true':
         message = ('mendwright: ' + (action.input('working-directory') or '.') + ' is not inside '

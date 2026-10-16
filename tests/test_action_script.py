@@ -640,8 +640,9 @@ def test_a_dirty_checkout_is_refused_and_an_untracked_file_is_fine(world):
                                          "'/' and make a valid branch name with the base branch, "
                                          "and git check-ref-format refused 'mendwright fix/main'."),
     ('branch-prefix', 'mw-', "mendwright: branch-prefix 'mw-' must end with '/' and make a valid "
-                             "branch name with the base branch, and git check-ref-format refused "
-                             "'mw-main'."),
+                             "branch name with the base branch, such as mendwright/fix/."),
+    ('branch-prefix', '', "mendwright: branch-prefix '' must end with '/' and make a valid branch "
+                          "name with the base branch, such as mendwright/fix/."),
 ])
 def test_bad_inputs_are_refused(world, name, value, message):
     world.inputs[name] = value

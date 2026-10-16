@@ -1469,7 +1469,7 @@ On a public repository it adds a notice: the branch and the pull request are pub
 | `globs` | empty | One `--glob` per line. |
 | `destructive-keys` | empty | One key per line. List the keys you pass to `mendwright.open(destructive_keys=...)`, which the store doesn't save. |
 | `only-default-branch` | `true` | Open pull requests only into the repository's default branch. |
-| `branch-prefix` | `mendwright/fix/` | Ends with `/`. Two uses of the action on one base branch need different prefixes. |
+| `branch-prefix` | `mendwright/fix/` | Ends with `/`; an empty prefix, or one without the `/`, stops the job. Two uses of the action on one base branch need different prefixes. |
 | `dry-run` | `false` | Run `mendwright fix` without `--apply` and write the job summary. No commit, no push, no API call that writes. Allowed on `pull_request`. |
 | `draft` | `false` | Open the pull request as a draft. |
 | `labels` | empty | Comma-separated, at most 10, added when the pull request is opened. |
