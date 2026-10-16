@@ -5,6 +5,8 @@ page, have changed.
   and 'pages'). A heal on a page where the key's element was never found is declined
   before any model call (see flow_change_message), because a step that moved to another
   page looks like a missing element and a model may still find a similar one.
+- page_url(): the address of a page with its record ids and tokens masked, which the store
+  keeps per key ('lastUrl') so that `mendwright check` can load the page again.
 - is_interception_error(): whether an action failed because something covered the
   element (a cookie banner, a modal). mendwright then looks for a registered interruption
   and retries the action once, only after it handled one.
@@ -84,6 +86,67 @@ def page_path(url):
     if not segments:
         return None
     return '/' + '/'.join(segments)
+
+
+# A path segment page_url() keeps as it is: a name of up to 64 letters, digits and ._~-
+# that starts with a letter or digit. Anything else (a JWT, an email address, percent-encoded
+# text, a long slug) can hold a token or a person's data, and becomes '*'.
+_URL_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$')
+_HOST = re.compile(r'^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?$')
+_IPV6 = re.compile(r'^[0-9a-f:.]+$')
+_DEFAULT_PORTS = {'http': 80, 'https': 443}
+MAX_URL = 2048
+
+
+def _masked(part):
+    """Whether page_url() writes the path segment ``part`` as '*': it is not a plain name
+    (_URL_SEGMENT), it looks like a record id (_is_id), or one of its dot-separated pieces
+    of 16 or more characters does, or it starts like a JWT ('eyJ', the encoding of '{"').
+    So a reset link's token and an invitation id go, and 'page.html' or 'v2' stay."""
+    if not _URL_SEGMENT.match(part) or _is_id(part.lower()):
+        return True
+    if '.' in part and (part.startswith('eyJ') or any(
+            len(piece) >= 16 and _is_id(piece.lower()) for piece in part.split('.'))):
+        return True
+    return False
+
+
+def page_url(url):
+    """The address of the page at ``url`` that the store keeps per key ('lastUrl'), or None.
+
+    Only http and https addresses with a host have one. Scheme and host are lower case, a
+    port is kept unless it is the scheme's default, and user info, query and fragment are
+    left out. The path keeps the case the browser had and its empty segments (a trailing
+    slash stays), but a segment that is not a plain name of up to 64 letters, digits and
+    ._~- (an email address, a JWT, percent-encoded text, a long slug), or that looks like a
+    record id (see _is_id), becomes '*'. An empty path is '/'. None for about:, data:, blob:,
+    javascript:, file: and any other scheme, and for a result over 2048 characters.
+    page_url(page_url(x)) == page_url(x)."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if scheme not in _DEFAULT_PORTS or not host:
+        return None
+    if ':' in host:
+        if not _IPV6.match(host):
+            return None
+        host = '[' + host + ']'
+    elif not _HOST.match(host):
+        return None
+    if port is not None and port != _DEFAULT_PORTS[scheme]:
+        host += ':' + str(port)
+    segments = ['*' if part and _masked(part) else part for part in parts.path.split('/')]
+    path = '/'.join(segments)
+    if not path.startswith('/'):
+        path = '/' + path
+    address = scheme + '://' + host + path
+    return address if len(address) <= MAX_URL else None
 
 
 def is_interception_error(exc):
