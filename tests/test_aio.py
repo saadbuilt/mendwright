@@ -3,6 +3,7 @@ lxml-backed FakePage from conftest, a stub provider, asyncio.run() inside plain 
 
 import asyncio
 import inspect
+import json
 import logging
 import threading
 import time
@@ -1377,6 +1378,41 @@ def test_await_drift_holds_the_lock_of_the_healer(make_page, tmp_path, stub_prov
 
     run(main())
     assert order == ['drift starts', 'drift ends', 'locator']
+
+
+def test_await_drift_looks_a_call_up_as_the_sync_one_does(make_page, tmp_path, stub_provider):
+    sync_page = make_page(LOGIN, url='https://shop.test/login', fingerprints=True)
+    heal = mendwright.open(sync_page, provider=stub_provider(None),
+                           store_path=str(tmp_path / 'o.json'), heal_get_by=True, timeout_ms=0)
+    heal.page.get_by_role('button', name='Sign in').click()
+    sync_page.set_html(RENAMED)
+    heal.page.get_by_role('button', name='Sign in').click()          # a heal is saved
+    twins = RENAMED.replace('</main>', '<button>Sign in</button><button>Sign in</button></main>')
+    sync = mendwright.open(make_page(twins, url='https://shop.test/login', fingerprints=True),
+                           provider=stub_provider(None),
+                           store_path=str(tmp_path / 'o.json')).drift(timeout_ms=0)
+
+    async def main():
+        page = AsyncFakePage(make_page(twins, url='https://shop.test/login', fingerprints=True))
+        return await (await _open(page, tmp_path, stub_provider(None))).drift(timeout_ms=0)
+
+    report = run(main())
+    assert _verdicts(report) == _verdicts(sync)
+    [k] = report.keys
+    assert (k.key, k.verdict, [p.result for p in k.probes]) == (
+        CALL, 'refused', ['matches 2 elements', 'not tried'])
+
+
+def test_an_async_call_saves_its_address(make_page, tmp_path, stub_provider):
+    async def main():
+        page = AsyncFakePage(make_page(LOGIN, url='https://Shop.Test/Login/10482/?x=1',
+                                       fingerprints=True))
+        heal = await _open(page, tmp_path, stub_provider(None), heal_get_by=True)
+        await _sign_in(heal)
+
+    run(main())
+    saved = json.loads((tmp_path / 'o.json').read_text(encoding='utf-8'))['selectors']
+    assert saved[CALL]['lastUrl'] == 'https://shop.test/Login/*/'
 
 
 def test_await_drift_checks_its_arguments_first(apage, tmp_path):

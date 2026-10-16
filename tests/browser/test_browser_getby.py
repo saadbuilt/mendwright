@@ -382,6 +382,57 @@ def test_async_a_call_inside_an_iframe_is_refused_and_heals_on_the_frame(engine,
     assert [h.source for h in inner.heals] == ['fingerprint'] and provider.bundles == []
 
 
+
+# --- with mendwright check and heal.drift() ----------------------------------------------
+
+_LOGIN = ('<button id="login" type="button" onclick="done(\'login\')">Sign in</button>'
+          '<button id="help" type="button">Help</button>')
+_SIGN_IN = 'get_by_role("button", name="Sign in")'
+
+
+def test_drift_looks_a_call_up_as_a_run_does(tab, store_file, stub_provider):
+    from mw_engines import SITE
+    provider = stub_provider("//button[@id='login']")
+    tab.load_at(_page(_LOGIN), '/login')
+    _open(tab, provider, store_file).page.get_by_role('button', name='Sign in').click()
+    assert saved_entry(store_file, _SIGN_IN)['lastUrl'] == SITE + '/login'
+    renamed = _LOGIN.replace('>Sign in<', '>Log in<')
+    tab.load_at(_page(renamed), '/login')
+    [k] = _open(tab, provider, store_file).drift().keys
+    assert (k.key, k.verdict, k.detail) == (_SIGN_IN, 'would-heal', 'fingerprint')
+    heal = _open(tab, provider, store_file)
+    heal.page.get_by_role('button', name='Sign in').click()        # the run heals it so
+    assert [h.new for h in heal.heals] == [k.heal['selector']] and tab.text('#done') == 'login '
+    # Two other buttons named Sign in: a run hands the call to Playwright, which refuses it,
+    # and the saved heal, which still finds #login, is not used.
+    tab.load_at(_page(renamed + '<button type="button">Sign in</button>'
+                      '<button type="button">Sign in</button>'), '/login')
+    [k] = _open(tab, provider, store_file).drift().keys
+    assert (k.verdict, [p.result for p in k.probes]) == (
+        'refused', ['matches 2 elements', 'not tried'])
+    with pytest.raises(_library(tab).Error, match='strict mode violation'):
+        _open(tab, provider, store_file).page.get_by_role('button', name='Sign in').click(
+            timeout=2000)
+    assert provider.bundles == []
+
+
+def test_drift_refuses_a_call_found_only_inside_an_iframe(tab, store_file, stub_provider):
+    provider = stub_provider("//button[@id='pay']")
+    tab.load_at(_page('<button id="pay" type="button">Pay</button>'), '/checkout')
+    _open(tab, provider, store_file).page.get_by_role('button', name='Pay').click()
+    tab.load_at(_IFRAME, '/checkout')
+    for _ in range(50):
+        frame = tab.target.frame(name='payment')
+        if frame is not None and frame.locator('#pay').count() == 1:
+            break
+        time.sleep(0.1)
+    [k] = _open(tab, provider, store_file).drift().keys
+    assert k.verdict == 'refused'
+    assert ('mendwright did not look for it there, because mendwright does not follow a get_by_* '
+            'call into an iframe' in k.reason)
+    assert provider.bundles == []
+
+
 # --- what it costs -----------------------------------------------------------------------
 
 _BIG = _page(''.join('<div class="row"><span>Item ' + str(i) + '</span><a href="#i' + str(i)

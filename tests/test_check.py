@@ -477,7 +477,25 @@ def test_markdown_escapes_cells(make_page, store_dir, capsys):
     assert '`pipe\\|key`' in out and "//a[text()='a\\|b']" in out
     assert out.rstrip().endswith('Exit 0: every checked key resolves.')
     from mendwright.drift import _md_code
-    assert _md_code('a`b') == '`` a`b ``'
+    # As in mendwright fix and report (mendwright._md): any run of backticks, and control
+    # and bidirectional characters shown as \uXXXX.
+    assert _md_code('a`b') == '``a`b``' and _md_code('a``b') == '```a``b```'
+    assert _md_code('pay‮now') == '`pay\\u202Enow`'
+
+
+def test_markdown_keeps_the_spelling_of_a_call_that_starts_a_reason():
+    from mendwright.drift import KeyDrift, SelectorProbe, _reason_cell
+    call = 'get_by_role("button", name="Sign in")'
+
+    def drift(reason, selector=call):
+        return KeyDrift(key=call, page='/login', verdict='refused', detail=None,
+                        counts_as='broken', role='button', live_role=None, destructive=False,
+                        used=None, heal=None, provider=None, dry_run=False, confirmed=None,
+                        reason=reason, probes=(SelectorProbe(selector, 'code', None, 2, None,
+                                                             'matches 2 elements'),))
+    assert _reason_cell(drift(call + ' matches 2 elements.')) == call + ' matches 2 elements.'
+    assert _reason_cell(drift('button.go matches nothing.', 'button.go')).startswith('button.go')
+    assert _reason_cell(drift('it matches only through //a.')) == 'It matches only through //a.'
 
 
 def test_quiet_lists_only_what_is_not_ok(make_page, store_dir, capsys):

@@ -1250,3 +1250,13 @@ def test_the_guide_quotes_what_a_proposal_says_and_the_state_words(tmp_path, mak
     assert _raised(heal) in guide
     words = re.search(r'in a class, id, name or text: (.*?)\. A list that was', guide).group(1)
     assert set(re.findall(r'`([a-z]+)`', words)) == lists.STATE_WORDS
+
+
+def test_a_list_looked_up_with_nonempty_saves_its_address(make_page, tmp_path):
+    # mendwright check loads a key's lastUrl: a list found with nonempty=True records it as
+    # any lookup that matches does, and a proposal does not.
+    page = _shop(make_page, url='https://Shop.Test/Cart/10482/?step=2')
+    heal = _open(page, tmp_path)
+    assert len(heal.locator_all('cart', '.cart-item', nonempty=True)) == 3
+    entry = json.loads((tmp_path / 'o.json').read_text(encoding='utf-8'))['selectors']['cart']
+    assert (entry['lastUrl'], entry['lastPage']) == ('https://shop.test/Cart/*/', '/cart/*')

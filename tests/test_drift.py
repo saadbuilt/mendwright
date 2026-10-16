@@ -892,3 +892,111 @@ def test_report_shapes(make_page, stub_provider, tmp_path, caplog):
         k for k in report.keys if k.verdict == 'refused')
     with pytest.raises(ValueError):
         report.failed(fail_on='broken')
+
+
+# --- what the merge of the 0.9.0 features needed: get_by_* calls and list heals that wait ----
+
+CALL = 'get_by_role("button", name="Sign in")'
+LOGIN = ("<form id='login-form'><label for='email'>Email</label><input id='email' name='email' "
+         "type='email'><button id='login' type='submit' class='primary'>Sign in</button></form>")
+LOGIN_URL = 'https://shop.example/login'
+
+
+def _called(make_page, stub_provider, tmp_path, *pages):
+    """A run with heal_get_by=True that clicks the Sign in call on each of pages in turn,
+    so the store holds the call key, its fingerprint and the heals the run made."""
+    page = make_page(pages[0], url=LOGIN_URL, fingerprints=True)
+    heal = mendwright.open(page, provider=stub_provider(None), store_path=_store(tmp_path),
+                           heal_get_by=True, timeout_ms=0)
+    for html in pages:
+        page.set_html(html)
+        heal.page.get_by_role('button', name='Sign in').click()
+    return heal
+
+
+def test_a_call_key_s_heal_says_fix_lists_it_and_leaves_the_call(make_page, stub_provider,
+                                                                 tmp_path, caplog):
+    renamed = LOGIN.replace('>Sign in<', '>Log in<')
+    _called(make_page, stub_provider, tmp_path, LOGIN, renamed)
+    heal, page = checker(make_page, stub_provider, tmp_path, html=renamed, url=LOGIN_URL)
+    [k] = drifted(heal, page, caplog).keys
+    assert (k.key, k.verdict, k.used) == (CALL, 'ok-heal', "//button[@id='login']")
+    assert ('Run mendwright fix to see the healed selector and where the call is; it does not '
+            'change the call itself.') in k.reason
+    assert 'to put it in your code' not in k.reason
+
+
+def test_a_call_written_in_another_spelling_is_the_call_s_key(make_page, stub_provider, tmp_path,
+                                                              caplog):
+    _called(make_page, stub_provider, tmp_path, LOGIN)
+    heal, page = checker(make_page, stub_provider, tmp_path, html=LOGIN, url=LOGIN_URL)
+    [k] = drifted(heal, page, caplog, ["get_by_role('button', name='Sign in')"]).keys
+    assert (k.key, k.verdict) == (CALL, 'ok')
+
+
+@pytest.mark.parametrize('twins, result, said', [
+    ("<button type='submit'>Sign in</button><button type='submit'>Sign in</button>",
+     'matches 2 elements', 'and Playwright refuses an action on more than one element'),
+    ("<button type='submit' data-invisible>Sign in</button>", 'one hidden element',
+     'whose action on it waits for the element to show')])
+def test_a_call_a_run_hands_to_playwright_never_uses_its_heal(twins, result, said, make_page,
+                                                              stub_provider, tmp_path, caplog):
+    renamed = LOGIN.replace('>Sign in<', '>Log in<')
+    _called(make_page, stub_provider, tmp_path, LOGIN, renamed)
+    # The saved heal still matches one visible element, and the call matches something else.
+    html = renamed.replace('</form>', twins + '</form>')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=html, url=LOGIN_URL)
+    [k] = drifted(heal, page, caplog).keys
+    assert (k.verdict, k.counts_as, k.used) == ('refused', 'broken', CALL)
+    assert [(p.selector, p.result) for p in k.probes] == [
+        (CALL, result), ("//button[@id='login']", 'not tried')]
+    assert k.reason.startswith(CALL + ' ' + ('' if result.startswith('matches') else 'matches ')
+                               + result + '. A run neither looks up nor heals a get_by_* call '
+                               'that matches something: it hands it to Playwright as written, '
+                               + said)
+    assert k.fails(fail_on='unhealable')
+
+
+def test_a_call_found_only_inside_an_iframe_is_refused_in_the_run_s_words(stub_provider,
+                                                                         tmp_path, caplog):
+    from mendwright import getby
+    from mendwright.facade import _frame_message
+    store = load_store(None, _store(tmp_path))
+    store.set_code_candidates(CALL, [CALL])
+    store.set_meta(CALL, role='button')
+    store.set_last_page(CALL, '/signup')
+
+    class CallInFrame(TwoDocs):
+        def frame_matches(self, selector):
+            return [dict(self.frame, count=1)] if selector == CALL else []
+
+    page = CallInFrame(INNER)
+    heal = mendwright.open(page, provider=stub_provider(None), store_path=_store(tmp_path),
+                           timeout_ms=0)
+    [k] = drifted(heal, page, caplog).keys
+    assert k.verdict == 'refused'
+    assert k.reason == (CALL + ' matches nothing. A run would not heal it: ' + _frame_message(
+        CALL, CALL, [dict(page.frame, count=1)], 'mendwright.open', getby.NOT_FOLLOWED))
+    assert page.actions == [] and page.inner.actions == []
+
+
+def test_a_list_that_matches_nothing_names_its_list_heal_that_waits(make_page, stub_provider,
+                                                                    tmp_path, caplog):
+    from mendwright.store import edit_list_heal
+    _list_store(tmp_path, make_page, stub_provider)
+    tiles = "<ul><li class='tile'>A</li><li class='tile'>B</li></ul>"
+    load_store(None, _store(tmp_path)).propose_list_heal(
+        'cards', "//li[@class='tile']", proposal={'id': '3f2a9c1d', 'count': 2,
+                                                  'at': '2026-11-02T10:14:03+00:00'})
+    heal, page = checker(make_page, stub_provider, tmp_path, html=tiles)
+    [k] = drifted(heal, page, caplog).keys
+    assert k.verdict == 'list-missing'
+    assert k.reason.endswith("heal.drift() can't tell an empty list from a broken one either. "
+                             'A list heal found for it with nonempty=True waits for you to check '
+                             'it: run mendwright lists.')
+    edit_list_heal(_store(tmp_path), 'cards', 'accept', '3f2a9c1d')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=tiles, fingerprint=False)
+    [k] = drifted(heal, page, caplog).keys
+    assert k.reason == ("//li[@class='card'] matches nothing: a run gets [] at once, since the "
+                        "fingerprint tier is off. Its list heal //li[@class='tile'] was accepted, "
+                        'and waits for mendwright fix --apply to put it in your code.')

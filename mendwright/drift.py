@@ -11,6 +11,11 @@ has reached.
   with a provider that raises before any model call (_PreviewProvider), a journal in
   memory and no log. So a key gets the run's own decision and the run's own words, and
   nothing reaches the store, the journal, the page or a model.
+- The key of a heal.page.get_by_*() call is looked at as resolver.resolve_get_by() looks it
+  up: the call itself first, and its saved heals only while it matches nothing. A call that
+  matches several elements or one hidden one is 'refused', since a run hands it to
+  Playwright as written then (Healer._get_by_through), and a call found only inside an
+  iframe too (Healer._get_by_frames).
 - Each key gets one verdict (VERDICTS): it still resolves ('ok'), only through a saved heal
   ('ok-heal'), to an element of another control role ('wrong-role'), a run would heal it
   from memory or follow it into an iframe ('would-heal'), a run would ask a model
@@ -39,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from . import _md, getby
 from .coordinator import HealCoordinator, _list_missing_message
 from .drivers.base import driver_describe, driver_framed
 from .facade import _frame_message, latest_success
@@ -388,9 +394,17 @@ class _Key:
     def __init__(self, store, key):
         self.key = key
         self.meta = store.meta(key)
-        self.is_list = _valid_list(self.meta.get('listFingerprint'))
+        # The key of a heal.page.get_by_*() call: looked up as resolver.resolve_get_by() does.
+        self.call = getby.is_key(key)
+        self.is_list = not self.call and _valid_list(self.meta.get('listFingerprint'))
         rows = list(store.candidates(key))
-        if self.is_list:
+        if self.call:
+            # The call itself first, as the code's selector (a run's _prime() saves it so),
+            # then its saved heals and seed rows in store order.
+            mine = [c for c in rows if c.get('xpath') == key] or [{'xpath': key,
+                                                                    'source': 'code'}]
+            rows = mine[:1] + [c for c in rows if c.get('xpath') != key]
+        elif self.is_list:
             # As Healer._list_runnable: no heal and nothing inside an iframe.
             rows = [c for c in rows if not c.get('frameXPath') and c.get('source') != 'heal']
         else:
@@ -416,6 +430,9 @@ class _Key:
             else:
                 self._cannot_run(index, errors[0])
         self.used = None        # index of the row a run would use
+        # For a call key: what its call matched when a run would hand it to Playwright as
+        # written ('several', 'hidden' or 'rejected'), with no lookup and no heal.
+        self.through = None
         self.result = None      # the KeyDrift, once decided
 
     def _cannot_run(self, index, error):
@@ -449,9 +466,14 @@ def _run_role(store, key, meta):
 
 def _look(driver, k):
     """One poll of key k: try its runnable selectors in order until one resolves, as
-    resolver.resolve() does, with count() and is_visible() only."""
+    resolver.resolve() does, with count() and is_visible() only. A call key's call goes
+    first, alone (see _look_call)."""
+    if k.call and not _look_call(driver, k):
+        return
     resolved = None
     for index in list(k.runnable):
+        if k.call and index == 0:
+            continue                # looked at by _look_call()
         probe = k.probes[index]
         if resolved is not None:
             probe.update(matches=None, visible=None, result='not tried')
@@ -493,6 +515,73 @@ def _look(driver, k):
             else:
                 probe['result'] = 'one hidden element'
     k.used = resolved
+
+
+def _look_call(driver, k):
+    """The first step of a poll of call key k, as resolver.resolve_get_by() takes it: the
+    call itself. One usable element resolves k to it. Several elements, one hidden one, or a
+    call the driver refuses set k.through: a run hands the call to Playwright as written then,
+    without its saved heals. Returns True when nothing matched, and the key's other rows (its
+    saved heals) are to be tried."""
+    probe = k.probes[0]
+    for other in k.probes[1:]:
+        other.update(matches=None, visible=None, result='not tried')
+    if 0 not in k.runnable:
+        k.through = 'rejected'
+        return False
+    try:
+        count = driver.count(k.key)
+    except InvalidSelector as exc:
+        k.runnable.remove(0)
+        k._cannot_run(0, exc)
+        k.through = 'rejected'
+        return False
+    except Exception:
+        count = 0
+    count = count if isinstance(count, int) and not isinstance(count, bool) else 0
+    probe.update(matches=count, visible=None)
+    if count == 0:
+        probe['result'] = 'no match'
+        return True
+    if count > 1:
+        probe['result'] = 'matches ' + _elements(count)
+        k.through = 'several'
+        return False
+    try:
+        visible = bool(driver.is_visible(k.key))
+    except Exception:
+        visible = False
+    probe['visible'] = visible
+    if visible or not k.require_visible:
+        probe['result'] = 'one visible element' if visible else 'one hidden checkbox'
+        k.used = 0
+    else:
+        probe['result'] = 'one hidden element'
+        k.through = 'hidden'
+    return False
+
+
+def _through(k, store, dry_run):
+    """The verdict of call key k whose call a run hands to Playwright as written (see
+    _look_call), as Healer._get_by_through() does: no saved heal is used, and nothing heals."""
+    probe = k.probes[0]
+    if k.through == 'rejected':
+        first = k.errors[0] if k.errors else 'the driver cannot run it'
+        _decide(k, 'skipped', 'unrunnable', k.key + ' cannot run here: ' + first.rstrip('.')
+                + '. A run uses no saved heal of a get_by_* call that cannot run.', store,
+                dry_run)
+        return
+    if k.through == 'several':
+        text = (k.key + ' matches ' + _elements(probe['matches']) + '. A run neither looks up '
+                'nor heals a get_by_* call that matches something: it hands it to Playwright as '
+                'written, and Playwright refuses an action on more than one element (a strict '
+                'mode violation). Change the call so that it matches one element.')
+    else:
+        text = (k.key + ' matches one hidden element. A run neither looks up nor heals a '
+                'get_by_* call that matches something: it hands it to Playwright as written, '
+                'whose action on it waits for the element to show and fails when it stays '
+                'hidden. Check the page, or change the call.')
+    _decide(k, 'refused', None, text, store, dry_run, used=k.key)
 
 
 def _elements(count):
@@ -564,12 +653,12 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     def poll():
         started = clock()
         while True:
-            waiting = [k for k in work if k.result is None and not k.resolved]
+            waiting = [k for k in work if k.result is None and not k.resolved and not k.through]
             for k in waiting:
                 _look(driver, k)
-                if not k.runnable and not k.resolved:
+                if not k.runnable and not k.resolved and not k.through:
                     _unrunnable(k, store, dry_run)
-            waiting = [k for k in work if k.result is None and not k.resolved]
+            waiting = [k for k in work if k.result is None and not k.resolved and not k.through]
             if not waiting or (clock() - started) * 1000.0 >= timeout_ms:
                 return waiting
             sleep(poll_ms)
@@ -583,18 +672,22 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     for k in work:
         if k.result is None and k.resolved:
             _resolved(driver, store, k, canaries, who, dry_run)
+        elif k.result is None and k.through:
+            _through(k, store, dry_run)
 
     probed = [k for k in work if k.probes and (k.resolved or k.runnable)]
+    # A call that matches several elements or a hidden one found its page all the same.
+    matched = [k for k in probed if k.resolved or k.through in ('several', 'hidden')]
     missed = [k for k in work if k.result is None]
     notes = []
     if missed and gate is not None:
-        stopped = gate(not any(k.resolved for k in probed))
+        stopped = gate(not matched)
         if stopped:
             detail, reason = stopped
             for k in missed:
                 _decide(k, 'unreachable', detail, reason, store, dry_run)
             missed = []
-    if fresh and probed and not any(k.resolved for k in probed) and missed:
+    if fresh and probed and not matched and missed:
         count = len(probed)
         notes.append("none of this page's " + str(count) + ' key' + ('s' if count != 1 else '')
                      + ' matched. A redesign, an error page and a page that needs a sign-in or '
@@ -725,7 +818,9 @@ def _resolved(driver, store, k, canaries, who, dry_run):
         text = ('The selectors before it miss (' + before[0]['selector'] + ': '
                 + before[0]['result'] + '); the heal' if before else 'The heal')
         text += (' saved on ' + when + ', ' + used + ', matches ' + shown + ', and a run uses it. '
-                 'Run mendwright fix to put it in your code.')
+                 + ('Run mendwright fix to see the healed selector and where the call is; it '
+                    'does not change the call itself.' if k.call else
+                    'Run mendwright fix to put it in your code.'))
         confirmed = canaries.get((k.key, used))
         if confirmed is not True:
             text += ' No passing test confirmed it, so check that it finds the right element.'
@@ -773,14 +868,16 @@ def _miss(k, store, coordinator, preview, skips, optional, fresh, who, dry_run):
                 + when + '): a run skips it when it is missing. Not counted.', store, dry_run)
         return
     if k.is_list:
+        waiting = _waiting_list(store, k.key)
         if getattr(coordinator, 'fingerprint', False):
             lfp = k.meta.get('listFingerprint') or {}
             _decide(k, 'list-missing', None, _list_missing_message(
                 k.key, lfp.get('count') if isinstance(lfp, dict) else None) + ' ' + who
-                + " can't tell an empty list from a broken one either.", store, dry_run)
+                + " can't tell an empty list from a broken one either." + waiting, store,
+                dry_run)
         else:
             _decide(k, 'list-missing', None, miss + ': a run gets [] at once, since the '
-                    'fingerprint tier is off.', store, dry_run, counts_as='none')
+                    'fingerprint tier is off.' + waiting, store, dry_run, counts_as='none')
         return
     steps = k.meta.get('steps') or ()
     if fresh and steps:
@@ -790,6 +887,24 @@ def _miss(k, store, coordinator, preview, skips, optional, fresh, who, dry_run):
                 'heal.drift() inside your flow.', store, dry_run)
         return
     preview.judge(k, miss, dry_run)
+
+
+def _waiting_list(store, key):
+    """What the verdict of a list that matches nothing adds about the list heals of key that
+    wait (see heal.locator_all(nonempty=True) and mendwright lists), or ''."""
+    reader = getattr(store, 'list_heals', None)
+    try:
+        rows = list(reader(key)) if callable(reader) else []
+    except Exception:
+        return ''
+    accepted = [r for r in rows if r.get('status') == 'accepted']
+    if accepted:
+        return (' Its list heal ' + str(accepted[0].get('xpath')) + ' was accepted, and waits '
+                'for mendwright fix --apply to put it in your code.')
+    if rows:
+        return (' A list heal found for it with nonempty=True waits for you to check it: run '
+                'mendwright lists.')
+    return ''
 
 
 class _Preview:
@@ -847,6 +962,8 @@ class _Preview:
         core, shadow, finder = self.core, self.shadow, self.frames.frame_matches
         if finder is None:
             return False
+        if k.call:
+            return self._call_frame(k, miss, finder, dry_run)
         matches = []
         for selector in core._frame_candidates(k.key):
             try:
@@ -893,6 +1010,20 @@ class _Preview:
         _decide(k, 'would-heal', 'frame', text, core.store, dry_run,
                 heal={'source': 'frame', 'selector': alt, 'frame': frame, 'score': None,
                       'runner_up': None})
+        return True
+
+    def _call_frame(self, k, miss, finder, dry_run):
+        """Healer._get_by_frames(): a call key whose call matches inside an iframe is
+        refused, since a run follows neither a call nor a heal of one into an iframe. True
+        when it decided the key."""
+        try:
+            found = finder(k.key)
+        except Exception:
+            return False
+        if not found:
+            return False
+        self._refused(k, miss, _frame_message(k.key, k.key, found, self.opener,
+                                              getby.NOT_FOLLOWED, self.selenium), dry_run)
         return True
 
     def _heal(self, k, miss, dry_run):
@@ -1003,7 +1134,9 @@ def drift_keys(store, keys, timeout_ms, poll_ms):
     if bad:
         raise TypeError('mendwright: heal.drift() takes key names as strings, got '
                         + repr(bad[0]) + '.')
-    items = list(dict.fromkeys(items))
+    # A get_by_* call written in another spelling stands for the call's key, as in
+    # destructive_keys= and heal.present().
+    items = list(dict.fromkeys(getby.canonical_key(item) for item in items))
     known = set(store_keys(store))
     unknown = [item for item in items if item not in known]
     if unknown:
@@ -1763,13 +1896,22 @@ def format_text(run, quiet=False):
     return lines
 
 
-def _md_cell(text):
-    return ' '.join(str(text).split()).replace('|', '\\|')
+# The Markdown helpers of mendwright fix and report (mendwright._md): a code span holds any
+# run of backticks, and shows control and bidirectional characters as \uXXXX.
+_md_cell = _md.cell
 
 
 def _md_code(text):
-    text = ' '.join(str(text).split()).replace('|', '\\|')
-    return '`` ' + text + ' ``' if '`' in text else '`' + text + '`'
+    return _md.code(text, table=True)
+
+
+def _reason_cell(k):
+    """k's reason for a Markdown cell, capitalized unless it starts with the key or one of
+    its selectors (a get_by_* call, a CSS tag name), which keep their spelling."""
+    starts = [k.key] + [p.selector for p in k.probes if getattr(p, 'selector', None)]
+    if any(k.reason.startswith(s) for s in starts if s):
+        return _md_cell(k.reason)
+    return _md_cell(_capital(k.reason))
 
 
 def format_md(run, quiet=False):
@@ -1787,7 +1929,7 @@ def format_md(run, quiet=False):
             label = LABELS[k.verdict]
             rows.append('| ' + _md_code(result.plan.shown) + ' | ' + _md_code(k.key) + ' | '
                         + (label if k.verdict == 'ok' else '**' + label + '**') + ' | '
-                        + _md_cell(_capital(k.reason)) + ' |')
+                        + _reason_cell(k) + ' |')
     if rows:
         lines += ['| Page | Key | Result | Details |', '| --- | --- | --- | --- |'] + rows + ['']
     extra = ['- ' + _md_code(result.plan.shown) + ': ' + _md_cell(note) for result in run.pages

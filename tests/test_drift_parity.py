@@ -150,3 +150,76 @@ def test_the_fingerprint_reasoning_drift_reads_is_the_coordinator_s(make_page, t
     assert coordinator.try_heal('terms', store.meta('terms'), store.candidates('terms'), {})
     [proposed] = [e for e in journal.events if e['event'] == 'heal.proposed']
     assert _SCORES.fullmatch(proposed['reasoning'])
+
+
+# --- the key of a heal.page.get_by_*() call, with heal_get_by=True ---------------------------
+
+CALL = 'get_by_role("button", name="Pay now")'
+PAY = "<form id='checkout'><button type='button' id='pay' class='primary'>Pay now</button></form>"
+PAY_RENAMED = PAY.replace('>Pay now<', '>Pay<')          # the name changed, the id stayed
+PAY_GONE = "<form id='checkout'><button type='button' class='go'>Go</button></form>"
+# Two buttons named Pay now, and the one the saved heal finds.
+PAY_TWINS = PAY_RENAMED.replace('</form>', "<button type='button'>Pay now</button>"
+                                "<button type='button'>Pay now</button></form>")
+
+
+def _call_store(make_page, stub_provider, tmp_path, *pages):
+    """What a run with heal_get_by=True saves when it clicks the call on each of pages,
+    copied to a and b."""
+    page = make_page(pages[0], url=URL, fingerprints=True)
+    heal = mendwright.open(page, provider=stub_provider(None),
+                           store_path=str(tmp_path / 'a' / 'o.json'), heal_get_by=True,
+                           timeout_ms=0)
+    for html in pages:
+        page.set_html(html)
+        heal.page.get_by_role('button', name='Pay now').click()
+    shutil.copytree(tmp_path / 'a', tmp_path / 'b')
+
+
+def _call_run(make_page, tmp_path, side, html, provider):
+    """On a, the run's click on the call (heal, the exception it raised or None); on b,
+    heal.drift()'s verdict for the call's key (heal, KeyDrift)."""
+    page = make_page(html, url=URL, fingerprints=True)
+    heal = mendwright.open(page, provider=provider, store_path=str(tmp_path / side / 'o.json'),
+                           heal_get_by=True, timeout_ms=0)
+    if side == 'a':
+        try:
+            heal.page.get_by_role('button', name='Pay now').click()
+        except Exception as exc:
+            return heal, exc
+        return heal, None
+    [k] = heal.drift([CALL], timeout_ms=0).keys
+    return heal, k
+
+
+def test_a_call_heal_from_memory_is_the_run_s_heal(make_page, stub_provider, tmp_path):
+    _call_store(make_page, stub_provider, tmp_path, PAY)
+    run, raised = _call_run(make_page, tmp_path, 'a', PAY_RENAMED, stub_provider(None))
+    assert raised is None and run.heals[0].source == 'fingerprint'
+    _heal, k = _call_run(make_page, tmp_path, 'b', PAY_RENAMED, stub_provider(None))
+    assert (k.verdict, k.detail) == ('would-heal', 'fingerprint')
+    assert k.heal['selector'] == run.heals[0].new
+
+
+def test_a_call_the_fingerprint_cannot_heal_is_the_run_s_refusal(make_page, stub_provider,
+                                                                 tmp_path):
+    _call_store(make_page, stub_provider, tmp_path, PAY)
+    asked, checked = stub_provider("//button[@class='go']"), stub_provider("//button[@class='go']")
+    _run_heal, raised = _call_run(make_page, tmp_path, 'a', PAY_GONE, asked)
+    assert isinstance(raised, AttentionRequired)
+    said = str(raised).split('\n  -> ', 1)[1]
+    _heal, k = _call_run(make_page, tmp_path, 'b', PAY_GONE, checked)
+    assert k.verdict == 'refused' and said in k.reason      # never needs-model: no model asked
+    assert asked.bundles == [] and checked.bundles == []
+
+
+def test_a_call_a_run_hands_to_playwright_is_refused_and_its_heal_unused(make_page, stub_provider,
+                                                                        tmp_path):
+    _call_store(make_page, stub_provider, tmp_path, PAY, PAY_RENAMED)       # a heal is saved
+    run, raised = _call_run(make_page, tmp_path, 'a', PAY_TWINS, stub_provider(None))
+    assert 'strict mode violation' in str(raised)        # Playwright's own error, no heal used
+    assert run.heals == [] and run._page.actions == []
+    _heal, k = _call_run(make_page, tmp_path, 'b', PAY_TWINS, stub_provider(None))
+    assert (k.verdict, k.used) == ('refused', CALL)
+    assert [p.result for p in k.probes] == ['matches 2 elements', 'not tried']
+    assert 'a strict mode violation' in k.reason

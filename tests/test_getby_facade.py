@@ -857,3 +857,23 @@ def test_an_action_proxy_comes_back_for_each_lookup(tmp_path, make_page, stub_pr
     heal = _open(_page(make_page), tmp_path, stub_provider(HEAL))
     proxy = heal._get_by_locator(getby.parse(KEY), heal.page.native.get_by_role('button'))
     assert isinstance(proxy, ActionProxy) and proxy.key == KEY and proxy._canary is False
+
+
+# --- with mendwright check: the address a call was found at ---------------------------------
+
+def test_a_call_saves_its_address_and_one_handed_to_playwright_saves_none(make_page, tmp_path,
+                                                                         stub_provider):
+    page = make_page(PAGE, url='https://u:p@Shop.Test/Login/10482/?next=1#top', fingerprints=True)
+    heal = _open(page, tmp_path, stub_provider(None))
+    _sign_in(heal)
+    assert _saved(tmp_path)[KEY]['lastUrl'] == 'https://shop.test/Login/*/'
+    page.set_html(RENAMED)
+    page.url = 'https://shop.test:8443/login/10482/'          # a test app on another port
+    _sign_in(heal)                                            # healed, and found there
+    assert heal.heals and heal.store.last_url(KEY) == 'https://shop.test:8443/login/*/'
+    # Two Sign in buttons: Playwright runs the call as written, and nothing is saved.
+    page.set_html(PAGE.replace('</form>', "<button type='button'>Sign in</button></form>"))
+    page.url = 'https://shop.test:9000/login/10482/'
+    with pytest.raises(Exception, match='strict mode violation'):
+        _sign_in(heal)
+    assert heal.store.last_url(KEY) == 'https://shop.test:8443/login/*/'
