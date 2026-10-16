@@ -22,6 +22,7 @@ import sys
 import textwrap
 from urllib.parse import urlsplit
 
+from . import _md
 from .demo._story import BROWSERS, write_line
 
 DEFAULT_STORE_PATH = './.mendwright/overrides.json'  # the same default mendwright.open() uses
@@ -559,15 +560,11 @@ def _report_text(r):
 
 
 def _md_code(text):
-    """text as a Markdown code span that is safe inside a table cell."""
-    text = ' '.join(str(text).split()).replace('|', '\\|')
-    if '`' in text:
-        return '`` ' + text + ' ``'
-    return '`' + text + '`'
+    """text as a Markdown code span that is safe inside a table cell (see mendwright._md)."""
+    return _md.code(text, table=True, cut=None)
 
 
-def _md_cell(text):
-    return ' '.join(str(text).split()).replace('|', '\\|')
+_md_cell = _md.cell
 
 
 def _report_md(r):
