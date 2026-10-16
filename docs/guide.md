@@ -89,7 +89,7 @@ Other `Healer` members:
 - `heal.interrupt(key, selector, *, action=None, args=(), role=None, run=None)`: registers a step that can show up at any point. See [Interruptions](#interruptions), and [Interruptions that need a form](#interruptions-that-need-a-form) for `run=`.
 - `heal.handled_interruptions`: the interruptions this Healer handled, as `InterruptionEvent(key, before)`. With `dismiss=True`, the popups it dismissed are listed too, under the key `<popup>`, with `popup` (how the log line names it), `how` (`"escape"`, `"close"` or `"decline"`) and `label` (the button's) set (see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about)).
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
-- `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False)`: the elements of a list, such as the cards of a product grid. A list whose selector matches nothing is never healed. See [Lists](#lists).
+- `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)`: the elements of a list, such as the cards of a product grid. It gives only what your own selectors match. With `nonempty=True`, a list whose selectors match nothing is looked for and proposed to you. See [Lists](#lists).
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
 - `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
@@ -194,7 +194,7 @@ A key that never matched has no fingerprint, so a selector that is already broke
 
 `fingerprint=False` in `mendwright.open()` or `MENDWRIGHT_FINGERPRINT=0` turns the tier off, and `MENDWRIGHT_DISABLE=1` turns it off with every other heal.
 `HealCoordinator` in the low-level API leaves it off unless you pass `fingerprint=True`.
-A list of elements, such as the cards of a product grid, has a list fingerprint of its own, recorded in the same way, but a list is never healed: see [Lists](#lists).
+A list of elements, such as the cards of a product grid, has a list fingerprint of its own, recorded in the same way, but a list is never healed: with `nonempty=True`, mendwright looks for a list whose selector broke and proposes the new selector for you to check (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)).
 
 ### What you see
 
@@ -520,17 +520,17 @@ cards = heal.locator_all("cards", ".product-card")    # an ActionProxy for each 
 names = [card.native.locator("h3").inner_text() for card in cards]
 ```
 
-mendwright never heals a list whose selector matches nothing. An emptied list can't be told from a list whose selector broke: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text, and a heal there gives a loop that deletes the cart's rows the items saved for later. So such a lookup raises `AttentionRequired`, which names both possibilities, and a selector that broke in a redesign is fixed in your code.
+mendwright never uses a list that your own selectors don't match. With `nonempty=True`, it looks for a list whose selector broke and proposes the new selector to you (see [below](#lists-that-always-have-items-nonemptytrue)). An emptied list can't be told from a list whose selector broke: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text, and a heal there gives a loop that deletes the cart's rows the items saved for later. So such a lookup raises `AttentionRequired`, which names both possibilities, and a selector that broke in a redesign is fixed in your code.
 
 `heal.page.locator(selector).all()` and `heal.driver.find_elements()` behave as in 0.7.0: they give what the real call gives, and never wait, heal or save anything. A list that matches nothing is `[]` at once, so a loop that waits for toasts or a spinner to go away, or a check that a cart is empty, works as before.
 
-`heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False)` gives an `ActionProxy` for each element the list matches, in page order. `selector`, `role` (the items' role), `timeout_ms` and `poll_ms` mean what they mean for `heal.locator()`. In `mendwright.aio`, `await heal.locator_all(...)` gives `AsyncActionProxy`s.
+`heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)` gives an `ActionProxy` for each element the list matches, in page order. `selector`, `role` (the items' role), `timeout_ms` and `poll_ms` mean what they mean for `heal.locator()`. `nonempty=` takes `True` or `False` (anything else raises `TypeError`), and `nonempty=True` with `optional=True` raises `ValueError`, before anything touches the page. In `mendwright.aio`, `await heal.locator_all(...)` gives `AsyncActionProxy`s, and those errors raise at the call.
 
 How a list is looked up:
 
 1. The key's selectors are tried in order, the one in your code first, then the others saved for the key, such as those of a seed file. The first that matches one element or more gives the list, as written. A list is looked for on the page, not inside an iframe. Heals saved under the key are skipped: the key can also be that of `heal.locator()`, of a `heal.page` shortcut (the selector) or of `heal.driver.find_element()` (`by=value`), and a heal of the first card is not a heal of the cards.
 2. Each time one matches two or more elements, mendwright records a list fingerprint, in one round trip, once per Healer and selector: the [fingerprints](#what-a-fingerprint-holds) of three of the items (the first, the middle and the last), the tags inside each of them and of their children (their shape), how many items there were, and their nearest common container (its tag, id, test id, aria-label, classes and role). It tells mendwright that the list had items. Without `role=`, the items' role is saved from the first item. The first lookup of a key saves its selector, its first success, its page and the list fingerprint in one write of `overrides.json`. A list of one element is not recorded: nothing repeats in it.
-3. When none matches and the key has a list fingerprint, mendwright waits up to `timeout_ms`, handles the registered [interruptions](#interruptions) the page shows, and raises `AttentionRequired`, logged as a WARNING too. It looks for no other list on the page and asks no model, even when one is configured, and saves nothing, so the next run raises again. A list that comes while it waits, such as cards that a slow API sends, is used as it is.
+3. When none matches and the key has a list fingerprint, mendwright waits up to `timeout_ms`, handles the registered [interruptions](#interruptions) the page shows, and raises `AttentionRequired`, logged as a WARNING too. Unless the call passes `nonempty=True`, it looks for no other list on the page and asks no model, even when one is configured, and saves nothing, so the next run raises again. A list that comes while it waits, such as cards that a slow API sends, is used as it is.
 4. When none matches and the key has no list fingerprint, the list is empty at once, as `Locator.all()` and `find_elements()` give it. So is a list passed `optional=True`.
 
 What a cart's lookup raises once every item of the cart moved to Saved for later, and once a redesign renamed its rows:
@@ -545,6 +545,104 @@ For a list that may be empty at that point, such as a cart after an order, pass 
 With `fingerprint=False`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1`, no list fingerprint is recorded, and a list lookup that matches nothing is empty at once, as `Locator.all()` and `find_elements()` give it, even for a list recorded in an earlier run.
 
 The elements' actions handle interruptions and popups as `heal.locator()`'s do, and confirm or quarantine nothing, and so does an element's `confirm()`: no list is found through a heal, and a heal of one element under the same key, such as of `page.inner_text(".card")` next to `heal.locator_all(".card", ".card")`, is not the element's. On Playwright, the first read of an element of `heal.locator_all()` handles interruptions too, once for the whole list (see [Interruptions](#interruptions)). The reads of the elements of `heal.page.locator(selector).all()` handle none. The reads of a list's elements are never checked against `mendwright.open(expect_values=...)`. With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s. List fingerprints are saved in `overrides.json` as `listFingerprint` (see [SECURITY.md](../SECURITY.md) for what they hold).
+
+### Lists that always have items (nonempty=True)
+
+`nonempty=True` says that a list always has items at that point of your flow, such as the rows of a cart your test just filled:
+
+```python
+heal.locator("add", "#add-to-cart").click()
+rows = heal.locator_all("cart", ".cart-item", nonempty=True)
+```
+
+Don't pass it for a list that can be empty there. For that, pass `optional=True`, or nothing.
+
+Add it while the list still works. mendwright records where the list sits and its heading the next time the list matches in a call with `nonempty=True`, and keeps recording them for that key after that, in calls with and without it. A list recorded before that, by mendwright 0.8.0 or by calls without `nonempty=True`, can't be looked for, and its lookup says so.
+
+When none of the list's selectors matches, the lookup waits `timeout_ms` and handles interruptions, as any list lookup does, and also when mendwright has no list fingerprint for the key. If the list comes while it waits, it is used. Then mendwright looks for the list on the page: a group of 2 or more elements of the items' role that holds 2 of the 3 items it recorded, isn't under another heading or in another part of the page than the list was, and is visible on the live page. It never uses what it finds. It saves it in `overrides.json` as a proposed list heal, and raises `AttentionRequired`:
+
+```text
+No matching element for: cart (tried 1 candidate(s)).
+  -> 'cart' matched 3 elements when its list fingerprint was recorded, under 'Shopping cart', in <section class="cart">, and none of its selectors matches now. nonempty=True says the list has items here, so mendwright looked for it and found 3 div elements, under 'Shopping cart', in <section class="cart">, that hold 3 of the 3 items it recorded: //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')] (as CSS: div.cart-row). mendwright never uses a list it finds, because the items of an emptied list can show in another list on the page. If this is the list, look at it with: mendwright lists. Accept it with: mendwright lists accept cart 8b5351a5. Then write it into your code with: mendwright fix --apply. If the list can be empty here, remove nonempty=True.
+```
+
+The commands get `--store "PATH"` when the store is not the default one. A WARNING says the same in one line: `mendwright: found a list for 'cart' (3 div elements under 'Shopping cart'): .cart-item -> //div[...] (0.2s). It is not used. Check it with: mendwright lists`.
+
+What mendwright never does: it never gives you, or acts on, a list it found, in that run or a later one, and not after you accept it either. `heal.locator_all()` gives only what your own selectors match, those in your code or a seed file. A selector mendwright found works only once it is in your code.
+
+Why: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text. Two of the test pages of `tests/test_lists_emptied.py` are the same for an emptied list and a redesign but for one class name (`done` or `task`) and a heading. No rule on the page's markup is right on both, and a list taken from the wrong one gives a loop that deletes the cart's rows the items saved for later. So a person decides, looking at the page. mendwright helps with one more rule: it refuses a group that its selector picks by a word for a state that the list didn't have, in a class, id, name or text: `completed`, `complete`, `done`, `finished`, `archived`, `read`, `seen`, `saved`, `removed`, `deleted`, `cancelled`, `canceled`, `expired`, `inactive`, `closed`, `resolved`, `past`, `empty`, `unavailable` or `soldout`. A list that was about a state itself, such as a "Completed" list or items with class `done`, keeps its word. This says what the words mean, and is no proof: a site whose class names say nothing gets no help from it.
+
+To check and accept a proposal, run `mendwright lists` (see [mendwright lists](#mendwright-lists)). It shows where the list was when it was recorded and where the group it found is, the first items of both, and what is not the same:
+
+```text
+cart  (div elements)  id 3f2a9c1d
+  found    2026-11-02 10:14:03 UTC on /cart, from the list fingerprint (score 0.86, next best 0.31)
+  was      .cart-item: 3 elements under 'Your bag', in <ul class="lines">
+           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'
+  now      //li[contains(concat(' ', normalize-space(@class), ' '), ' summary-line ')]
+           3 elements under 'Order summary', in <ul class="summary">
+           they hold 3 of the 3 items recorded
+           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'
+  check    The heading is not the same: 'Your bag' then, 'Order summary' now.
+           The container is not the same: <ul class="lines"> then, <ul class="summary"> now.
+           The items of an emptied list can show in another list. Look at the page before you accept.
+  accept   mendwright lists accept cart 3f2a9c1d
+  reject   mendwright lists reject cart 3f2a9c1d
+```
+
+Read the `check` lines, and look at the page. If it is the list, `mendwright lists accept cart 3f2a9c1d` accepts it, by the id you looked at: the id changes whenever what `mendwright lists` shows changes, so a proposal that changed since is not accepted. Then `mendwright fix --apply` writes the new selector into your code, as it writes a heal (see [mendwright fix](#mendwright-fix)). If it isn't, `mendwright lists reject cart` quarantines it, and mendwright never proposes it, or another selector for the same elements, again.
+
+After you accept, the lookup still raises until the selector is in your code:
+
+```text
+No matching element for: cart (tried 1 candidate(s)).
+  -> 'cart' matched 3 elements when its list fingerprint was recorded, and none of its selectors matches now. You accepted a list heal for it on 2026-11-02 10:20:00 UTC, //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')], which matches 3 elements now, but mendwright takes a list only from the selectors in your code. Write it there with: mendwright fix --apply. If the list can be empty here, remove nonempty=True.
+```
+
+When the key's selectors come from a seed file, `mendwright fix` can't write it, since it changes only your code: the lookup, `mendwright lists` and `mendwright report` say so, and say to put the new selector in the seed file in place of the old one. A seed file that holds the XPath of a list heal that waits takes it over, as your code does once `mendwright fix` wrote it.
+
+When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty=True`, a proposed list heal is no longer proposed (an INFO line), and an accepted one is quarantined, with a WARNING and a `heal.quarantine` event: the list was not broken, or the key is used on more than one page. A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it. `mendwright fix` writes an accepted list heal only over those selectors, and leaves the key alone, saying why, when your last run passed other selectors for it (another page's, or one you fixed by hand), or when one of its selectors matched after the list heal was found. So `mendwright fix` never writes another list's selector over a selector that works.
+
+The selector it replaced matching one element is enough, since a list with one item is not empty: one element that keeps the old class elsewhere on a page, such as in a mini cart, quarantines a list heal you accepted too. mendwright can't tell it from the list, so it fails closed. From then on a lookup with `nonempty=True` refuses that group with `it is a list heal you rejected, or one mendwright quarantined`. If it is the list, change the selector in your code by hand; to have it proposed again instead, delete its row from `overrides.json` (see [Store and journal](#store-and-journal)).
+
+What it refuses, each with its reason in the message:
+
+| When | The message says |
+|---|---|
+| The list never matched 2 or more elements | `mendwright has never seen this list match 2 or more elements` |
+| It was recorded before a call with `nonempty=True` | `its list fingerprint was recorded by mendwright 0.8.0 or before a call with nonempty=True matched the list` |
+| The fingerprint tier is off | `mendwright looks for a list only while the fingerprint tier is on, and fingerprint=False turns it off.` (or what else turned it off) |
+| The key is marked destructive | `is marked as a destructive control` |
+| The page is not one the key was found on | `That looks like a change in the flow, not a renamed element` |
+| Every group is another list | `each group of div elements on the page is another list` and why |
+| The only groups look like placeholders | `look like placeholders`, so the list may still be loading |
+| No group repeats | `the page has no group of 2 or more div elements that repeat the same structure` |
+| No group is visible | `no group of div elements is visible on the live page` |
+| The best group scores too low | `scores 0.52, below the 0.65 needed` |
+| Two groups score alike | `two groups score alike` |
+| The shapes differ | `are not all shaped like the recorded items` |
+| Too few of the recorded items are in it | `holds only 1 of the 3 items it recorded`, or it shares values only with every item at once, or none |
+| No selector without positions finds it | `no selector without positions matches the best group and nothing else` |
+| A state word | `is picked by 'done-item', and 'done' names a state the recorded list didn't have` |
+| The live checks | `failed mendwright's list checks` and the check, such as `it matches 1 element on the live page, and a list heal needs 2 or more` or `it is a list heal you rejected` |
+| Dry run | `dry-run mode is on, so the list mendwright found for 'cart', ..., was checked but not saved.` |
+
+No model or gateway is asked about a list, with or without `nonempty=True`, and the hourly limit isn't touched.
+
+Limits:
+
+- A list with one item now is not looked for: a group needs 2 or more.
+- A list whose items change from run to run, such as live search results, can't be found: the group must hold 2 of the items that were recorded.
+- A redesign that puts the list under a new heading while the old one stays on the page, or in a new wrapper next to a look-alike, is refused as another list. 12 of the 33 redesigns of `tests/test_lists_emptied.py` are refused, most of them so.
+- An emptied list whose items show in another list whose class names say nothing (`notif`, `wish-line`) and with the same kind of heading is proposed: only you can tell. Each such case in the tests says that its heading is not the same.
+- Two identical containers with no heading give you little to go on: the proposal then says `the 2nd of 2 alike`.
+- Only the first 200 elements of a group are checked for their role and visibility on the live page.
+- A wrong acceptance that `mendwright fix --apply` writes into your code before the old selector matched again is your code's selector from then on, as any wrong selector you write is.
+- A mendwright 0.8.0 run on the same store drops a proposal's evidence, so it can't be accepted until a 0.9.0 run finds it again, and the next time 0.8.0 records the list it drops where the list sat.
+
+In CI, a proposal lives in the cached store (see [Keep heals between runs](#keep-heals-between-runs)). The message in the job log has the new selector. Or download the store and run `mendwright lists --store PATH`, `mendwright lists accept KEY ID --store PATH` and `mendwright fix --apply --store PATH` on your machine.
+
+In `overrides.json`, a proposal is a candidate with `"status": "proposed"`, `"list": true` and a `proposal` with what `mendwright lists` shows, and an accepted one has `"status": "accepted"` and an `acceptedAt`. Neither status is ever tried by a lookup. The list fingerprint gets a `label` (its heading) and a `place` (short hashes of where it sat). The journal gets `heal.held` for a proposal and `heal.accepted` for an acceptance (see [journal.jsonl](#journaljsonl)).
 
 ## Providers
 
@@ -735,6 +833,14 @@ mendwright: 3 selectors healed in 3 tests (2 confirmed by passing tests, 1 not c
 ```
 
 It lists the first 10 heals and says how many more there are; `-v` lists them all, and `-q` prints only the count line.
+
+A test that ended in a list heal proposed for `heal.locator_all(..., nonempty=True)` failed with the proposal's message, and the summary names its key, up to 10 keys, also with `-q` and under pytest-xdist:
+
+```text
+mendwright: 1 list heal waits for you to check it (run mendwright lists): cart
+```
+
+A passing test never accepts a list heal: only `mendwright lists accept` does (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)). With `--mendwright-dry-run`, nothing is proposed.
 
 ### Strict mode
 
@@ -1352,14 +1458,15 @@ This is the file after a run that learned the role on the old page and healed th
 The real file is a single line; it is wrapped here.
 
 - `source` is `code` (passed to `locator()`), `heal` or `seed`.
-- `status` is `active`, `quarantined` or `superseded`. Only active candidates are tried.
-- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `lastUrl`, the address of the last of them, which [`mendwright check`](#checking-for-drift-before-a-run) loads again (scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)).
+- `status` is `active`, `quarantined` or `superseded`, or for a list heal that `heal.locator_all(..., nonempty=True)` found, `proposed` or `accepted` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)). Only active candidates are tried.
+- A list heal has `"list": true`, a `proposal` with what `mendwright lists` shows of it (when it was found, on which page, the selectors that matched nothing, where the list was and where the group is, two of their headings, containers and items, and an `id`), and once accepted an `acceptedAt`. A key keeps at most 3 of those that wait, apart from its other inactive candidates: the one you accepted, then the newest proposals, so newer proposals never drop an acceptance.
+- Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `lastUrl`, the address of the last of them, which [`mendwright check`](#checking-for-drift-before-a-run) loads again (scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)), with a `label` (its heading) and a `place` (short hashes of where it sat) once a call with `nonempty=True` recorded it.
 - A candidate inside an iframe has a `frameXPath` with the frame's selector.
 - Up to 5 active candidates per key are kept, most recently successful first.
 - The key of a `heal.page.get_by_*()` call is written as the call, and so is its `code` candidate: `"get_by_role(\"button\", name=\"Sign in\")"`, with the inner quotes escaped by JSON (see [get_by locators](#get_by-locators)). A seed file may hold such keys, to mark one destructive, say, and such candidates, which run as calls on Playwright and are dropped with an `InvalidSelector` on Selenium.
 
 Writes take a lock file (`overrides.json.lock`), merge with what other processes wrote since the last read, and replace the file atomically.
-On a conflict, `quarantined` wins and `destructive: true` wins.
+On a conflict, `quarantined` wins, then `accepted`, and `destructive: true` wins.
 If a write fails, mendwright logs one WARNING and keeps working in memory.
 
 A file that is corrupt or can't be read raises an error when the store loads. It is never treated as empty, because the next write would replace it and lose every saved heal. Fix the file or move it aside.
@@ -1393,9 +1500,10 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 {"ts":"2026-10-10T19:07:53+00:00","event":"heal.canary","key":"accept_terms","xpath":"//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']","success":true}
 ```
 
-The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
+The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, `heal.held` for a list that `heal.locator_all(..., nonempty=True)` found and saved for you to check (with its `xpath`, `css`, `id`, `items`, `label`, `differs`, `old` and `page`), and `heal.accepted` when you accepted one with `mendwright lists accept`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
+The events of a list looked for with `nonempty=True` have `"list": true`. A list heal you rejected, or one quarantined because the selector it replaced matched again, writes a `heal.quarantine` with a `reason` that says which.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1726,7 +1834,7 @@ pytest shows the lines in the captured output of a failed test.
 
 ## Command line
 
-`mendwright` (or `python -m mendwright`) has six commands, `demo`, `doctor`, `report`, `fix`, `model` (see [Local model](#local-model)) and `check`, plus `--version`.
+`mendwright` (or `python -m mendwright`) has seven commands, `demo`, `doctor`, `report`, `fix`, `lists`, `model` (see [Local model](#local-model)) and `check`, plus `--version`.
 
 ### mendwright demo
 
@@ -1801,6 +1909,8 @@ Last applied heals, newest first:
     #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']
 ```
 
+A list heal that `heal.locator_all(..., nonempty=True)` proposed shows its status `proposed`, with `list of 3 under 'Shopping cart'; check it with: mendwright lists` under it, and an accepted one `list, accepted DATE; write it with: mendwright fix --apply`, or, when the key's selectors come from a seed file, `list, accepted DATE; its selectors come from a seed file, which mendwright fix doesn't change, so put it there in place of .cart-item`. The counts end with `, N held` when the journal has `heal.held` events. In `--format md`, a line under the table says how many list heals wait. `--format json` gives such a candidate `list`, `proposal` and `accepted`, and the counts a `held`.
+
 `--format html` makes one page you can open in a browser or keep as a CI artifact:
 
 ```bash
@@ -1858,7 +1968,8 @@ Which keys it changes:
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
 - Never a key marked destructive, a heal inside an iframe, or a key whose selectors came only from a seed file.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
-- Never a key with a heal of a list, saved with `"list": true` by builds of 0.8.0 before its release: mendwright no longer heals lists (see [Lists](#lists)), and such a heal can be another list. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
+- A list heal you accepted with `mendwright lists accept` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)), under the same rules as a heal, and only in place of the selectors it replaced. Its header line says `list heal, accepted DATE`, and it shows where the group is and what is not the same. Never when your last run passed other selectors for the key, such as another page's or one you fixed by hand, or when one of the key's selectors matched after the list heal was found: the reason says to change the selector by hand, or to drop the list heal with `mendwright lists reject KEY`. Never a list heal that waits for you to check it, with any option: it is left alone with the command that accepts it. Never an accepted one next to a newer proposal for the same key, until you accept or reject that one.
+- Never a key with a list heal saved with `"list": true` by builds of 0.8.0 before its release, which nobody checked: it can be another list that holds the items of an emptied one. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
 - Never a key that `heal.locator_all()` looks up as a list when its heal is of one element, from `heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key: written into the list call, it would make the list that one element. The reason names the healed selector.
 - Never a `heal.page.get_by_*()` call, whose key is written as the call: it is listed with its healed selector and the lines that make the call (see [mendwright fix and calls](#mendwright-fix-and-calls)). No string equal to a call's text is rewritten either.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
@@ -1878,6 +1989,47 @@ A file is written through a temporary file next to it and then replaced, and a f
 
 It exits 0 when there is nothing to do, after a dry run and after `--apply`, and 1 when there is no store, a `--path` doesn't exist, or a file couldn't be written.
 Once your code holds the healed selector, mendwright tries it first on the next run.
+
+### mendwright lists
+
+Lists the list heals that `heal.locator_all(..., nonempty=True)` found and saved for you to check, and accepts or rejects one. mendwright never uses one of them: an accepted one is used once `mendwright fix --apply` wrote it into your code (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)).
+
+```text
+mendwright lists [--store PATH] [--json]
+mendwright lists accept KEY ID [--store PATH]
+mendwright lists reject KEY [ID] [--store PATH]
+```
+
+```text
+Store: C:\work\shop\.mendwright\overrides.json
+1 list heal waits for you to check it.
+
+cart  (div elements)  id 3f2a9c1d
+  found    2026-11-02 10:14:03 UTC on /cart, from the list fingerprint (score 0.86, next best 0.31)
+  was      .cart-item: 3 elements under 'Shopping cart', in <section class="cart">
+           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'
+  now      //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]
+           as CSS: div.cart-row
+           3 elements under 'Shopping cart', in <section class="cart">
+           they hold 3 of the 3 items recorded
+           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'
+  accept   mendwright lists accept cart 3f2a9c1d
+  reject   mendwright lists reject cart 3f2a9c1d
+
+1 accepted list heal waits for mendwright fix --apply:
+  search  //li[contains(concat(' ', normalize-space(@class), ' '), ' hit ')]  (accepted 2026-10-30 08:00:00 UTC)
+```
+
+- `--store PATH` picks the file, as `report` finds it. The commands it prints get `--store "PATH"` when the store is not the default one, and a key with spaces or quotes is quoted for your shell.
+- A proposal whose heading or container is not the list's has `check` lines that say so. Read them, and look at the page, before you accept.
+- An accepted list heal of a key whose selectors come from a seed file is listed under `waits for you to put it in the seed file its key's selectors come from, which mendwright fix doesn't change`, with the selector it replaces.
+- A proposal that a mendwright 0.8.0 run wrote over has `no saved evidence`, and can't be accepted until a 0.9.0 run finds it again.
+- `--json` gives `{"store", "proposed": [{"key", "id", "xpath", "css", "proposal", "accept", "reject"}], "accepted": [{"key", "xpath", "css", "acceptedAt"}]}`, with the strings as stored.
+- `accept KEY ID` takes the proposal with that id, which changes whenever what `mendwright lists` shows changes, so you accept what you looked at. It replaces the key's other list heals, and changes no other row of the file.
+- `reject KEY` quarantines the key's list heal (give its id when there are several), and mendwright never proposes it, or another selector for the same elements, again. It also drops one you accepted.
+- Every string from the page is shown with its control characters as `?`.
+
+It exits 0 after a listing, even an empty one, and after an accept or a reject, 1 when the store, the key or the id is not there, the id changed or the file can't be written, and 2 for a usage error. There is no `--all`: each list needs a look. `accept` and `reject` write `heal.accepted` and `heal.quarantine` to the journal next to the store.
 
 ### mendwright check
 
@@ -1935,7 +2087,12 @@ The first line names the key. The line after `->` says why there was no heal:
 | interruptions were handled for '<key>' and '<interruption>' is still on the page | The interruption came back each time it was handled. Check the selector and `action=` you passed to `heal.interrupt()`, or, when the message names its `run=` function (`Check that relogin(), the run= function registered with heal.interrupt('session_expired', ...), really closes it.`), that the function closes it. |
 | does not know what kind of element | Pass `role=` |
 | was healed to ..., and its inner_text() there is ..., which is not money | A read through a heal returned a value that fails `expect_value=`, so the heal was quarantined. The next lookup heals again without that element. If the value is right, change `expect_value=`. See [Checking what a read returns](#checking-what-a-read-returns). |
-| Either the list is empty at this point, or its selector broke | A `heal.locator_all()` list that had items matches nothing, and mendwright never heals a list. If the selector broke, change it in your code. If the list can be empty there, pass `optional=True` to that call. See [Lists](#lists). |
+| Either the list is empty at this point, or its selector broke | A `heal.locator_all()` list that had items matches nothing, and mendwright never heals a list. If the selector broke, change it in your code, or pass `nonempty=True` where the list always has items, to have the new selector proposed. If the list can be empty there, pass `optional=True` to that call. See [Lists](#lists). |
+| Accept it with: mendwright lists accept | `nonempty=True` found the list somewhere else on the page and saved it for you to check. Run `mendwright lists`, look at the page, then accept or reject it, and run `mendwright fix --apply`. See [Lists that always have items](#lists-that-always-have-items-nonemptytrue). |
+| You accepted a list heal for it on | The list heal you accepted waits for `mendwright fix --apply` to put it in your code. mendwright never uses it before. |
+| mendwright looks for a list only while the fingerprint tier is on | Turn the tier back on (drop `fingerprint=False`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1`), or fix the selector in your code. |
+| its list fingerprint was recorded by mendwright 0.8.0 or before a call with nonempty=True | mendwright doesn't know where the list sat. Fix the selector in your code; the next lookup with `nonempty=True` that matches records it. |
+| names a state the recorded list didn't have | The group mendwright found is picked by a word such as `done` or `saved`, so it is most likely the list's items in another state, or another list. If the list can be empty here, remove `nonempty=True`; if the selector broke, change it in your code. |
 | no selector the model proposed passed mendwright's local gate | Read the last reason: `not unique (3)`, `role mismatch`, `not uniquely present on the live page` or `previously quarantined`. Try another model, or fix the selector by hand. |
 | the model returned no usable selector | Try a different model, or fix the selector by hand |
 | is inside an iframe ... mendwright did not look for it there | The reason says why (a destructive key, several iframes or elements, an iframe inside an iframe, or one nothing tells apart). Open mendwright on the frame (see [Iframes](#iframes)) |

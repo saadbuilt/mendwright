@@ -15,7 +15,7 @@ import lxml.html
 from . import getby
 from .css import css_selectors
 from .fit import has_position
-from .gate import live_reason
+from .gate import list_live_reason, live_reason
 from .selectors import CSS, XPATH, classify, frame_spelling, normalize
 from .validation import validate
 
@@ -324,6 +324,90 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
             return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason
+
+
+# list_gate()'s reasons for a list that a quarantine holds. An accepted list heal is
+# quarantined when the selector it replaced matches again (SelectorStore.retire_list_heals).
+_REJECTED_LIST = ('it is a list heal you rejected, or one mendwright quarantined: it quarantines '
+                  'a list heal you accepted once the selector it replaced matches again, even on '
+                  'one element')
+_REJECTED_ELEMENTS = ('it takes elements of a list heal you rejected, or of a quarantined '
+                      'selector of this key')
+
+
+def _code_back(store, selector_key, driver):
+    """For a list found for heal.locator_all(..., nonempty=True): the first of the key's
+    selectors from code or a seed file (on the page, not in an iframe) that matches one
+    element or more on the live page now, as a list that was still loading does once it came
+    while mendwright looked for it, else ''. Driver errors are skipped."""
+    if driver is None:
+        return ''
+    try:
+        own = [c['xpath'] for c in store.candidates(selector_key)
+               if c.get('source') in ('code', 'seed') and not c.get('frameXPath')]
+    except Exception:
+        return ''
+    for selector in own:
+        try:
+            if driver.count(selector):
+                return selector
+        except Exception:
+            continue
+    return ''
+
+
+def list_gate(store, selector_key, xpath, html, meta, driver, css=None):
+    """The checks of a list found for heal.locator_all(..., nonempty=True) (see
+    mendwright.lists), which mendwright proposes and never saves as a selector it uses:
+    (kind, reason, count, css_twin). kind is
+
+    - 'came' when a selector of the key's code or seed file matches on the live page now
+      (reason is that selector): the list came while mendwright looked for it. Checked
+      first, so a list that came is never refused;
+    - 'accepted' when the key already has this XPath as a list heal a person accepted;
+    - 'refused' with the reason: not an XPath; a list heal of the key that was rejected or
+      quarantined; lists.validate() (no position or brittle path, two or more elements of
+      the key's role in the captured page, none inside another); an element a quarantined
+      selector of the key matches on the page; or the live check (gate.list_live_reason);
+    - 'ok', with count the elements it matches in the captured page, and css_twin the CSS
+      form css when one of the key's selectors in code is CSS and css matches as many
+      elements on the live page as the XPath, else None.
+
+    A superseded or proposed list heal with the same XPath passes: it may be proposed
+    again."""
+    from .lists import validate as validate_list
+    came = _code_back(store, selector_key, driver)
+    if came:
+        return 'came', came, 0, None
+    if not isinstance(xpath, str) or not xpath.strip():
+        return 'refused', 'no candidates in proposal', 0, None
+    body, stored = _xpath_forms(xpath)
+    if classify(stored) != XPATH:
+        return 'refused', 'not an XPath expression', 0, None
+    status = _stored_status(store, selector_key, stored)
+    if status == 'quarantined':
+        return 'refused', _REJECTED_LIST, 0, None
+    if status == 'accepted':
+        return 'accepted', '', 0, None
+    result = validate_list(body, html, meta.get('expectedRole'))
+    if not result.ok:
+        return 'refused', result.reason, result.count, None
+    doc, bad = _quarantined_paths(store, selector_key, html, '')
+    if bad:
+        tree = doc.getroottree()
+        if any(tree.getpath(n) in bad for n in doc.xpath(body) if hasattr(n, 'tag')):
+            return 'refused', _REJECTED_ELEMENTS, result.count, None
+    live = list_live_reason(driver, stored, meta)
+    if live:
+        return 'refused', live, result.count, None
+    twin = None
+    if css and _code_uses_css(store, selector_key):
+        try:
+            if driver.count(css) == driver.count(stored):
+                twin = css
+        except Exception:
+            twin = None
+    return 'ok', 'ok', result.count, twin
 
 
 def report_outcome(gateway, selector_key, xpath, success, *, download_key, http=None,

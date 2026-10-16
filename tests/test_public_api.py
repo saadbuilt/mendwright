@@ -45,3 +45,18 @@ def test_get_by_key_is_exported():
     from mendwright.getby import get_by_key
     assert mendwright.get_by_key is get_by_key and 'get_by_key' in mendwright.__all__
     assert mendwright.get_by_key('get_by_test_id', 'go') == 'get_by_test_id("go")'
+
+
+def test_locator_all_takes_nonempty_and_all_is_unchanged():
+    import inspect
+
+    from mendwright.aio import AsyncHealer
+    from mendwright.facade import Healer
+
+    for cls in (Healer, AsyncHealer):
+        params = inspect.signature(cls.locator_all).parameters
+        assert list(params) == ['self', 'key', 'selector', 'role', 'timeout_ms', 'poll_ms',
+                                'optional', 'nonempty']
+        assert params['nonempty'].default is False
+        assert params['nonempty'].kind is inspect.Parameter.KEYWORD_ONLY
+    assert not {'ListMatch', 'ListOutcome', 'edit_list_heal'} & set(mendwright.__all__)

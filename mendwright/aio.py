@@ -30,7 +30,10 @@ Every safety decision is made by the sync core, unchanged:
   handling an interruption does. heal.step() and run_steps() (see mendwright.steps) look
   at the landmarks on the event loop and await each step's function.
 - Lists (locator_all(), see mendwright.lists) and expect_value= (see mendwright.values)
-  work as on the sync Healer. A list is looked up on the event loop, and never healed.
+  work as on the sync Healer. A list is looked up on the event loop, and never healed. With
+  nonempty=True, the search for a list whose selectors match nothing runs the sync
+  coordinator in a worker thread through SyncBridge, as a heal does, and what it finds is
+  only proposed, as there.
 - With open(heal_get_by=True), heal.page.get_by_role() and the other get_by_* calls are
   looked up and healed as on the sync Healer (see Healer._get_by_locator): the lookup is
   awaited on the event loop, the heal runs the coordinator in a worker thread, and a miss
@@ -59,7 +62,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
 from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers.base import _member, is_async_api, is_driver, looks_like_locator, unsupported_message
+from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
+                           unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -71,8 +75,9 @@ from .facade import _dismiss_choice, _get_by_choice, get_by_setting
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
-                     _locator_args, _overlay_locator, _overlay_options, _overlay_owner,
-                     _raised_by_run, _removable, _reraise, _setup, latest_success)
+                     _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
+                     _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
+                     latest_success)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
@@ -188,11 +193,13 @@ class SyncBridge:
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
     handle, url, outer_html, describe, inventory, fingerprint, and role_match for a heal of
-    a get_by_role() call), act_on for an interruption's action, visible_match for the
-    WARNING about a selector that matches several elements, the popup methods of
-    open(dismiss=True) (popup_probe and the others), run() for any other callable, and
-    wait() for a run= function of heal.interrupt(). describe, fingerprint, role_match,
-    visible_match and the popup methods are None when the async driver has none."""
+    a get_by_role() call, and for a list looked for with nonempty=True list_items and
+    list_fingerprint), act_on for an interruption's action, visible_match for the WARNING
+    about a selector that matches several elements, the popup methods of open(dismiss=True)
+    (popup_probe and the others), run() for any other callable, and wait() for a run=
+    function of heal.interrupt(). describe, fingerprint, role_match, visible_match,
+    list_items, list_fingerprint and the popup methods are None when the async driver has
+    none, and list_fingerprint takes no place= when the async driver's does not."""
 
     timeout = 30.0
 
@@ -213,6 +220,13 @@ class SyncBridge:
             self.role_match = None      # a heal of a get_by_role() call is then refused
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
+        if not callable(_member(driver, 'list_items')):
+            self.list_items = None
+        method = _member(driver, 'list_fingerprint')
+        if not callable(method):
+            self.list_fingerprint = None
+        elif not _takes_place(method):
+            self.list_fingerprint = self._list_fingerprint_unplaced
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
@@ -297,6 +311,15 @@ class SyncBridge:
 
     def role_match(self, selector, role, level=None, frame_chain=()):
         return self.run(self._driver.role_match, selector, role, level, frame_chain)
+
+    def list_items(self, selector, frame_chain=()):
+        return self.run(self._driver.list_items, selector, frame_chain)
+
+    def list_fingerprint(self, selector, frame_chain=(), *, place=False):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain, place=place)
+
+    def _list_fingerprint_unplaced(self, selector, frame_chain=()):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
@@ -672,19 +695,21 @@ class AsyncHealer:
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
                     role: Role | None = None, timeout_ms: int | None = None, poll_ms: int = 200,
-                    optional: bool = False):
+                    optional: bool = False, nonempty: bool = False):
         """Healer.locator_all(), awaited: ``await heal.locator_all(key, selector)`` gives an
         AsyncActionProxy for each element of the list, resolved. A list whose selectors all
-        match nothing is never healed, as there. Argument errors raise here, before anything
-        is awaited."""
+        match nothing is never healed, as there, and with nonempty=True what mendwright finds
+        for it is only proposed, as there. Argument errors raise here, before anything is
+        awaited."""
         roles, code = _locator_args(key, selector, role, None, entry='heal.locator_all()')
+        _nonempty_args(key, nonempty, optional)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional))
+        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional), nonempty)
 
-    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional):
+    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional, nonempty=False):
         __tracebackhide__ = True  # pytest shows the caller
         async with self._turn():
-            natives = await self._list(key, roles, code, timeout, poll_ms, optional)
+            natives = await self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
         return [_guarded(self, key, native, timeout, due) for native in natives]
 
@@ -714,7 +739,7 @@ class AsyncHealer:
                 raise AttentionRequired(_no_match_message(key, runnable, []))
             await self._sleep(poll_ms / 1000.0)
 
-    async def _list(self, key, roles, code, timeout, poll_ms, optional=False):
+    async def _list(self, key, roles, code, timeout, poll_ms, optional=False, nonempty=False):
         """Healer._list(), awaited, under the lock (see _turn). What a lookup that matches at
         once saves costs one write of the store, as there."""
         __tracebackhide__ = True  # pytest shows the caller
@@ -723,8 +748,8 @@ class AsyncHealer:
             core._prime(key, roles, code, None, None)
             found = await self._list_look(key, core._list_runnable(key))
             if found is not None:
-                return await self._list_found(key, roles, found)
-        if optional or not core._list_waits(key):
+                return await self._list_found(key, roles, found, nonempty)
+        if not nonempty and (optional or not core._list_waits(key)):
             return []
         try:
             found = await self._resolve_step(
@@ -735,31 +760,73 @@ class AsyncHealer:
         except AttentionRequired as exc:
             if _raised_by_run(exc):
                 raise   # a run= function's own, not a miss of this list
+            if nonempty:
+                return await self._list_nonempty_missing(key, roles, exc)
             raise core._list_missing(key, exc) from exc
         with _batched(self.store):
-            return await self._list_found(key, roles, found)
+            return await self._list_found(key, roles, found, nonempty)
 
-    async def _list_found(self, key, roles, found):
+    async def _list_found(self, key, roles, found, place=False):
         """Healer._list_found(), awaited."""
         core = self._core
         selector, count = found
         core._remember_page(key, await _url(self._driver))
-        if core._list_target(key, selector, count):
-            await self._keep_list(key, selector, roles)
+        placed = bool(place) or core._list_placed(key)
+        if core._list_target(key, selector, count, placed):
+            await self._keep_list(key, selector, roles, placed)
+        core._retire_lists(key, selector, count)
         if callable(_member(self._driver, 'handles')):
             return list(await _awaited(self._driver.handles(selector)))
         return [await _awaited(self._driver.handle(selector))]
 
-    async def _keep_list(self, key, selector, roles):
-        """Read the list fingerprint of what selector matches and save it for key
+    async def _keep_list(self, key, selector, roles, place=False):
+        """Read the list fingerprint of what selector matches, with where it sits when
+        place and the driver's list_fingerprint() takes place=, and save it for key
         (Healer._keep_list)."""
         lfp = None
-        if callable(_member(self._driver, 'list_fingerprint')):
+        method = _member(self._driver, 'list_fingerprint')
+        if callable(method):
             try:
-                lfp = await _awaited(self._driver.list_fingerprint(selector))
+                if place and _takes_place(method):
+                    lfp = await _awaited(self._driver.list_fingerprint(selector, place=True))
+                else:
+                    lfp = await _awaited(self._driver.list_fingerprint(selector))
             except Exception:
                 lfp = None
-        self._core._keep_list(key, selector, roles, lfp if valid_list(lfp) else None)
+        self._core._keep_list(key, selector, roles, lfp if valid_list(lfp) else None, place)
+
+    async def _list_nonempty_missing(self, key, roles, exc):
+        """Healer._list_nonempty_missing(), with the page reads awaited on the event loop
+        and the search (Healer._propose_list) in a worker thread, where the coordinator
+        reaches the page through SyncBridge."""
+        __tracebackhide__ = True  # pytest shows the caller
+        core = self._core
+        reason = core._nonempty_blocked(key)
+        if reason:
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+        core._reload_lists(key)
+        for row in core._list_rows(key):
+            if row.get('status') == 'accepted':
+                count = await self._count_live(row.get('xpath'))
+                if count:
+                    raise core._waits_for_fix(key, exc, row, count) from exc
+        outcome = await _in_thread(core._propose_list, key, exc, await _url(self._driver))
+        if outcome.kind == 'came':
+            with _batched(self.store):
+                found = await self._list_look(key, core._list_runnable(key))
+                if found is not None:
+                    self.coordinator.came(key, found[0])
+                    return await self._list_found(key, roles, found, True)
+        raise core._list_outcome_error(key, exc, outcome) from exc
+
+    async def _count_live(self, selector):
+        """Healer._count_live(), awaited."""
+        try:
+            if not isinstance(selector, str):
+                return 0
+            return int(await _awaited(self._driver.count(selector)))
+        except Exception:
+            return 0
 
     async def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.

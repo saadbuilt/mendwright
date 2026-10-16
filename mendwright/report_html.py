@@ -160,21 +160,26 @@ def _summary(report, records, quarantines, flow_counts):
             '<div class="cards">'] + cards + ['</div></section>']
 
 
-def _candidate(c):
+def _candidate(c, seeded=False):
+    from .cli import list_note
     status = c['status']
-    kind = {'active': 'ok', 'quarantined': 'bad'}.get(status, 'muted')
+    kind = {'active': 'ok', 'quarantined': 'bad', 'proposed': 'warn',
+            'accepted': 'warn'}.get(status, 'muted')
     source = c['source']
     skind = {'heal': 'info', 'code': 'plain', 'seed': 'plain'}.get(source, 'plain')
     frame = ('<div class="sub">inside frame ' + _code(c['frame']) + '</div>'
              if c.get('frame') else '')
     if c.get('css'):
         frame += '<div class="sub">as CSS ' + _code(c['css']) + '</div>'
+    if list_note(c, seeded):
+        frame += '<div class="sub">' + h(list_note(c, seeded)) + '</div>'
     return ('<li><div class="line">' + _badge(source, skind) + ' ' + _badge(status, kind) + '</div>'
             + _code(c['selector']) + frame
             + '<div class="sub">last success ' + h(_when(c['last_success'])) + '</div></li>')
 
 
 def _keys_section(report):
+    from .cli import _from_seed
     keys = report['keys']
     out = ['<section aria-labelledby="keys"><h2 id="keys">Keys and selectors</h2>']
     if not keys:
@@ -187,7 +192,9 @@ def _keys_section(report):
         marks = ''
         if k['destructive']:
             marks = '<div class="line">' + _badge('destructive, never auto-healed', 'bad') + '</div>'
-        cands = ('<ul class="cands">' + ''.join(_candidate(c) for c in k['candidates']) + '</ul>'
+        seeded = _from_seed(k['candidates'])
+        cands = ('<ul class="cands">' + ''.join(_candidate(c, seeded) for c in k['candidates'])
+                 + '</ul>'
                  if k['candidates'] else '<span class="muted">no selectors saved</span>')
         counts = per_key.get(k['key'])
         heals = ('<div>' + h(counts['requested']) + ' asked, ' + h(counts['applied']) + ' applied</div>'
