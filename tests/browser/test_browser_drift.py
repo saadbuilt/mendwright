@@ -319,6 +319,25 @@ def test_check_with_a_storage_state(site, store, tmp_path, capsys):
     assert 'session' not in out + err
 
 
+def test_check_a_storage_state_playwright_refuses_exits_4(site, store, tmp_path, capsys):
+    # The file is JSON with "cookies", so the check before launch takes it; Playwright then
+    # refuses its cookie, which has no url and no domain/path pair.
+    _need('chromium')
+    site.pages['/signup'] = SIGNUP_V1
+    record(site, store, '/signup', [('email', '#email', 'input')])
+    state = tmp_path / 'bad-auth.json'
+    state.write_text(json.dumps({'cookies': [{'name': 'session', 'value': 'SENTINEL-4242'}]}),
+                     encoding='utf-8')
+    code, out, err = run_check(capsys, '--store', store, '--origin', site.origin,
+                               '--timeout-ms', str(FAST_MS), '--storage-state', str(state))
+    assert code == 4 and out == ''
+    last = err.strip().splitlines()[-1]
+    assert last.startswith('mendwright check: could not use the storage state file '
+                           + str(state) + ' (')
+    assert last.endswith('). Save one with context.storage_state(path=...).')
+    assert 'SENTINEL' not in out + err and 'Traceback' not in err
+
+
 CONSENT_WALL = """
 <div id="didomi-notice" role="dialog" style="position:fixed;inset:0;background:#fff">
   <p>We use cookies.</p>

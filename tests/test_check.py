@@ -65,11 +65,13 @@ class FakeVisit:
 class FakeSession:
     """site maps an address to (html, status, final address) or to an exception."""
 
-    def __init__(self, site, make_page, options, interrupt_on=None, start_error=None):
+    def __init__(self, site, make_page, options, interrupt_on=None, start_error=None,
+                 raises=None):
         self.site, self.make_page, self.options = site, make_page, options
         self.visited, self.pages = [], []
         self.closed, self.closed_visits = False, 0
         self.interrupt_on, self.start_error = interrupt_on, start_error
+        self.raises = raises or {}      # address -> what visit() raises, as the browser would
 
     def start(self):
         if self.start_error is not None:
@@ -79,6 +81,8 @@ class FakeSession:
         self.visited.append(url)
         if url == self.interrupt_on:
             raise KeyboardInterrupt
+        if url in self.raises:
+            raise self.raises[url]
         answer = self.site.get(url, ('<p>Not found</p>', 404, url))
         if isinstance(answer, BaseException):
             return FakeVisit(None, None, answer, self)
@@ -236,6 +240,77 @@ def test_a_browser_that_does_not_start_exits_4(make_page, store_dir, capsys):
                                                                'is not installed.'))
     code, _out, err = run_check(_args(path), browser, capsys)
     assert code == 4 and "Playwright's webkit browser is not installed." in err
+    assert all(s.closed for s in browser.sessions)
+
+
+class _Refusing:
+    """A Playwright browser whose new_context() (or the context's new_page()) raises."""
+
+    def __init__(self, context_error=None, page_error=None):
+        self.context_error, self.page_error, self.closed = context_error, page_error, []
+
+    def new_context(self, **options):
+        if self.context_error is not None:
+            raise self.context_error
+        browser = self
+
+        class Context:
+            def set_default_navigation_timeout(self, ms):
+                pass
+
+            def new_page(self):
+                raise browser.page_error
+
+            def close(self):
+                browser.closed.append(True)
+        return Context()
+
+
+def test_a_storage_state_playwright_refuses_is_a_setup_error(tmp_path):
+    from mendwright.drift_session import PlaywrightSession, SetupError
+    session = PlaywrightSession(storage_state=str(tmp_path / 'state.json'))
+    session._browser = _Refusing(context_error=RuntimeError(
+        'Browser.new_context: Cookie should have a url or a domain/path pair\nCall log: ...'))
+    with pytest.raises(SetupError) as info:
+        session.visit('https://shop.example/signup')
+    assert str(info.value) == (
+        'could not use the storage state file ' + str(tmp_path / 'state.json') + ' (Browser.'
+        'new_context: Cookie should have a url or a domain/path pair). Save one with '
+        'context.storage_state(path=...).')
+    session = PlaywrightSession()
+    session._browser = _Refusing(page_error=RuntimeError('Target page, context or browser has '
+                                                         'been closed'))
+    with pytest.raises(SetupError) as info:
+        session.visit('https://shop.example/signup')
+    assert str(info.value).startswith('chromium could not open a page (Target page, context or '
+                                      'browser has been closed).')
+    assert session._browser.closed == [True]
+
+
+@pytest.mark.parametrize('workers', ['1', '2'])
+def test_a_browser_that_fails_while_pages_load_exits_4(make_page, store_dir, capsys, workers):
+    from mendwright.drift_session import SetupError
+    path = record(make_page, store_dir)
+    refused = SetupError('could not use the storage state file s.json (Browser.new_context: '
+                         'Cookie should have a url or a domain/path pair). Save one with '
+                         'context.storage_state(path=...).')
+    browser = Browser(make_page, shop(), raises={SHOP + '/signup': refused})
+    code, out, err = run_check(_args(path, '--workers', workers), browser, capsys)
+    assert code == 4 and out == ''
+    assert err.splitlines()[-1] == 'mendwright check: ' + str(refused)
+    assert all(s.closed for s in browser.sessions)
+
+
+def test_any_other_error_while_pages_load_exits_4_with_one_line(make_page, store_dir, capsys):
+    path = record(make_page, store_dir)
+    crash = RuntimeError('Target crashed at https://shop.example/signup?token=SECRET\n'
+                         'Call log')
+    browser = Browser(make_page, shop(), raises={SHOP + '/signup': crash})
+    code, out, err = run_check(_args(path), browser, capsys)
+    assert code == 4 and out == ''
+    assert err.splitlines()[-1] == ('mendwright check: stopped before it could report '
+                                    '(RuntimeError: Target crashed at '
+                                    'https://shop.example/signup).')
     assert all(s.closed for s in browser.sessions)
 
 

@@ -1055,6 +1055,12 @@ def cmd_check(args, session_factory=None):
         except KeyboardInterrupt:
             _err('mendwright check: interrupted.')
             return 130
+        except Exception as exc:
+            # A browser that crashed while pages were checked, say. Exit 1 would read as
+            # drift, so this is 4, with the first line of the error only.
+            first = (str(exc).strip().splitlines() or [''])[0]
+            return cannot('stopped before it could report (' + type(exc).__name__
+                          + (': ' + drift._cut_urls(first)[:300] if first else '') + ').')
     elif plan.notes:
         for note in plan.notes:
             _err(note)

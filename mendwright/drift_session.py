@@ -87,16 +87,29 @@ class PlaywrightSession:
 
     def visit(self, url, wait_until='load'):
         """Load url in a new context and return a Visit, also when the navigation failed
-        (Visit.error). The caller closes it."""
+        (Visit.error). The caller closes it. Raises SetupError when the browser can't open
+        the context or its page: a storage state file Playwright refuses, say, or a browser
+        that stopped. Only the first line of Playwright's error is shown, never the file's
+        contents."""
         options = {'accept_downloads': False}
         if self.storage_state:
             options['storage_state'] = self.storage_state
         if self.viewport:
             options['viewport'] = {'width': self.viewport[0], 'height': self.viewport[1]}
-        context = self._browser.new_context(**options)
+        try:
+            context = self._browser.new_context(**options)
+        except Exception as exc:
+            if self.storage_state:
+                raise SetupError('could not use the storage state file ' + str(self.storage_state)
+                                 + ' (' + self._scrub(_first(exc)) + '). Save one with '
+                                 'context.storage_state(path=...).') from None
+            raise SetupError(self._stopped(exc)) from None
         try:
             context.set_default_navigation_timeout(self.nav_timeout_ms)
-            page = context.new_page()
+            try:
+                page = context.new_page()
+            except Exception as exc:
+                raise SetupError(self._stopped(exc)) from None
             started = time.monotonic()
             response, error = None, None
             try:
@@ -112,6 +125,11 @@ class PlaywrightSession:
             except Exception:
                 pass
             raise
+
+    def _stopped(self, exc):
+        return (self.browser + ' could not open a page (' + self._scrub(_first(exc)) + '). '
+                'Check that it runs, or reinstall it with: python -m playwright install '
+                + self.browser)
 
     def close(self):
         for close in (getattr(self._browser, 'close', None), getattr(self._pw, 'stop', None)):

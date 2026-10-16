@@ -1409,7 +1409,7 @@ The words of a `refused` result come from the run's own decision, made by the sa
 | 1 | At least one key fails. Wins over 3. |
 | 2 | A usage error. Nothing was loaded. |
 | 3 | No key fails, but one couldn't be checked, or the store has no keys. `--allow-unchecked` makes that 0. |
-| 4 | It couldn't run: no store, a store or seed it can't read, no Playwright, a browser that won't start, or a storage state file it can't use. |
+| 4 | It couldn't run: no store, a store or seed it can't read, no Playwright, a browser that won't start, a storage state file it can't use (also one Playwright refuses), or an error that stopped it before it could report, such as a browser that crashed. It prints one line, never a key's result. |
 | 130 | Interrupted. Every browser is closed first. |
 
 - `--fail-on drift` (the default) fails on `wrong role`, `refused`, `would heal` and `needs model`.
