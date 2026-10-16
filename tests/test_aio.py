@@ -81,6 +81,7 @@ class AsyncFakePage:
     def __init__(self, sync_page):
         self.sync = sync_page
         self.threads = set()
+        self.frames = []    # a Page's frames (a Frame has no such list)
 
     @property
     def url(self):
@@ -859,3 +860,21 @@ def test_the_async_healer_takes_fingerprint_false(make_page, tmp_path, stub_prov
     heal = run(main())
     assert sync.fingerprint_reads == 0 and len(provider.bundles) == 1
     assert heal.heals[-1].source == 'model'
+
+
+def test_the_async_healer_saves_the_address_the_sync_one_saves(make_page, tmp_path):
+    url = 'https://u:p@Shop.Example/Orders/10482/?t=1#x'
+    sync_page = make_page(V2, url=url)
+    heal = mendwright.open(sync_page, store_path=str(tmp_path / 's.json'))
+    heal.locator('email', '#email', role='input', timeout_ms=0, poll_ms=0)
+
+    async def main():
+        aheal = await mendwright.aio.open(AsyncFakePage(make_page(V2, url=url)),
+                                          store_path=str(tmp_path / 'a.json'))
+        await aheal.locator('email', '#email', role='input', timeout_ms=0, poll_ms=0)
+        return aheal
+
+    aheal = run(main())
+    assert aheal.store.last_url('email') == heal.store.last_url('email') == (
+        'https://shop.example/Orders/*/')
+    assert aheal.store.meta('email')['lastPage'] == '/orders/*'

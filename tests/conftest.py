@@ -138,6 +138,7 @@ class FakePage:
         self.results = {}     # verb -> value the action returns
         self.queries = []     # every selector looked up
         self.describes = 0    # describe() round trips (evaluate_all calls)
+        self.frames = []      # a Page has a list of frames, a Frame none (no iframes here)
         self.set_html(html)
 
     def set_html(self, html):

@@ -46,7 +46,7 @@ from .drivers.base import (UNSURE, driver_handles, driver_list_fingerprint, driv
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
-                   journal_event, loop_message, nothing_matched_message, page_path,
+                   journal_event, loop_message, nothing_matched_message, page_path, page_url,
                    rejected_selector_message, run_cancelled_message, run_failed_message,
                    several_message, skip_message, stuck_message, unhandled_message)
 from .flow import (DISMISS_KEY, alert_message, consent_message, dismiss_loop_message,
@@ -2193,14 +2193,55 @@ class Healer:
 
     def _remember_page(self, key, url=None):
         """Save the page key's element was just found on (see mendwright.flow.page_path),
-        and the step run_steps() runs now, if any (see _remember_step)."""
-        path = page_path(self._url() if url is None else url)
-        self._remember_step(key, path)
-        setter = getattr(self.store, 'set_last_page', None)
+        its address (see _remember_url), and the step run_steps() runs now, if any (see
+        _remember_step), with at most one write of the store for all three."""
+        url = self._url() if url is None else url
+        path = page_path(url)
+        with _batched(self.store):
+            self._remember_step(key, path)
+            setter = getattr(self.store, 'set_last_page', None)
+            if callable(setter) and path:
+                setter(key, path)
+            self._remember_url(key, url)
+
+    def _remember_url(self, key, url):
+        """Save the address of the page key's element was just found on, with its record
+        ids masked (see mendwright.flow.page_url), so that `mendwright check` can load the
+        page again. Nothing for a page with no such address (about:blank, a data: URL, a
+        file:// page), nor for one inside an iframe (see _top_level), nor on a custom store
+        without set_last_url(). An address the store holds already costs no browser call
+        and no write."""
+        setter = getattr(self.store, 'set_last_url', None)
         if not callable(setter):
             return
-        if path:
-            setter(key, path)
+        address = page_url(url)
+        if address is None:
+            return
+        getter = getattr(self.store, 'last_url', None)
+        try:
+            if callable(getter) and getter(key) == address:
+                return
+        except Exception:
+            pass
+        if not self._top_level():
+            return
+        setter(key, address)
+
+    def _top_level(self):
+        """Whether the address url() gives is the top-level page's: on Playwright, when
+        mendwright was opened on a Page (a Frame's address is the frame's own); on Selenium,
+        when the driver is not switched into a frame (current_url is the top-level page's
+        then, whatever frame the element is in: one round trip). Any other driver's url()
+        is taken as given."""
+        from .drivers.playwright_async import AsyncPlaywrightDriver
+        from .drivers.playwright_sync import PlaywrightSyncDriver
+        from .drivers.selenium import SeleniumDriver
+        driver = self._driver
+        if isinstance(driver, (PlaywrightSyncDriver, AsyncPlaywrightDriver)):
+            return isinstance(getattr(self._page, 'frames', None), list)
+        if isinstance(driver, SeleniumDriver):
+            return not driver.inside_frame()
+        return True
 
     def _fingerprint_target(self, key):
         """The selector to read key's fingerprint through after a match, or None when there
