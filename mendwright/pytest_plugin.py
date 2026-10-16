@@ -17,8 +17,8 @@ What it adds:
 - A summary of the heals at the end of the run, and a header line when ``heal`` is used.
 
 Options: --mendwright-page-fixture, --mendwright-store, --mendwright-dry-run,
---mendwright-disable, --mendwright-strict, and the ini keys mendwright_page_fixture and
-mendwright_store. ``-p no:mendwright`` turns the plugin off.
+--mendwright-disable, --mendwright-strict, --mendwright-heal-get-by, and the ini keys
+mendwright_page_fixture and mendwright_store. ``-p no:mendwright`` turns the plugin off.
 
 pytest loads this module in every session wherever mendwright is installed. Importing it
 has no side effects, and a run that uses none of it prints nothing extra and writes no
@@ -31,6 +31,8 @@ import logging
 import os
 
 import pytest
+
+from .getby import is_key
 
 logger = logging.getLogger('mendwright')
 
@@ -66,6 +68,11 @@ def pytest_addoption(parser):
         '--mendwright-strict', dest='mendwright_strict', action='store_true', default=False,
         help='fail every test that needed a heal (the heal is still saved), so CI catches '
              'selectors that have drifted.')
+    group.addoption(
+        '--mendwright-heal-get-by', dest='mendwright_heal_get_by', action='store_true',
+        default=False,
+        help='heal heal.page.get_by_*() calls too, from their fingerprints. Sets '
+             'MENDWRIGHT_HEAL_GET_BY=1 for the run.')
     parser.addini(
         'mendwright_page_fixture', default='',
         help="fixture that the 'heal' fixture passes to mendwright.open() (default: page).")
@@ -259,16 +266,19 @@ class _Session:
         self.strict_failed = set()   # nodeids whose final report strict mode failed
         self._tracker = None
         self._env = None
-        # open() has no switch for these two, and Healers a test opens itself should
-        # follow them too, so they go through the documented environment variables.
+        # The heal fixture passes none of these to open(), and Healers a test opens itself
+        # should follow them too, so they go through the documented environment variables.
         dry_run = config.getoption('mendwright_dry_run')
         disable = config.getoption('mendwright_disable')
-        if dry_run or disable:
+        get_by = config.getoption('mendwright_heal_get_by')
+        if dry_run or disable or get_by:
             self._env = pytest.MonkeyPatch()
             if dry_run:
                 self._env.setenv('MENDWRIGHT_DRY_RUN', '1')
             if disable:
                 self._env.setenv('MENDWRIGHT_DISABLE', '1')
+            if get_by:
+                self._env.setenv('MENDWRIGHT_HEAL_GET_BY', '1')
 
     def pytest_unconfigure(self, config):
         if self._env is not None:
@@ -291,6 +301,8 @@ class _Session:
             mode = 'heal'
         if self.strict:
             mode += ', strict'
+        if mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
+            mode += ', get_by_* healed'
         if mode != 'disabled' and _no_provider(healing):
             if _fingerprint_on():
                 mode += ' (no provider: only fingerprint heals, no model; see mendwright doctor)'
@@ -366,6 +378,9 @@ class _Session:
         lines = ['mendwright --mendwright-strict: this test passed only because ' + head]
         lines += ['  ' + _heal_line(r) for r in records]
         lines.append(fix + ', or run without --mendwright-strict to let heals pass.')
+        if any(is_key(r['key']) for r in records):
+            lines.append('For a get_by_* call, run mendwright fix to see the healed selector and '
+                         'where the call is; it does not change the call itself.')
         return '\n'.join(lines)
 
     def _failed_note(self, records):

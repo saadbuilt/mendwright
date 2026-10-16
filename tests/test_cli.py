@@ -554,6 +554,68 @@ def test_doctor_json(capsys, tmp_path, monkeypatch):
     assert data["env"] == {} and data["problems"] == []
 
 
+def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    at = lines.index("get_by_* locators")
+    assert lines[at - 1] == "" and lines.index("Fingerprint healing (no model)") < at
+    assert " ".join(line.strip() for line in lines[at + 1:at + 4]) == (
+        "not healed (default): heal.page.get_by_role() and the other get_by_* calls go to "
+        "Playwright as written. Set MENDWRIGHT_HEAL_GET_BY=1, or pass heal_get_by=True to "
+        "mendwright.open(), to heal a call that matches nothing from its fingerprint.")
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": False, "source": "default", "heals": False}
+
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "1")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert ("  healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches "
+            "nothing is") in out
+    assert "  MENDWRIGHT_HEAL_GET_BY=1" in out.splitlines()
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "heals": True}
+
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert cli.main(["doctor"]) == 0
+    assert ("  routed (MENDWRIGHT_HEAL_GET_BY=1), but the fingerprint tier is off, so a get_by_*"
+            in capsys.readouterr().out)
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"]["heals"] is False
+
+    monkeypatch.delenv("MENDWRIGHT_FINGERPRINT")
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "0")
+    assert cli.main(["doctor"]) == 0
+    assert "  not healed (MENDWRIGHT_HEAL_GET_BY=0): heal.page.get_by_role()" in (
+        capsys.readouterr().out)
+
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "sometimes")
+    assert cli.main(["doctor"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    problems = lines[lines.index("Problems") + 1:]
+    assert any("MENDWRIGHT_HEAL_GET_BY must be 1 or 0" in line for line in problems)
+
+
+def test_report_shows_a_call_key_as_it_is(capsys, tmp_path):
+    folder = tmp_path / ".mendwright"
+    folder.mkdir()
+    key = 'get_by_role("button", name="Sign in")'
+    store = folder / "overrides.json"
+    store.write_text(json.dumps({"schema": 2, "selectors": {key: {
+        "expectedRole": "button", "candidates": [
+            {"xpath": key, "source": "code", "status": "active",
+             "lastSucceededAt": "2026-10-20T09:00:00+00:00"},
+            {"xpath": "//button[@id='login']", "source": "heal", "status": "active",
+             "lastSucceededAt": "2026-10-21T09:00:00+00:00"}]}}}), encoding="utf-8")
+    assert cli.main(["report", "--store", str(store)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert key + "  (button)" in lines
+    assert "  active      code  " + key + "  (last success: 2026-10-20 09:00:00 UTC)" in lines
+
+
 def test_doctor_never_prints_secrets(capsys, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET-0123456789")
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-test-model")
