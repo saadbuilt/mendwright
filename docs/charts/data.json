@@ -685,7 +685,7 @@
             "state": "yes",
             "note": "heal.page / heal.driver",
             "source": "README.md, No changes per step; mendwright/proxies.py",
-            "detail": "page = mendwright.open(page).page, or driver = mendwright.open(driver).driver. page.locator(selector), the page shortcuts that take a selector, and find_element with By.XPATH, CSS_SELECTOR, ID or NAME heal. Chained locators, get_by_* and the other By values pass through unhealed."
+            "detail": "page = mendwright.open(page).page, or driver = mendwright.open(driver).driver. page.locator(selector), the page shortcuts that take a selector, and find_element with By.XPATH, CSS_SELECTOR, ID or NAME heal. get_by_* heal with heal_get_by=True; chained locators and other By values pass through unhealed."
           },
           "healenium": {
             "state": "yes",
