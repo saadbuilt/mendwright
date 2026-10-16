@@ -95,6 +95,11 @@ BIND_REASON = 'it passes arguments this version of mendwright does not read'
 LONG_REASON = ('its arguments are longer than mendwright saves in a key ('
                + format(MAX_KEY, ',') + ' characters)')
 
+# Why a call goes to Playwright as written (see Healer._get_by_locator), in its DEBUG line.
+REJECTED = 'was rejected by the browser'
+HIDDEN = 'matches 1 hidden element'
+STARTED_TO_MATCH = 'started to match something other than one visible element'
+
 # Why a call key is not followed into an iframe (see Healer._get_by_frames).
 NOT_FOLLOWED = 'mendwright does not follow a get_by_* call into an iframe'
 

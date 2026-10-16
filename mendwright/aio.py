@@ -899,6 +899,15 @@ class AsyncHealer:
         """Whether open(dismiss=True) was passed (see Healer._dismiss)."""
         return self._core._dismiss_on
 
+    @property
+    def _heal_get_by(self):
+        """Whether open(heal_get_by=True) was passed (see Healer._get_by_locator)."""
+        return self._core._heal_get_by
+
+    def _note_get_by(self, step, why):
+        """Healer._note_get_by(): one INFO line for a get_by_* call that is never a key."""
+        self._core._note_get_by(step, why)
+
     async def _dismiss_before(self, key, native, verb, budget, timeout_ms, poll_ms):
         """Healer._dismiss_before(), awaited."""
         __tracebackhide__ = True

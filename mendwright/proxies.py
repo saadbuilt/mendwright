@@ -18,6 +18,15 @@ With open(dismiss=True), those locators come back as GuardedLocators instead: th
 still not healed, whose actions look for interruptions and popups first, as
 heal.locator()'s do.
 
+With open(heal_get_by=True), page.get_by_role() and the six other get_by_* calls on heal.page
+come back as HealingGetByLocators instead: their actions and waiting reads go through
+Healer._get_by_locator(), under a key written as the call (see mendwright.getby), and
+everything else is the real Locator's, unhealed. is_visible() answers for the call as
+written, never from a heal. Calls chained from one, .first, .nth(), .filter() and the
+like stay the real ones (or GuardedLocators), as above. A call that is never a key (a
+state filter such as checked=, include_hidden=True, an argument mendwright does not read)
+is logged once at INFO and stays the real locator too.
+
 On Selenium, driver.find_element(by, value) for By.XPATH, By.CSS_SELECTOR, By.ID and
 By.NAME goes through heal.locator(f'{by}={value}', selector). find_element (for any By),
 find_elements, and find_element(s) on an element return HealingElements: the element,
@@ -48,6 +57,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
+from . import getby
 from .drivers.base import looks_like_locator
 from .exceptions import AttentionRequired
 from .facade import ACTIONS, ActionProxy, _raised_by_run
@@ -207,6 +217,47 @@ class HealingPage(_Proxy):
             return self._mw_target.is_visible(selector, **kwargs)
         return self._mw_healer._peek_visible(selector)
 
+    # Playwright's get_by_* calls. They take any arguments and hand them to Playwright as
+    # they are, so an argument a later Playwright adds still works (see _mw_get_by).
+
+    def get_by_role(self, *args, **kwargs):
+        return self._mw_get_by('get_by_role', args, kwargs)
+
+    def get_by_text(self, *args, **kwargs):
+        return self._mw_get_by('get_by_text', args, kwargs)
+
+    def get_by_label(self, *args, **kwargs):
+        return self._mw_get_by('get_by_label', args, kwargs)
+
+    def get_by_placeholder(self, *args, **kwargs):
+        return self._mw_get_by('get_by_placeholder', args, kwargs)
+
+    def get_by_alt_text(self, *args, **kwargs):
+        return self._mw_get_by('get_by_alt_text', args, kwargs)
+
+    def get_by_title(self, *args, **kwargs):
+        return self._mw_get_by('get_by_title', args, kwargs)
+
+    def get_by_test_id(self, *args, **kwargs):
+        return self._mw_get_by('get_by_test_id', args, kwargs)
+
+    def _mw_get_by(self, method, args, kwargs):
+        """heal.page.<method>(*args, **kwargs): the real Locator first, so Playwright checks
+        its own arguments, then, with open(heal_get_by=True) and a call that can be a key, a
+        HealingGetByLocator (AsyncHealingGetByLocator on the async healer). Otherwise what
+        0.8.0 gave: the real Locator, or a GuardedLocator with open(dismiss=True). Nothing
+        touches the page or the store here."""
+        target = getattr(self._mw_target, method)(*args, **kwargs)
+        step = 'page.' + _call_text(method, args, kwargs)
+        healer = self._mw_healer
+        if not healer._heal_get_by:
+            return _guard(self, target, step)
+        call, why = getby.call_of(method, args, kwargs)
+        if call is None:
+            healer._note_get_by(step, why)
+            return _guard(self, target, step)
+        return self._mw_get_by_type(healer, target, call, step)
+
     def __repr__(self):
         return '<HealingPage ' + repr(self._mw_target) + '>'
 
@@ -230,6 +281,50 @@ for _name in PAGE_SHORTCUTS:
     setattr(HealingPage, _name, _page_shortcut(_name))
 
 
+class HealingGetByLocator(HealingLocator):
+    """With open(heal_get_by=True), what heal.page.get_by_role() and the other get_by_*
+    calls return. Its actions and the reads that wait for the element go through
+    Healer._get_by_locator(), under the call's key (see mendwright.getby): the call itself
+    first, a saved heal only while the call matches nothing, a heal from the call's
+    fingerprint when it matches nothing for the timeout, and Playwright as written when it
+    matches several elements or one hidden one. timeout= is the lookup's timeout too.
+
+    Everything else is the real Locator's and is never healed: is_visible(), count(),
+    wait_for(), is_hidden(), all() (as on HealingLocator), and Playwright's expect().
+    Locators built from it (.first, .nth(), .filter(), .get_by_text(), ...) are the real
+    ones, or GuardedLocators with open(dismiss=True), named as in 0.8.0. It passes
+    isinstance() checks for the Locator, and .native is the Locator."""
+
+    def __init__(self, healer, target, call, step):
+        super().__init__(healer, target, getby.canonical(call))
+        object.__setattr__(self, '_mw_call', call)
+        object.__setattr__(self, '_mw_name', step)
+
+    def _mw_healed(self, name):
+        def call(*args, **kwargs):
+            proxy = self._mw_healer._get_by_locator(self._mw_call, self._mw_target,
+                                                    timeout_ms=_timeout_ms(kwargs))
+            return getattr(proxy, name)(*args, **kwargs)
+        call.__name__ = name
+        return call
+
+    def __getattr__(self, name):
+        if name in HEALED_LOCATOR_METHODS:
+            return self._mw_healed(name)
+        return _chained(self, name, getattr(self._mw_target, name))
+
+    def _mw_step(self):
+        return self._mw_name
+
+    def is_visible(self, **kwargs):
+        """Playwright's own is_visible() for the call as written: never answered from a
+        heal, so a renamed button is not visible to it, while its click() heals."""
+        return self._mw_target.is_visible(**kwargs)
+
+    def __repr__(self):
+        return '<HealingGetByLocator ' + repr(self._mw_selector) + '>'
+
+
 # --- guard-only locators, for open(dismiss=True) ----------------------------------------------
 
 # What builds another locator on a Page, Frame, Locator or FrameLocator, as methods and as
@@ -244,7 +339,8 @@ LOCATOR_PROPERTIES = frozenset(('first', 'last', 'owner', 'content_frame'))
 
 def _arg_text(value):
     """An argument as a GuardedLocator's name shows it."""
-    if type(value) in (HealingLocator, AsyncHealingLocator, GuardedLocator, AsyncGuardedLocator):
+    if type(value) in (HealingLocator, AsyncHealingLocator, HealingGetByLocator,
+                       AsyncHealingGetByLocator, GuardedLocator, AsyncGuardedLocator):
         return value._mw_step()
     if looks_like_locator(value):
         return '<locator>'
@@ -378,6 +474,30 @@ class AsyncHealingPage(HealingPage):
         return '<AsyncHealingPage ' + repr(self._mw_target) + '>'
 
 
+class AsyncHealingGetByLocator(HealingGetByLocator):
+    """HealingGetByLocator on an AsyncHealer: the healed methods, is_visible() and all() are
+    coroutines."""
+
+    def _mw_healed(self, name):
+        async def call(*args, **kwargs):
+            proxy = self._mw_healer._get_by_locator(self._mw_call, self._mw_target,
+                                                    timeout_ms=_timeout_ms(kwargs))
+            await proxy._ensure()
+            return await getattr(proxy, name)(*args, **kwargs)
+        call.__name__ = name
+        return call
+
+    async def is_visible(self, **kwargs):
+        return await self._mw_target.is_visible(**kwargs)
+
+    async def all(self):
+        """HealingLocator.all(), awaited."""
+        return _items(self, await self._mw_target.all())
+
+    def __repr__(self):
+        return '<AsyncHealingGetByLocator ' + repr(self._mw_selector) + '>'
+
+
 class AsyncGuardedLocator(GuardedLocator):
     """GuardedLocator on an AsyncHealer: its actions are coroutines."""
 
@@ -398,7 +518,11 @@ class AsyncGuardedLocator(GuardedLocator):
 HealingPage._mw_guard_type = HealingLocator._mw_guard_type = GuardedLocator
 GuardedLocator._mw_guard_type = GuardedLocator
 AsyncHealingPage._mw_guard_type = AsyncHealingLocator._mw_guard_type = AsyncGuardedLocator
+AsyncHealingGetByLocator._mw_guard_type = AsyncGuardedLocator
 AsyncGuardedLocator._mw_guard_type = AsyncGuardedLocator
+# The healing locator each page builds for a get_by_* call (see HealingPage._mw_get_by).
+HealingPage._mw_get_by_type = HealingGetByLocator
+AsyncHealingPage._mw_get_by_type = AsyncHealingGetByLocator
 
 
 # --- Selenium ------------------------------------------------------------------------------------
@@ -580,9 +704,11 @@ class HealingDriver(_Proxy):
         return '<HealingDriver ' + repr(self._mw_target) + '>'
 
 
-_PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator, HealingDriver,
-                HealingElement, GuardedLocator, AsyncGuardedLocator)
+_PROXY_TYPES = (HealingPage, AsyncHealingPage, HealingLocator, AsyncHealingLocator,
+                HealingGetByLocator, AsyncHealingGetByLocator, HealingDriver, HealingElement,
+                GuardedLocator, AsyncGuardedLocator)
 
 __all__ = ['HealingPage', 'HealingLocator', 'AsyncHealingPage', 'AsyncHealingLocator',
-           'HealingDriver', 'HealingElement', 'GuardedLocator', 'AsyncGuardedLocator',
-           'selenium_selector', 'not_found_error', 'unwrap']
+           'HealingGetByLocator', 'AsyncHealingGetByLocator', 'HealingDriver', 'HealingElement',
+           'GuardedLocator', 'AsyncGuardedLocator', 'selenium_selector', 'not_found_error',
+           'unwrap']
