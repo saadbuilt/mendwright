@@ -3,6 +3,8 @@ functions of mendwright.drift: which site each key belongs to, the address of ea
 the pages whose path reads as an action, page patterns, and the answers that leave a page
 unchecked. Offline: stores in tmp_path, no browser."""
 
+import json
+
 import pytest
 
 from mendwright import drift
@@ -100,6 +102,42 @@ def test_a_path_with_an_email_address_is_not_built_from_last_page(tmp_path):
     store = _store(tmp_path, {'k': ('/users/ada@example.com', None, None)})
     [page] = plan_check(store, ['k'], base_url='https://shop.example').pages
     assert page.address is None and page.skip[0] == 'no-url'
+
+
+def _raw_store(tmp_path, entry):
+    """A store file with one key 'k', as a cache or a pull request could hand it over."""
+    path = tmp_path / 'overrides.json'
+    entry = dict(entry, candidates=[{'xpath': '#k', 'source': 'code', 'status': 'active'}])
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': entry}}), encoding='utf-8')
+    return load_store(None, str(path), read_only=True)
+
+
+@pytest.mark.parametrize('last_page', [
+    '@169.254.169.254/latest/meta-data/',       # user info: the host would be 169.254.169.254
+    '.evil.example/x',                          # another host
+    ':8443/admin',                              # another port
+    '//evil.example/x',                         # a doubled slash, which a browser keeps
+    '/signup?next=/account',                    # a query the store chose
+    '/signup#x',                                # a fragment
+    '/Signup',                                  # not lower case: not one page_path writes
+    'signup',                                   # no leading slash
+])
+def test_base_url_builds_no_address_from_a_last_page_mendwright_did_not_write(tmp_path,
+                                                                             last_page):
+    store = _raw_store(tmp_path, {'lastPage': last_page})
+    [page] = plan_check(store, ['k'], base_url='https://shop.example').pages
+    assert page.address is None
+    assert page.skip == ('no-url', 'its saved page ' + repr(last_page) + " isn't a path as "
+                         'mendwright saves one (an older version saved it, or it was edited), '
+                         'so mendwright check builds no address from it. Run your tests once '
+                         'with 0.9.0 to save it again.')
+    assert 'shop.example' not in page.shown
+
+
+def test_base_url_still_builds_an_address_from_a_last_page_mendwright_wrote(tmp_path):
+    store = _raw_store(tmp_path, {'lastPage': '/account/orders'})
+    [page] = plan_check(store, ['k'], base_url='https://shop.example').pages
+    assert page.address == 'https://shop.example/account/orders' and page.skip is None
 
 
 def test_a_stale_address_and_an_old_store(tmp_path):

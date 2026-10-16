@@ -1239,6 +1239,9 @@ _OLD_TEXT = ('the store has only the path {page} for it, because it was saved be
 _STALE_TEXT = ('its saved address and its saved page {page} disagree: it was last found on a '
                'page mendwright saves no address for (a Playwright Frame, or a frame the '
                "Selenium driver was switched into). Pass --url '{page}={example}'.")
+_BAD_PAGE_TEXT = ("its saved page {page!r} isn't a path as mendwright saves one (an older "
+                  'version saved it, or it was edited), so mendwright check builds no address '
+                  'from it. Run your tests once with 0.9.0 to save it again.')
 _ACTION_TEXT = ('the path {path} reads as an action ({word}), and loading it could do that, '
                 'such as end the session your runs use. Pass --load-page \'{page}\' to check '
                 'it anyway.')
@@ -1335,7 +1338,7 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
         elif load and newest_path is not None and '*' not in newest_path.split('/'):
             address = load + newest_path
         elif (load and base_url is not None and not g['lu'] and '*' not in page.split('/')
-              and _plain(built)):
+              and _stored_page(page) and _on(built, load, page) and _plain(built)):
             address = built
         if address is not None:
             shown = shown_address(address)
@@ -1344,6 +1347,9 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
                 skip = ('action-page', _ACTION_TEXT.format(path=urlsplit(address).path,
                                                            word=word, page=page))
                 address = None
+        elif load and not g['lu'] and not _stored_page(page):
+            # Text a store from a cache or a pull request can hold: never part of an address.
+            skip = ('no-url', _BAD_PAGE_TEXT.format(page=page))
         elif load is None:
             if kind == 'stale':
                 skip = ('no-url', _STALE_TEXT.format(page=page,
@@ -1373,6 +1379,28 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
                      + ', '.join(sorted(hosts)) + ') are all loaded from ' + base_url + '. If '
                      'they are different sites, map each with --origin RECORDED=ACTUAL instead.')
     return Plan(pages=pages, left_out=left_out, sites=sites, notes=notes)
+
+
+def _stored_page(page):
+    """Whether page is a path as mendwright.flow.page_path writes one, such as '/signup' or
+    '/orders/*'. lastPage comes from a store a cache or a pull request may have written, so
+    an address is built from it only then: such a path can't name another host, a port,
+    user info, a query or a fragment."""
+    if page == '/':
+        return True
+    if not isinstance(page, str) or not page.startswith('/'):
+        return False
+    return page_path('http://mendwright.invalid' + page) == page
+
+
+def _on(address, origin, path):
+    """Whether address is path on origin, and nothing else."""
+    try:
+        parts = urlsplit(address)
+    except ValueError:
+        return False
+    return (origin_of(address) == origin and parts.path == path and not parts.query
+            and not parts.fragment and '@' not in parts.netloc)
 
 
 def _plain(address):
