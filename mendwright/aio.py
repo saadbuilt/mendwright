@@ -659,7 +659,7 @@ class AsyncHealer:
         AsyncActionProxy for each element of the list, resolved. A list whose selectors all
         match nothing is never healed, as there. Argument errors raise here, before anything
         is awaited."""
-        roles, code = _locator_args(key, selector, role, None)
+        roles, code = _locator_args(key, selector, role, None, entry='heal.locator_all()')
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional))
 

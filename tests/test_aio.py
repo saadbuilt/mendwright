@@ -1022,6 +1022,29 @@ def test_an_async_heal_without_the_calls_aria_role_is_refused(make_page, tmp_pat
     assert heal.heals == [] and provider.bundles == []
 
 
+def test_async_reserved_keys_name_the_method_that_refused_them(make_page, tmp_path,
+                                                                stub_provider):
+    _sync, page = _call_page(make_page)
+    call = 'get_by_role("button", name="Go")'
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=0, heal_get_by=True)
+        refused = []
+        for entry, make in (('heal.locator()', lambda: heal.locator(call, '#go')),
+                            ('heal.locator_all()', lambda: heal.locator_all(call, '#go')),
+                            ('heal.interrupt()', lambda: heal.interrupt(call, '#go'))):
+            with pytest.raises(ValueError) as caught:
+                make()
+            refused.append((entry, str(caught.value)))
+        return refused
+
+    for entry, message in run(main()):
+        assert message == (
+            "mendwright: '" + call + "' is how mendwright names a heal.page.get_by_role() call, "
+            'so ' + entry + ' cannot take it as a key. Pick another key.')
+    assert not (tmp_path / 'o.json').exists()
+
+
 def test_the_async_call_off_by_default_is_the_real_locator(make_page, tmp_path, stub_provider):
     _sync, page = _call_page(make_page)
 
