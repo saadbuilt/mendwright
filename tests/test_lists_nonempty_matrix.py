@@ -338,3 +338,35 @@ def test_a_0_8_0_store_is_written_byte_for_byte_as_0_8_0_wrote_it(tmp_path, make
     assert _keys_in_order(path.read_bytes()) == _keys_in_order(
         (GOLDEN / 'overrides.json').read_bytes())
     assert not (tmp_path / 'journal.jsonl').exists()             # 0.8.0 journaled nothing
+
+
+def report_080(cli, write_store, root, fmt):
+    """mendwright report of test_cli.py's store (no list heal in it) in format fmt, with the
+    store's folder and mendwright's version as placeholders: what 0.8.0 printed for it is in
+    tests/fixtures/lists_080 (report.txt, .md, .html and .json)."""
+    import contextlib
+    import io
+    import re
+    store = write_store(root / 's')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert cli.main(['report', '--store', str(store), '--format', fmt]) == 0
+    text = out.getvalue().replace(json.dumps(str(root / 's'))[1:-1], '<FOLDER>')
+    text = text.replace(str(root / 's'), '<FOLDER>')
+    return re.sub(r'Made by mendwright [^<]*<', 'Made by mendwright <VERSION><', text)
+
+
+@pytest.mark.parametrize('fmt', ['text', 'md', 'html', 'json'])
+def test_report_is_unchanged_for_a_store_without_list_rows(tmp_path, fmt):
+    from mendwright import cli
+    from test_cli import _write_store
+    got = report_080(cli, _write_store, tmp_path, fmt)
+    want = (GOLDEN / ('report.' + {'text': 'txt'}.get(fmt, fmt))).read_text(encoding='utf-8')
+    if fmt != 'json':
+        assert got == want
+        return
+    got, want = json.loads(got), json.loads(want)
+    assert got['journal']['counts'].pop('held') == 0                  # the one new field
+    for counts in got['journal']['per_key'].values():
+        assert counts.pop('held') == 0
+    assert got == want

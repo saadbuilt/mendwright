@@ -161,14 +161,18 @@ def _summary(report, records, quarantines, flow_counts):
 
 
 def _candidate(c):
+    from .cli import list_note
     status = c['status']
-    kind = {'active': 'ok', 'quarantined': 'bad'}.get(status, 'muted')
+    kind = {'active': 'ok', 'quarantined': 'bad', 'proposed': 'warn',
+            'accepted': 'warn'}.get(status, 'muted')
     source = c['source']
     skind = {'heal': 'info', 'code': 'plain', 'seed': 'plain'}.get(source, 'plain')
     frame = ('<div class="sub">inside frame ' + _code(c['frame']) + '</div>'
              if c.get('frame') else '')
     if c.get('css'):
         frame += '<div class="sub">as CSS ' + _code(c['css']) + '</div>'
+    if list_note(c):
+        frame += '<div class="sub">' + h(list_note(c)) + '</div>'
     return ('<li><div class="line">' + _badge(source, skind) + ' ' + _badge(status, kind) + '</div>'
             + _code(c['selector']) + frame
             + '<div class="sub">last success ' + h(_when(c['last_success'])) + '</div></li>')

@@ -4,6 +4,8 @@
     mendwright doctor    check the install, browser libraries, provider and store
     mendwright report    list the selectors and heals in an override store (text, md, json, html)
     mendwright fix       write healed selectors back into your code (a diff, or --apply)
+    mendwright lists     check the list heals heal.locator_all(nonempty=True) proposed, and
+                         accept or reject one
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
@@ -469,6 +471,9 @@ def _read_journal(path):
 
 _COUNTED = (('requested', 'heal.requested'), ('applied', 'heal.applied'),
             ('rejected', 'heal.rejected'), ('quarantined', 'heal.quarantine'))
+# Counted too, and shown only when there are some: lists found for heal.locator_all(...,
+# nonempty=True) and saved for a person to check (heal.held).
+_ALL_COUNTED = _COUNTED + (('held', 'heal.held'),)
 
 
 def collect_report(path):
@@ -491,6 +496,12 @@ def collect_report(path):
                 row['frame'] = str(c['frameXPath'])
             if isinstance(c.get('css'), str) and c['css']:
                 row['css'] = c['css']
+            if c.get('list') is True:
+                from .store import evidence_of
+                row['list'] = True
+                row['proposal'] = evidence_of(c)
+                row['accepted'] = (c['acceptedAt'] if isinstance(c.get('acceptedAt'), str)
+                                   and c['acceptedAt'] else None)
             candidates.append(row)
         keys.append({'key': key, 'role': entry.get('expectedRole'),
                      'destructive': entry.get('destructive') is True,
@@ -499,13 +510,14 @@ def collect_report(path):
     journal_path = os.path.join(os.path.dirname(path), 'journal.jsonl')
     events = _read_journal(journal_path)
     journal = {'path': journal_path, 'exists': events is not None,
-               'counts': {name: 0 for name, _ in _COUNTED}, 'per_key': {}, 'last_applied': []}
+               'counts': {name: 0 for name, _ in _ALL_COUNTED}, 'per_key': {},
+               'last_applied': []}
     for event in events or ():
-        for name, event_name in _COUNTED:
+        for name, event_name in _ALL_COUNTED:
             if event['event'] == event_name:
                 journal['counts'][name] += 1
                 per = journal['per_key'].setdefault(str(event.get('key')),
-                                                    {n: 0 for n, _ in _COUNTED})
+                                                    {n: 0 for n, _ in _ALL_COUNTED})
                 per[name] += 1
     applied = [e for e in events or () if e['event'] == 'heal.applied']
     for e in reversed(applied[-LAST_HEALS:]):
@@ -537,7 +549,30 @@ def _role_note(k):
 
 
 def _counts_sentence(counts):
-    return ', '.join(str(counts[name]) + ' ' + name for name, _ in _COUNTED)
+    held = counts.get('held') or 0
+    return (', '.join(str(counts[name]) + ' ' + name for name, _ in _COUNTED)
+            + (', ' + str(held) + ' held' if held else ''))
+
+
+def list_note(c):
+    """What the report says under a list heal of the store, or '' for any other row: one
+    proposed for heal.locator_all(..., nonempty=True) waits for a person to check it, one
+    accepted for mendwright fix."""
+    if not c.get('list'):
+        return ''
+    from .lists import _printable
+    if c['status'] == 'proposed':
+        evidence = c.get('proposal') or {}
+        now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
+        count = evidence.get('count')
+        return ('list' + (' of ' + str(count) if isinstance(count, int) else '')
+                + (' under ' + repr(_printable(now['label'])) if now.get('label') else '')
+                + '; check it with: mendwright lists')
+    if c['status'] == 'accepted':
+        return ('list, accepted ' + (_when(c.get('accepted')) if c.get('accepted')
+                                     else 'date unknown')
+                + '; write it with: mendwright fix --apply')
+    return ''
 
 
 def _who(heal):
@@ -569,6 +604,8 @@ def _report_text(r):
                          + ')')
             if c.get('css'):
                 lines.append('  ' + ' ' * 18 + 'as CSS: ' + c['css'])
+            if list_note(c):
+                lines.append('  ' + ' ' * 18 + list_note(c))
         if per:
             lines.append('  heals: ' + _counts_sentence(per))
     if not r['keys']:
@@ -622,8 +659,16 @@ def _report_md(r):
                     selector += ' in frame ' + _md_code(c['frame'])
                 if c.get('css'):
                     selector += ' (as CSS: ' + _md_code(c['css']) + ')'
+                if list_note(c):
+                    selector += ' (' + _md_cell(list_note(c)) + ')'
                 lines.append('| ' + cell + ' | ' + selector + ' | ' + _md_cell(c['source'])
                              + ' | ' + status + ' | ' + _md_cell(_when(c['last_success'])) + ' |')
+        waiting = sum(1 for k in r['keys'] for c in k['candidates']
+                      if c.get('list') and c['status'] == 'proposed')
+        if waiting:
+            lines.append('')
+            lines.append(str(waiting) + ' list heal(s) wait for you to check them: run '
+                         '`mendwright lists`.')
     else:
         lines.append('The store has no keys yet.')
     lines.append('')
@@ -760,6 +805,183 @@ def cmd_fix(args):
     return 1 if result.errors else 0
 
 
+# --- lists -----------------------------------------------------------------------------
+#
+# The list heals heal.locator_all(..., nonempty=True) saved for a person to check. Listing
+# reads the store file; accept and reject edit it through store.edit_list_heal(), which
+# changes only the rows they are about.
+
+def _plural(n, one, many):
+    return str(n) + ' ' + (one if n == 1 else many)
+
+
+def _shown_items(items):
+    from .lists import _printable
+    return ', '.join(repr(_printable(t)) for t in items if isinstance(t, str))
+
+
+def collect_lists(path, data):
+    """The list heals of the store data read from path: {'store', 'proposed': [{'key', 'id',
+    'xpath', 'css', 'proposal', 'accept', 'reject', 'role'}], 'accepted': [{'key', 'xpath',
+    'css', 'acceptedAt'}]}, keys in name order, the newest first within a key."""
+    from .store import _proposal_order, evidence_of
+    flag = store_flag(path)
+    out = {'store': path, 'proposed': [], 'accepted': []}
+    for key in sorted(data['selectors']):
+        entry = data['selectors'][key]
+        if not isinstance(entry, dict):
+            continue
+        rows = [c for c in entry.get('candidates') or () if isinstance(c, dict)
+                and c.get('list') is True and isinstance(c.get('xpath'), str)]
+        word, note = command_key(key)
+        for c in sorted((c for c in rows if c.get('status') == 'proposed'), key=_proposal_order,
+                        reverse=True):
+            evidence = evidence_of(c)
+            pid = evidence['id'] if evidence else None
+            out['proposed'].append({
+                'key': key, 'id': pid, 'xpath': c['xpath'], 'css': c.get('css') or None,
+                'proposal': evidence,
+                'accept': ('mendwright lists accept ' + word + ' ' + pid + flag + note
+                           if pid else None),
+                'reject': ('mendwright lists reject ' + word + (' ' + pid if pid else '') + flag
+                           + note),
+                'role': entry.get('expectedRole') if isinstance(entry.get('expectedRole'), str)
+                else None})
+        for c in sorted((c for c in rows if c.get('status') == 'accepted'),
+                        key=lambda c: str(c.get('acceptedAt') or ''), reverse=True):
+            out['accepted'].append({'key': key, 'xpath': c['xpath'], 'css': c.get('css') or None,
+                                    'acceptedAt': c.get('acceptedAt')})
+    return out
+
+
+def _lists_text(listing):
+    """The text mendwright lists prints, as lines."""
+    from .lists import _printable, differs_lines, place_text
+    lines = ['Store: ' + listing['store']]
+    proposed, accepted = listing['proposed'], listing['accepted']
+    if proposed:
+        lines.append(_plural(len(proposed), 'list heal waits', 'list heals wait')
+                     + ' for you to check ' + ('it.' if len(proposed) == 1 else 'them.'))
+    else:
+        lines.append('No list heal waits for you to check it.')
+    for item in proposed:
+        role = '  (' + (item['role'] or 'unknown') + ' elements)'
+        lines.append('')
+        evidence = item['proposal']
+        if evidence is None:
+            lines.append(item['key'] + role + '  no saved evidence')
+            lines.append('  why      an older mendwright wrote the store after it was found. Run '
+                         'the test again with mendwright 0.9.0 to find it anew.')
+            lines.append('  reject   ' + item['reject'])
+            continue
+        lines.append(item['key'] + role + '  id ' + _printable(evidence['id']))
+        was = evidence.get('was') if isinstance(evidence.get('was'), dict) else {}
+        now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
+        page = evidence.get('page')
+        score = ''
+        if isinstance(evidence.get('score'), (int, float)):
+            score = ' (score ' + format(evidence['score'], '.2f')
+            if isinstance(evidence.get('next'), (int, float)):
+                score += ', next best ' + format(evidence['next'], '.2f')
+            score += ')'
+        lines.append('  found    ' + _when(evidence.get('at'))
+                     + (' on ' + _printable(page) if isinstance(page, str) and page else '')
+                     + ', from the list fingerprint' + score)
+        selectors = [str(s) for s in was.get('selectors') or ()]
+        lines.append('  was      ' + (', '.join(_printable(s) for s in selectors) + ': '
+                                      if selectors else '')
+                     + place_text(was.get('count'), was))
+        if was.get('items'):
+            lines.append('           first items: ' + _shown_items(was['items']))
+        lines.append('  now      ' + item['xpath'])
+        if item['css']:
+            lines.append('           as CSS: ' + item['css'])
+        lines.append('           ' + place_text(evidence.get('count'), now, alike=True))
+        if isinstance(evidence.get('found'), int) and isinstance(evidence.get('recorded'), int):
+            lines.append('           they hold ' + str(evidence['found']) + ' of the '
+                         + str(evidence['recorded']) + ' items recorded')
+        if now.get('items'):
+            lines.append('           first items: ' + _shown_items(now['items']))
+        checks = differs_lines(evidence)
+        for i, line in enumerate(checks):
+            lines.append(('  check    ' if i == 0 else '           ') + line)
+        if checks:
+            lines.append('           The items of an emptied list can show in another list. '
+                         'Look at the page before you accept.')
+        lines.append('  accept   ' + item['accept'])
+        lines.append('  reject   ' + item['reject'])
+    if accepted:
+        lines.append('')
+        lines.append(_plural(len(accepted), 'accepted list heal waits', 'accepted list heals wait')
+                     + ' for mendwright fix --apply' + store_flag(listing['store']) + ':')
+        for item in accepted:
+            when = item['acceptedAt']
+            lines.append('  ' + item['key'] + '  ' + item['xpath'] + '  (accepted '
+                         + (_when(when) if when else 'date unknown') + ')')
+    return lines
+
+
+def _lists_edit(args, path, action):
+    """mendwright lists accept / reject: edit the store and say what was done."""
+    from .lists import _printable
+    from .store import ListHealError, edit_list_heal
+    try:
+        done = edit_list_heal(path, args.key, action, args.id)
+    except ListHealError as exc:
+        _err('mendwright lists: ' + str(exc))
+        return 1
+    evidence = done.row.get('proposal') if isinstance(done.row.get('proposal'), dict) else {}
+    shown = repr(done.key) + (' (' + done.id + ')' if done.id else '')
+    if action == 'reject':
+        _out('Rejected the list heal of ' + shown + ': ' + done.xpath + ". mendwright won't "
+             'propose it, or another selector for the same elements, again.')
+        return 0
+    try:
+        data = _read_store(path)
+        role = data['selectors'][done.key].get('expectedRole')
+    except (ReportError, KeyError, AttributeError):
+        role = None
+    now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
+    what = ''
+    if isinstance(evidence.get('count'), int):
+        what = (' (' + str(evidence['count']) + ' ' + (role if isinstance(role, str) and role
+                                                       else 'list') + ' elements'
+                + (' under ' + repr(_printable(now['label'])) if now.get('label') else '') + ')')
+    _out('Accepted the list heal of ' + shown + ': ' + done.xpath + what + '.')
+    _out("mendwright doesn't use it until it is in your code. Write it there with: mendwright "
+         'fix --apply' + store_flag(path))
+    if done.superseded:
+        _out('It replaces ' + _plural(len(done.superseded), 'other list heal',
+                                      'other list heals') + ' found for ' + repr(done.key) + '.')
+    return 0
+
+
+def cmd_lists(args):
+    if getattr(args, 'action_store', None):
+        args.store = args.action_store          # the action's --store wins
+    path = _find_store('lists', args)
+    if path is None:
+        return 1
+    action = getattr(args, 'lists_command', None)
+    if action in ('accept', 'reject'):
+        return _lists_edit(args, path, action)
+    try:
+        data = _read_store(path)
+    except ReportError as exc:
+        _err('mendwright lists: ' + str(exc))
+        return 1
+    listing = collect_lists(path, data)
+    if args.json:
+        shown = dict(listing, proposed=[{k: v for k, v in item.items() if k != 'role'}
+                                        for item in listing['proposed']])
+        lines = json.dumps(shown, indent=2, ensure_ascii=False).split('\n')
+    else:
+        lines = _lists_text(listing)
+    for line in lines:
+        _out(line)
+    return 0
+
+
 # --- model -----------------------------------------------------------------------------
 
 def cmd_model_install(args):
@@ -862,6 +1084,39 @@ def build_parser():
     fix.add_argument('--apply', action='store_true',
                      help='write the changes (default: print the diff only)')
     fix.set_defaults(handler=cmd_fix)
+
+    lists = sub.add_parser(
+        'lists', help='check the list heals heal.locator_all(nonempty=True) proposed',
+        description='List the list heals that heal.locator_all(..., nonempty=True) found for a '
+                    'list whose selectors matched nothing, and saved for you to check: where '
+                    'the list was when it was recorded, where the group found is, the first '
+                    'items of both and what is not the same. mendwright never uses one: accept '
+                    'it with "mendwright lists accept KEY ID", then write it into your code with '
+                    '"mendwright fix --apply". Exits 0, or 1 on errors.')
+    lists.add_argument('--store', metavar='PATH',
+                       help='the override store file (default: MENDWRIGHT_STORE, else '
+                            './.mendwright/overrides.json)')
+    lists.add_argument('--json', action='store_true', help='print the list heals as JSON')
+    lists_sub = lists.add_subparsers(dest='lists_command', metavar='<action>')
+    accept = lists_sub.add_parser(
+        'accept', help='accept a proposed list heal, by its id',
+        description='Accept the list heal of KEY whose id is ID, as mendwright lists shows it. '
+                    'It replaces any other list heal of the key. mendwright still does not use '
+                    'it until mendwright fix --apply puts it in your code.')
+    accept.add_argument('key', metavar='KEY', help='the key, as mendwright lists shows it')
+    accept.add_argument('id', metavar='ID', help='the id mendwright lists shows')
+    accept.add_argument('--store', metavar='PATH', dest='action_store',
+                        help='the override store file')
+    reject = lists_sub.add_parser(
+        'reject', help='reject a list heal of a key',
+        description='Reject the list heal of KEY (the one with id ID when it has several): it '
+                    'is quarantined, and mendwright never proposes it, or another selector for '
+                    'the same elements, again.')
+    reject.add_argument('key', metavar='KEY', help='the key, as mendwright lists shows it')
+    reject.add_argument('id', metavar='ID', nargs='?', help='the id mendwright lists shows')
+    reject.add_argument('--store', metavar='PATH', dest='action_store',
+                        help='the override store file')
+    lists.set_defaults(handler=cmd_lists)
 
     model = sub.add_parser(
         'model', help="download and set up mendwright's local selector model",

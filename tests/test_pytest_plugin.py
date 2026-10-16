@@ -720,3 +720,93 @@ def test_under_xdist_the_summary_is_printed_once(project, monkeypatch):
     text = result.stdout.str()
     assert '::test_terms  ' + TERMS_LINE in text
     assert '::test_go  ' + GO_LINE in text
+
+
+# --- list heals heal.locator_all(..., nonempty=True) proposed ----------------------------------------
+
+CART = '''
+
+def _cart(row):
+    rows = ''.join("<div class='" + row + "'><a href='/p/" + slug + "'>" + name + "</a>"
+                   "<span class='price'>$9</span><button class='delete'>Delete</button></div>"
+                   for name, slug in (('Blue mug', 'blue-mug'), ('Red mug', 'red-mug'),
+                                      ('Tea pot', 'tea-pot')))
+    return ("<html><body><main><h1>Shopping cart</h1><section class='cart'>" + rows
+            + "</section></main></body></html>")
+
+
+@pytest.fixture
+def cart():
+    page = FakePage(_cart('cart-item'), url='https://shop.test/cart', fingerprints=True, css=True)
+    page.redesign = lambda: page.set_html(_cart('cart-row'))
+    return page
+'''
+
+CART_TESTS = '''
+    import pytest
+    import mendwright
+
+    def _proposed(cart, key):
+        heal = mendwright.open(cart, store_path='cart/overrides.json', timeout_ms=0)
+        assert len(heal.locator_all(key, '.cart-item', nonempty=True)) == 3
+        cart.redesign()
+        heal.locator_all(key, '.cart-item', nonempty=True)
+
+    def test_cart(cart):
+        _proposed(cart, 'cart')
+
+    def test_caught(cart):
+        with pytest.raises(mendwright.AttentionRequired, match='mendwright lists accept'):
+            _proposed(cart, 'basket')
+'''
+
+
+def _cart_rows(project, key):
+    data = json.loads((project.path / 'cart' / 'overrides.json').read_text(encoding='utf-8'))
+    return [c for c in data['selectors'][key]['candidates'] if c.get('list')]
+
+
+def test_a_test_that_ends_in_a_proposal_names_it_in_the_summary(project):
+    pytest.importorskip('cssselect')     # the inner test's fake page matches '.cart-item'
+    project.makeconftest(_conftest() + CART)
+    project.makepyfile(CART_TESTS)
+    result = run(project)
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(['*mendwright lists accept cart *',
+                                 'mendwright: 2 list heals wait for you to check them (run '
+                                 'mendwright lists): cart, basket'])
+    assert summary_lines(result) == []                   # no heal: nothing was used
+    # The passing test that caught it accepted nothing.
+    assert [c['status'] for c in _cart_rows(project, 'basket')] == ['proposed']
+    quiet = run(project, '-q')                            # -q: the line, no section
+    assert ('mendwright: 2 list heals wait for you to check them (run mendwright lists): cart, '
+            'basket') in quiet.outlines
+    assert not [line for line in quiet.outlines if line.strip('= ') == 'mendwright']
+
+
+def test_dry_run_saves_no_proposal(project):
+    pytest.importorskip('cssselect')
+    project.makeconftest(_conftest() + CART)
+    project.makepyfile(CART_TESTS)
+    result = run(project, '--mendwright-dry-run')
+    result.assert_outcomes(passed=0, failed=2)
+    result.stdout.fnmatch_lines(['*dry-run mode is on, so the list mendwright found for*'])
+    assert _cart_rows(project, 'cart') == []
+    assert not [line for line in result.outlines if 'list heals wait' in line]
+
+
+def test_under_xdist_the_list_heals_are_named_once(project, monkeypatch):
+    pytest.importorskip('xdist')
+    pytest.importorskip('cssselect')
+    root = str(Path(mendwright.__file__).resolve().parents[1])
+    monkeypatch.setenv('PYTHONPATH', os.pathsep.join(
+        p for p in (root, os.environ.get('PYTHONPATH')) if p))
+    project.makeconftest(_conftest() + CART)
+    project.makepyfile(CART_TESTS.replace("'cart/overrides.json'", "key + '/overrides.json'"))
+    result = project.runpytest_subprocess(*PLUGIN, '-p', 'xdist.plugin', '-n', '2',
+                                          timeout=120)
+    result.assert_outcomes(passed=1, failed=1)
+    lines = [line for line in result.outlines if 'list heal' in line and 'wait' in line]
+    assert len(lines) == 1 and lines[0].startswith('mendwright: 2 list heals wait for you to '
+                                                   'check them (run mendwright lists): ')
+    assert set(lines[0].split(': ')[-1].split(', ')) == {'cart', 'basket'}
