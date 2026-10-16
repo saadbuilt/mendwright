@@ -542,6 +542,26 @@ def test_workers_give_the_same_report(make_page, store_dir, capsys):
     assert len(browser.sessions) == 3 and all(s.closed for s in browser.sessions)
 
 
+def test_the_guide_quotes_what_check_says():
+    from pathlib import Path
+
+    from mendwright import drift
+    from mendwright.flow import handled_message
+    path = Path(__file__).resolve().parents[1] / 'docs' / 'guide.md'
+    if not path.is_file():
+        pytest.skip('docs/ is not in this copy of the project (the sdist leaves it out)')
+    guide = path.read_text(encoding='utf-8')
+    for word in drift.ACTION_WORDS:
+        assert '`' + word + '`' in guide, word
+    for pair in drift.ACTION_PAIRS:
+        assert '`' + ' '.join(pair) + '`' in guide, pair
+    assert handled_message('cookie_banner', '<check>') in guide
+    for verdict in drift.VERDICTS:
+        assert '| `' + drift.LABELS[verdict] + '` |' in guide, verdict
+    for code in ('0', '1', '2', '3', '4', '130'):
+        assert '| ' + code + ' |' in guide
+
+
 @pytest.mark.parametrize('workers', ['1', '3'])
 def test_ctrl_c_closes_every_browser_and_exits_130(workers, make_page, store_dir, capsys):
     path, site = _many_pages(make_page, store_dir)
