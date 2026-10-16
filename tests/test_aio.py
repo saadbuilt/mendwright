@@ -3,6 +3,7 @@ lxml-backed FakePage from conftest, a stub provider, asyncio.run() inside plain 
 
 import asyncio
 import inspect
+import logging
 import threading
 import time
 
@@ -1131,6 +1132,27 @@ def test_async_reserved_keys_name_the_method_that_refused_them(make_page, tmp_pa
             "mendwright: '" + call + "' is how mendwright names a heal.page.get_by_role() call, "
             'so ' + entry + ' cannot take it as a key. Pick another key.')
     assert not (tmp_path / 'o.json').exists()
+
+
+def test_async_open_warns_about_a_call_key_written_on_page(make_page, tmp_path, stub_provider,
+                                                           caplog):
+    _sync, page = _call_page(make_page)
+    on_page, total = "page.get_by_role('button', name='Sign in')", "page.get_by_test_id('total')"
+
+    async def main():
+        with caplog.at_level(logging.WARNING, logger='mendwright'):
+            heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=0,
+                               heal_get_by=True, destructive_keys={on_page},
+                               expect_values={total: 'money'})
+        return heal
+
+    heal = run(main())
+    parse = mendwright.getby.parse
+    assert [r.getMessage() for r in caplog.records] == [
+        mendwright.getby.on_object_message('expect_values=', total,
+                                           parse("get_by_test_id('total')")),
+        mendwright.getby.on_object_message('destructive_keys=', on_page, parse(CALL))]
+    assert not heal.store.is_locked_destructive(CALL)
 
 
 def test_the_async_call_off_by_default_is_the_real_locator(make_page, tmp_path, stub_provider):

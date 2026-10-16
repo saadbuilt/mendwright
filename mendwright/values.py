@@ -34,7 +34,7 @@ from decimal import Decimal
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .getby import canonical_key, two_spellings_message
+from .getby import canonical_key, two_spellings_message, warn_on_object
 
 # The checks expect_value= takes by name, and how a message says a value is not one.
 NAMES = {
@@ -476,6 +476,7 @@ def expectations(specs: Any) -> dict:
         if not isinstance(key, str) or not key:
             raise TypeError('mendwright: expect_values= takes keys as strings, got '
                             + repr(key) + '.')
+        warn_on_object('expect_values=', key)
         canonical = canonical_key(key)
         if canonical in spelled:
             raise ValueError(two_spellings_message('expect_values=', spelled[canonical], key))

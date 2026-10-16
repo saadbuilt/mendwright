@@ -134,6 +134,24 @@ def test_canonical_key_reads_a_call_in_any_spelling_and_leaves_other_keys():
         "'get_by_test_id(\"t\")' and \"get_by_test_id('t')\". Keep one of them.")
 
 
+def test_a_call_written_on_an_object_is_found_but_stays_a_key_of_its_own():
+    pay = GetByCall('get_by_role', 'button', 'Pay')
+    for key in ("page.get_by_role('button', name='Pay')",
+                'heal.page.get_by_role("button", name="Pay")',
+                " self._page.get_by_role('button', name='Pay')\n"):
+        assert getby.on_object(key) == pay
+        assert getby.canonical_key(key) is key
+    for key in ('get_by_role("button", name="Pay")', '#pay', 'page.locator("#pay")',
+                "page.get_by_role('checkbox', checked=True)", "page.get_by_role('button').click()",
+                ".get_by_role('button')", 'page.get_by_role(' + 'x' * 1000 + ')', None):
+        assert getby.on_object(key) is None
+    assert getby.on_object_message('destructive_keys=', "page.get_by_role('button', name='Pay')",
+                                   pay) == (
+        "mendwright: destructive_keys= has the key \"page.get_by_role('button', name='Pay')\", "
+        'which no heal.page.get_by_role() call uses. That call\'s key is '
+        'get_by_role("button", name="Pay"), as mendwright.get_by_key() writes it.')
+
+
 @pytest.mark.parametrize('method, args, kwargs, why', [
     ('get_by_role', ('checkbox',), {'name': 'Terms', 'checked': True},
      'checked= picks the element by its state, which a saved selector cannot keep'),

@@ -34,10 +34,13 @@ import ast
 import functools
 import inspect
 import json
+import logging
 import re
 from dataclasses import dataclass
 
 from .exceptions import AttentionRequired
+
+logger = logging.getLogger('mendwright')
 
 # The get_by_* methods mendwright heals, in the order the docs list them.
 METHODS = ('get_by_role', 'get_by_text', 'get_by_label', 'get_by_placeholder',
@@ -327,6 +330,36 @@ def canonical_key(key):
     keys through it, so a mark written that way still applies to the call."""
     call = parse(key)
     return key if call is None else canonical(call)
+
+
+# A get_by_* call written on an object, such as page.get_by_role(...): the call from get_by_.
+_ON_OBJECT = re.compile(r'(?:[A-Za-z_]\w*\.)+(get_by_.*)', re.DOTALL)
+
+
+def on_object(key):
+    """The GetByCall of a key written as a get_by_* call on an object, such as
+    page.get_by_role('button', name='Pay') from a log line, or None. Such a key is a key of
+    its own, not the call's (canonical_key leaves it as it is), so destructive_keys=,
+    expect_values= and seed files log a WARNING for one (warn_on_object)."""
+    if not isinstance(key, str) or len(key) > MAX_KEY:
+        return None
+    match = _ON_OBJECT.fullmatch(key.strip())
+    return None if match is None else parse(match.group(1))
+
+
+def on_object_message(where, key, call):
+    """The WARNING for a key of ``where`` written as call on an object (see on_object)."""
+    return ('mendwright: ' + where + ' has the key ' + repr(key) + ', which no heal.page.'
+            + call.method + "() call uses. That call's key is " + canonical(call)
+            + ', as mendwright.get_by_key() writes it.')
+
+
+def warn_on_object(where, key):
+    """Log on_object_message() when key, of ``where`` (destructive_keys=, expect_values=, a
+    seed file), is a get_by_* call written on an object."""
+    call = on_object(key)
+    if call is not None:
+        logger.warning(on_object_message(where, key, call))
 
 
 def build(ctx, call):

@@ -282,8 +282,11 @@ class SelectorStore:
                  override=None):
         self._data = data
         self._override_path = Path(_expand(override_path))
-        # A key written as a get_by_* call in another spelling marks the call's key too.
+        # A key written as a get_by_* call in another spelling marks the call's key too. One
+        # written on an object, such as page.get_by_role(...), does not, and is logged.
         destructive_keys = frozenset(destructive_keys)
+        for key in sorted(destructive_keys, key=str):
+            getby.warn_on_object('destructive_keys=', key)
         self._destructive_keys = destructive_keys | {getby.canonical_key(k)
                                                      for k in destructive_keys}
         # Injected in tests: the monotonic clock and sleep for lock waits and write
@@ -938,6 +941,7 @@ def _call_keys(data, path):
         return data
     renamed, spelled = {}, {}
     for key, entry in selectors.items():
+        getby.warn_on_object(str(path), key)
         canonical = getby.canonical_key(key)
         if canonical in spelled:
             raise StoreReadError(getby.two_spellings_message(str(path), spelled[canonical], key))

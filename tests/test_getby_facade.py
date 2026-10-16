@@ -497,6 +497,31 @@ def test_expect_values_and_present_read_a_call_key_in_another_spelling(tmp_path,
     assert healed.present(PY_KEY) is True          # the saved heal, while the call misses
 
 
+def test_a_call_key_written_on_page_is_a_key_of_its_own_and_warned_about(
+        tmp_path, make_page, stub_provider, caplog):
+    on_page, total = 'page.' + PY_KEY, "page.get_by_test_id('total')"
+    page = _page(make_page)
+    with caplog.at_level(logging.WARNING, logger='mendwright'):
+        heal = _open(page, tmp_path, stub_provider(HEAL), destructive_keys={on_page},
+                     expect_values={total: 'money'})
+    assert [r.getMessage() for r in caplog.records] == [
+        getby.on_object_message('expect_values=', total, getby.parse("get_by_test_id('total')")),
+        getby.on_object_message('destructive_keys=', on_page, getby.parse(KEY))]
+    _sign_in(heal)
+    page.set_html(RENAMED)
+    _sign_in(heal)                                  # not marked: the key is its own
+    assert [h.key for h in heal.heals] == [KEY]
+    caplog.clear()
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {
+        on_page: {'destructive': True, 'candidates': []}}}), encoding='utf-8')
+    with caplog.at_level(logging.WARNING, logger='mendwright'):
+        store = mendwright.load_store(str(seed), str(tmp_path / 'seeded.json'))
+    assert [r.getMessage() for r in caplog.records] == [
+        getby.on_object_message(str(seed), on_page, getby.parse(KEY))]
+    assert store.is_locked_destructive(on_page) and not store.is_locked_destructive(KEY)
+
+
 def test_two_spellings_of_one_call_key_are_refused(tmp_path, make_page, stub_provider):
     with pytest.raises(ValueError) as caught:
         _open(_page(make_page), tmp_path, stub_provider(HEAL),
