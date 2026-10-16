@@ -1023,8 +1023,9 @@ class Healer:
 
         def attempt(wait=timeout):
             # Playwright's overlay handlers stay out of the lookup, whose scroll runs their
-            # check: the step handles what the page shows itself, before its action. A run=
-            # function called inside the handler would have only the scroll's timeout.
+            # check: the step handles what the page shows itself, before its action or read
+            # (see ActionProxy._before_read). A run= function called inside the handler
+            # would have only the scroll's timeout.
             with self._overlays.handling():
                 return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
 
@@ -1107,15 +1108,20 @@ class Healer:
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         natives = self._list(key, roles, timeout, poll_ms, optional)
         healed = self._healed(key) if natives else None
-        return [self._item(key, native, timeout, poll_ms, healed, expect) for native in natives]
+        due = [True]    # one check of the interruptions for the reads of the whole list
+        return [self._item(key, native, timeout, poll_ms, healed, expect, due)
+                for native in natives]
 
-    def _item(self, key, native, timeout_ms, poll_ms, healed=None, expect=None):
+    def _item(self, key, native, timeout_ms, poll_ms, healed=None, expect=None, due=None):
         """An ActionProxy for one element of list key, with the heal canary off: its actions
         confirm nothing, and its reads, checked against expect when the list was found
-        through the heal healed, can only refuse it (see _check_value)."""
+        through the heal healed, can only refuse it (see _check_value). due, when given,
+        is shared by the elements of one lookup (see ActionProxy._before_read)."""
         proxy = ActionProxy(self, key, native, timeout_ms=timeout_ms, poll_ms=poll_ms,
                             healed=healed, expect=expect)
         proxy._canary = False
+        if due is not None:
+            proxy._reads_due = due
         return proxy
 
     def _list_known(self, key):
@@ -1623,7 +1629,7 @@ class Healer:
                         function_name(item.run) if item.run is not None else None))
                 budget.used += 1
                 if self._run_interruption(item, target, before, timeout_ms, poll_ms, driver,
-                                          overlay):
+                                          overlay, budget):
                     budget.handled.append(item.key)
                     handled = True
         return handled
@@ -1716,14 +1722,14 @@ class Healer:
         return bool(described) and described.get('role') in item.roles
 
     def _run_interruption(self, item, target, before, timeout_ms, poll_ms, driver,
-                          overlay=False):
+                          overlay=False, budget=None):
         """Perform the interruption's action on target, or call its run= function (see
         _run_function), wait for it to go away, and record it. False (with a WARNING) when
         the action failed in the browser; what a run= function raised is raised."""
         function = None
         if item.run is not None:
             function = function_name(item.run)
-            self._run_function(item, target, before, driver, overlay)
+            self._run_function(item, target, before, driver, overlay, budget)
         else:
             try:
                 native = driver.handle(target)
@@ -1746,7 +1752,7 @@ class Healer:
                       selector=None if item.preset else target, function=function)
         return True
 
-    def _run_function(self, item, target, before, driver, overlay):
+    def _run_function(self, item, target, before, driver, overlay, budget=None):
         """Call interruption item's run= function with heal.page (heal.driver on Selenium),
         or, on the async healer, have _runner await it on the event loop. While it runs
         (_IN_RUN, _runs), its own actions do not handle item again and dismiss no popup, so
@@ -1757,8 +1763,11 @@ class Healer:
         run_steps() runs, whose page its keys are not saved for. What it raises gets one
         WARNING and a flow.interrupt event with outcome 'failed', and is raised as it is,
         marked (_raised_by_run): the step it was handled for does not take an
-        AttentionRequired from it for a miss of its own. On the async healer, a step that
-        is cancelled cancels it (see aio._in_thread)."""
+        AttentionRequired from it for a miss of its own. When Playwright's overlay handler
+        called it (overlay), the error goes into budget, the step's, before the run ends:
+        on the async healer the step waits for the run in another thread (see
+        aio.AsyncHealer._await_runs), and must find the error once the run is over. On the
+        async healer, a step that is cancelled cancels it (see aio._in_thread)."""
         record = _Run(self, item.key)
         running, step = _IN_RUN.set(_IN_RUN.get() + (record,)), _RUNNING_STEP.set(None)
         self._runs.append(record)
@@ -1780,6 +1789,8 @@ class Healer:
                 exc._mendwright_run = True
             except Exception:
                 pass        # an exception class with __slots__: it is raised unmarked
+            if overlay and budget is not None and _raised_by_run(exc):
+                budget.raised = exc     # the step raises it (see _overlay_run)
             raise
         finally:
             self._runs.remove(record)
@@ -1808,6 +1819,12 @@ class Healer:
         budget = Budget()
         self._interrupt(key, budget, timeout_ms, poll_ms, uncovered=uncovered)
         return budget
+
+    def _handles_reads(self):
+        """Whether the reads of heal.locator()'s proxies handle the registered
+        interruptions first (see ActionProxy._before_read): on sync Playwright."""
+        from .drivers.playwright_sync import PlaywrightSyncDriver
+        return isinstance(self._driver, PlaywrightSyncDriver)
 
     @contextlib.contextmanager
     def _running(self, key, budget, timeout_ms, poll_ms):
@@ -1923,9 +1940,9 @@ class Healer:
         """Whether the overlay handler for key should look at the page now. Not while a
         healer of the page handles interruptions itself or looks up a key (its own action
         on the banner and the lookup's scroll run Playwright's check too: the step handles
-        what the page shows before its action), and not for an interruption that was still
-        on the page after MAX_INTERRUPTIONS_PER_STEP actions in a row, until mendwright
-        sees it gone or the page navigates (see _stuck_count)."""
+        what the page shows before its action or read), and not for an interruption that was
+        still on the page after MAX_INTERRUPTIONS_PER_STEP actions in a row, until
+        mendwright sees it gone or the page navigates (see _stuck_count)."""
         return (not self._overlays.busy and key in self._interruptions
                 and self._stuck_count(key) < MAX_INTERRUPTIONS_PER_STEP)
 
@@ -1947,11 +1964,11 @@ class Healer:
         raises: Playwright runs this in the middle of an action, which goes on either way.
 
         What a run= function raises here (one WARNING already says so) cannot reach the
-        action. The step that is running, if any, keeps it in its budget and raises it once
-        Playwright gives the step back (_reraise), without calling the function again. And
-        the interruption is left alone, as one still there after 3 times in a row is, until
-        mendwright sees it gone or the page navigates: before every action mendwright does
-        not route, it would only fail again."""
+        action, which goes on. The step that is running, if any, keeps it in its budget and
+        raises it once that action ends (_reraise), when it goes through or its timeout runs
+        out, without calling the function again. And the interruption is left alone, as one
+        still there after 3 times in a row is, until mendwright sees it gone or the page
+        navigates: before every action mendwright does not route, it would only fail again."""
         steps = self._steps
         if len(steps) == 1:
             before, budget, timeout_ms, poll_ms = steps[0]
@@ -2532,10 +2549,18 @@ class Healer:
 
 # Actions a proxy runs through the driver with canary handling: Playwright Locator verbs
 # plus Selenium's send_keys and submit. Everything else (inner_text, get_attribute, text,
-# is_checked, ...) is a read and falls through to the native object unchanged.
+# is_checked, ...) is a read and falls through to the native object, on Playwright once
+# the registered interruptions the page shows are handled (see LOCATOR_READS).
 ACTIONS = ('click', 'dblclick', 'fill', 'type', 'press', 'press_sequentially', 'check',
            'uncheck', 'set_checked', 'select_option', 'hover', 'tap', 'clear', 'focus',
            'set_input_files', 'drag_to', 'send_keys', 'submit')
+
+# The reads of a Playwright Locator that look at the page as it is now. On Playwright, the
+# registered interruptions the page shows are handled before the first of them after a
+# lookup, as before an action (see ActionProxy._before_read).
+LOCATOR_READS = frozenset(('text_content', 'inner_text', 'inner_html', 'get_attribute',
+                           'input_value', 'is_visible', 'is_hidden', 'is_checked',
+                           'is_enabled', 'is_disabled', 'is_editable'))
 
 # Errors raised before an action reaches the browser: a verb the element does not have,
 # or arguments it does not take. They say nothing about the selector, so they never
@@ -2560,11 +2585,15 @@ class ActionProxy:
 
     A successful action does not confirm a heal on its own. Pass expect=<callable
     returning bool> to check the result, or call confirm(). Reads such as inner_text()
-    or get_attribute() fall through to the native object. Use .native where a library
-    wants the real object, for example Playwright's expect(proxy.native).
+    or get_attribute() fall through to the native object, on Playwright once the
+    registered interruptions the page shows are handled, before the first read. Use
+    .native where a library wants the real object, for example Playwright's
+    expect(proxy.native).
 
     Before an action, registered interruptions the page shows are handled (see
-    Healer.interrupt); on Selenium, only when something covers the element. With
+    Healer.interrupt); on Selenium, only when something covers the element. On
+    Playwright they are handled before the first read of the Locator too (LOCATOR_READS),
+    unless an action came first: once per lookup (see _before_read). With
     open(dismiss=True) a popup nobody registered that covers the element is
     dismissed (see mendwright.dismiss). An action that fails because something
     covered the element is retried once, and only after an interruption was
@@ -2594,6 +2623,10 @@ class ActionProxy:
         # The heal the element was found through, and the check its reads must pass.
         self._healed = healed
         self._expect = expect
+        # Whether a read still handles the registered interruptions first: until a read or
+        # an action of the element did, once per lookup (see _before_read). The elements of
+        # one heal.locator_all() share it.
+        self._reads_due = [True]
 
     @property
     def native(self) -> Any:
@@ -2636,6 +2669,7 @@ class ActionProxy:
         healer = self._healer
         budget = healer._before_action(self._key, self._timeout_ms, self._poll_ms,
                                        self._uncovered())
+        self._reads_due[0] = False      # its reads need not look again (see _before_read)
         healer._dismiss_before(self._key, self._native, verb, budget, self._timeout_ms,
                                self._poll_ms)
         with healer._running(self._key, budget, self._timeout_ms, self._poll_ms):
@@ -2759,12 +2793,16 @@ class ActionProxy:
 
     def __getattr__(self, name: str) -> Any:
         # Reads and anything else not listed in ACTIONS go to the native object unchanged,
-        # but for the reads expect_value= checks on an element found through a heal.
+        # but for the reads expect_value= checks on an element found through a heal, and
+        # for a Locator's reads on sync Playwright, the first of which handles interruptions
+        # first (see _before_read).
         if not self.__dict__.get('_present', True) and not name.startswith('__'):
             raise AttributeError(absent_message(self._key))
         value = getattr(self._native, name)
-        if (name not in VALUE_READS or self.__dict__.get('_expect') is None
-                or self.__dict__.get('_healed') is None):
+        checked = (name in VALUE_READS and self.__dict__.get('_expect') is not None
+                   and self.__dict__.get('_healed') is not None)
+        handles = name in LOCATOR_READS and callable(value) and self._healer._handles_reads()
+        if not (checked or handles):
             return value
         healer, key, healed, expect = self._healer, self._key, self._healed, self._expect
         confirms = self._canary          # off for the elements of a list: reads only refuse
@@ -2774,10 +2812,33 @@ class ActionProxy:
 
         def read(*args, **kwargs):
             __tracebackhide__ = True  # pytest shows the caller
-            return healer._check_value(key, healed, name, args, value(*args, **kwargs), expect,
-                                       confirms)
+            if handles:
+                self._before_read()
+            result = value(*args, **kwargs)
+            if not checked:
+                return result
+            return healer._check_value(key, healed, name, args, result, expect, confirms)
         read.__name__ = name
         return read
+
+    def _before_read(self):
+        """Before a read of the Locator (LOCATOR_READS) on sync Playwright: handle the
+        registered interruptions the page shows, as before an action (see
+        Healer._before_action), logged and journaled before this key, with no time limit
+        for a run= function. Playwright runs no overlay handler before a read, and its
+        handlers stay out of the lookup's scroll (see Healer.locator), so a cookie banner
+        would otherwise stay over the page after a step that only reads.
+
+        The check queries the page for each registered interruption, so it runs once per
+        lookup, as the lookup's scroll did on 0.7.0: on the first read, unless an action
+        of the element came first, and once for all the elements of a list. A banner that
+        opens later is left to the next action or lookup. A check that raised (a run=
+        function's error, InterruptionLoop) runs again on the next read."""
+        __tracebackhide__ = True
+        due = self._reads_due
+        if due[0]:
+            self._healer._before_action(self._key, self._timeout_ms, self._poll_ms)
+            due[0] = False
 
     def __repr__(self) -> str:
         if not self._present:

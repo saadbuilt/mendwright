@@ -393,6 +393,81 @@ def test_flow_a_banner_that_now_opens_first(engine, tmp_path):
     assert provider.bundles == []
 
 
+@pytest.mark.parametrize('read', ['page.text_content', 'locator.inner_text',
+                                  'page.get_attribute', 'cookies='])
+def test_flow_a_read_handles_a_cookie_banner_over_the_page_first(engine, tmp_path, read):
+    # As on the sync healer: the read handles the banner itself, as an action does, and logs
+    # it before its own key. The healer's lock keeps Playwright's handler out of the lookup.
+    async def main():
+        page = await engine.page(_ONETRUST if read == 'cookies=' else _SIGNUP + _COOKIE_BANNER)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300,
+                                             cookies='reject' if read == 'cookies=' else None)
+            if read != 'cookies=':
+                heal.interrupt('cookies', '#cookie-accept')
+            if read == 'page.text_content':
+                value, key = await heal.page.text_content('#create'), '#create'
+            elif read == 'locator.inner_text':
+                value, key = await heal.locator('create', '#create').inner_text(), 'create'
+            else:
+                value, key = await heal.page.get_attribute('#create', 'type'), '#create'
+            return heal, value, key, await page.text_content('#consent')
+        finally:
+            await _close(page)
+
+    heal, value, key, consent = engine.run(main())
+    assert value == ('button' if read in ('page.get_attribute', 'cookies=') else 'Create account')
+    assert consent == ('rejected' if read == 'cookies=' else 'accepted')
+    banner = 'cookie_banner' if read == 'cookies=' else 'cookies'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [(banner, key)]
+
+
+_ROWS = "<ul><li class='row'>Ada</li><li class='row'>Grace</li><li class='row'>Linus</li></ul>"
+
+
+@pytest.mark.parametrize('read', ['locator', 'locator_all'])
+def test_flow_a_read_handles_a_cookie_banner_once_per_lookup(engine, tmp_path, read):
+    # As on the sync healer: a banner that opens after the first read stays up through the
+    # next reads of the same proxy (the first resolves it), or of the other elements of the
+    # same list, until a new lookup's read handles it.
+    async def show_banner(page):
+        await page.evaluate("html => { document.getElementById('consent').textContent = 'none';"
+                            " document.body.insertAdjacentHTML('beforeend', html); }",
+                            _COOKIE_BANNER)
+
+    async def main():
+        page = await engine.page(_SIGNUP + _ROWS)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub(), store_path=_store(tmp_path),
+                                             timeout_ms=300)
+            heal.interrupt('cookies', '#cookie-accept')
+            await show_banner(page)
+            if read == 'locator':
+                items, key = [heal.locator('create', '#create')] * 3, 'create'
+            else:
+                items, key = await heal.locator_all('rows', 'li.row'), 'rows'
+            texts = [await items[0].inner_text()]
+            consents = [await page.text_content('#consent')]
+            await show_banner(page)
+            texts += [await item.inner_text() for item in items[1:]]
+            consents.append(await page.text_content('#consent'))
+            handled = [(e.key, e.before) for e in heal.handled_interruptions]
+            texts.append(await heal.page.text_content('#create'))
+            consents.append(await page.text_content('#consent'))
+            return heal, key, texts, consents, handled
+        finally:
+            await _close(page)
+
+    heal, key, texts, consents, handled = engine.run(main())
+    rows = ['Create account'] * 3 if read == 'locator' else ['Ada', 'Grace', 'Linus']
+    assert texts == rows + ['Create account']
+    assert consents == ['accepted', 'none', 'accepted']
+    assert handled == [('cookies', key)]
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key),
+                                                                       ('cookies', '#create')]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_flow_the_cookies_preset(engine, tmp_path, choice, outcome):
     async def main():
@@ -938,6 +1013,62 @@ def test_flow_what_an_async_run_function_raises_stops_the_step(engine, tmp_path)
 
     heal, saved = engine.run(main())
     assert saved == 'no' and len(calls) == 1 and heal.handled_interruptions == []
+
+
+# A Next button and a list of rows that stay disabled, and a session popup that
+# _SHOW_RELOGIN opens 0.3 seconds on, while an action on them waits.
+_LATE_RELOGIN = """<button id="next" type="button" disabled>Next</button>
+<ul><li><button class="row" type="button" disabled>Ada</button></li>
+  <li><button class="row" type="button" disabled>Grace</button></li></ul>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <input id="user" aria-label="User"></div>"""
+_SHOW_RELOGIN = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; },"
+                 " 300)")
+
+
+@pytest.mark.parametrize('how', ['healed', 'guarded', 'list'])
+def test_flow_a_step_waits_for_a_slow_async_run_function_of_the_overlay_handler(engine, tmp_path,
+                                                                                how):
+    # As on the sync healer: the popup opens while the click waits, so Playwright's overlay
+    # handler awaits the function, which takes longer than the click's 1 second and then
+    # raises. The click gives up while it runs: the step waits for it and raises its error,
+    # and a heal made in this run stays pending.
+    calls = []
+
+    async def relogin(page):
+        calls.append(page)
+        await page.fill('#user', 'ada')
+        await asyncio.sleep(1.5)
+        raise LookupError('no password for ada in the test vault')
+
+    async def main():
+        page = await engine.page(_LATE_RELOGIN)
+        try:
+            heal = await mendwright.aio.open(page, provider=Stub("//button[@id='next']"),
+                                             store_path=_store(tmp_path), timeout_ms=300,
+                                             dismiss=how == 'guarded')
+            if how == 'healed':
+                target = await heal.locator('next', '#next-old', role='button')
+            elif how == 'guarded':
+                target = heal.page.get_by_role('button', name='Next')
+            else:
+                target = (await heal.locator_all('rows', 'button.row'))[0]
+            heal.interrupt('relogin', '#relogin', run=relogin)
+            while heal._watching:
+                await asyncio.sleep(0)
+            await page.evaluate('() => ' + _SHOW_RELOGIN)
+            with pytest.raises(LookupError, match='no password for ada'):
+                await target.click(timeout=1000)
+            return heal, await page.input_value('#user')
+        finally:
+            await _close(page)
+
+    heal, user = engine.run(main())
+    assert len(calls) == 1 and user == 'ada'
+    if how == 'healed':
+        assert heal.pending() == {'next': "//button[@id='next']"}
+        assert heal.store.status('next', "//button[@id='next']") == 'active'
 
 
 def test_flow_cancelling_a_step_cancels_its_async_run_function(engine, tmp_path):

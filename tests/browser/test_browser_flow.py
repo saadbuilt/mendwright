@@ -148,6 +148,82 @@ function choose(choice) {
 </script>""", 'onetrust')
 
 
+_PRICE = page('<p>Consent: <span id="consent">none</span></p>'
+              '<p>Price: <span id="price" data-currency="USD">$10.00</span></p>'
+              + _SCRIPT + _BANNER, 'price')
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('read', ['page.text_content', 'locator.inner_text',
+                                  'page.get_attribute', 'cookies='])
+def test_a_read_handles_a_cookie_banner_over_the_page_first(tab, store_file, stub_provider,
+                                                            read):
+    # Playwright runs no overlay handler before a read, and its handlers stay out of the
+    # lookup's scroll, so the read handles the banner itself, as an action does, and logs
+    # it before its own key. A banner left up would cover page.mouse, a screenshot or a
+    # scraper's next read.
+    tab.load(_ONETRUST if read == 'cookies=' else _PRICE)
+    heal = _open(tab, stub_provider(None), store_file,
+                 cookies='reject' if read == 'cookies=' else None)
+    if read != 'cookies=':
+        heal.interrupt('cookies', '#cookie-accept')
+
+    if read == 'page.text_content':
+        value, key = heal.page.text_content('#price'), '#price'
+    elif read == 'locator.inner_text':
+        value, key = _step(heal, 'price', '#price').inner_text(), 'price'
+    elif read == 'page.get_attribute':
+        value, key = heal.page.get_attribute('#price', 'data-currency'), '#price'
+    else:
+        value, key = heal.page.get_attribute('#email', 'type'), '#email'
+
+    assert value == {'page.get_attribute': 'USD', 'cookies=': 'email'}.get(read, '$10.00')
+    banner = 'cookie_banner' if read == 'cookies=' else 'cookies'
+    assert tab.text('#consent') == ('rejected' if read == 'cookies=' else 'accepted')
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [(banner, key)]
+    assert _flow_events(store_file) == [('flow.interrupt', banner, key)]
+
+
+_ROWS = page('<p>Consent: <span id="consent">none</span></p>'
+             '<p>Price: <span id="price">$10.00</span></p>'
+             '<ul><li class="row">Ada</li><li class="row">Grace</li><li class="row">Linus</li>'
+             '</ul>' + _SCRIPT, 'rows')
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('read', ['locator', 'locator_all'])
+def test_a_read_handles_a_cookie_banner_once_per_lookup(tab, store_file, stub_provider, read):
+    # The check before a read queries the page for each registered interruption, so it runs
+    # once per lookup, as the lookup's scroll did on 0.7.0: a banner that opens after the
+    # first read stays up through the next reads of the same proxy, or of the other
+    # elements of the same list, until a new lookup's read handles it.
+    tab.load(_ROWS)
+    heal = _open(tab, stub_provider(None), store_file)
+    heal.interrupt('cookies', '#cookie-accept')
+    show = "document.body.insertAdjacentHTML('beforeend', " + json.dumps(_BANNER) + ')'
+    tab.js(show)
+    if read == 'locator':
+        items, key = [_step(heal, 'price', '#price')] * 3, 'price'
+    else:
+        items = heal.locator_all('rows', 'li.row', timeout_ms=FAST_MS, poll_ms=POLL_MS)
+        key = 'rows'
+
+    first = items[0].inner_text()
+    assert tab.text('#consent') == 'accepted'
+    tab.js("document.getElementById('consent').textContent = 'none'")
+    tab.js(show)
+    later = [item.inner_text() for item in items[1:]]
+
+    expected = ['$10.00'] * 3 if read == 'locator' else ['Ada', 'Grace', 'Linus']
+    assert [first] + later == expected
+    assert tab.text('#consent') == 'none'               # still up
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key)]
+    assert heal.page.text_content('#price') == '$10.00'
+    assert tab.text('#consent') == 'accepted'
+    assert [(e.key, e.before) for e in heal.handled_interruptions] == [('cookies', key),
+                                                                       ('cookies', '#price')]
+
+
 @pytest.mark.parametrize('choice, outcome', [('reject', 'rejected'), ('accept', 'accepted')])
 def test_the_cookies_preset_on_a_onetrust_banner(tab, store_file, stub_provider, choice, outcome):
     tab.load(_ONETRUST)
@@ -775,6 +851,56 @@ def test_a_slow_run_function_that_raises_stops_the_step_once(tab, store_file, st
 
     assert len(calls) == 1 and tab.value('#email') == ''
     assert [event[4] for event in _interrupt_events(store_file)] == ['failed']
+
+
+# A Next button and a list of rows that stay disabled, and a session popup that
+# _SHOW_RELOGIN opens 0.3 seconds on, while an action on them waits.
+_LATE_RELOGIN = page("""
+<button id="next" type="button" disabled>Next</button>
+<ul><li><button class="row" type="button" disabled>Ada</button></li>
+  <li><button class="row" type="button" disabled>Grace</button></li></ul>
+<div id="relogin" role="dialog" aria-label="Session expired"
+  style="display: none; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.4)">
+  <input id="user" aria-label="User"></div>""", 'late relogin')
+_SHOW_RELOGIN = ("setTimeout(() => { document.getElementById('relogin').style.display = 'block'; },"
+                 " 300)")
+
+
+@pytest.mark.engine_family('playwright')
+@pytest.mark.parametrize('how', ['healed', 'guarded', 'list'])
+def test_a_step_waits_for_a_slow_run_function_of_the_overlay_handler(tab, store_file,
+                                                                      stub_provider, how):
+    # The popup opens while the click waits, so Playwright's overlay handler calls the
+    # function, which takes longer than the click's 1 second and then raises. The click
+    # gives up while it runs: the step waits for it and raises its error, and a heal made in
+    # this run stays pending, since the click's failure says nothing about it.
+    tab.load(_LATE_RELOGIN)
+    heal = _open(tab, stub_provider("//button[@id='next']"), store_file,
+                 dismiss=how == 'guarded')
+    calls = []
+
+    def relogin(page):
+        calls.append(page)
+        page.fill('#user', 'ada')
+        page.wait_for_timeout(1500)
+        raise LookupError('no password for ada in the test vault')
+
+    if how == 'healed':
+        target = _step(heal, 'next', '#next-old', role='button')
+    elif how == 'guarded':
+        target = heal.page.get_by_role('button', name='Next')
+    else:
+        target = heal.locator_all('rows', 'button.row')[0]
+    heal.interrupt('relogin', '#relogin', run=relogin)
+    tab.js(_SHOW_RELOGIN)
+
+    with pytest.raises(LookupError, match='no password for ada'):
+        target.click(timeout=1000)
+
+    assert len(calls) == 1 and tab.value('#user') == 'ada'
+    if how == 'healed':
+        assert heal.pending() == {'next': "//button[@id='next']"}
+        assert heal.store.status('next', "//button[@id='next']") == 'active'
 
 
 # A popup that asks which saved address to deliver to, over the page: it closes once one of
