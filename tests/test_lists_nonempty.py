@@ -234,6 +234,7 @@ def test_the_list_gate_refuses_what_a_rejection_holds_and_names_an_acceptance(tm
 
 NO_MATCH = 'No matching element for: cart (tried 1 candidate(s)).\n  -> '
 ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]"
+REJECTED = 'it is a list heal you rejected, or one mendwright quarantined'
 
 
 def _open(page, root, provider=None, **kwargs):
@@ -849,6 +850,53 @@ def test_a_newer_proposal_next_to_an_accepted_one_says_so(tmp_path, make_page):
             'one or reject it. If the list can be empty here, remove nonempty=True.') in message
 
 
+def test_a_healer_that_lives_across_an_accept_does_not_propose_it_again(tmp_path, make_page):
+    page, heal, pid = _proposed(make_page, tmp_path)
+    held, reads = len(_events(tmp_path, 'heal.held')), page.items_reads
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', pid, now='2026-10-30T08:00:00+00:00')
+    message = _raised(heal)                                           # the same Healer
+    assert 'You accepted a list heal for it on 2026-10-30 08:00:00 UTC, ' + ROWS in message
+    assert 'Accept it with' not in message and page.items_reads == reads     # no search
+    assert len(_events(tmp_path, 'heal.held')) == held and len(heal.coordinator.held) == 1
+    assert _rows(tmp_path)[ROWS]['status'] == 'accepted'
+
+
+def test_a_healer_that_lives_across_a_reject_does_not_propose_it_again(tmp_path, make_page):
+    page, heal, pid = _proposed(make_page, tmp_path)
+    held = len(_events(tmp_path, 'heal.held'))
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'reject', pid)
+    assert _raised(heal) == _searched(
+        'the group it found, ' + ROWS + ", failed mendwright's list checks (" + REJECTED + ')')
+    assert len(_events(tmp_path, 'heal.held')) == held and len(heal.coordinator.held) == 1
+    assert _rows(tmp_path)[ROWS]['status'] == 'quarantined'
+
+
+@pytest.mark.parametrize('action', ['accept', 'reject'])
+def test_an_accept_or_reject_that_comes_during_the_search_is_kept(tmp_path, make_page, action):
+    # The person accepts or rejects after the lookup read the file again, and before the
+    # proposal is saved: the save takes in the file, and nothing is proposed.
+    page, heal, pid = _proposed(make_page, tmp_path)
+    held = len(_events(tmp_path, 'heal.held'))
+    heal.store.reload_list_heals = lambda key: None
+    capture = heal.coordinator.html_provider
+
+    def html():
+        edit_list_heal(tmp_path / 'o.json', 'cart', action, pid)
+        return capture()
+    heal.coordinator.html_provider = html
+    message = _raised(heal)
+    assert 'Accept it with' not in message and len(heal.coordinator.held) == 1
+    assert len(_events(tmp_path, 'heal.held')) == held
+    if action == 'accept':
+        assert 'You accepted a list heal for it on ' in message
+    else:
+        assert message.endswith("failed mendwright's list checks (" + REJECTED + '). If the '
+                                'selector broke, change it in your code. If the list can be '
+                                'empty here, remove nonempty=True.')
+    assert _rows(tmp_path)[ROWS]['status'] == ('accepted' if action == 'accept'
+                                               else 'quarantined')
+
+
 @pytest.mark.parametrize('nonempty', [True, False])
 def test_the_old_selector_matching_again_retires_list_heals(tmp_path, make_page, caplog,
                                                             nonempty):
@@ -915,6 +963,33 @@ def test_async_a_list_whose_rows_were_renamed_is_proposed_and_never_used(tmp_pat
     assert len(rows) == 3 and _rows(tmp_path)[ROWS]['status'] == 'quarantined'
     assert heal.heals == [] and heal.coordinator.held and lists.placed(
         load_store(None, str(tmp_path / 'o.json')).meta('cart')['listFingerprint'])
+
+
+def test_async_an_accepted_list_heal_waits_for_fix_with_no_search(tmp_path, make_page):
+    # The same healer lives across the accept, as a session-wide one does.
+    async def main():
+        sync = _shop(make_page)
+        heal = await mendwright.aio.open(_Page(sync), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0)
+        await heal.locator_all('cart', '.cart-item', nonempty=True)
+        sync.set_html(cart(True, row='cart-row'))
+        with pytest.raises(AttentionRequired):
+            await heal.locator_all('cart', '.cart-item', nonempty=True)
+        edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', _rows(tmp_path)[ROWS]['proposal']['id'],
+                       now='2026-10-30T08:00:00+00:00')
+        reads, events = sync.items_reads, len(_journal(tmp_path))
+        with pytest.raises(AttentionRequired) as waits:
+            await heal.locator_all('cart', '.cart-item', nonempty=True)
+        return heal, sync, reads, events, waits.value
+    heal, sync, reads, events, waits = asyncio.run(main())
+    assert str(waits) == NO_MATCH + (
+        "'cart' matched 3 elements when its list fingerprint was recorded, and none of its "
+        'selectors matches now. You accepted a list heal for it on 2026-10-30 08:00:00 UTC, '
+        + ROWS + ', which matches 3 elements now, but mendwright takes a list only from the '
+        'selectors in your code. Write it there with: mendwright fix --apply' + _flag(tmp_path)
+        + '. If the list can be empty here, remove nonempty=True.')
+    assert sync.items_reads == reads and len(_journal(tmp_path)) == events      # no search
+    assert len(heal.coordinator.held) == 1
 
 
 def test_selenium_a_list_whose_rows_were_renamed_is_proposed(tmp_path):

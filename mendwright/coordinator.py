@@ -597,6 +597,19 @@ class HealCoordinator:
             detail = type(exc).__name__ + (': ' + str(exc) if str(exc) else '')
             return self._list_refused(selector_key, self._unsaved(selector_key,
                                                                   'it raised ' + detail))
+        # The write takes in the file: a person may have accepted or rejected this list heal
+        # since the store was read (see SelectorStore._merge_status), and then it is not
+        # proposed.
+        status = row.get('status') if isinstance(row, dict) else None
+        if status == 'accepted':
+            return ListOutcome('accepted', xpath=match.xpath, row=row, count=match.count)
+        if status == 'quarantined':
+            from .client import _REJECTED_LIST
+            self.journal.rejected(selector_key, xpath=match.xpath, list=True,
+                                  reason=_REJECTED_LIST, source=FINGERPRINT_PROVIDER)
+            return self._list_refused(selector_key, nonempty_searched(
+                selector_key, lfp.get('count'), 'the group it found, ' + match.xpath
+                + ", failed mendwright's list checks (" + _REJECTED_LIST + ')'))
         seconds = max(0.0, self.clock() - started)
         now = evidence['now']
         self.journal.held(selector_key, provider=FINGERPRINT_PROVIDER,

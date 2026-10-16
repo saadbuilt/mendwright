@@ -817,6 +817,39 @@ class SelectorStore:
         self._persist_override()
         return copy.deepcopy(c)
 
+    def reload_list_heals(self, key):
+        """Take in what another process did to key's list heals in the override file since
+        this store read or wrote it, such as mendwright lists accept or reject: the statuses
+        'accepted', 'quarantined' and 'superseded', and acceptedAt, merged as a write merges
+        them (see _absorb), without writing. So a store loaded before a person accepted or
+        rejected a list heal doesn't propose it again. Nothing when the file can't be read."""
+        entry = self._data['selectors'].get(key)
+        if not entry or not any(_is_list_heal(c) for c in entry.get('candidates', [])):
+            return
+        try:
+            disk, _native = _read(self._override_path, self._destructive_keys, sleep=self._sleep)
+        except Exception:
+            return
+        theirs = (disk.get('selectors') or {}).get(key)
+        if not isinstance(theirs, dict):
+            return
+        mine = {c['xpath']: c for c in entry.get('candidates', []) if _is_list_heal(c)}
+        for c in theirs.get('candidates') or ():
+            if not isinstance(c, dict) or c.get('xpath') not in mine:
+                continue
+            local = mine[c['xpath']]
+            status = _merge_status(local.get('status', 'active'), c.get('status', 'active'),
+                                   self._base.get((key, c['xpath'])))
+            if status == local['status'] or status not in ('accepted', 'quarantined',
+                                                           'superseded'):
+                continue
+            local['status'] = status
+            if status == c.get('status'):
+                self._base[(key, c['xpath'])] = status      # as the file has it now
+            if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
+                    isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
+                local['acceptedAt'] = c['acceptedAt']
+
     def retire_list_heals(self, key, selector, *, now=None):
         """End key's list heals that the selector ``selector``, which just matched, was
         replaced by: those whose proposal names it among the selectors that matched nothing

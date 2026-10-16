@@ -1285,6 +1285,19 @@ class Healer:
         except Exception:
             return []
 
+    def _reload_lists(self, key):
+        """Take in what mendwright lists accept or reject did to key's list heals since the
+        store was read (SelectorStore.reload_list_heals), so a Healer that lives across an
+        accept or a reject doesn't propose that list heal again. Nothing for a store without
+        reload_list_heals()."""
+        method = getattr(self.store, 'reload_list_heals', None)
+        if not callable(method):
+            return
+        try:
+            method(key)
+        except Exception:
+            logger.debug('mendwright: could not reload the list heals of %r', key, exc_info=True)
+
     def _retire_lists(self, key, selector, count):
         """End key's list heals that selector, which just matched count elements, replaced
         (SelectorStore.retire_list_heals): a proposed one is no longer proposed, an accepted
@@ -1311,6 +1324,7 @@ class Healer:
         reason = self._nonempty_blocked(key)
         if reason:
             raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+        self._reload_lists(key)
         for row in self._list_rows(key):
             if row.get('status') == 'accepted':
                 count = self._count_live(row.get('xpath'))

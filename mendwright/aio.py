@@ -769,6 +769,7 @@ class AsyncHealer:
         reason = core._nonempty_blocked(key)
         if reason:
             raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+        core._reload_lists(key)
         for row in core._list_rows(key):
             if row.get('status') == 'accepted':
                 count = await self._count_live(row.get('xpath'))

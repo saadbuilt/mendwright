@@ -134,6 +134,26 @@ def test_a_process_that_loaded_the_proposal_keeps_its_acceptance(tmp_path):
     assert row['proposal']['id'] == '3f2a9c1d'
 
 
+def test_a_store_reloads_what_mendwright_lists_did_to_its_list_heals(tmp_path):
+    store = _store(tmp_path)
+    store.propose_list_heal('cart', ROWS, proposal=evidence())
+    store.propose_list_heal('cart', SAVED, proposal=evidence('9b8c7d6e'))
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', '3f2a9c1d',
+                   now='2026-11-02T10:20:00+00:00')
+    before = (tmp_path / 'o.json').read_bytes()
+    assert store.status('cart', ROWS) == 'proposed'                     # read before it
+    store.reload_list_heals('cart')
+    assert store.status('cart', ROWS) == 'accepted' and store.status('cart', SAVED) == 'superseded'
+    assert store.list_heals('cart')[0]['acceptedAt'] == '2026-11-02T10:20:00+00:00'
+    assert (tmp_path / 'o.json').read_bytes() == before                 # nothing written
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'reject', '3f2a9c1d')
+    store.reload_list_heals('cart')
+    assert store.status('cart', ROWS) == 'quarantined'
+    store.set_meta('cart', role='div')                                   # a later write keeps it
+    assert _rows(tmp_path)[ROWS]['status'] == 'quarantined'
+    store.reload_list_heals('nothing')                                   # no such key: nothing
+
+
 def test_a_write_by_mendwright_0_8_0_drops_the_evidence_and_fails_closed(tmp_path):
     store = _store(tmp_path)
     store.propose_list_heal('cart', ROWS, proposal=evidence())
