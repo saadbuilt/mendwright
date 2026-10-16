@@ -82,7 +82,9 @@ def migrate_schema1(data, destructive_keys=frozenset()):
 def merge(seed, override):
     """Union candidates per key (override overlays seed by xpath). Non-candidate
     metadata comes from the seed, falling back to the override for override-only
-    keys."""
+    keys. A list heal of the override that waits (proposed or accepted) and that the seed
+    holds too is the seed's row: a person put it in the seed file, as mendwright fix puts
+    one in the code (see SelectorStore.set_code_candidates)."""
     out = {'schema': 2, 'selectors': {}}
     keys = set(seed.get('selectors', {})) | set(override.get('selectors', {}))
     for key in keys:
@@ -94,6 +96,8 @@ def merge(seed, override):
             candidates[c['xpath']] = dict(c)
         for c in o.get('candidates', []):
             if c['xpath'] in candidates:
+                if _is_list_heal(c):
+                    continue
                 candidates[c['xpath']].update(c)
             else:
                 candidates[c['xpath']] = dict(c)
@@ -433,6 +437,13 @@ class SelectorStore:
         for skey, sentry in (seed or {}).get('selectors', {}).items():
             for sc in sentry.get('candidates', []):
                 self._seed_state[(skey, sc.get('xpath'))] = _row_state(sc)
+        # A list heal that waited and that the seed file holds now is the seed's row (see
+        # merge): the file's "list", proposal and acceptedAt are not taken back for it.
+        for okey, oentry in (override or {}).get('selectors', {}).items():
+            for oc in (oentry.get('candidates') or () if isinstance(oentry, dict) else ()):
+                if (isinstance(oc, dict) and _is_list_heal(oc)
+                        and (okey, oc.get('xpath')) in self._seed_state):
+                    self._delisted.add((okey, oc['xpath']))
         # Keys whose destructive flag nothing can clear: the seed's flags (or, with no seed
         # given, the flags in data). destructive_keys is checked as well, in meta().
         source = seed if seed is not None else data

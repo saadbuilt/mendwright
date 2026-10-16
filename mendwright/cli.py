@@ -943,8 +943,14 @@ def _lists_edit(args, path, action):
     try:
         data = _read_store(path)
         role = data['selectors'][done.key].get('expectedRole')
+        rows = [c for c in data['selectors'][done.key].get('candidates') or ()
+                if isinstance(c, dict)]
     except (ReportError, KeyError, AttributeError):
-        role = None
+        role, rows = None, None
+    # No selector of the code is saved for the key: its selectors come from a seed file
+    # (see fixback._plan_list).
+    seeded = rows is not None and not any(
+        c.get('source') == 'code' and (c.get('status') or 'active') == 'active' for c in rows)
     now = evidence.get('now') if isinstance(evidence.get('now'), dict) else {}
     what = ''
     if isinstance(evidence.get('count'), int):
@@ -952,8 +958,15 @@ def _lists_edit(args, path, action):
                                                        else 'list') + ' elements'
                 + (' under ' + repr(_printable(now['label'])) if now.get('label') else '') + ')')
     _out('Accepted the list heal of ' + shown + ': ' + _printable(done.xpath) + what + '.')
-    _out("mendwright doesn't use it until it is in your code. Write it there with: mendwright "
-         'fix --apply' + store_flag(path))
+    if seeded:
+        from .coordinator import _in_seed
+        was = evidence.get('was') if isinstance(evidence.get('was'), dict) else {}
+        replaced = [_printable(str(s)) for s in was.get('selectors') or ()]
+        _out("mendwright doesn't use it until it is one of the key's selectors. "
+             + _in_seed(replaced))
+    else:
+        _out("mendwright doesn't use it until it is in your code. Write it there with: "
+             'mendwright fix --apply' + store_flag(path))
     if done.superseded:
         _out('It replaces ' + _plural(len(done.superseded), 'other list heal',
                                       'other list heals') + ' found for ' + repr(done.key) + '.')

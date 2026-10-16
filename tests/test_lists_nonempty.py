@@ -978,6 +978,54 @@ def test_one_element_of_the_old_selector_quarantines_an_accepted_list_heal_and_s
     assert _rows(tmp_path)[ROWS]['status'] == 'active'
 
 
+def _seeded(make_page, root, xpath, page=None):
+    """A healer whose 'cart' comes only from a seed file holding xpath."""
+    seed = root / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {'cart': {
+        'expectedRole': 'div', 'candidates': [
+            {'xpath': xpath, 'source': 'seed', 'addedAt': '2026-10-01T08:00:00+00:00',
+             'lastSucceededAt': None, 'status': 'active'}]}}}), encoding='utf-8')
+    page = page or _shop(make_page)
+    store = load_store(str(seed), str(root / 'o.json'))
+    return page, mendwright.open(page, provider=None, store=store, timeout_ms=0)
+
+
+def test_a_list_heal_of_a_key_from_a_seed_file_says_to_put_it_in_the_seed_file(tmp_path,
+                                                                            make_page, capsys):
+    from mendwright import cli
+    page, heal = _seeded(make_page, tmp_path, '.cart-item')
+    assert len(heal.locator_all('cart', nonempty=True)) == 3
+    page.set_html(cart(True, row='cart-row'))
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator_all('cart', nonempty=True)
+    pid = _rows(tmp_path)[ROWS]['proposal']['id']
+    seed = (" Its selectors come from a seed file, which mendwright fix doesn't change, so "
+            'then put it there in place of .cart-item. If the list can be empty here')
+    assert ('Accept it with: mendwright lists accept cart ' + pid + _flag(tmp_path) + '.'
+            + seed) in str(info.value)
+    assert 'mendwright fix' not in str(info.value).split('Accept it with')[1].replace(
+        "which mendwright fix doesn't change", '')
+    assert cli.main(['lists', 'accept', 'cart', pid, '--store', str(tmp_path / 'o.json')]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "mendwright doesn't use it until it is one of the key's selectors. Its selectors come "
+        "from a seed file, which mendwright fix doesn't change, so put it there in place of "
+        '.cart-item.')
+    page, heal = _seeded(make_page, tmp_path, '.cart-item', page)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator_all('cart', nonempty=True)
+    assert str(info.value).endswith(
+        ", which matches 3 elements now, but mendwright takes a list only from the key's own "
+        "selectors. Its selectors come from a seed file, which mendwright fix doesn't change, so "
+        'put it there in place of .cart-item. If the list can be empty here, remove '
+        'nonempty=True.')
+    # The person puts it in the seed file: the seed's row wins over the accepted list heal.
+    page, heal = _seeded(make_page, tmp_path, ROWS, page)
+    assert len(heal.locator_all('cart', nonempty=True)) == 3
+    assert heal.store.list_heals('cart') == []
+    assert ROWS not in _rows(tmp_path) or _rows(tmp_path)[ROWS]['source'] == 'seed'
+    assert not [c for c in _rows(tmp_path).values() if c.get('list')]
+
+
 def test_another_selector_of_the_key_retires_nothing(tmp_path, make_page):
     page, heal, pid = _proposed(make_page, tmp_path)
     page.set_html(cart(True, row='cart-row'))

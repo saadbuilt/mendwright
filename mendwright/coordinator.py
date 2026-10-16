@@ -136,6 +136,16 @@ def _elements(n):
     return str(n) + (' element' if n == 1 else ' elements')
 
 
+def _in_seed(selectors, then=''):
+    """The sentence that says where a list heal goes for a key whose selectors all come from
+    a seed file, which mendwright fix doesn't change: in the seed file, in place of
+    selectors. A seed file that holds the list heal's XPath takes it over (see
+    store.merge)."""
+    return ("Its selectors come from a seed file, which mendwright fix doesn't change, so "
+            + then + 'put it there' + (' in place of ' + ' and '.join(map(str, selectors))
+                                       if selectors else '') + '.')
+
+
 @dataclass(frozen=True)
 class ListOutcome:
     """What HealCoordinator.propose_list() did: kind is 'proposed' (saved for a person to
@@ -663,6 +673,11 @@ class HealCoordinator:
                          + ', which matches nothing now. mendwright fix writes neither until '
                          'you accept this one or reject it.')
                 break
+        seeded = self._seed_selectors(selector_key)
+        if seeded is None:
+            write = ' Then write it into your code with: mendwright fix --apply' + flag + '.'
+        else:
+            write = ' ' + _in_seed(was.get('selectors') or seeded, then='then ')
         return (repr_key(selector_key) + ' matched ' + _had(lfp.get('count')) + ' when its list '
                 'fingerprint was recorded' + _place(was['label'], was['container']) + ', and none '
                 'of its selectors matches now. nonempty=True says the list has items here, so '
@@ -673,8 +688,20 @@ class HealCoordinator:
                 'uses a list it finds, because the items of an emptied list can show in another '
                 'list on the page. If this is the list, look at it with: mendwright lists' + flag
                 + '. Accept it with: mendwright lists accept ' + word + ' ' + evidence['id'] + flag
-                + note + '. Then write it into your code with: mendwright fix --apply' + flag + '.'
-                + other + ' If the list can be empty here, remove nonempty=True.')
+                + note + '.' + write + other + ' If the list can be empty here, remove '
+                'nonempty=True.')
+
+    def _seed_selectors(self, selector_key):
+        """key's selectors when they all come from a seed file: no selector of your code is
+        saved for it, so mendwright fix, which changes only the code, can't write a list heal
+        for it. None when one comes from the code, or the store can't say."""
+        try:
+            rows = list(self.store.candidates(selector_key))
+        except Exception:
+            return None
+        if not rows or any(c.get('source') == 'code' for c in rows):
+            return None
+        return [c['xpath'] for c in rows if c.get('source') != 'heal' and not c.get('frameXPath')]
 
     def _list_heals(self, selector_key):
         """store.list_heals(key), or [] for a store without it, or that raised."""
@@ -732,14 +759,23 @@ class HealCoordinator:
         from .cli import _when
         lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
         when = (row or {}).get('acceptedAt')
+        seeded = self._seed_selectors(selector_key)
+        if seeded is None:
+            where = ('the selectors in your code. Write it there with: mendwright fix --apply'
+                     + _store_flag(self.store) + '.')
+        else:
+            evidence = (row or {}).get('proposal')
+            was = evidence.get('was') if isinstance(evidence, dict) else None
+            replaced = was.get('selectors') if isinstance(was, dict) else None
+            where = ("the key's own selectors. "
+                     + _in_seed(replaced if isinstance(replaced, list) and replaced else seeded))
         reason = (repr_key(selector_key) + ' matched ' + _had((lfp or {}).get('count'))
                   + ' when its list fingerprint was recorded, and none of its selectors matches '
                   'now. You accepted a list heal for it on '
                   + (_when(when) if isinstance(when, str) and when else 'date unknown') + ', '
                   + str((row or {}).get('xpath')) + ', which matches ' + _elements(count)
-                  + ' now, but mendwright takes a list only from the selectors in your code. '
-                  'Write it there with: mendwright fix --apply' + _store_flag(self.store)
-                  + '. If the list can be empty here, remove nonempty=True.')
+                  + ' now, but mendwright takes a list only from ' + where
+                  + ' If the list can be empty here, remove nonempty=True.')
         self.heal_reasons[selector_key] = reason
         self._emit(logging.WARNING, repr(selector_key) + ' waits for mendwright fix: ' + reason)
         return reason

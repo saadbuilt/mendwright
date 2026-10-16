@@ -118,6 +118,29 @@ def test_newer_proposals_never_push_out_an_accepted_list_heal(tmp_path):
         '//li[@class="l3"]', '//li[@class="l2"]']                  # the oldest one is dropped
 
 
+def test_a_seed_file_that_holds_a_list_heal_takes_it_over(tmp_path):
+    store = _store(tmp_path, code=())
+    store.propose_list_heal('cart', ROWS, proposal=evidence())
+    store.propose_list_heal('cart', SAVED, proposal=evidence('9b8c7d6e'))
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', '3f2a9c1d')
+    data = _file(tmp_path)
+    data['selectors']['cart']['candidates'].append(
+        {'xpath': '.gone', 'source': 'heal', 'addedAt': 'x', 'lastSucceededAt': None,
+         'status': 'quarantined'})
+    (tmp_path / 'o.json').write_text(json.dumps(data), encoding='utf-8')
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {'cart': {'candidates': [
+        {'xpath': x, 'source': 'seed', 'addedAt': 'x', 'lastSucceededAt': None, 'status': 'active'}
+        for x in (ROWS, '.gone')]}}}), encoding='utf-8')
+    seeded = load_store(str(seed), str(tmp_path / 'o.json'))
+    assert seeded.status('cart', ROWS) == 'active' and seeded.list_heals('cart') == []
+    assert seeded.status('cart', '.gone') == 'quarantined'              # a quarantine still pins
+    seeded.set_meta('cart', role='div')                                 # its next write
+    rows = _rows(tmp_path)
+    assert ROWS not in rows and rows['.gone']['status'] == 'quarantined'
+    assert rows[SAVED]['status'] == 'superseded'
+
+
 # --- several processes on one file -------------------------------------------------------------
 
 def test_two_processes_keep_both_proposals_and_the_newer_evidence(tmp_path):
