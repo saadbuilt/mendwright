@@ -35,7 +35,7 @@ from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .client import _stored_status, add_heal
-from .coordinator import HealCoordinator, resolve_with_heal
+from .coordinator import DISABLED_REASON, HealCoordinator, resolve_with_heal
 from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, expect_control,
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
@@ -401,9 +401,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     fingerprint = fingerprint_setting(fingerprint)
 
     if _env_flag('MENDWRIGHT_DISABLE'):
-        provider = _NullProvider(
-            'healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not repaired. '
-            'Unset MENDWRIGHT_DISABLE to let mendwright heal again.')
+        provider = _NullProvider(DISABLED_REASON)
     elif provider is None:
         try:
             from .providers import auto_provider

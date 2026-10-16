@@ -12,6 +12,7 @@ import urllib.request
 
 import lxml.html
 
+from . import getby
 from .css import css_selectors
 from .fit import has_position
 from .gate import live_reason
@@ -251,7 +252,9 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
 
     The gate is: static validate() against the captured HTML AND, when a live `driver` is
     supplied, the live check against the current page (exactly-one + visible). A candidate
-    that validates statically but is not uniquely present live is NOT applied.
+    that validates statically but is not uniquely present live is NOT applied. For the key
+    of a get_by_role() call (see mendwright.getby), the live check also asks Playwright
+    whether the element has the call's ARIA role (see gate.live_reason).
 
     A candidate the store already holds as quarantined or superseded is rejected with
     reason 'previously quarantined' / 'previously superseded'. Adding it again would not
@@ -308,7 +311,7 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
         if classify(xpath) != XPATH:  # defensive: never store a model's engine selector
             reason = 'not an XPath expression'
             continue
-        live = live_reason(driver, xpath, meta)
+        live = live_reason(driver, xpath, meta, call=getby.parse(selector_key))
         if live:
             reason = live
             continue

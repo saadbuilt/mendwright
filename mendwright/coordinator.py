@@ -6,7 +6,9 @@ submitted, keys marked destructive are never healed, a key is not healed on a pa
 it was never found (a change in the flow, see mendwright.flow), and a failed canary
 quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
-A list whose selectors all match nothing is never healed (see decline_list).
+A list whose selectors all match nothing is never healed (see decline_list), and the key of
+a heal.page.get_by_*() call is healed from its fingerprint only, never by a model (see
+_heal_get_by).
 """
 
 import contextlib
@@ -14,6 +16,7 @@ import logging
 import time
 
 from . import fingerprint as _fingerprint
+from . import getby
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
@@ -44,6 +47,14 @@ def _role_needed(selector_key):
             "role='checkbox', role='link' or role='combobox', or set expectedRole for the key "
             "in the seed file.")
 
+
+# Why nothing heals under MENDWRIGHT_DISABLE=1 (the provider open() swaps in says it too).
+DISABLED_REASON = ('healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not '
+                   'repaired. Unset MENDWRIGHT_DISABLE to let mendwright heal again.')
+# Why nothing heals while the guard blocks.
+GUARD_REASON = ('a transaction guard is currently blocking heals (a payment or registration '
+                'submission is pending), so mendwright did not try to heal. Run the step again '
+                'once the guard allows heals.')
 
 # The provider name heals from the fingerprint tier get in the journal and the log.
 FINGERPRINT_PROVIDER = 'fingerprint'
@@ -210,7 +221,8 @@ class HealCoordinator:
         human-readable reason via ``self.heal_reasons`` (see ``explain``).
 
         With fingerprint=True the fingerprint tier runs first (after the destructive, page,
-        role and guard checks), and the provider is asked only when it does not heal."""
+        role and guard checks), and the provider is asked only when it does not heal. The
+        key of a get_by_* call is healed from its fingerprint only (see _heal_get_by)."""
         if meta.get('destructive'):
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
@@ -218,6 +230,8 @@ class HealCoordinator:
         moved = self._flow_change(selector_key, context)
         if moved:
             return self._decline(selector_key, moved)
+        if getby.is_key(selector_key):
+            return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
         # stand-in) carries its own actionable reason; surface it verbatim. The str check
         # matters: a bare Mock()/MagicMock() test double answers every attribute with a
@@ -238,10 +252,7 @@ class HealCoordinator:
             # for nothing.
             return self._decline(selector_key, 'mendwright ' + _role_needed(selector_key))
         if not self.guard():
-            return self._decline(selector_key,
-                "a transaction guard is currently blocking heals (a payment or registration "
-                "submission is pending), so mendwright did not try to heal. Run the step again "
-                "once the guard allows heals.")
+            return self._decline(selector_key, GUARD_REASON)
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -345,6 +356,37 @@ class HealCoordinator:
             "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
             "matches exactly one element of the expected role and is present on the live page.")
         return None
+
+    def _heal_get_by(self, selector_key, meta, broken_candidates):
+        """try_heal() for the key of a heal.page.get_by_*() call (see mendwright.getby),
+        after the destructive and page checks: the fingerprint tier only. A call names its
+        element by role and words, and when it breaks those are what changed, so a model
+        given the old call could only guess. The fingerprint holds what survives a redesign
+        (ids, test ids, names, classes, ancestors), and the tier needs a strong identity
+        signal and a margin before it proposes anything. So no provider, gateway or local
+        model is asked, no page leaves the machine, and the rate limit is not used.
+
+        Declined, in order: MENDWRIGHT_DISABLE=1, the fingerprint tier off, no fingerprint
+        in the store (a call that never matched is more often a mistake in the call than a
+        redesign), an unknown role, a guard that blocks; then whatever the tier itself does
+        not heal. Its pick goes through apply(), whose live check also asks Playwright for
+        the ARIA role of a get_by_role() call (gate.live_reason)."""
+        if self.disabled:
+            return self._decline(selector_key, DISABLED_REASON)
+        if not self.fingerprint:
+            return self._decline(selector_key, getby.tier_off_message(selector_key))
+        if not _fingerprint.valid(meta.get('fingerprint')):
+            return self._decline(selector_key, getby.no_fingerprint_message(selector_key))
+        role = meta.get('expectedRole')
+        if not role or role == 'unknown':
+            return self._decline(selector_key, getby.role_unknown_message(selector_key))
+        if not self.guard():
+            return self._decline(selector_key, GUARD_REASON)
+        applied, note, _requested = self._fingerprint_tier(
+            selector_key, meta, broken_candidates, self.html_provider(), self.clock())
+        if applied is not None:
+            return applied      # the heal, or False after the dry run declined it
+        return self._decline(selector_key, note + '. ' + getby.NO_MODEL)
 
     def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
         """The first tier: (applied, note, requested). applied is the xpath applied, False

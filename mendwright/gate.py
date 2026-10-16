@@ -7,8 +7,12 @@ the store only after two checks (client.apply runs both):
   2. A live check against the current page through the Driver (live_reason below): it
      matches exactly one element at that moment, and, for a driver with describe(), that
      element is read again: it must have the expected role (and the expected text for a
-     destructive key). The element must also be visible unless its role is checkbox (a
-     hidden native checkbox behind a styled label is common).
+     destructive key). For the key of a heal.page.get_by_role() call (see mendwright.getby)
+     Playwright itself must give the element the call's ARIA role, and level= when the call
+     has one (driver.role_match): the gate's role is mostly the tag, and a
+     <button role="tab"> that lost its role is still a button to it. A driver that cannot
+     tell refuses the heal. The element must also be visible unless its role is checkbox
+     (a hidden native checkbox behind a styled label is common).
 
 The snapshot is taken before the model call, which takes seconds, so the page can change
 in between (a single-page app re-rendering). Reading the element again on the live page
@@ -20,16 +24,21 @@ A selector that matched once in a captured string is not enough; it must be uniq
 present on the live page when it is saved. Keys marked destructive never get this far: the
 coordinator refuses them first."""
 
+from .drivers.base import driver_role_match
+from .getby import ROLE_UNREADABLE, role_mismatch
 from .validation import _norm
 
 NOT_LIVE = 'passed static validation but not uniquely present on the live page'
 UNREADABLE = 'could not read the live element, so its role could not be checked'
 
 
-def live_reason(driver, xpath, meta, frame_chain=()):
+def live_reason(driver, xpath, meta, frame_chain=(), call=None):
     """'' when xpath passes the live check, else the reason it does not (apply() passes it
     to the re-prompt). Any driver error counts as a failure (fail closed). With no live
-    driver (the legacy low-level path) only the static gate applies, so this is ''."""
+    driver (the legacy low-level path) only the static gate applies, so this is ''.
+
+    call is the GetByCall of the key when the key is a get_by_* call (see
+    mendwright.getby): for get_by_role(), Playwright must give the element its role."""
     if driver is None:
         return ''
     meta = meta or {}
@@ -48,6 +57,12 @@ def live_reason(driver, xpath, meta, frame_chain=()):
                 texts = {_norm(t) for t in (meta.get('expectedText') or ())}
                 if _norm(live.get('text')) not in texts:
                     return 'live action text mismatch: ' + _norm(live.get('text'))
+        if call is not None and call.method == 'get_by_role':
+            ok = driver_role_match(driver, xpath, call.value, call.level, frame_chain)
+            if ok is None:
+                return ROLE_UNREADABLE
+            if not ok:
+                return role_mismatch(call)
         if meta.get('expectedRole') == 'checkbox':
             return ''
         if not driver.is_visible(xpath, frame_chain):
