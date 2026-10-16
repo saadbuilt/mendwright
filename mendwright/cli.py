@@ -389,6 +389,35 @@ def default_store_path():
                                               or DEFAULT_STORE_PATH))
 
 
+def store_flag(path):
+    """' --store "PATH"' for a command a message tells you to run on the store at path,
+    or '' when path is the default store (default_store_path())."""
+    try:
+        same = (os.path.normcase(os.path.abspath(os.fspath(path)))
+                == os.path.normcase(default_store_path()))
+    except (TypeError, ValueError):
+        return ''
+    return '' if same else ' --store "' + os.fspath(path) + '"'
+
+
+_PLAIN_KEY = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-')
+
+
+def command_key(key):
+    """(word, note): key as a command a message prints puts it for a shell. As it is when
+    it has only letters, digits, _ . and -; else in double quotes when it has no ", `, $ or
+    backslash; else in single quotes when it has no '; else KEY, with note saying to quote
+    the key (note is '' otherwise)."""
+    text = str(key)
+    if text and set(text) <= _PLAIN_KEY:
+        return text, ''
+    if not any(ch in text for ch in '"`$\\'):
+        return '"' + text + '"', ''
+    if "'" not in text:
+        return "'" + text + "'", ''
+    return 'KEY', ' (put the key ' + repr(text) + ' in quotes for your shell)'
+
+
 def _read_store(path):
     try:
         with open(path, encoding='utf-8-sig') as handle:

@@ -18,7 +18,12 @@ describe() gets only the count and visibility checks.
 
 A selector that matched once in a captured string is not enough; it must be uniquely
 present on the live page when it is saved. Keys marked destructive never get this far: the
-coordinator refuses them first."""
+coordinator refuses them first.
+
+A list found for heal.locator_all(..., nonempty=True) (see mendwright.lists) has a live check
+of its own, list_live_reason(): two or more elements on the live page, each of the items'
+role, and at least one of them visible. It is never used, only proposed, but a person reads
+it as a list that is on the page."""
 
 from .validation import _norm
 
@@ -60,3 +65,35 @@ def live_reason(driver, xpath, meta, frame_chain=()):
 def live_match(driver, xpath, meta, frame_chain=()):
     """True if xpath passes the live check (see live_reason)."""
     return not live_reason(driver, xpath, meta, frame_chain)
+
+
+# list_live_reason()'s reason when the live page could not be read (fail closed).
+LIST_UNREADABLE = 'the live page could not be read'
+
+
+def list_live_reason(driver, xpath, meta):
+    """'' when the list xpath passes the live check, else the reason it does not. The
+    elements are read in one round trip (list_items(), at most the first 200 of them): two
+    or more, each of the expected role, at least one visible. A driver without
+    list_items(), no live driver and any driver error fail (fail closed)."""
+    from .drivers.base import driver_list_items
+    want = (meta or {}).get('expectedRole')
+    try:
+        items = driver_list_items(driver, xpath) if driver is not None else None
+    except Exception:
+        return LIST_UNREADABLE
+    if not isinstance(items, list):
+        return LIST_UNREADABLE
+    if len(items) < 2:
+        return _too_few(len(items))
+    for item in items:
+        if want and want != 'unknown' and item.get('role') != want:
+            return 'live element role mismatch: got ' + str(item.get('role')) + ' want ' + str(want)
+    if not any(item.get('visible') for item in items):
+        return 'none of its ' + str(len(items)) + ' elements is visible on the live page'
+    return ''
+
+
+def _too_few(count):
+    return ('it matches ' + str(count) + (' element' if count == 1 else ' elements')
+            + ' on the live page, and a list heal needs 2 or more')

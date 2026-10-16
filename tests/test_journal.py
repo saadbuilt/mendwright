@@ -8,9 +8,11 @@ import os
 import pytest
 
 from mendwright.journal import (
+    ACCEPTED,
     APPLIED,
     CANARY,
     DEFAULT_PATH,
+    HELD,
     PROPOSED,
     QUARANTINE,
     REJECTED,
@@ -64,6 +66,19 @@ def test_writes_events_and_reads_back_jsonl(tmp_path):
     assert 'model' not in rows[0] and 'latency_ms' not in rows[0] and 'tokens' not in rows[0]
     # False is real data, not "unknown" -> it must be kept.
     assert rows[4]['success'] is False
+
+
+def test_list_heals_held_and_accepted_have_events_of_their_own(tmp_path):
+    j = _journal(tmp_path)
+    j.held('cart', provider='fingerprint', xpath='//li', id='3f2a9c1d', list=True, css=None)
+    j.accepted('cart', xpath='//li', id='3f2a9c1d', list=True)
+    rows = _read(tmp_path)
+    assert (HELD, ACCEPTED) == ('heal.held', 'heal.accepted')
+    assert [r['event'] for r in rows] == [HELD, ACCEPTED]
+    assert rows[0] == {'ts': FIXED, 'event': HELD, 'key': 'cart', 'provider': 'fingerprint',
+                       'xpath': '//li', 'id': '3f2a9c1d', 'list': True}
+    NullJournal().held('cart')
+    NullJournal().accepted('cart')
 
 
 def test_appends_without_truncating(tmp_path):

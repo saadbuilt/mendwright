@@ -13,12 +13,15 @@ import pytest
 
 from mendwright import lists
 from mendwright.aio import SyncBridge
+from mendwright.client import list_gate
 from mendwright.drivers.base import (driver_list_fingerprint, driver_list_items, driver_places,
                                      item_rows)
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
 from mendwright.drivers.selenium import SeleniumDriver
+from mendwright.gate import list_live_reason
+from mendwright.store import load_store
 
-from test_lists import CARDS, V1, ListDriver
+from test_lists import CARDS, TILE, V1, V2, ListDriver
 
 
 class PlacedListDriver(ListDriver):
@@ -131,3 +134,89 @@ def test_the_sync_bridge_has_the_list_methods_the_async_driver_has():
     bridge = asyncio.run(main())
     assert bridge.list_items is None and driver_list_items(bridge, CARDS) is None
     assert callable(bridge.list_fingerprint) and not driver_places(bridge)
+
+
+# --- the list gate ----------------------------------------------------------------------------
+
+class LiveDriver:
+    """count() and list_items() over a page, for the list gate."""
+
+    def __init__(self, html, hidden=False, fail=False):
+        self.doc = lxml.html.fromstring(html)
+        self.hidden, self.fail = hidden, fail
+
+    def _els(self, selector):
+        body = selector[len('xpath='):] if selector.startswith('xpath=') else selector
+        if not body.startswith('/'):
+            from lxml.cssselect import CSSSelector
+            return CSSSelector(body)(self.doc)
+        return [e for e in self.doc.xpath(body) if hasattr(e, 'tag')]
+
+    def count(self, selector, frame_chain=()):
+        return len(self._els(selector))
+
+    def list_items(self, selector, frame_chain=()):
+        if self.fail:
+            raise RuntimeError('Target closed')
+        return [{'tag': e.tag, 'role': e.tag, 'type': '', 'visible': not self.hidden}
+                for e in self._els(selector)]
+
+
+def test_the_live_check_of_a_list():
+    meta = {'expectedRole': 'div'}
+    assert list_live_reason(LiveDriver(V2), TILE, meta) == ''
+    for driver in (None, object(), LiveDriver(V2, fail=True)):
+        assert list_live_reason(driver, TILE, meta) == 'the live page could not be read'
+    assert list_live_reason(LiveDriver(V2, hidden=True), TILE, meta) == (
+        'none of its 4 elements is visible on the live page')
+    assert list_live_reason(LiveDriver(V2), '//h1', meta) == (
+        'it matches 1 element on the live page, and a list heal needs 2 or more')
+    assert list_live_reason(LiveDriver(V2), TILE, {'expectedRole': 'li'}) == (
+        'live element role mismatch: got div want li')
+
+
+def _gate_store(tmp_path, code=CARDS):
+    store = load_store(None, str(tmp_path / 'o.json'))
+    store.set_code_candidates('cards', [code])
+    store.set_meta('cards', role='div', list_fingerprint=lists.of_elements(
+        lxml.html.fromstring(V1).xpath(CARDS), place=True))
+    return store
+
+
+def test_the_list_gate(tmp_path):
+    store = _gate_store(tmp_path)
+    meta = store.meta('cards')
+    live = LiveDriver(V2)
+    assert list_gate(store, 'cards', TILE, V2, meta, live, 'div.product-tile') == (
+        'ok', 'ok', 4, None)                                      # the code's selector is XPath
+    css = _gate_store(tmp_path / 'css', '.product-card')
+    assert list_gate(css, 'cards', TILE, V2, css.meta('cards'), live, 'div.product-tile') == (
+        'ok', 'ok', 4, 'div.product-tile')
+    assert list_gate(css, 'cards', TILE, V2, css.meta('cards'), live, 'div.nope')[3] is None
+    assert list_gate(store, 'cards', '//section/div', V2, meta, live)[:2] == ('refused', 'no match')
+    assert list_gate(store, 'cards', "//div[@id='grid']/div[2]", V2, meta, live)[1] == (
+        lists.POSITIONAL)
+    assert list_gate(store, 'cards', '//h1', V2, meta, live)[1] == (
+        'it matches 1 element, and a list heal needs 2 or more')
+    assert list_gate(store, 'cards', TILE, V2, meta, LiveDriver(V2, hidden=True))[1] == (
+        'none of its 4 elements is visible on the live page')
+    assert list_gate(store, 'cards', TILE, V2, meta, LiveDriver(V2, fail=True))[1] == (
+        'the live page could not be read')
+    # The list came while mendwright looked: the code's selector matches now.
+    assert list_gate(store, 'cards', TILE, V1, meta, LiveDriver(V1)) == ('came', CARDS, 0, None)
+
+
+def test_the_list_gate_refuses_what_a_rejection_holds_and_names_an_acceptance(tmp_path):
+    store = _gate_store(tmp_path)
+    meta = store.meta('cards')
+    live = LiveDriver(V2)
+    store.propose_list_heal('cards', TILE, proposal={'id': 'a', 'at': 'b', 'count': 4})
+    assert list_gate(store, 'cards', TILE, V2, meta, live)[0] == 'ok'     # proposed again
+    store._find('cards', TILE)['status'] = 'accepted'
+    assert list_gate(store, 'cards', TILE, V2, meta, live)[0] == 'accepted'
+    store.quarantine('cards', TILE)
+    assert list_gate(store, 'cards', TILE, V2, meta, live)[1] == (
+        'it is a list heal you rejected, or one mendwright quarantined')
+    other = "//div[@id='grid']/div"                                    # the same elements
+    assert list_gate(store, 'cards', other, V2, meta, live)[1] == (
+        'it takes elements of a list heal you rejected, or of a quarantined selector of this key')

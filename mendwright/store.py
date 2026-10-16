@@ -14,6 +14,13 @@ The file stays schema 2; the fields are optional. A key is destructive when the 
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these.
 
+A list found for heal.locator_all(..., nonempty=True) is saved as a candidate with
+"list": true and the status 'proposed' (``propose_list_heal``), with the evidence a person
+checks it by (its ``proposal``), and becomes 'accepted' only through ``edit_list_heal``,
+which the mendwright lists command runs. Both statuses are inactive: no lookup ever tries
+such a row, and mendwright fix writes an accepted one into the code. ``retire_list_heals``
+ends a list heal once the selector it replaced matches again.
+
 Only a missing file reads as empty. A seed or override file that exists but is not
 valid JSON (a hand edit, a merge conflict) or is not a selector file raises
 StoreReadError: reading it as empty would drop its destructive flags and quarantines,
@@ -21,12 +28,14 @@ and the next write would replace the file. A read that Windows refuses for a mom
 (another process replacing the file) is retried briefly.
 """
 import contextlib
+import copy
 import json
 import logging
 import os
 import tempfile
 import threading
 import time
+import dataclasses
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -181,6 +190,93 @@ def _respell_frame_heals(data):
     return data
 
 
+@contextlib.contextmanager
+def _locked(path, *, timeout, stale_after, clock=time.monotonic, sleep=time.sleep,
+            wallclock=time.time):
+    """Hold the lock file next to the store file ``path`` (overrides.json.lock) for the
+    block, waiting up to ``timeout`` seconds for another process's lock and removing one
+    older than ``stale_after`` seconds (its owner most likely died while writing). Raises
+    TimeoutError when the lock stays held. SelectorStore and edit_list_heal() share it."""
+    path = Path(path)
+    lock = path.with_name(path.name + '.lock')
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = clock() + timeout
+    delay = 0.005
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except (FileExistsError, PermissionError) as exc:
+            # On Windows a lock file that is being deleted gives PermissionError for a
+            # moment. With no lock file there, it is a real permission problem.
+            if isinstance(exc, PermissionError) and not lock.exists():
+                raise
+            if _break_if_stale(lock, stale_after, wallclock):
+                continue
+            if clock() >= deadline:
+                raise TimeoutError('the lock file ' + str(lock) + ' is held by another '
+                                   'process') from None
+            sleep(delay)
+            delay = min(delay * 2, 0.1)
+            continue
+        try:
+            os.write(fd, str(os.getpid()).encode('ascii'))
+        finally:
+            os.close(fd)
+        break
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(str(lock))
+        except OSError:
+            pass
+
+
+def _break_if_stale(lock, stale_after, wallclock=time.time):
+    """Remove a lock file older than stale_after seconds. True if it was removed."""
+    try:
+        age = wallclock() - os.stat(str(lock)).st_mtime
+    except OSError:
+        return False
+    if age <= stale_after:
+        return False
+    try:
+        os.unlink(str(lock))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    logger.warning('mendwright: removed a stale lock file %s (%.0f seconds old)', lock, age)
+    return True
+
+
+def _atomic_write(path, text, sleep=time.sleep):
+    """Write text to a temp file next to path, then os.replace() it in. On Windows the
+    replace fails while another process has the file open for reading, so it is retried
+    briefly."""
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.sel-', suffix='.json', dir=str(parent))
+    try:
+        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        delay = 0.01
+        for attempt in range(8):
+            try:
+                os.replace(tmp, str(path))
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                sleep(delay)
+                delay = min(delay * 2, 0.2)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def _read_schema2(path, destructive_keys=frozenset()):
     """Read a selector file, migrating schema-1 to schema-2. A missing file is an empty
     store; one that exists but cannot be used raises StoreReadError."""
@@ -269,6 +365,34 @@ def _pages(value):
     return []
 
 
+# The statuses of a list heal that waits: for a person to check it, or for mendwright fix.
+LIST_WAITING = ('proposed', 'accepted')
+# How many proposed and accepted list heals a key keeps, newest first.
+MAX_LIST_HEALS = 3
+
+
+def evidence_of(c):
+    """A candidate's saved proposal (see lists.proposal_evidence) when it has one this
+    version reads: a dict with a str id, a str at and an int count. Else None."""
+    proposal = c.get('proposal') if isinstance(c, dict) else None
+    if (isinstance(proposal, dict) and isinstance(proposal.get('id'), str)
+            and isinstance(proposal.get('at'), str) and isinstance(proposal.get('count'), int)
+            and not isinstance(proposal.get('count'), bool)):
+        return proposal
+    return None
+
+
+def _is_list_heal(c):
+    """True for a list heal that waits (proposed or accepted)."""
+    return c.get('list') is True and c.get('status') in LIST_WAITING
+
+
+def _proposal_order(c):
+    """Newest proposal first, then the newest added; rows with no proposal last."""
+    evidence = evidence_of(c)
+    return (evidence is not None, evidence['at'] if evidence else '', c.get('addedAt') or '')
+
+
 class SelectorStore:
     # Seconds to wait for another process's lock on the override file, and the age after
     # which a leftover lock file is treated as abandoned.
@@ -294,6 +418,9 @@ class SelectorStore:
         self._last_success = {}
         # key -> selectors set_code_candidates() put first, in order. In memory only.
         self._preferred = {}
+        # (key, xpath) of the list heals set_code_candidates() took over as code in this
+        # process: the file's "list", proposal and acceptedAt are not taken back for them.
+        self._delisted = set()
         # (key, xpath) pairs mutated locally this session (success/quarantine/add).
         self._dirty = set()
         # Pristine seed state {(key, xpath): (status, lastSucceededAt)}. The override file
@@ -397,11 +524,12 @@ class SelectorStore:
         """Make selectors (in order) the selectors the code currently passes for key.
 
         Each one becomes an active candidate with source 'code' (a healed or retired
-        candidate with the same text is taken over and made active again). Older 'code'
-        candidates that are no longer passed get status 'superseded': they stay in the
-        file but are not resolved. Seed and heal candidates stay as fallbacks. For the rest
-        of this process, candidates() lists these selectors first, in this order. The
-        override file is written only when something changed."""
+        candidate with the same text is taken over and made active again; a list heal taken
+        over drops its "list" mark, proposal and acceptedAt, as mendwright fix put it in the
+        code). Older 'code' candidates that are no longer passed get status 'superseded':
+        they stay in the file but are not resolved. Seed and heal candidates stay as
+        fallbacks. For the rest of this process, candidates() lists these selectors first,
+        in this order. The override file is written only when something changed."""
         entry = self._entry(key)
         wanted = list(dict.fromkeys(selectors))
         changed = False
@@ -414,6 +542,11 @@ class SelectorStore:
             elif c.get('source') == 'heal' or c.get('status', 'active') != 'active':
                 if c.get('source') == 'heal':
                     c['source'] = 'code'
+                if c.get('list') is True and (c.get('status') in LIST_WAITING
+                                              or 'proposal' in c or 'acceptedAt' in c):
+                    for name in ('list', 'proposal', 'acceptedAt'):
+                        c.pop(name, None)
+                    self._delisted.add((key, xpath))
                 c['status'] = 'active'
             else:
                 continue
@@ -545,8 +678,9 @@ class SelectorStore:
         return self._last_success.get(key)
 
     def status(self, key, xpath):
-        """The status of one stored candidate ('active', 'quarantined', 'superseded'), or
-        None when the key has no such candidate."""
+        """The status of one stored candidate ('active', 'quarantined', 'superseded', and
+        for a list heal 'proposed' or 'accepted'), or None when the key has no such
+        candidate."""
         entry = self._data['selectors'].get(key)
         for c in (entry or {}).get('candidates', []):
             if c.get('xpath') == xpath:
@@ -627,6 +761,89 @@ class SelectorStore:
                 found.pop('list', None)
         self._dirty.add((key, xpath))
         self._persist_override()
+
+    def list_heals(self, key):
+        """Copies of key's list heals that wait (proposed or accepted, see
+        propose_list_heal), the newest proposal first; rows with no proposal last."""
+        entry = self._data['selectors'].get(key) or {}
+        rows = [copy.deepcopy(c) for c in entry.get('candidates', []) if _is_list_heal(c)]
+        return sorted(rows, key=_proposal_order, reverse=True)
+
+    def propose_list_heal(self, key, xpath, *, css=None, proposal, now=None):
+        """Save xpath as a list heal proposed for key (see heal.locator_all(nonempty=True)),
+        with the evidence a person checks it by (proposal, see lists.proposal_evidence) and
+        its CSS form css, and return a copy of the row. The row is inactive ("status":
+        "proposed", "list": true): no lookup tries it, and only edit_list_heal() accepts it.
+        A row with the same XPath that was proposed or superseded is proposed again with the
+        new evidence; an active heal (a list heal of a build of 0.8.0 before its release) is
+        made a proposal too. Raises ValueError for a row that is accepted or quarantined, or
+        an active one from code or a seed file: those are never proposed."""
+        if not isinstance(proposal, dict):
+            raise ValueError('mendwright: propose_list_heal() takes the proposal as a dict')
+        entry = self._entry(key)
+        c = self._find(key, xpath)
+        if c is None:
+            c = {'xpath': xpath, 'source': 'heal', 'addedAt': now or _now_iso(),
+                 'lastSucceededAt': None, 'status': 'proposed', 'list': True}
+            if css:
+                c['css'] = css
+            c['proposal'] = copy.deepcopy(proposal)
+            entry['candidates'].append(c)
+        else:
+            status = c.get('status', 'active')
+            if status in ('accepted', 'quarantined') or (
+                    status == 'active' and c.get('source') != 'heal'):
+                raise ValueError('mendwright: ' + repr(xpath) + ' is ' + status + ' for '
+                                 + repr(key) + ', so it is not proposed again')
+            if c.get('source') != 'seed':
+                c['source'] = 'heal'
+            c['status'] = 'proposed'
+            c['list'] = True
+            c['proposal'] = copy.deepcopy(proposal)
+            # An empty css stays as a key, so _absorb() does not take an old one back.
+            c['css'] = css or ''
+            self._delisted.discard((key, xpath))
+            # Proposed now, whatever the file says another process made it since (see
+            # _merge_status): an acceptance or a quarantine there still wins.
+            self._base.pop((key, xpath), None)
+        self._dirty.add((key, xpath))
+        self._persist_override()
+        return copy.deepcopy(c)
+
+    def retire_list_heals(self, key, selector, *, now=None):
+        """End key's list heals that the selector ``selector``, which just matched, was
+        replaced by: those whose proposal names it among the selectors that matched nothing
+        (proposal['was']['selectors']), and those with no proposal (a 0.8.0 write dropped
+        it) when selector is one of the key's selectors from code or a seed file. A proposed
+        one becomes 'superseded', an accepted one 'quarantined': the list was not broken.
+        Returns (xpath, old status, new status) for each row it changed, and writes the
+        override file only then."""
+        entry = self._data['selectors'].get(key)
+        if not entry:
+            return []
+        own = None
+        changes = []
+        for c in entry.get('candidates', []):
+            if not _is_list_heal(c):
+                continue
+            evidence = evidence_of(c)
+            was = (evidence.get('was') or {}) if evidence else None
+            if isinstance(was, dict) and isinstance(was.get('selectors'), list):
+                hit = selector in was['selectors']
+            else:
+                if own is None:
+                    own = {o['xpath'] for o in self.candidates(key)
+                           if o.get('source') in ('code', 'seed')}
+                hit = selector in own
+            if not hit:
+                continue
+            old = c['status']
+            c['status'] = 'superseded' if old == 'proposed' else 'quarantined'
+            self._dirty.add((key, c['xpath']))
+            changes.append((c['xpath'], old, c['status']))
+        if changes:
+            self._persist_override()
+        return changes
 
     def quarantine(self, key, xpath):
         c = self._find(key, xpath)
@@ -709,58 +926,11 @@ class SelectorStore:
             'writable file: store_path= or MENDWRIGHT_STORE for mendwright.open(), or the '
             'override path passed to load_store().', self._override_path, detail)
 
-    @contextlib.contextmanager
     def _locked_file(self):
-        lock = self._override_path.with_name(self._override_path.name + '.lock')
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        deadline = self._clock() + self.lock_timeout
-        delay = 0.005
-        while True:
-            try:
-                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except (FileExistsError, PermissionError) as exc:
-                # On Windows a lock file that is being deleted gives PermissionError for a
-                # moment. With no lock file there, it is a real permission problem.
-                if isinstance(exc, PermissionError) and not lock.exists():
-                    raise
-                if self._break_if_stale(lock):
-                    continue
-                if self._clock() >= deadline:
-                    raise TimeoutError('the lock file ' + str(lock) + ' is held by another '
-                                       'process') from None
-                self._sleep(delay)
-                delay = min(delay * 2, 0.1)
-                continue
-            try:
-                os.write(fd, str(os.getpid()).encode('ascii'))
-            finally:
-                os.close(fd)
-            break
-        try:
-            yield
-        finally:
-            try:
-                os.unlink(str(lock))
-            except OSError:
-                pass
-
-    def _break_if_stale(self, lock):
-        """Remove a lock file older than lock_stale_after seconds (its owner most likely
-        died while writing). True if it was removed."""
-        try:
-            age = self._wallclock() - os.stat(str(lock)).st_mtime
-        except OSError:
-            return False
-        if age <= self.lock_stale_after:
-            return False
-        try:
-            os.unlink(str(lock))
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return False
-        logger.warning('mendwright: removed a stale lock file %s (%.0f seconds old)', lock, age)
-        return True
+        """The lock on the override file for a write (see _locked)."""
+        return _locked(self._override_path, timeout=self.lock_timeout,
+                       stale_after=self.lock_stale_after, clock=self._clock, sleep=self._sleep,
+                       wallclock=self._wallclock)
 
     def _remember_base(self, data):
         """Record the candidate statuses, places (frameXPath, css) and metadata of an
@@ -788,7 +958,10 @@ class SelectorStore:
         - when both changed the destructive flag, True wins;
         - lastSucceededAt is the newer of the two;
         - a candidate's frameXPath and css follow the same rule as a value: the file's when
-          only the other side changed them, this store's otherwise.
+          only the other side changed them, this store's otherwise;
+        - a list heal's proposal is the one with the later 'at' (the file's when this store
+          has none), and its acceptedAt the file's when this store has none, but not for a
+          list heal this store took over as code (see set_code_candidates).
         New keys and candidates from the file are added."""
         for key, entry in (disk.get('selectors') or {}).items():
             if not isinstance(entry, dict):
@@ -811,8 +984,18 @@ class SelectorStore:
                 newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
                 local['lastSucceededAt'] = newest or None
                 _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
+                if (key, xpath) in self._delisted:
+                    continue                 # taken over as code here: no list heal any more
                 if c.get('list') is True:
                     local['list'] = True     # another process healed a list with it
+                theirs = evidence_of(c)
+                if theirs is not None:
+                    mine_evidence = evidence_of(local)
+                    if mine_evidence is None or theirs['at'] > mine_evidence['at']:
+                        local['proposal'] = copy.deepcopy(theirs)
+                if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
+                        isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
+                    local['acceptedAt'] = c['acceptedAt']
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):
@@ -824,7 +1007,8 @@ class SelectorStore:
         _is_delta) and the metadata saved with set_meta(). Active candidates are capped at
         maxCandidates, most recently succeeded first. Inactive ones (quarantined,
         superseded) get their own cap, except a quarantined seed row, which is always
-        kept so the seed cannot bring it back."""
+        kept so the seed cannot bring it back. List heals that wait (proposed, accepted)
+        are kept apart from them, at most MAX_LIST_HEALS, the newest proposal first."""
         selectors = {}
         for key, e in self._data['selectors'].items():
             cap = e.get('maxCandidates', 5)
@@ -836,11 +1020,14 @@ class SelectorStore:
             active = sorted((c for c in persistable if c.get('status', 'active') == 'active'),
                             key=lambda c: c.get('lastSucceededAt') or '', reverse=True)[:cap]
             inactive = [c for c in persistable if c.get('status', 'active') != 'active']
+            waiting = sorted((c for c in inactive if c.get('status') in LIST_WAITING),
+                             key=_proposal_order, reverse=True)[:MAX_LIST_HEALS]
+            inactive = [c for c in inactive if c.get('status') not in LIST_WAITING]
             pinned = [c for c in inactive if c.get('source') == 'seed']
             others = sorted((c for c in inactive if c.get('source') != 'seed'),
                             key=recency, reverse=True)[:cap]
             overlay = []
-            for c in active + pinned + others:
+            for c in active + pinned + others + waiting:
                 item = {k: c[k] for k in ('xpath', 'source', 'addedAt', 'lastSucceededAt', 'status') if k in c}
                 if 'frameXPath' in c:
                     item['frameXPath'] = c['frameXPath']
@@ -848,6 +1035,11 @@ class SelectorStore:
                     item['css'] = c['css']
                 if c.get('list') is True:
                     item['list'] = True
+                evidence = evidence_of(c)
+                if evidence is not None:
+                    item['proposal'] = evidence
+                if isinstance(c.get('acceptedAt'), str) and c['acceptedAt']:
+                    item['acceptedAt'] = c['acceptedAt']
                 overlay.append(item)
             saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
             if overlay or saved:
@@ -855,33 +1047,14 @@ class SelectorStore:
         return {'schema': 2, 'selectors': selectors}
 
     def _write(self, payload):
-        """Write payload to a temp file next to the override, then os.replace() it in.
-        On Windows the replace fails while another process has the file open for
-        reading, so it is retried briefly."""
-        parent = self._override_path.parent
-        parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix='.sel-', suffix='.json', dir=str(parent))
-        try:
-            os.chmod(tmp, 0o600)
-            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
-                fh.write(payload)
-            delay = 0.01
-            for attempt in range(8):
-                try:
-                    os.replace(tmp, str(self._override_path))
-                    break
-                except PermissionError:
-                    if attempt == 7:
-                        raise
-                    self._sleep(delay)
-                    delay = min(delay * 2, 0.2)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+        """Write payload to the override file atomically (see _atomic_write)."""
+        _atomic_write(self._override_path, payload, self._sleep)
 
 
 def _merge_status(mine, theirs, base):
-    """One candidate's status after a three-way merge (see SelectorStore._absorb)."""
+    """One candidate's status after a three-way merge (see SelectorStore._absorb). When
+    both sides changed it, 'quarantined' wins, then 'accepted' (a person's acceptance is
+    never undone by a process that loaded the store before it), else this store's."""
     if mine == theirs:
         return mine
     if base is not None and mine == base:
@@ -890,6 +1063,8 @@ def _merge_status(mine, theirs, base):
         return mine            # only this store changed
     if 'quarantined' in (mine, theirs):
         return 'quarantined'
+    if 'accepted' in (mine, theirs):
+        return 'accepted'
     return mine
 
 
@@ -915,6 +1090,155 @@ def _merge_meta(mine, theirs, base):
         if value is not None:
             out[field] = value
     return out
+
+
+# --- mendwright lists accept / reject ----------------------------------------------------------
+#
+# The command line edits the override file in place, under the lock every store write takes:
+# it changes the status of the rows it is about and nothing else, and never rebuilds the file
+# through a SelectorStore, whose write leaves out seed rows it did not load (a quarantine a
+# seed row has in the file would be dropped, and the seed would bring the selector back).
+
+class ListHealError(Exception):
+    """mendwright lists accept or reject could not do what it was asked. The message says
+    why and what to do; the command line prints it after 'mendwright lists: '."""
+
+
+@dataclasses.dataclass
+class ListHealEdit:
+    """What edit_list_heal() did: the key, 'accept' or 'reject', the row's XPath, its
+    proposal's id (None for one without), a copy of the row after the edit, and the XPaths
+    of the key's other list heals an accept superseded."""
+    key: str
+    action: str
+    xpath: str
+    id: str | None
+    row: dict
+    superseded: list = dataclasses.field(default_factory=list)
+
+
+def _ids(rows):
+    return [evidence_of(c)['id'] for c in rows if evidence_of(c) is not None]
+
+
+def _and(items):
+    items = list(items)
+    return ', '.join(items[:-1]) + ' and ' + items[-1] if len(items) > 1 else ''.join(items)
+
+
+def _pick(key, action, proposal_id, proposed, accepted, flag):
+    """The row of key that edit_list_heal() changes, or ListHealError."""
+    from .cli import _when, command_key
+    word, note = command_key(key)
+    if proposal_id is not None:
+        # reject also takes an accepted one by its id.
+        for c in proposed + (accepted if action == 'reject' else []):
+            if (evidence_of(c) or {}).get('id') == proposal_id:
+                return c
+    elif action == 'reject':
+        waiting = proposed or accepted
+        if len(waiting) == 1:
+            return waiting[0]
+        if len(waiting) > 1:
+            raise ListHealError(repr(key) + ' has ' + str(len(waiting)) + ' list heals waiting: '
+                                'give the id of the one to reject (' + ', '.join(_ids(waiting))
+                                + ').')
+    if not proposed:
+        message = repr(key) + ' has no list heal to check.'
+        if accepted:
+            when = accepted[0].get('acceptedAt')
+            message += (' Its list heal was accepted on ' + (_when(when) if when else 'date unknown')
+                        + ' and waits for mendwright fix --apply; to drop it, run: mendwright '
+                        'lists reject ' + word + flag + note)
+        raise ListHealError(message)
+    ids = _ids(proposed)
+    if not ids:
+        raise ListHealError('the list heal of ' + repr(key) + ' has no saved evidence, because '
+                            'an older mendwright wrote the store after it was found. Run the '
+                            'test again with mendwright 0.9.0 to find it anew.')
+    message = repr(key) + ' has no list heal with id ' + str(proposal_id) + '.'
+    if len(ids) == 1:
+        message += ' It changed since you looked: run mendwright lists' + flag + ' to see it again.'
+    else:
+        message += (' The ones waiting are ' + _and(ids) + ': run mendwright lists' + flag
+                    + ' to see them.')
+    raise ListHealError(message)
+
+
+def edit_list_heal(path, key, action, proposal_id=None, *, now=None):
+    """Accept or reject a list heal of key in the override file at path (mendwright lists
+    accept KEY ID, mendwright lists reject KEY [ID]). Returns a ListHealEdit; raises
+    ListHealError, with the message to print, when it cannot.
+
+    accept takes the proposed row whose proposal id is proposal_id, makes it 'accepted' with
+    acceptedAt now, and makes the key's other proposed or accepted list heals 'superseded'.
+    reject takes the proposed row with that id, or with no id the key's only proposed row,
+    else its only accepted one, and quarantines it, so the list gate refuses it and every
+    selector that takes its elements. The file is read and written under its lock, and only
+    those rows change: every other key and row stays as it is on disk. The journal next to
+    the file gets heal.accepted, or heal.quarantine."""
+    if action not in ('accept', 'reject'):
+        raise ValueError('mendwright: edit_list_heal() takes accept or reject, got ' + repr(action))
+    from .cli import store_flag
+    from .journal import Journal
+    path = Path(_expand(path))
+    shown = str(path)
+    flag = store_flag(shown)
+    if not path.is_file():
+        raise ListHealError('no store at ' + shown + '.')
+    try:
+        with _locked(path, timeout=SelectorStore.lock_timeout,
+                     stale_after=SelectorStore.lock_stale_after):
+            data, native = _read(path)
+            if not native:
+                if data.get('selectors'):
+                    raise ListHealError(shown + ' was written by an older mendwright (schema 1). '
+                                        'Run your tests once with this version to convert it.')
+                raise ListHealError('no key ' + repr(key) + ' in ' + shown + '. Run mendwright '
+                                    'lists' + flag + ' to see the keys with a list heal to check.')
+            entry = data['selectors'].get(key)
+            if not isinstance(entry, dict):
+                raise ListHealError('no key ' + repr(key) + ' in ' + shown + '. Run mendwright '
+                                    'lists' + flag + ' to see the keys with a list heal to check.')
+            rows = [c for c in entry.get('candidates') or ()
+                    if isinstance(c, dict) and c.get('list') is True
+                    and isinstance(c.get('xpath'), str)]
+            proposed = sorted((c for c in rows if c.get('status') == 'proposed'),
+                              key=_proposal_order, reverse=True)
+            accepted = sorted((c for c in rows if c.get('status') == 'accepted'),
+                              key=_proposal_order, reverse=True)
+            target = _pick(key, action, proposal_id, proposed, accepted, flag)
+            superseded = []
+            if action == 'accept':
+                target['status'] = 'accepted'
+                target['acceptedAt'] = now or _now_iso()
+                for c in proposed + accepted:
+                    if c is not target:
+                        c['status'] = 'superseded'
+                        superseded.append(c['xpath'])
+            else:
+                target['status'] = 'quarantined'
+            _atomic_write(path, json.dumps(data, separators=(',', ':')))
+    except TimeoutError:
+        raise ListHealError('could not save the change to ' + shown + ': the lock file '
+                            + shown + '.lock is held by another process. Try again when your '
+                            'tests have finished.') from None
+    except (OSError, StoreReadError) as exc:
+        if isinstance(exc, StoreReadError):
+            raise ListHealError(str(exc)[len('mendwright: '):] if str(exc).startswith(
+                'mendwright: ') else str(exc)) from None
+        raise ListHealError('could not save the change to ' + shown + ' (' + type(exc).__name__
+                            + ': ' + str(exc) + ').') from None
+    evidence = evidence_of(target)
+    journal = Journal(path.parent / 'journal.jsonl')
+    if action == 'accept':
+        journal.accepted(key, xpath=target['xpath'], id=evidence['id'] if evidence else None,
+                         list=True)
+    else:
+        journal.quarantine(key, xpath=target['xpath'], list=True,
+                           reason='rejected with mendwright lists reject')
+    return ListHealEdit(key, action, target['xpath'], evidence['id'] if evidence else None,
+                        copy.deepcopy(target), superseded)
 
 
 def _expand(path):

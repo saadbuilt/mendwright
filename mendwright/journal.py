@@ -1,5 +1,7 @@
 """Append-only JSONL event journal for heal activity: one line per event
-(heal.requested / proposed / rejected / applied / canary / quarantine, and for flow
+(heal.requested / proposed / rejected / applied / canary / quarantine, heal.held for a list
+found for heal.locator_all(..., nonempty=True) and saved for a person to check, not used,
+heal.accepted when a person accepted one with mendwright lists accept, and for flow
 changes flow.interrupt / dismiss / skip / page_guard / step), recording the provider,
 model, latency and token counts when they are known. Writing is best-effort and
 never raises, so a bad path or a full disk cannot break a heal in progress.
@@ -28,6 +30,8 @@ REJECTED = 'heal.rejected'
 APPLIED = 'heal.applied'
 CANARY = 'heal.canary'
 QUARANTINE = 'heal.quarantine'
+HELD = 'heal.held'                    # a list was found and saved as proposed, not used
+ACCEPTED = 'heal.accepted'            # a person accepted a proposed list heal
 FLOW_INTERRUPT = 'flow.interrupt'     # an interruption was handled before a step
 FLOW_DISMISS = 'flow.dismiss'         # a popup nobody registered was dismissed (dismiss=True)
 FLOW_SKIP = 'flow.skip'               # a step was skipped instead of healed
@@ -117,6 +121,12 @@ class _BaseJournal:
 
     def quarantine(self, key=None, **f):
         return self.event(QUARANTINE, key=key, **f)
+
+    def held(self, key=None, **f):
+        return self.event(HELD, key=key, **f)
+
+    def accepted(self, key=None, **f):
+        return self.event(ACCEPTED, key=key, **f)
 
     def interrupted(self, key=None, **f):
         return self.event(FLOW_INTERRUPT, key=key, **f)
