@@ -103,6 +103,21 @@ def test_list_heals_are_newest_first_and_capped_apart_from_other_rows(tmp_path):
     assert order == ['00000003', '00000002', '00000001']
 
 
+def test_newer_proposals_never_push_out_an_accepted_list_heal(tmp_path):
+    store = _store(tmp_path)
+    store.propose_list_heal('cart', ROWS, proposal=evidence('00000000', '2026-11-01T00:00:00+00:00'))
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', '00000000')
+    later = load_store(None, str(tmp_path / 'o.json'))       # three runs, or xdist workers
+    for i in range(1, MAX_LIST_HEALS + 1):
+        later.propose_list_heal('cart', '//li[@class="l' + str(i) + '"]',
+                                proposal=evidence('0000000' + str(i),
+                                                  '2026-11-0' + str(i + 1) + 'T00:00:00+00:00'))
+    rows = _rows(tmp_path)
+    assert rows[ROWS]['status'] == 'accepted'
+    assert [x for x, c in rows.items() if c['status'] == 'proposed'] == [
+        '//li[@class="l3"]', '//li[@class="l2"]']                  # the oldest one is dropped
+
+
 # --- several processes on one file -------------------------------------------------------------
 
 def test_two_processes_keep_both_proposals_and_the_newer_evidence(tmp_path):
@@ -173,8 +188,8 @@ def test_a_write_by_mendwright_0_8_0_drops_the_evidence_and_fails_closed(tmp_pat
     assert after.status('cart', SAVED) == 'accepted'                    # fix still writes it
     after.set_code_candidates('cart', [CODE])
     assert after.retire_list_heals('cart', '.unrelated') == []
-    assert after.retire_list_heals('cart', CODE) == [(ROWS, 'proposed', 'superseded'),
-                                                      (SAVED, 'accepted', 'quarantined')]
+    assert sorted(after.retire_list_heals('cart', CODE)) == [(ROWS, 'proposed', 'superseded'),
+                                                              (SAVED, 'accepted', 'quarantined')]
 
 
 def test_taking_an_accepted_list_heal_over_as_code_makes_it_a_plain_code_row(tmp_path):

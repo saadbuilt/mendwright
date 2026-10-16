@@ -367,7 +367,7 @@ def _pages(value):
 
 # The statuses of a list heal that waits: for a person to check it, or for mendwright fix.
 LIST_WAITING = ('proposed', 'accepted')
-# How many proposed and accepted list heals a key keeps, newest first.
+# How many proposed and accepted list heals a key keeps: an accepted one, then the newest.
 MAX_LIST_HEALS = 3
 
 
@@ -1048,7 +1048,8 @@ class SelectorStore:
         maxCandidates, most recently succeeded first. Inactive ones (quarantined,
         superseded) get their own cap, except a quarantined seed row, which is always
         kept so the seed cannot bring it back. List heals that wait (proposed, accepted)
-        are kept apart from them, at most MAX_LIST_HEALS, the newest proposal first."""
+        are kept apart from them, at most MAX_LIST_HEALS: an accepted one first, then the
+        newest proposals."""
         selectors = {}
         for key, e in self._data['selectors'].items():
             cap = e.get('maxCandidates', 5)
@@ -1060,8 +1061,10 @@ class SelectorStore:
             active = sorted((c for c in persistable if c.get('status', 'active') == 'active'),
                             key=lambda c: c.get('lastSucceededAt') or '', reverse=True)[:cap]
             inactive = [c for c in persistable if c.get('status', 'active') != 'active']
+            # An acceptance is a person's choice: newer proposals never push it out.
             waiting = sorted((c for c in inactive if c.get('status') in LIST_WAITING),
-                             key=_proposal_order, reverse=True)[:MAX_LIST_HEALS]
+                             key=lambda c: (c.get('status') == 'accepted',) + _proposal_order(c),
+                             reverse=True)[:MAX_LIST_HEALS]
             inactive = [c for c in inactive if c.get('status') not in LIST_WAITING]
             pinned = [c for c in inactive if c.get('source') == 'seed']
             others = sorted((c for c in inactive if c.get('source') != 'seed'),
