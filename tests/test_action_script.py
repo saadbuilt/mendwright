@@ -618,6 +618,7 @@ def test_a_dirty_checkout_is_refused_and_an_untracked_file_is_fine(world):
         'mendwright: the checkout has changes to tracked files before mendwright fix ran '
         '(tests/test_checkout.py). Run the action right after actions/checkout, so the pull '
         "request holds only mendwright's changes."]
+    assert '(`tests/test_checkout.py`)' in world.summary()
     git(world.ws, 'checkout', '--', 'tests/test_checkout.py')
     world.run()
     assert world.result() == 'created'
@@ -890,6 +891,7 @@ def test_errors_in_fix_put_the_files_back_and_stop(world, monkeypatch):
                      'changed: Permission denied. Close the file in other programs, or edit it by '
                      'hand, then run again.). The files it wrote were put back and nothing was '
                      'pushed. The other errors are above.')
+    assert 'could not finish (`tests/test_other.py was not changed: ' in world.summary()
     assert git(world.ws, 'status', '--porcelain') == ''
     assert 'publish' not in world.steps
 
@@ -927,7 +929,12 @@ def test_errors_in_fix_put_back_the_tracked_files_and_name_the_untracked_ones(wo
         "errors are above."]
     assert git(world.ws, 'status', '--porcelain', '--untracked-files=no') == ''
     assert (world.ws / 'tests' / 'test_checkout.py').read_text(encoding='utf-8') == TEST_FILE
-    assert '`generated/test_gen.py`' in world.summary()
+    assert world.summary() == (
+        '## mendwright\n\nStopped: mendwright: mendwright fix could not finish (`tests/test_other.py '
+        'was not changed: Permission denied. Close the file in other programs, or edit it by hand, '
+        'then run again.`). The tracked files it wrote were put back and nothing was pushed, but '
+        "git does not track `generated/test_gen.py`, so it keeps mendwright fix's changes. The "
+        'other errors are above.\n')
 
 
 def test_errors_in_fix_put_back_a_file_paths_names_in_another_case(world, monkeypatch):
@@ -972,6 +979,8 @@ def test_a_put_back_that_git_refuses_is_not_called_done(world, monkeypatch):
         FAILED_WRITE + "Nothing was pushed, but git could not put back the files it wrote (error: "
         "unable to unlink old 'tests/test_checkout.py': Permission denied). The other errors are "
         "above."]
+    assert "(`error: unable to unlink old 'tests/test_checkout.py': Permission denied`)" \
+        in world.summary()
 
 
 def test_the_fix_step_works_without_the_token(world):
@@ -1081,6 +1090,7 @@ def test_a_change_under_github_is_refused_and_put_back(world):
     assert notices(world, 'publish', 'error') == [
         'mendwright: mendwright fix changed .github/workflows/ci.yml, under .github/, which it '
         'never should. The files were put back and nothing was pushed; please report this.']
+    assert 'changed `.github/workflows/ci.yml`, under .github/' in world.summary()
     _nothing_pushed_and_all_put_back(world)
 
 
@@ -1091,6 +1101,7 @@ def test_a_changed_file_fix_did_not_report_is_refused_and_put_back(world):
     assert notices(world, 'publish', 'error') == [
         'mendwright: git shows changes mendwright fix did not report (README.md). The files were '
         'put back and nothing was pushed; please report this.']
+    assert 'did not report (`README.md`)' in world.summary()
     _nothing_pushed_and_all_put_back(world)
 
 
@@ -1111,6 +1122,8 @@ def test_a_put_back_that_git_refuses_in_publish_is_not_called_done(world, monkey
         "pushed, but git could not put the files back (error: unable to unlink old 'README.md': "
         "Permission denied); please report this."]
     assert world.remote_sha('mendwright/fix/main') is None and world.api.writes() == []
+    assert ("did not report (`README.md`). Nothing was pushed, but git could not put the files back "
+            "(`error: unable to unlink old 'README.md': Permission denied`)") in world.summary()
 
 
 def test_a_staged_file_fix_did_not_write_is_refused_and_put_back(world, monkeypatch):
@@ -1127,6 +1140,7 @@ def test_a_staged_file_fix_did_not_write_is_refused_and_put_back(world, monkeypa
     assert notices(world, 'publish', 'error') == [
         'mendwright: git shows changes mendwright fix did not report (tests/extra.py). The files '
         'were put back and nothing was pushed; please report this.']
+    assert 'did not report (`tests/extra.py`)' in world.summary()
     _nothing_pushed_and_all_put_back(world)
 
 

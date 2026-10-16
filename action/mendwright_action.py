@@ -567,12 +567,14 @@ def _check_checkout(action, decision, notices):
     dirty = action.git('-C', wd, 'status', '--porcelain=v1', '-z', '--untracked-files=no')[1]
     changed = _porcelain_paths(dirty)
     if changed:
-        message = ('mendwright: the checkout has changes to tracked files before mendwright fix '
-                   'ran (' + ', '.join(changed[:10]) + (', ...' if len(changed) > 10 else '')
-                   + '). Run the action right after actions/checkout, so the pull request holds '
-                   "only mendwright's changes.")
+        def dirty_files(shown):
+            return ('mendwright: the checkout has changes to tracked files before mendwright fix '
+                    'ran (' + ', '.join(shown) + (', ...' if len(changed) > 10 else '')
+                    + '). Run the action right after actions/checkout, so the pull request holds '
+                    "only mendwright's changes.")
+        message = dirty_files(changed[:10])
         if mode == 'fix':
-            raise Stop(message)
+            raise Stop(message, summary=dirty_files([md_code(p) for p in changed[:10]]))
         notices.append(message)
     if mode == 'fix' and decision.get('public') == 'true':
         notices.append('mendwright: this repository is public, so the branch and pull request '
@@ -740,7 +742,8 @@ def git_name(top, path, changed):
 def _stop_after_errors(action, wd, written, first):
     """F11: put back the tracked files mendwright fix wrote, and stop. git cannot put back a
     file it does not track, so the message names those."""
-    start = 'mendwright: mendwright fix could not finish (' + first + '). '
+    def start(shown):
+        return 'mendwright: mendwright fix could not finish (' + shown + '). '
     end = ' The other errors are above.'
     tracked, kept, failed = [], [], None
     if written:
@@ -755,17 +758,19 @@ def _stop_after_errors(action, wd, written, first):
         if code != 0:
             failed = _first_error(err, action.secrets())
     if failed is not None:
-        raise Stop(start + 'Nothing was pushed, but git could not put back the files it wrote ('
-                   + failed + ').' + end)
+        said = 'Nothing was pushed, but git could not put back the files it wrote ('
+        raise Stop(start(first) + said + failed + ').' + end,
+                   summary=start(md_code(first)) + said + md_code(failed) + ').' + end)
     if not kept:
-        raise Stop(start + 'The files it wrote were put back and nothing was pushed.' + end)
+        said = 'The files it wrote were put back and nothing was pushed.'
+        raise Stop(start(first) + said + end, summary=start(md_code(first)) + said + end)
 
-    def refusal(shown):
-        return (start + ('The tracked files it wrote were put back and n' if tracked else 'N')
+    def refusal(error, shown):
+        return (start(error) + ('The tracked files it wrote were put back and n' if tracked else 'N')
                 + 'othing was pushed, but git does not track ' + ', '.join(shown) + ', so '
                 + ('it keeps' if len(kept) == 1 else 'they keep') + " mendwright fix's changes."
                 + end)
-    raise Stop(refusal(kept), summary=refusal([md_code(p) for p in kept]))
+    raise Stop(refusal(first, kept), summary=refusal(md_code(first), [md_code(p) for p in kept]))
 
 
 def run_fix(action, argv):
@@ -889,6 +894,18 @@ def _porcelain_paths(text):
     return out
 
 
+def _under_github(shown, said):
+    """P2's refusal: shown are the paths, said how the put back went."""
+    return ('mendwright: mendwright fix changed ' + ', '.join(shown) + ', under .github/, which '
+            'it never should. ' + said + '; please report this.')
+
+
+def _not_reported(shown, said):
+    """P1's and P3's refusal."""
+    return ('mendwright: git shows changes mendwright fix did not report (' + ', '.join(shown)
+            + '). ' + said + '; please report this.')
+
+
 class Publish:
     """The publish step: everything after mendwright fix wrote the files."""
 
@@ -968,9 +985,10 @@ class Publish:
         return _porcelain_paths(out)
 
     def put_back(self, files):
-        """Put files back as the tested commit has them, and say how it went, for P1 and P2.
-        A file staged since is unstaged first (checkout alone copies the index, which then
-        holds the change); a file the commit does not have stays, untracked."""
+        """Put files back as the tested commit has them, and say how it went, for P1 to P3:
+        (for the log, for the job summary). A file staged since is unstaged first (checkout
+        alone copies the index, which then holds the change); a file the commit does not have
+        stays, untracked."""
         git, failed = self.action.git, None
         if files:
             top = self.top()
@@ -982,8 +1000,9 @@ class Publish:
             if code != 0:
                 failed = _first_error(err, self.action.secrets())
         if failed is None:
-            return 'The files were put back and nothing was pushed'
-        return 'Nothing was pushed, but git could not put the files back (' + failed + ')'
+            return ('The files were put back and nothing was pushed',) * 2
+        said = 'Nothing was pushed, but git could not put the files back ('
+        return said + failed + ')', said + md_code(failed) + ')'
 
     def top(self):
         if self._top is None:
@@ -1001,15 +1020,14 @@ class Publish:
         github = [p for p in set(changed) | set(planned)
                   if _fold(p) == '.github' or _fold(p).startswith('.github/')]
         if github:
-            said = self.put_back(changed)
-            raise Stop('mendwright: mendwright fix changed ' + ', '.join(sorted(github))
-                       + ', under .github/, which it never should. ' + said
-                       + '; please report this.')
+            said, said_md = self.put_back(changed)
+            raise Stop(_under_github(sorted(github), said),
+                       summary=_under_github([md_code(p) for p in sorted(github)], said_md))
         extra = sorted(set(changed) - set(planned))
         if extra:
-            said = self.put_back(changed)
-            raise Stop('mendwright: git shows changes mendwright fix did not report ('
-                       + ', '.join(extra) + '). ' + said + '; please report this.')
+            said, said_md = self.put_back(changed)
+            raise Stop(_not_reported(extra, said),
+                       summary=_not_reported([md_code(p) for p in extra], said_md))
         for path in planned:
             if path not in changed:
                 listed = self.action.git('-C', top, 'ls-files', '-z', '--', path)[1]
@@ -1111,10 +1129,10 @@ class Publish:
         staged = [_norm(p) for p in action.git('-C', top, 'diff', '--cached', '--name-only',
                                                '-z')[1].split('\0') if p]
         if sorted(staged) != sorted(files):
-            said = self.put_back(sorted(set(staged) | set(files)))
-            raise Stop('mendwright: git shows changes mendwright fix did not report ('
-                       + ', '.join(sorted(set(staged) ^ set(files))) + '). ' + said
-                       + '; please report this.')
+            said, said_md = self.put_back(sorted(set(staged) | set(files)))
+            extra = sorted(set(staged) ^ set(files))
+            raise Stop(_not_reported(extra, said),
+                       summary=_not_reported([md_code(p) for p in extra], said_md))
         os.makedirs(action.temp, exist_ok=True)
         message = os.path.join(action.temp, 'commit-message.txt')
         with open(message, 'w', encoding='utf-8', newline='\n') as handle:
