@@ -323,8 +323,11 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
     return None, reason
 
 
-# list_gate()'s reasons for a list that a quarantine holds.
-_REJECTED_LIST = 'it is a list heal you rejected, or one mendwright quarantined'
+# list_gate()'s reasons for a list that a quarantine holds. An accepted list heal is
+# quarantined when the selector it replaced matches again (SelectorStore.retire_list_heals).
+_REJECTED_LIST = ('it is a list heal you rejected, or one mendwright quarantined: it quarantines '
+                  'a list heal you accepted once the selector it replaced matches again, even on '
+                  'one element')
 _REJECTED_ELEMENTS = ('it takes elements of a list heal you rejected, or of a quarantined '
                       'selector of this key')
 

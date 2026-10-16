@@ -446,6 +446,8 @@ No matching element for: cart (tried 1 candidate(s)).
 
 When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty=True`, a proposed list heal is no longer proposed (an INFO line), and an accepted one is quarantined, with a WARNING and a `heal.quarantine` event: the list was not broken, or the key is used on more than one page. A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it. `mendwright fix` writes an accepted list heal only over those selectors, and leaves the key alone, saying why, when your last run passed other selectors for it (another page's, or one you fixed by hand), or when one of its selectors matched after the list heal was found. So `mendwright fix` never writes another list's selector over a selector that works.
 
+The selector it replaced matching one element is enough, since a list with one item is not empty: one element that keeps the old class elsewhere on a page, such as in a mini cart, quarantines a list heal you accepted too. mendwright can't tell it from the list, so it fails closed. From then on a lookup with `nonempty=True` refuses that group with `it is a list heal you rejected, or one mendwright quarantined`. If it is the list, change the selector in your code by hand; to have it proposed again instead, delete its row from `overrides.json` (see [Store and journal](#store-and-journal)).
+
 What it refuses, each with its reason in the message:
 
 | When | The message says |

@@ -223,8 +223,7 @@ def test_the_list_gate_refuses_what_a_rejection_holds_and_names_an_acceptance(tm
     store._find('cards', TILE)['status'] = 'accepted'
     assert list_gate(store, 'cards', TILE, V2, meta, live)[0] == 'accepted'
     store.quarantine('cards', TILE)
-    assert list_gate(store, 'cards', TILE, V2, meta, live)[1] == (
-        'it is a list heal you rejected, or one mendwright quarantined')
+    assert list_gate(store, 'cards', TILE, V2, meta, live)[1] == REJECTED
     other = "//div[@id='grid']/div"                                    # the same elements
     assert list_gate(store, 'cards', other, V2, meta, live)[1] == (
         'it takes elements of a list heal you rejected, or of a quarantined selector of this key')
@@ -234,7 +233,9 @@ def test_the_list_gate_refuses_what_a_rejection_holds_and_names_an_acceptance(tm
 
 NO_MATCH = 'No matching element for: cart (tried 1 candidate(s)).\n  -> '
 ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]"
-REJECTED = 'it is a list heal you rejected, or one mendwright quarantined'
+REJECTED = ('it is a list heal you rejected, or one mendwright quarantined: it quarantines a '
+            'list heal you accepted once the selector it replaced matches again, even on one '
+            'element')
 
 
 def _open(page, root, provider=None, **kwargs):
@@ -739,8 +740,7 @@ def test_a_rejected_list_heal_is_refused_under_any_spelling(tmp_path, make_page)
     edit_list_heal(tmp_path / 'o.json', 'cart', 'reject')
     again = _open(page, tmp_path)
     assert _raised(again) == _searched(
-        'the group it found, ' + ROWS + ", failed mendwright's list checks (it is a list heal "
-        'you rejected, or one mendwright quarantined)')
+        'the group it found, ' + ROWS + ", failed mendwright's list checks (" + REJECTED + ')')
 
 
 def test_dry_run_checks_and_saves_nothing(tmp_path, make_page, caplog):
@@ -957,6 +957,25 @@ def test_the_old_selector_matching_again_retires_list_heals(tmp_path, make_page,
     quarantined = _events(tmp_path, 'heal.quarantine')[-1]
     assert quarantined['xpath'] == ROWS and quarantined['list'] is True
     assert quarantined['reason'] == 'the selector it replaced matches again'
+
+
+def test_one_element_of_the_old_selector_quarantines_an_accepted_list_heal_and_says_so(
+        tmp_path, make_page):
+    # A list with one item is not empty, so one element that keeps the old class (a mini cart)
+    # is enough: mendwright can't tell it from the cart, and fails closed.
+    page, heal, pid = _proposed(make_page, tmp_path)
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', pid)
+    mini = cart(True, row='cart-row').replace(
+        '<h2>Saved for later', "<aside><div class='cart-item'>Blue mug</div></aside><h2>Saved for later")
+    assert len(_open(_shop(make_page, mini), tmp_path).locator_all('cart', '.cart-item')) == 1
+    assert _rows(tmp_path)[ROWS]['status'] == 'quarantined'
+    again = _open(page, tmp_path)
+    assert _raised(again) == _searched(
+        'the group it found, ' + ROWS + ", failed mendwright's list checks (" + REJECTED + ')')
+    assert 'once the selector it replaced matches again, even on one element' in REJECTED
+    # The way back: the selector in the code, by hand.
+    assert len(again.locator_all('cart', ROWS, nonempty=True)) == 3
+    assert _rows(tmp_path)[ROWS]['status'] == 'active'
 
 
 def test_another_selector_of_the_key_retires_nothing(tmp_path, make_page):
