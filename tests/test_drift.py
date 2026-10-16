@@ -780,6 +780,21 @@ def test_keys_on_the_site_root(make_page, stub_provider, tmp_path, caplog):
     assert {k.page for k in report.keys} == {'/'}
 
 
+def test_keys_on_the_site_root_of_a_test_app_on_a_new_port(make_page, stub_provider, tmp_path,
+                                                          caplog):
+    # A live server on a random port: the store names last run's port. Other pages match
+    # by path, so the root matches by host, whatever the port.
+    record(make_page, stub_provider, tmp_path, url='http://127.0.0.1:5001/')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=V1,
+                         url='http://127.0.0.1:5002/')
+    report = drifted(heal, page, caplog)
+    assert report.ok and len(report.keys) == len(KEYS)
+    # Another host's root is another site.
+    heal, page = checker(make_page, stub_provider, tmp_path, html=V1,
+                         url='http://localhost:5002/')
+    assert drifted(heal, page, caplog).keys == ()
+
+
 @pytest.mark.parametrize('call, error, text', [
     (lambda h: h.drift('email'), TypeError, "takes a list of keys, such as heal.drift(['email'])"),
     (lambda h: h.drift(['email', 3]), TypeError, 'takes key names as strings, got 3'),

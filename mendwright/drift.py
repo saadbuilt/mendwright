@@ -1015,14 +1015,18 @@ def drift_keys(store, keys, timeout_ms, poll_ms):
 
 def keys_on_page(store, url):
     """The keys recorded on the page at url: those whose lastPage or one of whose pages is
-    its page_path(), or, on the site root, those whose last_url() is that root."""
+    its page_path(), or, on the site root, those whose last_url() is a root on the same
+    host. The port and scheme don't count, as page_path() leaves the origin aside on other
+    pages, so a test app that starts on a new port each run still has its home page's
+    keys."""
     here = page_path(url)
     out = []
     if here is None:
         root = page_url(url)
         if not root or _root_page(root) is None:
             return []
-        return sorted(k for k in store_keys(store) if _last_url(store, k) == root)
+        host = urlsplit(root).hostname
+        return sorted(k for k in store_keys(store) if _root_of(_last_url(store, k), host))
     for key in store_keys(store):
         try:
             meta = store.meta(key)
@@ -1031,6 +1035,14 @@ def keys_on_page(store, url):
         if meta.get('lastPage') == here or here in (meta.get('pages') or ()):
             out.append(key)
     return sorted(out)
+
+
+def _root_of(address, host):
+    """Whether address is a site root on host."""
+    try:
+        return bool(address) and _root_page(address) == '/' and urlsplit(address).hostname == host
+    except ValueError:
+        return False
 
 
 def journal_evidence(events):

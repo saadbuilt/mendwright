@@ -1501,7 +1501,7 @@ def test_checkout_selectors(page, heal):
     assert report.ok, report.text()
 ```
 
-- `heal.drift()` checks the keys found on this page before, and `heal.drift(["email", "pay"])` those keys wherever they were found: a key never found on this page gets the page guard's refusal, as in a run, unless `heal_across_pages=True`.
+- `heal.drift()` checks the keys found on this page before (on the site root, the keys found on a root of the same host, whatever its port, for a test app that starts on a new port each run), and `heal.drift(["email", "pay"])` those keys wherever they were found: a key never found on this page gets the page guard's refusal, as in a run, unless `heal_across_pages=True`.
 - `timeout_ms=` (the healer's by default) is one wait for the whole page.
 - It returns a `DriftReport` from `mendwright.drift`: `ok` (at least one key, none broken, none unchecked; `False` for a page where no key was found), `broken`, `unchecked`, `failed(fail_on=..., strict=...)`, `text()` and `as_dict()`. Each of its `keys` is a `KeyDrift` with the `verdict`, `reason`, `used` selector, `heal` and the `probes` of each selector.
 - It uses the healer's store, provider, fingerprint setting, `destructive_keys`, guard, `heal_across_pages` and dry-run setting. A key registered with `heal.interrupt()` is `optional` when it misses.
