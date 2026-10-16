@@ -7,6 +7,7 @@ the right element, and every test that heals or declines a call checks that it w
 asked: mendwright heals a call from its fingerprint only. No network, no model.
 """
 
+import asyncio
 import importlib
 import re
 import statistics
@@ -342,6 +343,43 @@ def test_async_a_renamed_button_heals_and_two_matches_pass_through(engine, tmp_p
     assert 'strict mode violation' in str(error) and not isinstance(error, GetByNotFound)
     assert isinstance(missed, GetByNotFound)
     assert provider.bundles == []
+
+
+def test_async_a_call_inside_an_iframe_is_refused_and_heals_on_the_frame(engine, tmp_path,
+                                                                        stub_provider):
+    provider = stub_provider("//button[@id='pay']")
+
+    async def run(tab):
+        store = str(tmp_path / 'o.json')
+        await tab.set_content(_IFRAME)
+        frame = None
+        for _ in range(50):
+            frame = tab.frame(name='payment')
+            if frame is not None and await frame.locator('#pay').count() == 1:
+                break
+            await asyncio.sleep(0.1)
+        heal = await mendwright.aio.open(tab, provider=provider, store_path=store,
+                                         heal_get_by=True, timeout_ms=FAST_MS)
+        refused = None
+        try:
+            await heal.page.get_by_role('button', name='Pay').click()
+        except Exception as exc:
+            refused = exc
+        inner = await mendwright.aio.open(frame, provider=provider, store_path=store,
+                                          heal_get_by=True, timeout_ms=FAST_MS)
+        await inner.page.get_by_role('button', name='Pay').click()
+        await frame.evaluate("document.getElementById('pay').textContent = 'Confirm'")
+        await inner.page.get_by_role('button', name='Pay').click()
+        return heal, inner, refused, await frame.locator('#pay').text_content()
+
+    heal, inner, refused, text = engine.with_async_page(run)
+    assert isinstance(refused, GetByNotFound)
+    assert ("mendwright did not look for it there, because mendwright does not follow a get_by_* "
+            "call into an iframe" in str(refused))
+    assert ("heal = await mendwright.aio.open(page.frame(name='payment'), heal_get_by=True)."
+            in str(refused))
+    assert heal.heals == [] and text == 'Confirm!'
+    assert [h.source for h in inner.heals] == ['fingerprint'] and provider.bundles == []
 
 
 # --- what it costs -----------------------------------------------------------------------

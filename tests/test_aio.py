@@ -1022,6 +1022,93 @@ def test_an_async_heal_without_the_calls_aria_role_is_refused(make_page, tmp_pat
     assert heal.heals == [] and provider.bundles == []
 
 
+def test_the_async_calls_own_element_reports_nothing_to_the_canary(make_page, tmp_path,
+                                                                   stub_provider):
+    heal_xpath = "//button[@id='login']"
+    sync, page = _call_page(make_page)
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider(heal_xpath), timeout_ms=0,
+                           heal_get_by=True)
+        await _sign_in(heal)
+        sync.set_html(RENAMED)
+        await _sign_in(heal)
+        assert heal.pending() == {CALL: heal_xpath}
+        sync.set_html(LOGIN)                     # the call matches again
+        sync.fail['click'] = RuntimeError('Locator.click: Element is not attached to the DOM')
+        with pytest.raises(RuntimeError):
+            await _sign_in(heal)
+        return heal
+
+    heal = run(main())
+    assert sync.actions[-1][0] == "get_by_role('button', name='Sign in')"
+    assert heal.pending() == {CALL: heal_xpath}
+    assert heal.store.status(CALL, heal_xpath) == 'active'
+
+
+def test_an_async_call_that_starts_to_match_several_during_the_wait_passes_through_at_once(
+        make_page, tmp_path, stub_provider):
+    sync, page = _call_page(make_page, RENAMED)
+    real = sync._get_by
+    slept = []
+
+    def later(method, args, kwargs):
+        if sync.trips >= 2:       # after the first look and the first poll
+            sync.set_html(LOGIN.replace('</main>', '<button>Sign in</button></main>'))
+        return real(method, args, kwargs)
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    now = [0.0]
+    sync._get_by = later
+
+    async def main():
+        heal = await _open(page, tmp_path, stub_provider("//button[@id='login']"),
+                           timeout_ms=10000, heal_get_by=True)
+        heal._sleep, heal._clock = fake_sleep, lambda: now[0]
+        with pytest.raises(Exception, match='strict mode violation') as caught:
+            await _sign_in(heal)
+        assert not isinstance(caught.value, AttentionRequired)
+        return heal
+
+    heal = run(main())
+    assert len(slept) <= 2 and heal.heals == []
+    assert [c['xpath'] for c in heal.store.candidates(CALL)] == [CALL]
+
+
+def test_an_async_call_that_matches_in_an_iframe_is_not_healed_or_followed(make_page, tmp_path,
+                                                                           stub_provider):
+    page = AsyncFakePage(make_page("<html><body><main><p>Pay below</p></main></body></html>",
+                                   url='https://shop.test/checkout', fingerprints=True))
+    child = AsyncFakePage(make_page("<html><body><button id='pay'>Pay</button></body></html>",
+                                    url='https://pay.test/form'))
+    child.name, child.parent_frame = 'payment', page
+    main = AsyncFakePage(page.sync)
+    main.parent_frame = None
+    page.frames = [main, child]
+    key = 'get_by_role("button", name="Pay")'
+    provider = stub_provider("//button[@id='pay']")
+
+    async def main_():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by=True)
+        heal.store.add_candidate(key, "//button[@id='pay']")   # a heal that matches only there
+        with pytest.raises(mendwright.getby.GetByNotFound) as caught:
+            await heal.page.get_by_role('button', name='Pay').click()
+        return heal, caught.value
+
+    heal, error = run(main_())
+    assert str(error).endswith(
+        "-> '" + key + "' is inside an iframe: " + key + ' matches nothing in the page '
+        "mendwright was opened on, but matches inside the iframe named 'payment'. mendwright "
+        'did not look for it there, because mendwright does not follow a get_by_* call into an '
+        'iframe, and did not ask a model to heal it. Open mendwright on that Frame instead: '
+        "heal = await mendwright.aio.open(page.frame(name='payment'), heal_get_by=True).")
+    assert not any(c.get('frameXPath') for c in heal.store.candidates(key))
+    assert heal.heals == [] and provider.bundles == []
+
+
 def test_async_reserved_keys_name_the_method_that_refused_them(make_page, tmp_path,
                                                                 stub_provider):
     _sync, page = _call_page(make_page)
