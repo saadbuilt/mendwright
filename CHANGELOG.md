@@ -18,7 +18,7 @@ While the version starts with 0, a minor release can change the public API.
 - `mendwright fix` no longer writes a heal that is not an XPath lxml can compile, or whose CSS form is not one mendwright builds, since mendwright saves no such heal. It lists the key.
 - `mendwright fix` lists a key whose newest heal was quarantined and that nothing has matched since.
 - `mendwright fix` skips `.github` folders, also when `--path` names one, leads into one through a link or junction, or names one in another case.
-- `mendwright report --format md` writes a selector that holds two backticks in a row in a code span that holds it.
+- `mendwright report --format md` writes its code spans as `mendwright fix --format md` does: a selector that holds two backticks in a row gets a code span that holds it, control and bidirectional characters show as `\uXXXX`, a space at either end of a value is kept, and an empty value shows as (empty).
 
 ## [0.8.0] - 2026-10-16
 

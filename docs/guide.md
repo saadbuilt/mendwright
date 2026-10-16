@@ -1574,7 +1574,7 @@ Store (where mendwright.open() saves heals)
 ### mendwright report
 
 Lists each key in a store with its selectors, and the heal counts from the journal.
-`--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`). `--format` is `text`, `md`, `json` or `html`.
+`--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`). `--format` is `text`, `md`, `json` or `html`. In `md`, each key and selector is in a code span, with control and bidirectional characters written out as `\uXXXX`, and an empty one shows as (empty).
 `--out FILE` writes the report to a file instead of stdout, creating the folder if it is missing, and prints `Wrote <path>`.
 
 ```text

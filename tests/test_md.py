@@ -67,3 +67,10 @@ def test_report_markdown_puts_two_backticks_in_a_row_in_a_span_that_holds_them()
     assert cli._md_code('`a`') == '`` `a` ``'
     assert cli._md_code('//a | //b') == '`//a \\| //b`'
     assert cli._md_cell('a |\n b') == 'a \\| b'
+
+
+def test_report_markdown_shows_what_the_changelog_says():
+    assert cli._md_code('') == '(empty)'
+    assert cli._md_code(' #a ') == '`  #a  `'           # CommonMark shows ' #a '
+    assert cli._md_code('a\x1bb') == '`a\\u001Bb`'
+    assert cli._md_code('x\u202Ey') == '`x\\u202Ey`'
