@@ -1315,6 +1315,8 @@ def plan_check(store, keys, *, origins=None, base_url=None, urls=None, load_page
         # The site root's address next to a page: two processes saved the key at once, one
         # on the root and one on the page (a run saves no root address over a page, see
         # Healer._remember_page). The address names the key's site, and lastPage its page.
+        # A healer on a Playwright Frame that finds a key first found on the root leaves
+        # the same pair, with the frame's path as lastPage (a limit the guide names).
         on_site = bool(lu) and bool(lp) and not consistent and _root_page(lu) == '/'
         recorded = origin_of(lu) if consistent or on_site else None
         if lu and not lp and not consistent:

@@ -193,6 +193,24 @@ def test_a_healer_on_a_frame_saves_no_address(tmp_path, make_page):
     assert healer.store.meta('note')['lastPage'] == '/embed/consent'
 
 
+def test_a_frame_after_the_site_root_leaves_the_root_address_next_to_its_page(tmp_path,
+                                                                             make_page):
+    # A limit the guide names: `mendwright check` reads this pair as two processes that
+    # saved the key at once, and loads the frame's path on the site named.
+    from mendwright.drift import plan_check
+    path = str(tmp_path / 'o.json')
+    _note(sh_open(make_page(NOTE, url='https://shop.example/'), store_path=path))
+    frame = make_page(NOTE, url='https://consent.vendor.example/widget')
+    del frame.frames
+    healer = sh_open(frame, store_path=path)
+    _note(healer)
+    assert healer.store.last_url('note') == 'https://shop.example/'
+    assert healer.store.meta('note')['lastPage'] == '/widget'
+    origins = {'https://shop.example': 'https://shop.example'}
+    [page] = plan_check(healer.store, ['note'], origins=origins).pages
+    assert page.address == 'https://shop.example/widget'
+
+
 def _selenium(url, framed):
     from mendwright.drivers.selenium import SeleniumDriver
 
