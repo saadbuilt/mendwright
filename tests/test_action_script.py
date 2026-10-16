@@ -1092,6 +1092,24 @@ def test_a_commit_by_someone_else_blocks_the_branch(world):
                                       'commits this action did not make.\n')
 
 
+def test_an_author_from_the_job_s_environment_or_git_config_does_not_block_the_action(world):
+    # A workflow that sets GIT_AUTHOR_* for its own commits, or author.email in git's config,
+    # must not put that author on the action's commit: the next run would block itself.
+    world.env.update(GIT_AUTHOR_NAME='CI', GIT_AUTHOR_EMAIL='ci@example.com',
+                     GIT_COMMITTER_NAME='CI', GIT_COMMITTER_EMAIL='ci@example.com')
+    for role in ('author', 'committer'):
+        git(world.ws, 'config', role + '.name', 'Config')
+        git(world.ws, 'config', role + '.email', 'config@example.com')
+    world.run()
+    assert world.result() == 'created'
+    who = git(world.bare, 'log', '-1', '--format=%an|%ae|%cn|%ce', 'mendwright/fix/main')
+    assert who == '|'.join(['github-actions[bot]', BOT_EMAIL] * 2)
+    _changed_plan(world)
+    world.run()
+    assert world.result() == 'updated', world.log()
+    assert notices(world, 'publish', 'warning') == []
+
+
 def test_an_update_branch_merge_commit_blocks_the_branch(world):
     world.run()
     # GitHub's "Update branch" merges the base into the branch, as the person who clicked.

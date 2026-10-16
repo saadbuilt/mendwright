@@ -55,10 +55,13 @@ MAX_RETRY_AFTER = 60
 COMMIT_PREFIX = 'mendwright fix:'
 STORE_FOLDER = '.mendwright'
 JOURNAL = 'journal.jsonl'
-# Variables that make git print what it sends, or ask someone for a password.
+# Variables that make git print what it sends, or ask someone for a password, and those that
+# would put another author on the action's commit (they win over -c user.email), so that the
+# next run would take its own commit for someone else's.
 _GIT_UNSET = ('GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_CURL', 'GIT_CURL_VERBOSE',
               'GIT_ASKPASS', 'SSH_ASKPASS', 'MW_TOKEN', 'GIT_CONFIG_COUNT', 'GIT_DIR',
-              'GIT_WORK_TREE', 'GIT_INDEX_FILE')
+              'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
+              'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')
 
 INTRO = ('mendwright healed these selectors while your tests ran, and each heal was confirmed. '
          'This pull request writes them into your code, so the code says what the store says.',
@@ -1044,8 +1047,11 @@ class Publish:
         with open(message, 'w', encoding='utf-8', newline='\n') as handle:
             handle.write(self.title() + '\n\nFrom ' + self.run_url + ', tests on ' + self.sha
                          + '.\n')
-        action.git('-C', top, '-c', 'user.name=' + action.input('commit-author-name'),
-                   '-c', 'user.email=' + self.email, '-c', 'commit.gpgsign=false',
+        name = action.input('commit-author-name')
+        who = []
+        for role in ('user', 'author', 'committer'):       # author.* and committer.* beat user.*
+            who += ['-c', role + '.name=' + name, '-c', role + '.email=' + self.email]
+        action.git('-C', top, *who, '-c', 'commit.gpgsign=false',
                    'commit', '--no-verify', '--cleanup=verbatim', '-F', message)
         code, _, err = action.git('-C', top, 'push', '--force-with-lease=refs/heads/'
                                   + self.branch + ':' + remote, action.remote_url(),
