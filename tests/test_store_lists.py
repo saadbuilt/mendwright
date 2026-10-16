@@ -343,3 +343,17 @@ def test_an_accepted_list_heal_whose_css_form_the_code_passes_is_done(tmp_path):
     run.set_code_candidates('cart', ['div.cart-row'])
     assert run.list_heals('cart') == [] and _rows(tmp_path)[ROWS]['status'] == 'superseded'
     assert [c['xpath'] for c in run.candidates('cart')] == ['div.cart-row']
+
+
+def test_a_snapshot_that_takes_a_list_heal_over_leaves_the_store_s_row_alone(tmp_path):
+    # mendwright check and heal.drift() preview heals on a snapshot: nothing done to it may
+    # change how this store merges the file, where mendwright lists accepted the row.
+    store = _store(tmp_path)
+    store.propose_list_heal('cart', ROWS, css='div.cart-row', proposal=evidence())
+    edit_list_heal(str(tmp_path / 'o.json'), 'cart', 'accept', '3f2a9c1d',
+                   now='2026-11-02T10:20:00+00:00')
+    store.snapshot().set_code_candidates('cart', [ROWS])
+    store.set_last_step('cart', 'checkout')             # a write: it merges the file first
+    row = _rows(tmp_path)[ROWS]
+    assert (row['status'], row.get('acceptedAt'), row.get('list')) == (
+        'accepted', '2026-11-02T10:20:00+00:00', True)

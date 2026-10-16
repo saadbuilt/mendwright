@@ -335,7 +335,11 @@ def test_a_0_8_0_store_is_written_byte_for_byte_as_0_8_0_wrote_it(tmp_path, make
     from mendwright.store import load_store
     monkeypatch.setattr('mendwright.store._now_iso', lambda: '2026-11-02T10:00:00+00:00')
     path = scenario_080(mendwright, make_page, Journal, load_store, tmp_path)
-    assert _keys_in_order(path.read_bytes()) == _keys_in_order(
+    # The one field 0.9.0 adds to every key it finds, for mendwright check: lastUrl.
+    data = json.loads(path.read_bytes())
+    assert {key: entry.pop('lastUrl') for key, entry in data['selectors'].items()} == {
+        'cards': 'https://shop.example/shop', 'menu': 'https://shop.example/shop'}
+    assert _keys_in_order(json.dumps(data, separators=(',', ':'))) == _keys_in_order(
         (GOLDEN / 'overrides.json').read_bytes())
     assert not (tmp_path / 'journal.jsonl').exists()             # 0.8.0 journaled nothing
 

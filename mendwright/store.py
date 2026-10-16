@@ -721,13 +721,13 @@ class SelectorStore:
     def snapshot(self):
         """An independent copy of this store in memory, with read_only=True: what is done
         to it (a heal applied, a quarantine) never reaches this store or any file. It keeps
-        the destructive flags, the seed's roles and texts, the role guesses and the order
-        set_code_candidates() gave, and starts with no batch, no unsaved change and no
-        success recorded in this process."""
+        the destructive flags, the seed's roles and texts, the role guesses, the order
+        set_code_candidates() gave and the list heals it took over as code, and starts with no
+        batch, no unsaved change and no success recorded in this process."""
         clone = copy.copy(self)
         for name in ('_data', '_meta', '_base', '_base_place', '_base_meta'):
             setattr(clone, name, copy.deepcopy(getattr(self, name, {})))
-        for name in ('_locked', '_seed_role', '_seed_text', '_guessed'):
+        for name in ('_locked', '_seed_role', '_seed_text', '_guessed', '_delisted'):
             setattr(clone, name, set(getattr(self, name, ())))
         clone._preferred = {k: list(v) for k, v in self._preferred.items()}
         clone._seed_state = dict(self._seed_state)
