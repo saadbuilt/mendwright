@@ -14,7 +14,7 @@ While the version starts with 0, a minor release can change the public API.
 
 ### Changed
 
-- `mendwright fix` no longer rewrites the selector passed to `heal.interrupt()` or the landmark passed to `heal.step(when=)` when it equals the old selector of a healed key: written there, another key's heal would make the interruption act on that key's element. It lists them with the selector to check.
+- `mendwright fix` no longer rewrites the selector passed to `heal.interrupt()` or the landmark passed to `heal.step(when=)` when it equals the old selector of a healed key: written there, another key's heal would make the interruption act on that key's element. It lists them with the selector to check. This holds for a string written in the call and for one that reaches it through a name in the same file (a constant, a class constant, a dict or list, a parameter of your own function); a string from another module is not followed.
 - `mendwright fix` no longer writes a heal that is not an XPath lxml can compile, or whose CSS form is not one mendwright builds, since mendwright saves no such heal. It lists the key.
 - `mendwright fix` lists a key whose newest heal was quarantined and that nothing has matched since.
 - `mendwright fix` skips `.github` folders, also when `--path` names one, leads into one through a link or junction, or names one in another case.

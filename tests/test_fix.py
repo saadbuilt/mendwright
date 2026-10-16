@@ -1034,6 +1034,74 @@ def test_a_selector_seen_only_under_a_flow_call_is_found_but_not_written(root, c
     assert "test_a.py:1 was not changed: '#x' is passed to heal.interrupt()" in out
 
 
+FLOW_THROUGH = {
+    "constant": ('ACCEPT = "#x"\n'
+                 'def test_a(heal):\n'
+                 '    heal.interrupt("banner", ACCEPT)\n'
+                 '    heal.locator("accept", ACCEPT).click()\n', [(1, "ACCEPT")]),
+    "dict-of-interruptions": ('INTERRUPTIONS = {"banner": "#x", "chat": "#chat-close"}\n'
+                              'def test_a(heal):\n'
+                              '    for key, selector in INTERRUPTIONS.items():\n'
+                              '        heal.interrupt(key, selector)\n', [(1, "selector")]),
+    "subscript": ('SELECTORS = {"banner": "#x"}\n'
+                  'heal.interrupt("banner", selector=SELECTORS["banner"])\n',
+                  [(1, 'SELECTORS["banner"]')]),
+    "class-constant": ('class Sel:\n'
+                       '    ACCEPT = "#x"\n'
+                       'heal.step("pay", when=[Sel.ACCEPT])\n', [(2, "Sel.ACCEPT")]),
+    "attribute": ('class Checkout:\n'
+                  '    def __init__(self, heal):\n'
+                  '        self.banner = "#x"\n'
+                  '        heal.interrupt("banner", self.banner)\n', [(3, "self.banner")]),
+    "helper": ('def dismiss(heal, selector="#x"):\n'
+               '    heal.interrupt("banner", selector)\n'
+               'def test_a(heal):\n'
+               '    dismiss(heal, "#x")\n'
+               '    dismiss(heal, selector="#x")\n', [(1, "selector"), (4, "selector"), (5, "selector")]),
+}
+
+
+@pytest.mark.parametrize("name", list(FLOW_THROUGH))
+def test_a_flow_selector_passed_through_a_name_is_never_rewritten(root, capsys, name):
+    source_text, notes = FLOW_THROUGH[name]
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_flow.py", source_text)
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == source_text
+    what = "heal.step(when=)" if name == "class-constant" else "heal.interrupt()"
+    for line, via in notes:
+        assert ("tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to " + what
+                + " through " + via + ", and mendwright fix never rewrites") in out, out
+    assert "no string equal to" not in out
+
+
+def test_a_name_is_followed_in_its_own_scope_only(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_scope.py", textwrap.dedent('''\
+        SEL = "#x"
+        def test_banner(heal):
+            heal.interrupt("banner", SEL)
+        def test_accept(heal):
+            SEL = "#x"
+            heal.locator("accept", SEL).click()
+        def test_other(heal):
+            sel = "#x"
+            heal.locator("accept", sel).click()
+        def test_flow(heal):
+            sel = "#cookie-ok"
+            heal.interrupt("cookies", sel)
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == 'SEL = "#x"'                                 # the interruption's
+    assert lines[4] == '    SEL = "//button[@id=\'ok\']"'          # a local of another test
+    assert lines[7] == '    sel = "//button[@id=\'ok\']"'
+    assert "tests/test_scope.py:1 was not changed: '#x' is passed to heal.interrupt() through SEL" \
+        in out
+
+
 @pytest.mark.parametrize("new, why", [
     ("#not-an-xpath", "its healed selector '#not-an-xpath' is not an XPath"),
     ("//button[@id='x'", "its healed selector \"//button[@id='x'\" is not an XPath"),

@@ -19,7 +19,8 @@ What it will and will not touch:
   came only from a seed file (there is no string in your code to replace).
 - Never the selector of heal.interrupt() or the landmark of heal.step(when=): equal to the
   old selector of a healed key, it is listed instead, since another key's heal there would
-  make the interruption act on that key's element.
+  make the interruption act on that key's element. A string that reaches the call through a
+  name in the same file counts too (_FlowTrace); one from another module does not.
 - Only a string literal whose whole value is the old selector (compared as stored, so
   "xpath=//a" and " //a " both match the stored "//a"). Not a substring, not a comment,
   not an f-string, not bytes, not part of an implicit concatenation.
@@ -599,6 +600,191 @@ def _func_name(call):
     return func.id if isinstance(func, ast.Name) else ''
 
 
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+# Methods of a dict or list that give back what it holds, and builtins that pass a list on.
+_READS = frozenset({'get', 'items', 'values', 'copy', 'pop', 'setdefault'})
+_PASS_ON = frozenset({'list', 'tuple', 'set', 'dict', 'sorted', 'reversed', 'enumerate', 'iter'})
+
+
+def _target_names(target):
+    if isinstance(target, ast.Name):
+        return [target]
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for e in target.elts for n in _target_names(e)]
+    return []
+
+
+class _FlowTrace:
+    """The string literals of one file that a name, an attribute or a subscript passed to
+    heal.interrupt() or heal.step(when=) can stand for: what is assigned to the name in the
+    scope it belongs to, or looped over into it, a parameter's default and the arguments of
+    the calls to its function in this file, what is assigned to an attribute of that name
+    anywhere in the file (a class constant, self.x = ...), and the values of a dict or the
+    items of a list it reads. It counts a literal that might reach the call as reaching it,
+    and follows nothing out of the file: an imported constant, functools.partial and a
+    string built at run time are not seen."""
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.scope = {}         # node -> the Module, function, lambda or class it runs in
+        self.bound = {}         # scope -> names bound there
+        self.globals = {}       # scope -> names declared global there
+        self.sources = {}       # (scope, name) -> expressions assigned or looped into it
+        self.attrs = {}         # attribute name -> expressions assigned to it
+        self.calls = {}         # function name -> the calls to it
+        stack = [(tree, tree)]
+        while stack:            # no recursion: a long expression must not overflow the stack
+            node, scope = stack.pop()
+            self.scope[node] = scope
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                outer = node.decorator_list + [node.args] + ([node.returns] if node.returns else [])
+                stack += [(c, scope) for c in outer] + [(s, node) for s in node.body]
+                self._bind(scope, node.name)
+                self._params(node)
+            elif isinstance(node, ast.Lambda):
+                stack += [(node.args, scope), (node.body, node)]
+                self._params(node)
+            elif isinstance(node, ast.ClassDef):
+                outer = node.decorator_list + node.bases + [k.value for k in node.keywords]
+                stack += [(c, scope) for c in outer] + [(s, node) for s in node.body]
+                self._bind(scope, node.name)
+            else:
+                stack += [(c, scope) for c in ast.iter_child_nodes(node)]
+        for node in list(self.scope):
+            self._record(node)
+
+    def _bind(self, scope, name, source=None):
+        self.bound.setdefault(scope, set()).add(name)
+        if source is not None:
+            self.sources.setdefault((scope, name), []).append(source)
+
+    def _params(self, func):
+        args = func.args
+        positional = args.posonlyargs + args.args
+        defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+        pairs = (list(zip(positional, defaults, strict=True))
+                 + list(zip(args.kwonlyargs, args.kw_defaults, strict=True)))
+        for arg, default in pairs:
+            self._bind(func, arg.arg, default)
+        for arg in (args.vararg, args.kwarg):
+            if arg is not None:
+                self._bind(func, arg.arg)
+
+    def _assign(self, scope, target, value):
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)) \
+                and len(target.elts) == len(value.elts) \
+                and not any(isinstance(e, ast.Starred) for e in target.elts + value.elts):
+            for t, v in zip(target.elts, value.elts, strict=True):
+                self._assign(scope, t, v)
+            return
+        if isinstance(target, ast.Attribute):
+            self.attrs.setdefault(target.attr, []).append(value)
+        for name in _target_names(target):
+            self._bind(scope, name.id, value)
+            if isinstance(scope, ast.ClassDef):       # a class constant, read as Class.NAME
+                self.attrs.setdefault(name.id, []).append(value)
+
+    def _record(self, node):
+        scope = self.scope[node]
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                self._assign(scope, target, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and node.value is not None:
+            self._assign(scope, node.target, node.value)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            for name in _target_names(node.target):
+                self._bind(scope, name.id, node.iter)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            for name in _target_names(node.optional_vars):
+                self._bind(scope, name.id, node.context_expr)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                self._bind(scope, (alias.asname or alias.name).split('.')[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            self._bind(scope, node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            self.globals.setdefault(scope, set()).update(node.names)
+        elif isinstance(node, ast.Call):
+            name = _func_name(node)
+            if name:
+                self.calls.setdefault(name, []).append(node)
+
+    def _binding_scope(self, name, scope):
+        if name in self.globals.get(scope, ()):
+            return self.tree
+        through_function = False
+        while True:
+            if name in self.bound.get(scope, ()) and not (
+                    isinstance(scope, ast.ClassDef) and through_function):
+                return scope
+            if scope is self.tree:
+                return None
+            through_function = through_function or isinstance(scope, _FUNCS)
+            scope = self.scope[scope]
+
+    def _call_arguments(self, func, name):
+        """The arguments the calls in this file pass to parameter name of func."""
+        positional = [a.arg for a in func.args.posonlyargs + func.args.args]
+        method = isinstance(self.scope[func], ast.ClassDef)
+        out = []
+        for call in self.calls.get(getattr(func, 'name', None), ()):
+            if name in positional:
+                index = positional.index(name) - (1 if method and isinstance(call.func, ast.Attribute)
+                                                  else 0)
+                if 0 <= index < len(call.args) and not any(
+                        isinstance(a, ast.Starred) for a in call.args[:index + 1]):
+                    out.append(call.args[index])
+            out += [k.value for k in call.keywords if k.arg == name]
+        return out
+
+    def _is_param(self, func, name):
+        args = func.args
+        return name in [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+
+    def literals(self, expr):
+        """The str Constant nodes expr can stand for."""
+        out, seen, work = [], set(), [expr]
+        while work:
+            node = work.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            scope = self.scope.get(node, self.tree)
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, str):
+                    out.append(node)
+            elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                work += node.elts
+            elif isinstance(node, ast.Dict):
+                work += node.values
+            elif isinstance(node, ast.Starred):
+                work.append(node.value)
+            elif isinstance(node, ast.IfExp):
+                work += [node.body, node.orelse]
+            elif isinstance(node, ast.BoolOp):
+                work += node.values
+            elif isinstance(node, ast.Subscript):
+                work.append(node.value)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in _READS:
+                work += [node.func.value] + node.args[1:2]
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id in _PASS_ON:
+                work += node.args
+            elif isinstance(node, ast.Name):
+                where = self._binding_scope(node.id, scope)
+                if where is not None:
+                    work += [s for s in self.sources.get((where, node.id), ()) if s is not None]
+                    if isinstance(where, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                            self._is_param(where, node.id):
+                        work += self._call_arguments(where, node.id)
+            elif isinstance(node, ast.Attribute):
+                work += self.attrs.get(node.attr, ())
+        return out
+
+
 def python_contexts(text):
     """{(line, column): context} for the string literals of Python source that are not a
     plain selector. The context is SKIP for a literal that is no selector at all (a role=,
@@ -614,6 +800,7 @@ def python_contexts(text):
         return {}
     lines = _split_lines(text)
     out = {}
+    through = []        # (expression, what): a selector passed to a FLOW call by name
 
     def mark(node, context):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
@@ -637,7 +824,10 @@ def python_contexts(text):
                 for value in values:
                     items = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
                     for item in items:
-                        mark(item, (FLOW, what))
+                        if isinstance(item, ast.Constant):
+                            mark(item, (FLOW, what))
+                        else:
+                            through.append((item, what))
             for arg, value in keywords.items():
                 if arg in NOT_SELECTOR_KEYWORDS:
                     mark(value, SKIP)
@@ -657,6 +847,14 @@ def python_contexts(text):
                     mark(arg, (CSS_ONLY, name + '()'))
         elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
             by_pair(node.elts[0], node.elts[1])
+    if through:
+        trace = _FlowTrace(tree)
+        for expr, what in through:
+            via = ast.get_source_segment(text, expr) or ''
+            via = ' '.join(via.split())
+            via = via if len(via) <= 60 else via[:57] + '...'
+            for literal in trace.literals(expr):
+                mark(literal, (FLOW, what, via))
     return out
 
 
@@ -915,16 +1113,18 @@ def _diff(shown, before, after):
     return [line.rstrip('\r\n') for line in lines]
 
 
-def _flow_note(where, value, what, keys):
+def _flow_note(where, value, what, keys, via=''):
     """The note for a literal under heal.interrupt() or heal.step(when=) that equals the old
-    selector of keys."""
+    selector of keys. via is the code passed there when the literal reaches the call through
+    a name, an attribute or a subscript."""
     if what == 'heal.step(when=)':
         rule, thing = "never rewrites a step's landmark", "the step's landmark"
     else:
         rule, thing = 'never rewrites the selector of an interruption', 'the interruption'
-    return (where + ' was not changed: ' + repr(value) + ' is passed to ' + what + ', and '
-            'mendwright fix ' + rule + '. It equals the old selector of ' + ', '.join(keys)
-            + ', so if ' + thing + ' broke too, change it by hand.')
+    return (where + ' was not changed: ' + repr(value) + ' is passed to ' + what
+            + (' through ' + via if via else '') + ', and mendwright fix ' + rule
+            + '. It equals the old selector of ' + ', '.join(keys) + ', so if ' + thing
+            + ' broke too, change it by hand.')
 
 
 def scan_file(path, plan, result, needles):
@@ -975,7 +1175,8 @@ def scan_file(path, plan, result, needles):
         found.add(selector)
         if context and context[0] == FLOW:
             result.note('flow_selector', shown, lit.line, _flow_note(
-                shown + ':' + str(lit.line), lit.value, context[1], plan.keys_for[selector]))
+                shown + ':' + str(lit.line), lit.value, context[1], plan.keys_for[selector],
+                context[2] if len(context) > 2 else ''))
             continue
         if selector in plan.ambiguous:
             blocked.append((lit.line, selector, plan.ambiguous[selector]))
