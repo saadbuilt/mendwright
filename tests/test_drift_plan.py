@@ -140,6 +140,26 @@ def test_base_url_still_builds_an_address_from_a_last_page_mendwright_wrote(tmp_
     assert page.address == 'https://shop.example/account/orders' and page.skip is None
 
 
+@pytest.mark.parametrize('last_page', [
+    '@169.254.169.254/latest/meta-data/', '.evil.example/x', ':8443/admin', 'signup',
+    '/signup?next=/account', '/signup#x'])
+@pytest.mark.parametrize('entry, kwargs', [
+    ({}, {'base_url': 'https://shop.example'}),
+    # The site root's address next to a page (see plan_check's on_site).
+    ({'lastUrl': 'https://shop.example/'},
+     {'origins': {'https://shop.example': 'https://shop.example'}}),
+], ids=['base-url', 'origin'])
+def test_an_address_built_from_last_page_is_that_path_on_the_site_and_nothing_else(
+        tmp_path, monkeypatch, last_page, entry, kwargs):
+    # The second guard on its own: with the check of lastPage's form let through, the
+    # address built from it must still be the path on the site named, or none.
+    monkeypatch.setattr(drift, '_stored_page', lambda page: True)
+    store = _raw_store(tmp_path, dict(entry, lastPage=last_page))
+    [page] = plan_check(store, ['k'], **kwargs).pages
+    assert page.origin == 'https://shop.example'
+    assert page.address is None and page.skip[0] == 'no-url'
+
+
 def test_a_stale_address_and_an_old_store(tmp_path):
     store = _store(tmp_path, {
         'framed': ('/signup', 'https://shop.example/embed/consent', None),
