@@ -786,6 +786,12 @@ def run_fix(action, argv):
 def cmd_fix(action):
     mode = action.env.get('MW_MODE', '')
     wd = action.working_directory()
+    prefix = _repo_prefix(action, wd)
+    # fix skips .github below the folder it runs in, so it must not run inside one.
+    if _fold(prefix).split('/')[0] == '.github':
+        raise Stop('mendwright: working-directory ' + (action.input('working-directory') or '.')
+                   + ' is inside .github/, which mendwright fix never changes. Pass the folder '
+                   'that holds your tests.')
     store, journal = find_store(action)
     for entry in action.lines('paths') or ['.']:
         target = os.path.realpath(os.path.join(wd, entry))
@@ -816,8 +822,7 @@ def cmd_fix(action):
                    'so nothing was changed.')
     with open(fix_json, encoding='utf-8') as handle:
         data = json.load(handle)
-    prefix = _repo_prefix(action, wd)
-    written = [prefix + f['path'] for f in data.get('files') or () if f.get('written')]
+    written =[prefix + f['path'] for f in data.get('files') or () if f.get('written')]
     if data.get('errors'):
         _stop_after_errors(action, wd, written, str(data['errors'][0]))
     import mendwright.cli

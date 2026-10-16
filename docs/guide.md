@@ -1464,7 +1464,7 @@ On a public repository it adds a notice: the branch and the pull request are pub
 |---|---|---|
 | `artifact` | `mendwright-store` | The artifact that holds the store, from this run or, under `workflow_run`, from the run that triggered it. Empty: read the store from the workspace. |
 | `store` | `overrides.json` | The store's path inside the artifact, tried as given and then under `.mendwright/`. With `artifact` empty, a path relative to `working-directory`, tried the same way. No `..`. |
-| `working-directory` | `.` | Where your code is checked out; `mendwright fix` runs here. Inside the workspace and the git checkout. |
+| `working-directory` | `.` | Where your code is checked out; `mendwright fix` runs here. Inside the workspace and the git checkout, and not inside `.github`. |
 | `paths` | `.` | One `--path` per line, each inside `working-directory`. |
 | `globs` | empty | One `--glob` per line. |
 | `destructive-keys` | empty | One key per line. List the keys you pass to `mendwright.open(destructive_keys=...)`, which the store doesn't save. |
@@ -1674,7 +1674,7 @@ Which strings it changes:
 Each rewritten Python file must still parse, have the same structure, and differ only in the planned strings, or it isn't written.
 The original quote style and prefix are kept where they can hold the new selector, and a BOM, a coding comment and the line endings are kept.
 A file is written through a temporary file next to it and then replaced, and a file that changed since it was read is not overwritten.
-`.git`, `.github`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files. A `.github` folder holds your workflows and local actions, so it is skipped even when `--path` names it, leads into it through a link or junction, or names it in another case such as `.GitHub`.
+`.git`, `.github`, `.venv`, `venv`, `node_modules`, `.mendwright`, `build`, `dist`, caches and `*.egg-info` folders are skipped, and so are symbolic links, Windows junctions, files over 2 MiB and binary files. A `.github` folder holds your workflows and local actions, so it is skipped even when `--path` names it, leads into it through a link or junction, or names it in another case such as `.GitHub`. The folder you run `mendwright fix` from and the folders above it count only when `--path` names them, so a project checked out in a folder named `.github` is still scanned with the default `--path .`, and so is a `.github` folder you run it from: run it from your project's folder. The action refuses a `working-directory` inside `.github`.
 
 `--format json` prints one JSON document and nothing else on stdout, for scripts such as the [GitHub Action](#open-a-pull-request-with-the-fixes). Errors still go to stderr. Cut down:
 
@@ -1835,6 +1835,7 @@ Each message starts with `mendwright:`. A notice or a warning leaves the job gre
 | the checkout is at ..., but the tests ran on | Under `workflow_run`, pass `ref: ${{ github.event.workflow_run.head_sha }}` to `actions/checkout`. |
 | the checkout has changes to tracked files | Run the action right after `actions/checkout`, so the pull request holds only mendwright's changes. |
 | is not inside a git checkout | Run `actions/checkout` first, and check `working-directory`. |
+| is inside .github/, which mendwright fix never changes | Set `working-directory` to the folder that holds your tests. |
 | the action needs Python 3.10 to 3.14 | Set `python-version`, or leave it at its default. |
 | has no artifact named | Upload the store with `actions/upload-artifact` and `include-hidden-files: true`, under the name the `artifact` input gives. |
 | has no overrides.json at its top or in .mendwright/ | Upload the folder that holds the store, or set `store`. |

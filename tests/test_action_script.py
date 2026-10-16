@@ -930,6 +930,20 @@ def test_errors_in_fix_put_back_the_tracked_files_and_name_the_untracked_ones(wo
     assert '`generated/test_gen.py`' in world.summary()
 
 
+@pytest.mark.parametrize('folder', ['.github', '.github/scripts'])
+def test_a_working_directory_inside_github_is_refused(world, folder):
+    # mendwright fix counts only the part of a path below the folder it runs in, so run there
+    # it would scan .github.
+    world.new_commit('.github/scripts/test_x.py', 'X = "#accept-terms"\n')
+    world.inputs['working-directory'] = folder
+    world.run()
+    assert world.steps['fix'][0] == 1 and 'publish' not in world.steps
+    assert notices(world, 'fix', 'error') == [
+        'mendwright: working-directory ' + folder + ' is inside .github/, which mendwright fix '
+        'never changes. Pass the folder that holds your tests.']
+    assert git(world.ws, 'status', '--porcelain') == ''
+
+
 def test_a_put_back_that_git_refuses_is_not_called_done(world, monkeypatch):
     _fix_fails_on_one_file(world, monkeypatch)
     real = ma.Action.git
