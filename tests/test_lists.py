@@ -326,6 +326,7 @@ def _store(tmp_path, code='.product-card'):
 
 
 def test_apply_list_saves_the_heal_and_its_css(tmp_path):
+    pytest.importorskip('cssselect')     # the live page counts the CSS form with it
     store = _store(tmp_path)
     applied, reason, count = apply_list(store, 'cards', TILE, V2, store.meta('cards'),
                                         driver=LiveDriver(V2), css='div.product-tile')

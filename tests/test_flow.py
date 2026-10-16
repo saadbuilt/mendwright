@@ -1241,7 +1241,10 @@ def test_a_selector_with_several_visible_matches_suggests_none_of_them(side, tmp
 
 
 def test_the_guide_quotes_the_messages_the_code_writes():
-    guide = (Path(__file__).resolve().parents[1] / 'docs' / 'guide.md').read_text(encoding='utf-8')
+    path = Path(__file__).resolve().parents[1] / 'docs' / 'guide.md'
+    if not path.is_file():
+        pytest.skip('docs/ is not in this copy of the project (the sdist leaves it out)')
+    guide = path.read_text(encoding='utf-8')
     landmark = several_message('landmark', 'payment', '.step-title', 2, 1, [])
     two = several_message('interruption', 'cookies', '.close', 2, 0, [], visible=2)
     loop = loop_message('search', 'session_expired', 3, 'relogin')

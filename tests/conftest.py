@@ -173,6 +173,9 @@ class FakePage:
                 return []
             try:
                 from lxml.cssselect import CSSSelector
+            except ImportError:     # lxml's own extra: a test that needs CSS can't run without it
+                pytest.skip('cssselect is not installed')
+            try:
                 return CSSSelector(css)(self._doc)
             except Exception:
                 return []
