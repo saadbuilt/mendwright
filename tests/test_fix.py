@@ -1052,3 +1052,91 @@ def test_a_real_heal_is_written_back_and_then_wins_on_the_next_run(root, capsys,
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+
+
+# --- heal.page.get_by_*() calls: never rewritten -------------------------------------------
+
+SIGN_IN = 'get_by_role("button", name="Sign in")'
+LOGIN = "//button[@id='login']"
+SIGN_IN_SOURCE = (
+    'import re\n'
+    '\n'
+    'def test_login(page):\n'
+    '    page.get_by_role("button", name="Sign in").click()\n'
+    "    page.get_by_role(role='button', name='Sign in', exact=False).click()\n"
+    '    NAME = "Sign in"\n'
+    '    page.get_by_role("button", name=NAME).click()\n'
+    '    page.get_by_role("button", name=re.compile("sign in", re.I)).click()\n'
+    '    expect_values = {\'get_by_role("button", name="Sign in")\': "money"}\n')
+
+
+def _call_line(state, where):
+    return ('  ' + SIGN_IN + ': it is a heal.page.get_by_role() call, and mendwright fix does not '
+            'rewrite calls: from the code it cannot tell whether a call with these arguments runs '
+            'on heal.page or inside another locator, where it may still find the element it was '
+            'written for. Its healed selector, ' + state + ', is ' + LOGIN + ". Change the call's "
+            "arguments by hand to the element's new role or words, or replace it with "
+            'page.locator("' + LOGIN + '"). ' + where)
+
+
+def test_a_call_key_is_left_alone_with_its_healed_selector_and_places(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    source = write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before        # the dict key equal to the call text too
+    lines = out.splitlines()
+    assert lines[0] == "mendwright fix: nothing to write back."
+    assert "Left alone:" in lines
+    assert _call_line('confirmed', 'Calls with these arguments: tests/test_login.py:4, '
+                                   'tests/test_login.py:5.') in lines
+
+
+def test_an_unconfirmed_call_heal_and_no_place_found(root, capsys):
+    write_store(root, {SIGN_IN: healed(SIGN_IN, LOGIN, role="button")}, [])
+    write(root, "test_a.py", 'NAME = "Sign in"\npage.get_by_role("button", name=NAME).click()\n')
+    write(root, "notes.txt", 'page.get_by_role("button", name="Sign in")\n')
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert _call_line('not confirmed yet (check that it finds the right element)',
+                      'No call with these arguments written as literals was found in 1 Python '
+                      'file; calls whose arguments come from variables are not searched.') in (
+        out.splitlines())
+
+
+def test_more_than_ten_places_are_cut(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    write(root, "test_many.py", 'page.get_by_role("button", name="Sign in")\n' * 13)
+    code, out, _err = run(capsys)
+    places = ', '.join('test_many.py:' + str(n) for n in range(1, 11))
+    assert _call_line('confirmed', 'Calls with these arguments: ' + places + ', and 3 more.') in (
+        out.splitlines())
+
+
+def test_a_destructive_call_key_keeps_the_destructive_reason(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button", destructive=True)
+    code, out, _err = run(capsys)
+    assert ("  " + SIGN_IN + ": it is marked destructive, so its heals are never written into "
+            "code. Fix the selector by hand.") in out.splitlines()
+    assert "is a heal.page.get_by_role() call" not in out
+
+
+def test_python_call_sites_reads_literal_calls_only():
+    text = ('page.get_by_role("button", name="Sign in")\n'
+            'x.get_by_role(role="button", name="Sign in")\n'
+            'page.get_by_role("button", name=name)\n'
+            'page.get_by_text(re.compile("total", re.I))\n'
+            'get_by_role("button", name="Sign in")\n'
+            'page.get_by_role("button", name="Sign in", checked=True)\n')
+    keys = {SIGN_IN, 'get_by_text(re.compile("total", re.IGNORECASE))'}
+    assert fixback.python_call_sites(text, keys) == {
+        SIGN_IN: [1, 2], 'get_by_text(re.compile("total", re.IGNORECASE))': [4]}
+    assert fixback.python_call_sites('def broken(:\n', keys) == {}
+
+
+def test_a_call_key_never_enters_the_table_of_strings_to_replace():
+    store = {"schema": 2, "selectors": {SIGN_IN: healed(SIGN_IN, LOGIN, role="button")}}
+    plan = fixback.plan_fixes(store, [canary(SIGN_IN, LOGIN)])
+    assert plan.fixes == [] and plan.new_for == {}
+    assert plan.calls == [fixback.CallLeft(SIGN_IN, 'get_by_role', LOGIN, True)]

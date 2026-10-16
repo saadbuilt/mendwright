@@ -20,6 +20,11 @@ What it will and will not touch:
   not an f-string, not bytes, not part of an implicit concatenation.
 - Never a file in which the same string belongs to more than one key: it is left as it is
   and listed, because mendwright cannot tell which new selector goes where.
+- Never a heal.page.get_by_*() call (a key written as the call, see mendwright.getby): from
+  the code it cannot tell whether a call with the same arguments runs on heal.page or
+  inside another locator, where it may still find the element it was written for. It is
+  listed under "Left alone" with its healed selector and the Python lines that make a call
+  with the same literal arguments (python_call_sites).
 
 Python files are read with tokenize and checked with ast: after the rewrite the file must
 still parse, have the same structure, and differ only in the values of the replaced
@@ -42,6 +47,7 @@ import time
 import tokenize
 from dataclasses import dataclass, field
 
+from . import getby
 from .selectors import CSS, XPATH, classify, normalize
 
 # Folders that never hold your code. A folder is skipped by name, at any depth.
@@ -66,6 +72,8 @@ DOUBLE_QUOTE_ONLY_EXTS = frozenset({'.java', '.kt', '.kts', '.cs', '.scala', '.s
 _NEEDLE_SPLIT = re.compile(r'''['"\\\s]''')
 _LINE = re.compile(r'[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+')
 _WRITE_TRIES = 8
+# The most places a call key's "Left alone" line lists (see format_lines).
+CALL_PLACES = 10
 
 # An old selector that is one word ('button', 'input') equals strings that are not
 # selectors (role='button', a dict entry), so a key with one is never written back.
@@ -100,9 +108,20 @@ class Fix:
 
 
 @dataclass
+class CallLeft:
+    """The key of a heal.page.get_by_*() call whose best selector is a heal: never written
+    into the code, only listed with its healed selector."""
+    key: str
+    method: str                 # get_by_role, get_by_text, ...
+    new: str                    # the healed selector (XPath)
+    confirmed: bool             # a canary success for this selector is in the journal
+
+
+@dataclass
 class Plan:
     fixes: list = field(default_factory=list)
     skipped: list = field(default_factory=list)       # (key, reason): keys left alone
+    calls: list = field(default_factory=list)         # CallLeft: call keys left alone
     new_for: dict = field(default_factory=dict)       # old selector -> new, when unambiguous
     keys_for: dict = field(default_factory=dict)      # old selector -> keys that use it
     ambiguous: dict = field(default_factory=dict)     # old selector -> keys, when ambiguous
@@ -186,6 +205,12 @@ def plan_fixes(store, events, *, include_unconfirmed=False):
             plan.skipped.append((key, 'its healed selector runs inside the iframe ' + str(best['frameXPath'])
                                  + ', and a selector in your code runs in the page itself. Change '
                                  'the selector and the frame handling by hand.'))
+            continue
+        call = getby.parse(key)
+        if call is not None:
+            # A heal.page.get_by_*() call: never rewritten, and its text never enters
+            # new_for, so no string literal equal to it is either.
+            plan.calls.append(CallLeft(key, call.method, new, canary.get((key, new)) is True))
             continue
         old = list(dict.fromkeys(c['xpath'] for c in candidates
                                  if c.get('source') == 'code' and c['xpath'] != new))
@@ -726,6 +751,8 @@ class FixResult:
     errors: list = field(default_factory=list)
     written: list = field(default_factory=list)
     has_robot: bool = False
+    call_sites: dict = field(default_factory=dict)      # call key -> [(path, line), ...]
+    call_scanned: int = 0                                # Python files searched for calls
 
 
 def shown_path(path):
@@ -895,6 +922,46 @@ def scan_file(path, plan, result, needles):
     return found
 
 
+def python_call_sites(text, keys):
+    """{key: [line, ...]} for the get_by_* calls in Python source ``text`` whose key (see
+    mendwright.getby) is one of ``keys``: each ast.Call of an attribute named after one of
+    the seven methods, such as page.get_by_role("button", name="Save"), whose arguments are
+    literals. A call whose arguments come from variables is not found. {} for a file that
+    does not parse."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return {}
+    found = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in getby.METHODS):
+            call = getby.from_ast_call(node.func.attr, node)
+            key = getby.canonical(call) if call is not None else None
+            if key in keys:
+                found.setdefault(key, []).append(node.lineno)
+    return found
+
+
+def _call_sites(plan, files, result):
+    """Where the Python files make the calls of plan.calls (see python_call_sites), into
+    result.call_sites as {key: ['path:line', ...]}."""
+    keys = {c.key for c in plan.calls}
+    python = [path for path in files if os.path.splitext(path)[1].lower() in PYTHON_EXTS]
+    result.call_scanned = len(python)
+    needles = [c.method.encode('ascii') for c in plan.calls]
+    for path in python:
+        data = _read_bytes(path)
+        if data is None or not any(n in data for n in needles):
+            continue
+        decoded = _decode_source(path, data)
+        if decoded is None:
+            continue
+        for key, lines in python_call_sites(decoded[0], keys).items():
+            result.call_sites.setdefault(key, []).extend(
+                (shown_path(path), line) for line in lines)
+
+
 def build_result(plan, paths=('.',), globs=()):
     """Scan the source files and work out every change. Nothing is written."""
     result = FixResult(plan)
@@ -908,6 +975,8 @@ def build_result(plan, paths=('.',), globs=()):
         for path in files:
             found |= scan_file(path, plan, result, needles)
     result.unmatched = [fix for fix in plan.fixes if not any(s in found for s in fix.old)]
+    if plan.calls:
+        _call_sites(plan, files, result)
     return result
 
 
@@ -1004,6 +1073,7 @@ def format_lines(result, *, apply):
                              'found one is replaced by the healed selector)')
 
     left = [key + ': ' + reason for key, reason in result.plan.skipped]
+    left.extend(_call_line(result, call) for call in result.plan.calls)
     for blocked in result.blocked:
         selectors = sorted({i[1] for i in blocked.items})
         keys = sorted({k for i in blocked.items for k in i[2]})
@@ -1051,3 +1121,25 @@ def format_lines(result, *, apply):
 
 def _quote_list(items):
     return ', '.join(repr(i) for i in items)
+
+
+def _call_line(result, call):
+    """The "Left alone" line of a CallLeft: why a call is not rewritten, its healed
+    selector, and where calls with the same arguments are."""
+    state = 'confirmed' if call.confirmed else 'not confirmed yet (check that it finds the right element)'
+    places = sorted(result.call_sites.get(call.key, ()))
+    if places:
+        shown = ', '.join(path + ':' + str(line) for path, line in places[:CALL_PLACES])
+        if len(places) > CALL_PLACES:
+            shown += ', and ' + str(len(places) - CALL_PLACES) + ' more'
+        where = 'Calls with these arguments: ' + shown + '.'
+    else:
+        where = ('No call with these arguments written as literals was found in '
+                 + _count(result.call_scanned, 'Python file') + '; calls whose arguments come '
+                 'from variables are not searched.')
+    return (call.key + ': it is a heal.page.' + call.method + '() call, and mendwright fix does '
+            'not rewrite calls: from the code it cannot tell whether a call with these arguments '
+            'runs on heal.page or inside another locator, where it may still find the element it '
+            'was written for. Its healed selector, ' + state + ', is ' + call.new + ". Change the "
+            "call's arguments by hand to the element's new role or words, or replace it with "
+            'page.locator(' + repr(call.new) + '). ' + where)
