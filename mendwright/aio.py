@@ -45,6 +45,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import inspect
 import logging
 import os
@@ -53,7 +54,7 @@ import time
 import weakref
 from typing import Any, Callable, Iterable, Sequence
 
-from .coordinator import HealCoordinator, resolve_with_heal
+from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
 from .drivers.base import _member, is_async_api, is_driver, looks_like_locator, unsupported_message
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
@@ -1037,7 +1038,8 @@ class AsyncHealer:
         if coordinator.is_pending(key, xpath):
             # A heal from earlier in this process. A gateway provider reports the outcome
             # over HTTP.
-            await _in_thread(coordinator.confirm_pending, key, False, None, xpath)
+            await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending, key,
+                                               False, None, xpath, by='destructive'))
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -1175,12 +1177,15 @@ class AsyncHealer:
             return None
         return out if isinstance(out, dict) else None
 
-    async def _confirm(self, key, success):
+    async def _confirm(self, key, success, by=None):
         """coordinator.confirm_pending(), in a worker thread (a gateway provider reports
-        the outcome over HTTP) and under the lock."""
+        the outcome over HTTP) and under the lock. by goes to the journal (see
+        HealCoordinator.confirm). _in_thread() passes positional arguments only, hence the
+        partial."""
         async with self._turn():
             if key in self.coordinator.pending:
-                await _in_thread(self.coordinator.confirm_pending, key, bool(success))
+                await _in_thread(functools.partial(_canary_call, self.coordinator.confirm_pending,
+                                                   key, bool(success), by=by))
 
     async def _check_value(self, key, healed, verb, args, value, expect):
         """Healer._check_value(), with the canary report in a worker thread and under the
@@ -1194,7 +1199,8 @@ class AsyncHealer:
         reason = None if ok else refusal_reason(verb, args, expect)
         async with self._turn():
             if coordinator.is_pending(key, healed):
-                await _in_thread(coordinator.confirm_pending, key, ok, reason, healed)
+                await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending,
+                                                   key, ok, reason, healed, by='expect_value'))
             elif not ok:
                 self.store.quarantine(key, healed)
                 coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1389,19 +1395,19 @@ class AsyncActionProxy:
                 ok = bool(await _awaited(expect()))
             except Exception:
                 ok = False
-            await self._confirm(ok)
+            await self._confirm(ok, 'expect')
         return result
 
     async def _failed(self, error):
         """ActionProxy._failed(), awaited: report a failed action to the heal canary, unless
         error is a stale element (see mendwright.flow.is_stale_error)."""
         if not is_stale_error(error):
-            await self._confirm(False)
+            await self._confirm(False, 'action')
 
-    async def _confirm(self, success):
+    async def _confirm(self, success, by=None):
         """Report the action's outcome to the heal canary, unless _canary is off."""
         if self._canary:
-            await self._healer._confirm(self._key, success)
+            await self._healer._confirm(self._key, success, by)
 
     async def click(self, *args: Any, expect: AsyncExpect | None = None, **kwargs: Any) -> Any:
         return await self._act('click', args, kwargs, expect)
@@ -1468,7 +1474,8 @@ class AsyncActionProxy:
         own. An element of heal.locator_all() reports nothing, as ActionProxy.confirm()
         says. Sync, like ActionProxy.confirm()."""
         if self._canary:
-            self._healer.coordinator.confirm_pending(self._key, bool(success))
+            _canary_call(self._healer.coordinator.confirm_pending, self._key, bool(success),
+                         by='confirm')
         return self
 
     def __getattr__(self, name: str) -> Any:

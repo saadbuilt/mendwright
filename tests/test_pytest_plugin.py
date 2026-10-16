@@ -129,6 +129,37 @@ def test_a_passing_test_confirms_its_heal(project):
     ])
 
 
+def test_the_canary_names_the_passing_test(project):
+    long_id = 'x' * 400
+    project.makepyfile('''
+        import pytest
+
+        def test_terms(heal):
+            heal.locator('terms', "//input[@id='old']", role='checkbox').check()
+
+        @pytest.mark.parametrize('case', [''' + repr(long_id) + '''])
+        def test_long(heal, case):
+            heal.locator('go', "//button[@id='go']", role='button').click()
+    ''')
+    run(project).assert_outcomes(passed=2)
+    journal = project.path / '.mendwright' / 'journal.jsonl'
+    [terms] = [e for e in events(journal) if e['event'] == 'heal.canary' and e['key'] == 'terms']
+    assert (terms['success'], terms['by'], terms['test']) == (
+        True, 'test', 'test_the_canary_names_the_passing_test.py::test_terms')
+    [long] = [e for e in events(journal) if e['event'] == 'heal.canary' and e['key'] == 'go']
+    assert len(long['test']) == 300
+    assert long['test'] == ('test_the_canary_names_the_passing_test.py::test_long[' + long_id)[:300]
+
+
+def test_strict_mode_still_names_the_test_that_confirmed_the_heal(project):
+    project.makepyfile(HEAL_TERMS)
+    run(project, '--mendwright-strict').assert_outcomes(failed=1)
+    journal = project.path / '.mendwright' / 'journal.jsonl'
+    [canary] = [e for e in events(journal) if e['event'] == 'heal.canary']
+    assert (canary['success'], canary['by'], canary['test']) == (
+        True, 'test', 'test_strict_mode_still_names_the_test_that_confirmed_the_heal.py::test_terms')
+
+
 def test_a_failing_test_leaves_its_heal_unconfirmed(project):
     project.makepyfile('''
         def test_terms(heal):

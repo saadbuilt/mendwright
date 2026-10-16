@@ -35,7 +35,7 @@ from typing import Any, Callable, Iterable, Literal, Sequence, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .client import _stored_status, add_heal
-from .coordinator import HealCoordinator, resolve_with_heal
+from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
 from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, expect_control,
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
@@ -1261,7 +1261,7 @@ class Healer:
         with the test's outcome."""
         keys = list(self.coordinator.pending)
         for key in keys:
-            self.coordinator.confirm_pending(key, bool(success))
+            _canary_call(self.coordinator.confirm_pending, key, bool(success), by='confirm')
         return len(keys)
 
     @property
@@ -1380,7 +1380,8 @@ class Healer:
         ok = expect.passes(value)
         reason = None if ok else refusal_reason(verb, args, expect)
         if coordinator.is_pending(key, healed):
-            coordinator.confirm_pending(key, ok, reason=reason, xpath=healed)
+            _canary_call(coordinator.confirm_pending, key, ok, reason=reason, xpath=healed,
+                         by='expect_value')
         elif not ok:
             self.store.quarantine(key, healed)
             coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1409,7 +1410,7 @@ class Healer:
         coordinator = self.coordinator
         if coordinator.is_pending(key, xpath):
             # A heal from earlier in this process.
-            coordinator.confirm_pending(key, False, xpath=xpath)
+            _canary_call(coordinator.confirm_pending, key, False, xpath=xpath, by='destructive')
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -2660,7 +2661,7 @@ class ActionProxy:
                 ok = bool(expect())
             except Exception:
                 ok = False
-            self._confirm(ok)
+            self._confirm(ok, 'expect')
         return result
 
     def _uncovered(self):
@@ -2681,12 +2682,13 @@ class ActionProxy:
         heal: a stale element (see mendwright.flow.is_stale_error) was found, then
         re-rendered by the page."""
         if not is_stale_error(error):
-            self._confirm(False)
+            self._confirm(False, 'action')
 
-    def _confirm(self, success):
-        """Report the action's outcome to the heal canary, unless _canary is off."""
+    def _confirm(self, success, by=None):
+        """Report the action's outcome to the heal canary, unless _canary is off. by says
+        what decided it, for the journal ('expect' or 'action')."""
         if self._canary:
-            self._healer.coordinator.confirm_pending(self._key, success)
+            _canary_call(self._healer.coordinator.confirm_pending, self._key, success, by=by)
 
     def click(self, *args: Any, expect: Expect | None = None, **kwargs: Any) -> Any:
         return self._act('click', args, kwargs, expect)
@@ -2749,7 +2751,8 @@ class ActionProxy:
         An element of heal.locator_all() reports nothing: no list is found through a heal, and
         a heal of one element under the same key is not this element's."""
         if self._canary:
-            self._healer.coordinator.confirm_pending(self._key, bool(success))
+            _canary_call(self._healer.coordinator.confirm_pending, self._key, bool(success),
+                         by='confirm')
         return self
 
     def __getattr__(self, name: str) -> Any:
