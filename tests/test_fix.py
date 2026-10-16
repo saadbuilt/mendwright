@@ -1138,7 +1138,8 @@ def test_what_keeps_a_heal_out_of_the_code_keeps_an_accepted_list_heal_out(root,
         "pay": cart_key(accepted, destructive=True),
         "seeded": cart_key(accepted, code=()),
         "word": cart_key(list_row(ROWS, "accepted", accepted=T2, was=("div",)), code=("div",)),
-        "both": cart_key(accepted, cand("//div[@id='p1']", "heal", T1))})
+        "both": cart_key(accepted, cand("//div[@id='p1']", "heal", T1)),
+        "framed": cart_key(dict(accepted, frameXPath="//iframe[@id='shop']"))})
     write(root, "test_cart.py", CART_TEST)
     code, out, _err = run(capsys, "--apply")
     lines = out.splitlines()
@@ -1148,6 +1149,9 @@ def test_what_keeps_a_heal_out_of_the_code_keeps_an_accepted_list_heal_out(root,
     assert any(line.startswith("  seeded: no selector from your code is saved for it")
                and line.endswith("Update the seed file by hand, to: " + ROWS) for line in lines)
     assert any(line.startswith("  word: its old selector 'div' is a bare word") for line in lines)
+    assert ("  framed: its healed selector runs inside the iframe //iframe[@id='shop'], and a "
+            "selector in your code runs in the page itself. Change the selector and the frame "
+            "handling by hand.") in lines
     assert ("  both: it has a heal of the list (heal.locator_all()) and a heal of one element "
             "under the same key, and one selector in your code cannot be both, so mendwright "
             "cannot tell which one goes where. Change the selectors by hand, or give the list a "

@@ -381,6 +381,16 @@ def test_a_driver_that_cannot_record_a_place_records_the_plain_list_and_says_so(
         'code.')
 
 
+def test_a_driver_that_cannot_record_a_place_never_replaces_a_placed_list(tmp_path, make_page):
+    page, _ = _recorded(make_page, tmp_path)                          # placed by another driver
+    placed = load_store(None, str(tmp_path / 'o.json')).meta('cart')['listFingerprint']
+    heal = _open(UnplacedDriver(page), tmp_path)
+    for nonempty in (True, False):
+        assert len(heal.locator_all('cart', '.cart-item', nonempty=nonempty)) == 3
+    assert page.list_reads >= 1                                       # it read the plain list
+    assert load_store(None, str(tmp_path / 'o.json')).meta('cart')['listFingerprint'] == placed
+
+
 # --- a proposal -----------------------------------------------------------------------------
 
 def test_a_list_whose_rows_were_renamed_is_proposed_and_never_used(tmp_path, make_page, caplog):
@@ -990,6 +1000,30 @@ def test_async_an_accepted_list_heal_waits_for_fix_with_no_search(tmp_path, make
         + '. If the list can be empty here, remove nonempty=True.')
     assert sync.items_reads == reads and len(_journal(tmp_path)) == events      # no search
     assert len(heal.coordinator.held) == 1
+
+
+def test_async_a_list_that_came_during_the_search_is_used_as_it_is(tmp_path, make_page, caplog):
+    page, _ = _recorded(make_page, tmp_path)
+    page.set_html(cart(True, row='cart-row'))
+
+    class Coming(_Page):
+        """The code's selector starts matching once the page was captured for the search."""
+
+        async def content(self):
+            html = await super().content()
+            self.sync.set_html(cart(True))
+            return html
+
+    async def main():
+        heal = await mendwright.aio.open(Coming(page), store_path=str(tmp_path / 'o.json'),
+                                         timeout_ms=0)
+        return await heal.locator_all('cart', '.cart-item', nonempty=True)
+    with caplog.at_level(logging.INFO, logger='mendwright'):
+        items = asyncio.run(main())
+    assert len(items) == 3 and ROWS not in _rows(tmp_path)
+    assert ("mendwright: 'cart' came while mendwright looked for it, so .cart-item was used as "
+            'it is.') in caplog.text
+    assert not _events(tmp_path, 'heal.held', 'heal.rejected')
 
 
 def test_selenium_a_list_whose_rows_were_renamed_is_proposed(tmp_path):
