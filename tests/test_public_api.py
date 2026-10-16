@@ -39,3 +39,9 @@ def test_the_facade_is_annotated():
 def test_the_package_ships_py_typed():
     from pathlib import Path
     assert (Path(mendwright.__file__).parent / 'py.typed').exists()
+
+
+def test_get_by_key_is_exported():
+    from mendwright.getby import get_by_key
+    assert mendwright.get_by_key is get_by_key and 'get_by_key' in mendwright.__all__
+    assert mendwright.get_by_key('get_by_test_id', 'go') == 'get_by_test_id("go")'
