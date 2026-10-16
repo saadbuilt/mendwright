@@ -238,6 +238,7 @@ class World:
         self.steps = {}
         self.actions = {}
         self.after_download = None
+        self.after_fix = None
 
     # the workspace and the server
 
@@ -353,6 +354,8 @@ class World:
         code, fix = step('fix', **later)
         if code or fix.get('ok') != 'true' or until == 'fix':
             return self.steps
+        if self.after_fix:
+            self.after_fix()
         step('publish', **later)
         return self.steps
 
@@ -1025,6 +1028,89 @@ def test_no_git_hook_runs(world, where):
     # The hooks are real: a plain git commit runs them.
     git(world.ws, 'commit', '-q', '--allow-empty', '-m', 'by hand')
     assert (world.tmp / 'hook-pre-commit').exists() and (world.tmp / 'hook-post-commit').exists()
+
+
+# --- publish: changes mendwright fix did not make -------------------------------------------------
+
+def _changed_after_fix(world, name, text):
+    def change():
+        world.write(name, text)
+    world.after_fix = change
+
+
+def _nothing_pushed_and_all_put_back(world):
+    assert world.steps['publish'][0] == 1
+    assert world.remote_sha('mendwright/fix/main') is None
+    assert world.api.writes() == []
+    assert git(world.ws, 'status', '--porcelain', '--untracked-files=no') == ''
+    assert (world.ws / 'tests' / 'test_checkout.py').read_text(encoding='utf-8') == TEST_FILE
+
+
+def test_a_change_under_github_is_refused_and_put_back(world):
+    world.new_commit('.github/workflows/ci.yml', 'run: echo "#accept-terms"\n')
+    _changed_after_fix(world, '.github/workflows/ci.yml', "run: echo \"//input[@name='x']\"\n")
+    world.run()
+    assert notices(world, 'publish', 'error') == [
+        'mendwright: mendwright fix changed .github/workflows/ci.yml, under .github/, which it '
+        'never should. The files were put back and nothing was pushed; please report this.']
+    _nothing_pushed_and_all_put_back(world)
+
+
+def test_a_changed_file_fix_did_not_report_is_refused_and_put_back(world):
+    world.new_commit('README.md', 'readme\n')
+    _changed_after_fix(world, 'README.md', 'changed\n')
+    world.run()
+    assert notices(world, 'publish', 'error') == [
+        'mendwright: git shows changes mendwright fix did not report (README.md). The files were '
+        'put back and nothing was pushed; please report this.']
+    _nothing_pushed_and_all_put_back(world)
+
+
+def test_a_staged_file_fix_did_not_write_is_refused_and_put_back(world, monkeypatch):
+    real = ma.Action.git
+
+    def one_more_staged(self, *args, **kwargs):
+        code, out, err = real(self, *args, **kwargs)
+        if 'diff' in args and '--cached' in args:
+            out += 'tests/extra.py\0'
+        return code, out, err
+
+    monkeypatch.setattr(ma.Action, 'git', one_more_staged)
+    world.run()
+    assert notices(world, 'publish', 'error') == [
+        'mendwright: git shows changes mendwright fix did not report (tests/extra.py). The files '
+        'were put back and nothing was pushed; please report this.']
+    _nothing_pushed_and_all_put_back(world)
+
+
+@pytest.mark.parametrize('text', [
+    'a‮b', '⁦x⁩', '‏', '؜', 'c\x1bd', 'e\x85f', ' ', 'k\ud800',
+    'a`b``c', '`', ' x ', '', 'a|b', 'tab\there',
+])
+def test_the_script_s_code_spans_are_mendwright_s(text):
+    from mendwright import _md
+    assert ma.md_code(text) == _md.code(text, cut=None)
+
+
+def test_the_closing_comment_writes_out_a_bidirectional_control_in_a_key(world):
+    key = 'accept‮terms'
+    world.write('tests/test_checkout.py', 'def test_signup(heal):\n    heal.locator('
+                + ascii(key) + ', "#accept-terms").check()\n')
+    world.env['GITHUB_SHA'] = world.commit('a key with a bidirectional control')
+    git(world.ws, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+    world.upload({key: heal('#accept-terms', TERMS, role='checkbox')}, confirmed(key, TERMS))
+    world.run()
+    assert world.result() == 'created', world.log()
+    world.checkout()
+    world.env['GITHUB_RUN_ID'] = '101'
+    entry = heal('#accept-terms', TERMS, role='checkbox')
+    entry['candidates'][0]['lastSucceededAt'] = '2026-10-05T00:00:00+00:00'
+    world.upload({key: entry}, confirmed(key, TERMS))
+    world.run()
+    assert world.result() == 'closed'
+    [(_, comment)] = world.api.comments
+    assert comment.splitlines()[2] == '- `accept\\u202Eterms`: the selector in your code works again.'
+    assert '‮' not in comment
 
 
 # --- publish: the same changes twice ------------------------------------------------------------

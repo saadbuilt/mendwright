@@ -960,9 +960,22 @@ class Publish:
         return _porcelain_paths(out)
 
     def put_back(self, files):
+        """Put files back as the tested commit has them, and say how it went, for P1 and P2.
+        A file staged since is unstaged first (checkout alone copies the index, which then
+        holds the change); a file the commit does not have stays, untracked."""
+        git, failed = self.action.git, None
         if files:
             top = self.top()
-            self.action.git('-C', top, 'checkout', '--', *files, check=False)
+            code, _, err = git('-C', top, 'reset', '-q', '--', *files, check=False)
+            known = [p for p in git('-C', top, 'ls-tree', '-r', '-z', '--name-only', 'HEAD', '--',
+                                    *files, check=False)[1].split('\0') if p]
+            if code == 0 and known:
+                code, _, err = git('-C', top, 'checkout', '--', *known, check=False)
+            if code != 0:
+                failed = _first_error(err, self.action.secrets())
+        if failed is None:
+            return 'The files were put back and nothing was pushed'
+        return 'Nothing was pushed, but git could not put the files back (' + failed + ')'
 
     def top(self):
         if self._top is None:
@@ -980,16 +993,15 @@ class Publish:
         github = [p for p in set(changed) | set(planned)
                   if _fold(p) == '.github' or _fold(p).startswith('.github/')]
         if github:
-            self.put_back(changed)
+            said = self.put_back(changed)
             raise Stop('mendwright: mendwright fix changed ' + ', '.join(sorted(github))
-                       + ', under .github/, which it never should. The files were put back and '
-                       'nothing was pushed; please report this.')
+                       + ', under .github/, which it never should. ' + said
+                       + '; please report this.')
         extra = sorted(set(changed) - set(planned))
         if extra:
-            self.put_back(changed)
+            said = self.put_back(changed)
             raise Stop('mendwright: git shows changes mendwright fix did not report ('
-                       + ', '.join(extra) + '). The files were put back and nothing was pushed; '
-                       'please report this.')
+                       + ', '.join(extra) + '). ' + said + '; please report this.')
         for path in planned:
             if path not in changed:
                 listed = self.action.git('-C', top, 'ls-files', '-z', '--', path)[1]
@@ -1091,10 +1103,10 @@ class Publish:
         staged = [_norm(p) for p in action.git('-C', top, 'diff', '--cached', '--name-only',
                                                '-z')[1].split('\0') if p]
         if sorted(staged) != sorted(files):
-            self.put_back(files)
+            said = self.put_back(sorted(set(staged) | set(files)))
             raise Stop('mendwright: git shows changes mendwright fix did not report ('
-                       + ', '.join(sorted(set(staged) ^ set(files))) + '). The files were put '
-                       'back and nothing was pushed; please report this.')
+                       + ', '.join(sorted(set(staged) ^ set(files))) + '). ' + said
+                       + '; please report this.')
         os.makedirs(action.temp, exist_ok=True)
         message = os.path.join(action.temp, 'commit-message.txt')
         with open(message, 'w', encoding='utf-8', newline='\n') as handle:
