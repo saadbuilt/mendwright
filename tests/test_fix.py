@@ -1354,10 +1354,11 @@ def test_github_folders_are_never_scanned(root, capsys):
     script = write(root, ".github/scripts/x.py", 'x = "#save"\n')
     workflow = write(root, ".github/workflows/ci.yml", 'run: echo "#save"\n')
     nested = write(root, "pkg/.github/x.py", 'x = "#save"\n')
+    other_case = write(root, "lib/.GitHub/x.py", 'x = "#save"\n')     # skipped in any case
     for args in ((), ("--glob", "*.yml"), ("--path", ".github"), ("--path", ".github/scripts/x.py")):
         code, out, err = run(capsys, "--apply", *args)
         assert (code, err) == (0, ""), (args, err)
-        for path in (script, workflow, nested):
+        for path in (script, workflow, nested, other_case):
             assert "#save" in path.read_text(encoding="utf-8"), (args, path)
     code, out, err = run(capsys, "--path", ".github/nope")
     assert code == 1 and "no such file or folder: .github/nope" in err
