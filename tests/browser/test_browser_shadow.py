@@ -140,11 +140,16 @@ def test_a_saved_shadow_heal_matches_nothing_outside_its_shadow_root(tab, store_
     tab.load(app_page(button('save-2', 'inside')))
     heal = _open(tab, store_file)
     heal.locator('save', '#save', role='button', poll_ms=POLL_MS)
-    # The button leaves the shadow root for the host's light DOM: Playwright's CSS would
-    # reach it through the saved chain, but it is outside the shadow root.
-    tab.load(app_page('<p>no button</p>', extra='').replace(
+    # The button leaves the shadow root for the host's light DOM, shown through a <slot>:
+    # Playwright's CSS would reach it through the saved chain, but it is outside the shadow
+    # root.
+    tab.load(app_page('<p>no button</p><slot></slot>').replace(
         '<my-app id="root"></my-app>', '<my-app id="root">' + button('save-2', 'light') + '</my-app>'))
+    assert tab.js("document.querySelector('my-app > button').getClientRects().length") == 1
     assert heal.present('save') is False
+    with pytest.raises(AttentionRequired):
+        heal.locator('save', '#save', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) is None
 
 
 def test_an_element_in_a_closed_shadow_root_is_never_healed(tab, store_file, stub_provider):
