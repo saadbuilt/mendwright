@@ -142,3 +142,16 @@ def test_a_selector_followed_into_a_shadow_root_is_written_with_its_own_css(root
     source = write(root, "test_a.py", "page.click(\"//button[@id='save']\")\n")
     assert run(capsys, "--apply")[0] == 0
     assert source.read_text(encoding="utf-8") == "page.click('" + followed + "')\n"
+
+
+@pytest.mark.parametrize("line, written", [
+    ("page.locator(\"xpath=//button[@id='save']\").click()\n", True),     # heal.page's key
+    ("driver.find_element(By.XPATH, \"//button[@id='save']\")\n", False),  # heal.driver's
+], ids=["heal-page", "find-element"])
+def test_a_key_written_as_an_xpath_is_fixed_only_in_a_playwright_call(root, capsys, line, written):
+    key = "xpath=//button[@id='save']"
+    write_store(root, store(key=key, old=key), [canary(key, CHAIN)])
+    source = write(root, "test_a.py", line)
+    out = run(capsys, "--apply")[1]
+    assert (CHAIN in source.read_text(encoding="utf-8")) is written
+    assert ("change it by hand to: " + CHAIN in out) is not written

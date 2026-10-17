@@ -1061,7 +1061,7 @@ A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not lo
 ### mendwright fix, check and report
 
 `mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a Playwright page or locator method (`page.locator()`, `page.click()` and the other methods that take a selector) in a Python file.
-Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call is listed (`shadow_driver`); the heal stays in the store and keeps working.
+Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`); the heal stays in the store and keeps working.
 
 `mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
 `mendwright report` shows the shadow root each selector runs in.
@@ -2362,7 +2362,7 @@ A file is written through a temporary file next to it and then replaced, and a f
 | `list_key` | a list key whose heal is of one element |
 | `bare_word` | a key whose old selector is a bare word |
 | `driver_by` | a key from a `By` that can't run the healed XPath |
-| `shadow_driver` | a key from `driver.find_element()` whose heal sits inside a shadow root |
+| `shadow_driver` | a key from `driver.find_element()` with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` whose heal sits inside a shadow root |
 | `unconfirmed` | a key whose heal was never confirmed |
 | `quarantined` | a key whose newest heal was quarantined, or a list heal you rejected |
 | `get_by_call` | the key of a `heal.page.get_by_*()` call, which `mendwright fix` never rewrites |

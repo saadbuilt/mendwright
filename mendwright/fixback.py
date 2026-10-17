@@ -118,9 +118,6 @@ _CSS_TWIN = re.compile(_CSS_COMPOUND + '(?: ' + _CSS_COMPOUND + ')?')
 # [attribute="value"], or a custom element's tag alone.
 _HOST = re.compile(r'[a-z][a-z0-9_-]*\[' + _CSS_NAME + '=' + _CSS_STRING + r'\]'
                    r'|[a-z][a-z0-9_]*-[a-z0-9_-]*')
-# The keys heal.driver makes for driver.find_element(by, value): Selenium, whose
-# find_element() cannot reach into a shadow root.
-_SELENIUM_KEYS = ('css selector=', 'id=', 'name=', 'xpath=')
 
 
 # --- the plan: which keys to fix ---------------------------------------------------------
@@ -435,7 +432,7 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
                       'entry), so mendwright cannot tell which ones are the selector. Change it by '
                       'hand to: ' + new)
             continue
-        if shadow and key.startswith(_SELENIUM_KEYS):
+        if shadow and key.startswith(tuple(prefix for prefix, _by in _DRIVER_KEYS)):
             plan.skip(key, 'shadow_driver', 'it comes from driver.find_element() through '
                       'heal.driver, and its heal sits inside ' + place_text(shadow) + ', which '
                       "Selenium's find_element() cannot reach. The heal stays in the store, and "
