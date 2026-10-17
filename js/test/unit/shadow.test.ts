@@ -153,6 +153,23 @@ describe('a key last found inside a shadow root', () => {
     assert.ok(!journalOf(w.dir).some((e) => e.event === 'heal.applied' || e.event === 'heal.requested'));
   });
 
+  test('is declined as shadow, and in dry run and under MENDWRIGHT_DISABLE=1 on purpose, as the Python package says',
+    async () => {
+      const codes = async (options: { dryRun?: boolean }, env: Record<string, string> = {}) => {
+        const w = world(V1);
+        await w.open().locator('save', '#save', { role: 'button' }).click();
+        w.page.goto(V2);
+        Object.assign(process.env, env);
+        await assert.rejects(w.open(options).locator('save', '#save', { role: 'button' }).click(),
+          /does not heal inside a shadow root yet/);
+        cleanEnv();
+        return journalOf(w.dir).filter((e) => e.event === 'heal.declined').map((e) => [e.key, e.code]);
+      };
+      assert.deepEqual(await codes({}), [['save', 'shadow']]);
+      assert.deepEqual(await codes({ dryRun: true }), [['save', 'dry_run']]);
+      assert.deepEqual(await codes({}, { MENDWRIGHT_DISABLE: '1' }), [['save', 'disabled']]);
+    });
+
   test('a key marked destructive is declined as destructive first', async () => {
     const w = world(V1);
     await w.open().locator('save', '#save', { role: 'button' }).click();

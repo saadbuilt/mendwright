@@ -448,7 +448,7 @@ export class Healer {
       const reason = "'" + key + "' was last found inside the iframe " + latest.frameXPath + ', and mendwright for '
         + 'TypeScript does not heal inside an iframe yet, so it did not look for the element on the page around it. '
         + 'Fix the selector by hand, or let the Python package heal it.';
-      this.coordinator.decline(key, reason, 'warning', null, 'frame');
+      this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('frame'));
       throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
     }
     // The same for a key last found inside an open shadow root: where the heal that matched

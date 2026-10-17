@@ -333,6 +333,13 @@ describe('what is never healed', () => {
     await assert.rejects(w.open({ provider: model }).locator('card', '#card').fill('4242'),
       /'card' was last found inside the iframe iframe\[name='pay'\], and mendwright for TypeScript does not heal inside an iframe/);
     assert.equal(model.bundles.length, 0);
+    // In dry run and under MENDWRIGHT_DISABLE=1 that is a decline on purpose, as the Python
+    // package's is.
+    await assert.rejects(w.open({ provider: model, dryRun: true }).locator('card', '#card').fill('4242'), /iframe/);
+    process.env.MENDWRIGHT_DISABLE = '1';
+    await assert.rejects(w.open({ provider: model }).locator('card', '#card').fill('4242'), /iframe/);
+    assert.deepEqual(journalOf(w.dir).filter((e) => e.event === 'heal.declined').map((e) => e.code),
+      ['frame', 'dry_run', 'disabled']);
   });
 
   test('a key whose role is unknown', async () => {

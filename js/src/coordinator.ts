@@ -148,6 +148,13 @@ export class HealCoordinator {
     return this.disabled ? 'disabled' : 'no_provider';
   }
 
+  /** The code of a heal refused in a place this package does not heal in (code): 'disabled'
+   * under MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run, declines on purpose, as the Python
+   * package gives them. */
+  placeCode(code: DeclineCode): DeclineCode {
+    return this.disabled ? 'disabled' : this.dryRun ? 'dry_run' : code;
+  }
+
   explain(key: string): string {
     return this.healReasons.get(key) ?? '';
   }
@@ -177,7 +184,7 @@ export class HealCoordinator {
     if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
     const moved = this.flowChange(key, context);
     if (moved) return this.decline(key, moved, 'warning', null, 'page_guard');
-    if (refusal) return this.decline(key, refusal, 'warning', null, 'shadow');
+    if (refusal) return this.decline(key, refusal, 'warning', null, this.placeCode('shadow'));
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
