@@ -8,8 +8,9 @@
   page paths, node ids, provider or model names, or file paths.
 - url_problem() says why a webhook URL is refused: it must be https:// with a host, or
   http:// on localhost, 127.0.0.1 or [::1].
-- send() makes at most two attempts, one retry after 2 seconds on HTTP 429, a 5xx, a
-  timeout or a connection error, follows no redirect, and verifies TLS. Of an error body it
+- send() makes at most two attempts, each cut off after its timeout, one retry after 2
+  seconds on HTTP 429, a 5xx, a timeout or a connection error, follows no redirect, and
+  verifies TLS. Of an error body it
   keeps only one machine word, such as Slack's no_service, that is no part of the URL.
 - origin() names the webhook in a message: scheme, host and port, with a label of the host
   that looks random, such as the id of an AWS Lambda function URL, as ***.
@@ -24,6 +25,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -231,9 +233,30 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class UrllibHttp:
     """POST with urllib: TLS verified with the default context, HTTPS_PROXY honoured as urllib
     does, no redirect followed. post() returns (status, body bytes), and raises TimeoutError
-    for a timeout and ConnectionError when the host cannot be reached."""
+    for a timeout and ConnectionError when the host cannot be reached.
+
+    timeout holds for the whole POST, not for each read of the socket, as urllib's does: a
+    webhook (or a proxy) that answers a byte at a time is cut off too. The POST runs in a
+    daemon thread, which is left to end on its own when it is cut off."""
 
     def post(self, url, body, headers, timeout):
+        done = {}
+
+        def run():
+            try:
+                done['answer'] = self._post(url, body, headers, timeout)
+            except Exception as exc:
+                done['error'] = exc
+        worker = threading.Thread(target=run, name='mendwright-notify', daemon=True)
+        worker.start()
+        worker.join(timeout)
+        if worker.is_alive():
+            raise TimeoutError('timed out')
+        if 'error' in done:
+            raise done['error']
+        return done['answer']
+
+    def _post(self, url, body, headers, timeout):
         opener = urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
         request = urllib.request.Request(url, data=body, method='POST', headers=headers)

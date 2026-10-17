@@ -4,7 +4,9 @@ path. No real webhook, no network beyond the loopback, no real clock or sleep.""
 
 import http.server
 import json
+import socket
 import threading
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -632,6 +634,59 @@ def test_urllib_posts_to_a_local_server_and_follows_no_redirect(server, store, m
     assert [s['path'] for s in _Server.seen] == ['/hook/SeCrEt', '/hook/SeCrEt']   # not followed
     err = capsys.readouterr().err
     assert 'answered HTTP 302, a redirect' in err and 'SeCrEt' not in err
+
+
+@pytest.fixture
+def drip():
+    """A webhook on 127.0.0.1 that answers 200 one byte every 0.05 s, each well inside the
+    timeout, so that the whole answer takes about 7 s."""
+    answer = (b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Slow: ' + b'a' * 100
+              + b'\r\n\r\nok')
+    stop = threading.Event()
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    sock.listen(5)
+    sock.settimeout(0.1)
+
+    def reply(conn):
+        with conn:
+            try:
+                conn.settimeout(2)
+                data = b''
+                while b'\r\n\r\n' not in data:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    data += chunk
+                for byte in answer:
+                    if stop.is_set():
+                        return
+                    conn.sendall(bytes([byte]))
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                continue
+            threading.Thread(target=reply, args=(conn,), daemon=True).start()
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    yield 'http://127.0.0.1:' + str(sock.getsockname()[1])
+    stop.set()
+    thread.join(5)
+    sock.close()
+
+
+def test_a_webhook_that_answers_a_byte_at_a_time_is_cut_off_at_the_timeout(drip):
+    started = time.monotonic()
+    result = notify.send(drip + '/hook', b'{}', timeout=0.5, sleep=lambda s: None)
+    took = time.monotonic() - started
+    assert (result.ok, result.error, result.attempts) == (False, 'timeout', 2)
+    assert took < 3, took           # two attempts of 0.5 s, not two of the 7 s the answer takes
 
 
 def test_urllib_says_a_refused_connection_without_the_url():

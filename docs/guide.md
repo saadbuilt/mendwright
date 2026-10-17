@@ -2531,7 +2531,7 @@ Sums up the events of one run in `journal.jsonl` and posts it to the webhook in 
 | `--run-url URL` | on GitHub Actions, this run's page | `https://`, or `http://` on `localhost`. |
 | `--pr-url URL` | none | The same rule. |
 | `--tests RESULT` | none | How the tests ended: a job result or run conclusion, such as `success` or `failure` (pass `${{ needs.test.result }}`). |
-| `--timeout SECONDS` | `10` | Per attempt, 1 to 30. |
+| `--timeout SECONDS` | `10` | Per attempt, for the whole POST and its answer, 1 to 30. |
 | `--dry-run` | off | Print the payload and send nothing. `MENDWRIGHT_WEBHOOK_URL` is not read. |
 | `--fail-on-error` | off | Exit 1 when nothing could be sent, for any reason but `--when`. |
 
