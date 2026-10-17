@@ -9,7 +9,7 @@ While the version starts with 0, a minor release can change the public API.
 
 The first release: the Python package's `heal.locator()` and `heal.page` for Playwright Test.
 
-- `import { test, expect } from 'mendwright/test'` makes the `page` fixture heal: `page.locator(selector)` and the page methods that take a selector heal when the selector broke, with the selector as the key. The `heal` fixture is the healer, and the heals of a test are confirmed when it passes. `mendwrightStrict` fails a test that passed only because of a heal.
+- `import { test, expect } from 'mendwright/test'` makes the `page` fixture heal: `page.locator(selector)` and the page methods that take a selector heal when the selector broke, with the selector as the key. The `heal` fixture is the healer, and the heals of a test are confirmed when it passes. `mendwrightStrict` fails a test that passed only because of a heal. `mendwright/test` has its types under every TypeScript `moduleResolution`, `node10` (the default with `"module": "commonjs"`) included.
 - `open(page)` and `heal.locator(key, selector, { role, destructive, optional, intent })` for a page you opened yourself.
 - The fingerprint tier, with the Python package's scoring, thresholds and text rules, before any model call.
 - Anthropic, OpenAI and compatible hosts, and Ollama (any model, or mendwright's own selector model) as providers, picked from the same environment variables as the Python package. A base URL with a user name or password in it (`baseUrl`, `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OLLAMA_HOST`) is refused when the provider is built, with an error that names only its scheme and host, and a provider's error text masks the user info of any URL in it.

@@ -12,7 +12,7 @@ This is the first release of the TypeScript package, 0.1.0. It is a port of the 
 npm install --save-dev mendwright
 ```
 
-It needs `@playwright/test` 1.40 or later and Node 18 or later, and has no dependencies of its own.
+It needs `@playwright/test` 1.40 or later and Node 18 or later, and has no dependencies of its own. Its types resolve under every TypeScript `moduleResolution`, `node10` (the default with `"module": "commonjs"`) included.
 
 ## The one-line change
 
