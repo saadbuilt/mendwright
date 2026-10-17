@@ -10,6 +10,7 @@ action.yml runs them. No network, no GitHub, no model.
 
 import base64
 import collections
+import http.server
 import importlib.util
 import io
 import json
@@ -18,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -59,6 +61,8 @@ INPUTS = {
     'branch-prefix': 'mendwright/fix/', 'dry-run': 'false', 'draft': 'false', 'labels': '',
     'close-stale': 'true', 'tests-result': 'success', 'commit-author-name': 'github-actions[bot]',
     'commit-author-email': BOT_EMAIL, 'python-version': '3.12',
+    'webhook-url': '', 'webhook-format': 'slack', 'notify-when': 'changes', 'notify-detail': 'keys',
+    'journal-run': '',
 }
 
 
@@ -307,16 +311,20 @@ class World:
         out = io.StringIO()
         act = ma.Action(env, stdout=out, transport=self.api, sleep=self.sleeps.append,
                         token_hex=lambda n, c=self.counter: format(c, '0' + str(2 * n) + 'x'),
-                        stat=getattr(self, 'stat', os.stat))
+                        stat=getattr(self, 'stat', os.stat),
+                        webhook_http=getattr(self, 'webhook_http', None))
         self.actions[step] = act
         return act, out
 
     def step_env(self, step, extra=()):
         env = dict(self.env)
         for name, value in self.inputs.items():
-            env['MW_IN_' + name.upper().replace('-', '_')] = value
+            if name != 'webhook-url':
+                env['MW_IN_' + name.upper().replace('-', '_')] = value
         if step in ('guard', 'find-artifact', 'publish'):
             env['MW_TOKEN'] = TOKEN
+        if step == 'notify':            # action.yml gives the URL to this step only
+            env['MENDWRIGHT_WEBHOOK_URL'] = self.inputs['webhook-url']
         env.update(extra)
         return env
 
@@ -342,10 +350,20 @@ class World:
             return self.steps
         later = {'MW_MODE': guard['mode'], 'MW_BASE': guard['base'], 'MW_SHA': guard['sha'],
                  'MW_ARTIFACT_RUN_ID': guard['artifact-run-id'], 'MW_SAME_RUN': guard['same-run']}
+        self._after_guard(step, later, until)
+        # The notify step's if: in action.yml. It runs after a failed step too.
+        if (until is None and guard.get('mode') in ('fix', 'dry-run')
+                and self.env.get('GITHUB_EVENT_NAME') != 'pull_request'
+                and self.inputs['webhook-url'] != ''):
+            published = self.steps.get('publish', (0, '', {}))[2]
+            step('notify', **dict(later, MW_PR_URL=published.get('pull-request-url', '')))
+        return self.steps
+
+    def _after_guard(self, step, later, until):
         if self.inputs['artifact']:
             code, found = step('find-artifact', **later)
             if code:
-                return self.steps
+                return
             later['MW_FOUND'] = found['found']
             if found['found'] == 'true':
                 shutil.copytree(str(self.uploaded), str(self.temp / 'artifact'))
@@ -353,11 +371,10 @@ class World:
                     self.after_download(self.temp / 'artifact')
         code, fix = step('fix', **later)
         if code or fix.get('ok') != 'true' or until == 'fix':
-            return self.steps
+            return
         if self.after_fix:
             self.after_fix()
         step('publish', **later)
-        return self.steps
 
     def summary(self):
         path = self.tmp / 'summary.md'
@@ -1841,3 +1858,217 @@ def test_the_ci_fixture_gives_the_outputs_the_ci_job_checks(world):
     assert (world.result(), out['written'], out['left-alone']) == ('dry-run', '1', '2')
     assert git(world.ws, 'status', '--porcelain') == ''
     assert world.api.calls == []
+
+
+# --- the alert (the notify step) ---------------------------------------------------------------
+
+WEBHOOK_PATH = '/services/T0/B0/WeBhOoKsEcReT'
+
+
+class _Webhook(http.server.BaseHTTPRequestHandler):
+    answers = []
+    seen = []
+
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length') or 0)
+        self.seen.append({'path': self.path, 'body': self.rfile.read(length),
+                          'agent': self.headers.get('User-Agent')})
+        status = self.answers.pop(0) if self.answers else 200
+        body = (b'bad ' + WEBHOOK_PATH.encode()) if status >= 400 else b'ok'
+        self.send_response(status)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def webhook():
+    _Webhook.answers, _Webhook.seen = [], []
+    httpd = http.server.HTTPServer(('127.0.0.1', 0), _Webhook)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield 'http://127.0.0.1:' + str(httpd.server_address[1]) + WEBHOOK_PATH
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def _with_run_ids(world, run='gh-100.1', extra=()):
+    """The default upload, with the run id the test job's journal gets on GitHub Actions."""
+    events = [dict(e, run=run) for e in confirmed('accept_terms', TERMS)] + list(extra)
+    world.upload({'accept_terms': heal('#accept-terms', TERMS, role='checkbox')}, events)
+
+
+def _summary_section(world):
+    text = world.summary()
+    return text[text.index('### This run'):]
+
+
+def test_the_alert_goes_out_after_the_pull_request_and_the_url_is_never_printed(world, webhook):
+    _with_run_ids(world, extra=[{'ts': T1, 'event': 'heal.declined', 'run': 'gh-100.1',
+                                 'key': 'pay', 'code': 'destructive',
+                                 'reason': 'page text the alert must not carry'}])
+    world.inputs['webhook-url'] = webhook
+    steps = world.run()
+    assert world.result() == 'created'
+    code, out, outputs = steps['notify']
+    assert code == 0 and outputs['notified'] == 'true'
+    # The URL is masked before anything else is printed, and printed nowhere.
+    lines = out.splitlines()
+    assert lines[:2] == ['::add-mask::' + webhook, '::add-mask::' + WEBHOOK_PATH]
+    for name, (_, text, values) in steps.items():
+        rest = text.splitlines()[2:] if name == 'notify' else text.splitlines()
+        assert not any('WeBhOoKsEcReT' in line for line in rest), name
+        assert not any('WeBhOoKsEcReT' in str(v) for v in values.values()), name
+    assert 'WeBhOoKsEcReT' not in world.summary()
+    assert 'WeBhOoKsEcReT' not in (world.tmp / 'output.txt').read_text(encoding='utf-8')
+    # Only the notify step had the URL.
+    for name, act in world.actions.items():
+        assert ('MENDWRIGHT_WEBHOOK_URL' in act.env) is (name == 'notify'), name
+        assert all(webhook not in str(v) for k, v in act.env.items()
+                   if k != 'MENDWRIGHT_WEBHOOK_URL'), name
+    # One POST, with the run's summary, the pull request and the tests' result.
+    [seen] = _Webhook.seen
+    assert seen['path'] == WEBHOOK_PATH and seen['agent'].startswith('mendwright/')
+    text = json.loads(seen['body'])['text']
+    assert text.startswith('mendwright, saadbuilt/shop: the site changed.\n1 selector repaired: '
+                           '1 from a fingerprint. 1 confirmed: `accept_terms`.\n')
+    assert ('1 needs a human: `pay` is marked destructive, so mendwright did not repair it.'
+            in text)
+    assert '\nThe tests passed.' in text and 'page text' not in text
+    # The pull request link comes from publish; the run link is not https here (file://).
+    assert 'Pull request: https://github.test/' + REPO + '/pull/12' in text
+    assert 'Run: ' not in text
+    section = _summary_section(world)
+    assert section.startswith('### This run\n\n````text\nmendwright, saadbuilt/shop: the site '
+                              'changed.\n')
+    assert section.rstrip('\n').endswith('The alert was sent.')
+
+
+def test_a_failed_webhook_never_fails_the_job(world, webhook):
+    _with_run_ids(world)
+    world.inputs['webhook-url'] = webhook
+    _Webhook.answers = [500, 500]
+    steps = world.run()
+    code, out, outputs = steps['notify']
+    assert code == 0 and outputs['notified'] == 'false'
+    assert world.sleeps == [2.0]              # one retry, after the action's own sleep
+    assert len(_Webhook.seen) == 2
+    assert ('::warning::mendwright notify: the webhook at http://127.0.0.1:' in out)
+    assert 'WeBhOoKsEcReT' not in '\n'.join(out.splitlines()[2:]) + world.summary()
+    section = _summary_section(world)
+    assert 'No alert was sent: `the webhook at http://127.0.0.1:' in section
+    assert 'answered HTTP 500 (bad ***) (tried 2 times). Nothing was sent.`' in section
+
+
+def test_an_unreachable_webhook_or_a_refused_url_never_fails_the_job(world):
+    _with_run_ids(world)
+    for url, said in (('https://hooks.invalid/x/SeCrEtHoOk', 'could not reach the webhook at '
+                       'https://hooks.invalid'),
+                      ('http://hooks.example/x/SeCrEtHoOk', 'must start with https://')):
+        world.inputs['webhook-url'] = url
+        world.webhook_http = _Unreachable()
+        world.checkout()
+        steps = world.run()
+        code, out, outputs = steps['notify']
+        assert code == 0 and outputs['notified'] == 'false', url
+        assert said in out and 'SeCrEtHoOk' not in '\n'.join(out.splitlines()[2:])
+        assert 'SeCrEtHoOk' not in world.summary()
+
+
+class _Unreachable:
+    def post(self, url, body, headers, timeout):
+        raise ConnectionError('its host name could not be resolved')
+
+
+class _Taken:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, body, headers, timeout):
+        self.calls.append(json.loads(body))
+        return 200, b'ok'
+
+
+def test_nothing_to_send_and_no_store_are_said_in_the_summary(world):
+    world.inputs['webhook-url'] = 'https://hooks.example/x'
+    world.webhook_http = taken = _Taken()
+    _with_run_ids(world, run='gh-99.1')         # another run's events: this run recorded nothing
+    world.run()
+    assert world.steps['notify'][0] == 0 and taken.calls == []
+    assert world.steps['notify'][2]['notified'] == 'false'
+    section = _summary_section(world)
+    assert '````text\nmendwright, saadbuilt/shop: nothing changed.\nThe tests passed.\n' in section
+    assert ('No alert was sent: `nothing to send for run gh-100: nothing was repaired and nothing '
+            'needs a human (--when changes).`') in section
+    # No artifact: no journal to summarize.
+    world.checkout()
+    world.api.artifacts = {}
+    world.run()
+    assert world.result() == 'nothing' and world.steps['notify'][0] == 0
+    assert 'No alert was sent: the run that tested the code uploaded no store' in world.summary()
+
+
+def test_journal_run_and_the_alert_inputs_are_passed_on(world):
+    world.inputs.update({'webhook-url': 'https://hooks.example/x', 'journal-run': 'nightly-7',
+                         'webhook-format': 'json', 'notify-when': 'always',
+                         'notify-detail': 'counts', 'tests-result': 'failure'})
+    world.webhook_http = taken = _Taken()
+    _with_run_ids(world, run='nightly-7')
+    world.run()
+    [data] = taken.calls
+    assert data['run'] == 'nightly-7' and data['tests'] == 'failure'
+    assert data['repaired']['total'] == 1 and data['repaired']['keys'] == []
+    assert 'accept_terms' not in json.dumps(data)
+
+
+def test_the_alert_step_sends_nothing_for_a_run_the_guard_did_not_let_through(world):
+    world.webhook_http = taken = _Taken()
+    for mode, event in (('', 'push'), ('skip', 'push'), ('dry-run', 'pull_request')):
+        env = world.step_env('notify', {'MW_MODE': mode, 'GITHUB_EVENT_NAME': event,
+                                        'MENDWRIGHT_WEBHOOK_URL': 'https://hooks.example/x'})
+        act, out = world.action('notify', env)
+        assert ma.main(['notify'], act) == 0
+        assert out.getvalue().splitlines()[0] == '::add-mask::https://hooks.example/x'
+        assert act.outputs['notified'] == 'false'
+    assert taken.calls == []
+
+
+def test_the_alert_step_exits_0_whatever_goes_wrong(world, monkeypatch):
+    _with_run_ids(world)
+    world.inputs['webhook-url'] = 'https://hooks.example/x'
+
+    def broken(action, url):
+        raise RuntimeError('boom')
+    monkeypatch.setattr(ma, 'notify_step', broken)
+    world.run()
+    code, out, outputs = world.steps['notify']
+    assert code == 0 and outputs['notified'] == 'false'
+    assert ('::warning::mendwright: no alert was sent: the alert step stopped (RuntimeError).'
+            in out)
+
+
+def test_the_alert_runs_after_a_refusal_of_the_fix_step(world):
+    world.inputs['webhook-url'] = 'https://hooks.example/x'
+    world.webhook_http = taken = _Taken()
+    _with_run_ids(world)
+    world.inputs['paths'] = '../outside'
+    world.run()
+    assert world.steps['fix'][0] == 1
+    assert world.steps['notify'][0] == 0 and len(taken.calls) == 1
+
+
+@pytest.mark.parametrize('name, value, said', [
+    ('webhook-format', 'teams', "the input webhook-format takes slack or json, got 'teams'."),
+    ('notify-when', 'never', "the input notify-when takes changes, attention or always, got "
+                             "'never'."),
+    ('notify-detail', 'all', "the input notify-detail takes keys or counts, got 'all'."),
+    ('journal-run', 'has space', "the input journal-run takes a run id"),
+])
+def test_the_alert_inputs_are_checked_first(world, name, value, said):
+    world.inputs[name] = value
+    world.run()
+    code, out, _ = world.steps['guard']
+    assert code == 1 and 'mendwright: ' + said in out

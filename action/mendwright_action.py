@@ -4,13 +4,16 @@
     mendwright_action.py find-artifact  whether the run that tested the code uploaded a store
     mendwright_action.py fix            mendwright fix --format json on the tested commit
     mendwright_action.py publish        commit, push, and open or update the pull request
+    mendwright_action.py notify         mendwright notify: the alert, and This run in the
+                                        job summary
 
 Standard library only. guard, find-artifact and publish never import mendwright or lxml.
-fix imports mendwright from the action's own folder ($GITHUB_ACTION_PATH, appended last to
-sys.path), so the action runs the mendwright of its own tag. Each step reads its inputs
-from its own environment (MW_IN_*, the outputs of earlier steps as MW_*), which action.yml
-fills, and writes its outputs to $GITHUB_OUTPUT. Only guard, find-artifact and publish get
-the token, as MW_TOKEN.
+fix and notify import mendwright from the action's own folder ($GITHUB_ACTION_PATH,
+appended last to sys.path), so the action runs the mendwright of its own tag. Each step
+reads its inputs from its own environment (MW_IN_*, the outputs of earlier steps as MW_*),
+which action.yml fills, and writes its outputs to $GITHUB_OUTPUT. Only guard, find-artifact
+and publish get the token, as MW_TOKEN, and only notify gets the webhook URL, as
+MENDWRIGHT_WEBHOOK_URL, which it masks before it prints anything and never prints.
 
 Nothing runs a shell: git gets argument lists, with hooks and the credential prompts off.
 The token reaches git only through GIT_CONFIG_* variables, and is masked first. Text that
@@ -44,6 +47,12 @@ TRUSTED_EVENTS = ('push', 'schedule', 'workflow_dispatch')
 TEST_RESULTS = ('success', 'failure', 'cancelled', 'skipped', 'neutral', 'timed_out',
                 'action_required', 'stale', 'startup_failure')
 BOOLEAN_INPUTS = ('dry-run', 'only-default-branch', 'draft', 'close-stale')
+# The alert's inputs that take one of a few words, and the words.
+CHOICE_INPUTS = (('webhook-format', ('slack', 'json')),
+                 ('notify-when', ('changes', 'attention', 'always')),
+                 ('notify-detail', ('keys', 'counts')))
+# A run id, as mendwright.journal.RUN_ID has it (guard does not import mendwright).
+RUN_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}')
 MAX_STORE = 50 * 1024 * 1024
 MAX_JOURNAL = 512 * 1024 * 1024
 MAX_LABELS = 10
@@ -255,10 +264,11 @@ class Action:
     Every side effect goes through here, so the tests can give fakes."""
 
     def __init__(self, env=None, *, stdout=None, transport=None, sleep=time.sleep,
-                 token_hex=secrets.token_hex, stat=os.stat, git='git'):
+                 token_hex=secrets.token_hex, stat=os.stat, git='git', webhook_http=None):
         self.env = dict(os.environ if env is None else env)
         self.stdout = stdout or sys.stdout
         self.sleep = sleep
+        self.webhook_http = webhook_http     # mendwright.notify's http=, for the tests
         self.token_hex = token_hex
         self.stat = stat
         self.git_exe = git
@@ -415,6 +425,16 @@ def _check_inputs(action):
         if value not in ('true', 'false'):
             raise Stop('mendwright: the input ' + name + ' takes true or false, got '
                        + repr(value) + '.')
+    for name, words in CHOICE_INPUTS:
+        value = action.input(name)
+        if value not in words:
+            raise Stop('mendwright: the input ' + name + ' takes ' + ', '.join(words[:-1])
+                       + ' or ' + words[-1] + ', got ' + repr(value) + '.')
+    journal_run = action.input('journal-run')
+    if journal_run and not RUN_ID.fullmatch(journal_run):
+        raise Stop("mendwright: the input journal-run takes a run id, 1 to 100 letters, digits, "
+                   "'.', '_', ':', '/' or '-' that starts with a letter or digit, such as the "
+                   'MENDWRIGHT_RUN_ID your test job sets, got ' + repr(journal_run) + '.')
     tests = action.input('tests-result').strip()
     if tests and tests not in TEST_RESULTS:
         raise Stop('mendwright: the input tests-result takes a job result such as success or '
@@ -628,8 +648,9 @@ def _regular(path):
         return False
 
 
-def find_store(action):
-    """(store path, journal path or None). Raises Stop or Done (F1 to F8)."""
+def find_store(action, warn=True):
+    """(store path, journal path or None). Raises Stop or Done (F1 to F8). warn=False leaves
+    out F8's warning, which the fix step already gave."""
     store_input = action.input('store').strip()
     artifact = action.input('artifact').strip()
     if artifact:
@@ -685,9 +706,10 @@ def find_store(action):
                        + (' Move the old journal aside, or stop carrying it from run to run.'
                           if path == journal else ''))
     if not os.path.lexists(journal):
-        action.annotate('warning', 'mendwright: there is no journal.jsonl next to the store, so '
-                        'no heal counts as confirmed and nothing is written back. Upload the '
-                        'journal too, not only overrides.json.')
+        if warn:
+            action.annotate('warning', 'mendwright: there is no journal.jsonl next to the store, '
+                            'so no heal counts as confirmed and nothing is written back. Upload '
+                            'the journal too, not only overrides.json.')
         return found, None
     return found, journal
 
@@ -774,19 +796,43 @@ def _stop_after_errors(action, wd, written, first):
     raise Stop(refusal(first, kept), summary=refusal(md_code(first), [md_code(p) for p in kept]))
 
 
-def run_fix(action, argv):
-    """mendwright.cli.main(argv), with its stdout and stderr captured: (code, text)."""
+def _mendwright(action):
+    """mendwright.cli, imported from the action's own folder."""
     if action.action_path not in sys.path:
         sys.path.append(action.action_path)
     import mendwright.cli
+    return mendwright.cli
+
+
+def captured(call, environ=None):
+    """call(), with its stdout and stderr captured: (its result, stdout, stderr). environ:
+    variables to set (a value of None unsets one) while it runs."""
     out, err = io.StringIO(), io.StringIO()
     saved = sys.stdout, sys.stderr
+    before = {name: os.environ.get(name) for name in (environ or {})}
+    for name, value in (environ or {}).items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
     sys.stdout, sys.stderr = out, err
     try:
-        code = mendwright.cli.main(argv)
+        result = call()
     finally:
         sys.stdout, sys.stderr = saved
-    return code, out.getvalue() + err.getvalue()
+        for name, value in before.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    return result, out.getvalue(), err.getvalue()
+
+
+def run_fix(action, argv):
+    """mendwright.cli.main(argv), with its stdout and stderr captured: (code, text)."""
+    cli = _mendwright(action)
+    code, out, err = captured(lambda: cli.main(argv))
+    return code, out + err
 
 
 def cmd_fix(action):
@@ -1332,10 +1378,135 @@ def cmd_publish(action):
     return Publish(action).run_step()
 
 
+# --- notify --------------------------------------------------------------------------------
+
+SENT = 'mendwright notify: sent the summary of '
+
+
+def webhook_secrets(url):
+    """The webhook URL as the runner should mask it: as given, stripped, its path (when longer
+    than one character) and its query. Its path is its key."""
+    values = [url, url.strip()]
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        if len(parts.path) > 1:
+            values.append(parts.path)
+        if parts.query:
+            values.append(parts.query)
+    except ValueError:
+        pass
+    seen = []
+    for value in values:
+        if value and value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _https(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme == 'https' and bool(parts.hostname)
+
+
+def cmd_notify(action):
+    """The notify step: mask the webhook URL, write This run to the job summary and send the
+    alert with mendwright notify. Always exits 0: an alert must not fail the job. Nothing is
+    sent for a run the guard did not let through, nor on pull_request, whatever runs the
+    step."""
+    url = action.env.get('MENDWRIGHT_WEBHOOK_URL') or ''
+    for value in webhook_secrets(url):
+        action.print('::add-mask::' + escape_data(value))
+    action.set_output('notified', 'false')
+    if action.env.get('MW_MODE') not in ('fix', 'dry-run') \
+            or action.env.get('GITHUB_EVENT_NAME') == 'pull_request':
+        action.print('mendwright: no alert for this run.')
+        return 0
+    try:
+        notify_step(action, url.strip())
+    except Exception as exc:        # Stop and Done included: nothing here fails the job
+        action.annotate('warning', 'mendwright: no alert was sent: the alert step stopped ('
+                        + type(exc).__name__ + ').')
+    return 0
+
+
+def _no_alert(action, why):
+    action.annotate('notice', 'mendwright: no alert was sent: ' + why)
+    action.summary('### This run\n\nNo alert was sent: ' + why + '\n')
+
+
+def notify_step(action, url):
+    try:
+        store, journal = find_store(action, warn=False)
+    except Done:
+        return _no_alert(action, 'the run that tested the code uploaded no store, so there is no '
+                                 'journal to summarize.')
+    except Stop as stop:
+        return _no_alert(action, 'the store was not read (' + str(stop).replace('mendwright: ', '', 1)
+                         + ')')
+    if journal is None:
+        return _no_alert(action, 'there is no journal.jsonl next to the store.')
+    env = action.env
+    run_id = env.get('MW_ARTIFACT_RUN_ID', '')
+    run = action.input('journal-run').strip() or ('gh-' + run_id)
+    argv = ['notify', '--store=' + store, '--run=' + run, '--when=' + action.input('notify-when'),
+            '--detail=' + action.input('notify-detail'),
+            '--title=' + env.get('GITHUB_REPOSITORY', '')]
+    server = (env.get('GITHUB_SERVER_URL') or 'https://github.com').rstrip('/')
+    run_url = server + '/' + env.get('GITHUB_REPOSITORY', '') + '/actions/runs/' + run_id
+    if run_id.isdigit() and _https(run_url):
+        argv.append('--run-url=' + run_url)
+    pr_url = env.get('MW_PR_URL', '').strip()
+    if pr_url and _https(pr_url):
+        argv.append('--pr-url=' + pr_url)
+    tests = action.input('tests-result').strip()
+    if tests:
+        argv.append('--tests=' + tests)
+    cli = _mendwright(action)
+    import mendwright._md as md
+
+    def notify(extra, url):
+        """cmd_notify with argv + extra, the URL in its environment only (None: unset), and
+        GITHUB_ACTIONS unset, so it leaves the warnings to this step."""
+        def run():
+            try:
+                args = cli.build_parser().parse_args(argv + extra)
+            except SystemExit:          # argparse said why on the captured stderr
+                return 2
+            return cli.cmd_notify(args, http=action.webhook_http, sleep=action.sleep)
+        return captured(run, {'GITHUB_ACTIONS': None, 'MENDWRIGHT_RUN_ID': None,
+                              'MENDWRIGHT_WEBHOOK_URL': url})
+
+    # This run, for the job summary: the text of the summary, sent or not. No URL here.
+    code, out, err = notify(['--format=json', '--dry-run'], None)
+    try:
+        text = json.loads(out)['text']
+    except (ValueError, KeyError, TypeError):
+        text = None
+    section = '### This run\n\n' + (md.fence(text) if text else 'The summary could not be made: '
+                                      + md_code((err or out).strip() or 'no message'))
+    # The alert.
+    code, out, err = notify(['--format=' + action.input('webhook-format'), '--fail-on-error'],
+                            url)
+    said = (out + err).strip()
+    if said:
+        action.untrusted(said)
+    for line in err.splitlines():
+        if line.strip():
+            action.annotate('warning', line.strip())
+    sent = code == 0 and out.startswith(SENT)
+    action.set_output('notified', 'true' if sent else 'false')
+    first = (out.strip() or err.strip() or 'no message').splitlines()[0]
+    first = first[len('mendwright notify: '):] if first.startswith('mendwright notify: ') else first
+    section += '\n\n' + ('The alert was sent.' if sent else 'No alert was sent: ' + md_code(first))
+    action.summary(section + '\n')
+
+
 # --- main ----------------------------------------------------------------------------------
 
 COMMANDS = {'guard': cmd_guard, 'find-artifact': cmd_find_artifact, 'fix': cmd_fix,
-            'publish': cmd_publish}
+            'publish': cmd_publish, 'notify': cmd_notify}
 
 
 def main(argv=None, action=None):

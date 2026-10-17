@@ -1771,8 +1771,13 @@ On a public repository it adds a notice: the branch and the pull request are pub
 | `commit-author-name` | `github-actions[bot]` | The author of its commits. |
 | `commit-author-email` | `41898282+github-actions[bot]@users.noreply.github.com` | Also how the action knows its own commits. |
 | `python-version` | `3.12` | Passed to `actions/setup-python`. Empty: the runner's `python3` or `python`, which must be 3.10 to 3.14. |
+| `webhook-url` | empty | A webhook that gets a summary of the run, such as a Slack incoming webhook (see [Alerts](#alerts)). Pass a secret, such as `${{ secrets.SLACK_WEBHOOK_URL }}`. Empty: no alert. |
+| `webhook-format` | `slack` | `slack`, or `json` for any other receiver. |
+| `notify-when` | `changes` | `changes`, `attention` or `always`, as `mendwright notify --when`. |
+| `notify-detail` | `keys` | `keys` names the keys in the alert; `counts` names none. |
+| `journal-run` | empty | The run id of the journal events to summarize. Empty: `gh-<run id>` of the run that tested the code, its newest attempt. Pass it only when your test job sets its own `MENDWRIGHT_RUN_ID`. |
 
-Boolean inputs take `true` or `false` only.
+Boolean inputs take `true` or `false` only. `webhook-format`, `notify-when`, `notify-detail` and `journal-run` are checked before anything else, as the boolean inputs are.
 
 | Output | Value |
 |---|---|
@@ -1781,6 +1786,7 @@ Boolean inputs take `true` or `false` only.
 | `pull-request-url` | That pull request's address |
 | `written` | How many keys were written back (in a dry run, would be) |
 | `left-alone` | How many items are under "Left alone" |
+| `notified` | `true` when the webhook took the summary, `false` when it did not, empty without `webhook-url` |
 
 #### Limits
 
