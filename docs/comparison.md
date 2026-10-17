@@ -144,10 +144,10 @@ Your test runner, your browser and the LLM API are not counted.
 
 ### mendwright wheel
 
-- The 0.9.0 wheel, built from a clean `git archive` with `core.autocrlf=false` (`python -m build`) before the release; replaced by the size PyPI serves once it is published.
-- The wheel is 444,808 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
+- The 0.9.0 wheel on [PyPI](https://pypi.org/project/mendwright/0.9.0/#files), built by the release workflow (`python -m build`, isolated, on Linux).
+- The wheel is 444,766 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
 - The lxml 6.1.3 wheel is 4,005,999 bytes for cp312 win_amd64 and 5,105,247 bytes for manylinux2014 x86_64 ([PyPI](https://pypi.org/pypi/lxml/6.1.3/json)).
-- Totals: 4,450,807 bytes (4.45 MB) on Windows and 5,550,055 bytes (5.55 MB) on Linux.
+- Totals: 4,450,765 bytes (4.45 MB) on Windows and 5,550,013 bytes (5.55 MB) on Linux.
 - The wheel embeds README.md and the package code, so this changes slightly when either does. It is re-measured at release.
 
 ### Other Python packages
