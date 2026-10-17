@@ -9,7 +9,10 @@
 //   and so do the list heals ('proposed', 'accepted') the Python package keeps for a person
 //   to check: this package never tries or changes those.
 // - Per-key metadata: expectedRole, expectedText, destructive, lastPage and pages, lastUrl,
-//   steps, intent, fingerprint and listFingerprint, written only when one of them changes.
+//   steps, intent, fingerprint, listFingerprint and shadowHosts (where the element was
+//   found, see shadow.ts), written only when one of them changes.
+// - A candidate the Python package saved inside an iframe or an open shadow root keeps its
+//   frameXPath, css and shadowHosts, in a three-way merge of their own.
 // - Writes take the lock file overrides.json.lock, take in what other processes (Python or
 //   TypeScript, other Playwright Test workers) wrote since the last read with a three-way
 //   merge, and replace the file atomically. On a conflict 'quarantined' wins, then
@@ -31,6 +34,7 @@ import { log } from './log';
 import { compactJson, nowIso } from './py';
 import { inferRole } from './roles';
 import { frameSpelling } from './selectors';
+import { savedHosts, type Hosts } from './shadow';
 
 export interface Candidate {
   xpath: string;
@@ -40,6 +44,7 @@ export interface Candidate {
   status?: string;
   frameXPath?: string;
   css?: string;
+  shadowHosts?: Hosts;
   list?: boolean;
   proposal?: Record<string, unknown>;
   acceptedAt?: string;
@@ -58,6 +63,7 @@ interface Entry {
   fingerprint?: Fingerprint;
   listFingerprint?: unknown;
   lastUrl?: string;
+  shadowHosts?: Hosts;
   candidates: Candidate[];
   [field: string]: unknown;
 }
@@ -82,14 +88,15 @@ export interface KeyMeta {
 
 /** Metadata fields saved in the store file next to the candidates. */
 export const META_FIELDS = ['expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
-  'fingerprint', 'steps', 'listFingerprint', 'lastUrl'] as const;
+  'fingerprint', 'steps', 'listFingerprint', 'lastUrl', 'shadowHosts'] as const;
 type MetaField = typeof META_FIELDS[number];
 type Meta = Partial<Record<MetaField, unknown>>;
 
 export const MAX_PAGES = 5;
 const LIST_WAITING = ['proposed', 'accepted'];
 const MAX_LIST_HEALS = 3;
-const PLACE_FIELDS = ['frameXPath', 'css'] as const;
+const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts'] as const;
+type Place = [string, string, string];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -254,6 +261,10 @@ function metaFields(entry: unknown): Meta {
   if (typeof entry.intent === 'string' && entry.intent.trim()) out.intent = entry.intent;
   if (validFingerprint(entry.fingerprint)) out.fingerprint = entry.fingerprint;
   if (validListFingerprint(entry.listFingerprint)) out.listFingerprint = entry.listFingerprint;
+  // A malformed value keeps a host nothing tells apart (null), so the key is never taken to
+  // be on the page because of it.
+  const hosts = savedHosts(entry.shadowHosts);
+  if (hosts.length) out.shadowHosts = hosts;
   return out;
 }
 
@@ -274,16 +285,27 @@ function isListHeal(c: Candidate): boolean {
   return c.list === true && LIST_WAITING.includes(c.status as string);
 }
 
-function placeOf(c: Candidate): [string, string] {
-  return [(c.frameXPath as string) || '', (c.css as string) || ''];
+/** A candidate's place field as it is compared: '' when it has none, its shadowHosts as
+ * JSON. */
+function placeValue(c: Candidate, field: typeof PLACE_FIELDS[number]): string {
+  if (field === 'shadowHosts') {
+    const hosts = savedHosts(c.shadowHosts);
+    return hosts.length ? JSON.stringify(hosts) : '';
+  }
+  return (c[field] as string) || '';
 }
 
-function mergePlace(local: Candidate, theirs: Candidate, base: [string, string] | undefined): void {
+function placeOf(c: Candidate): Place {
+  return PLACE_FIELDS.map((field) => placeValue(c, field)) as Place;
+}
+
+function mergePlace(local: Candidate, theirs: Candidate, base: Place | undefined): void {
   PLACE_FIELDS.forEach((field, i) => {
     if (base === undefined) {
-      if (field in theirs && !(field in local)) local[field] = theirs[field] as string;
-    } else if (((local[field] as string) || '') === base[i] && ((theirs[field] as string) || '') !== base[i]) {
-      local[field] = (theirs[field] as string) || '';
+      if (field in theirs && !(field in local)) local[field] = clone(theirs[field]) as any;
+    } else if (placeValue(local, field) === base[i] && placeValue(theirs, field) !== base[i]) {
+      if (field === 'shadowHosts') local.shadowHosts = [...savedHosts(theirs.shadowHosts)];
+      else local[field] = (theirs[field] as string) || '';
     }
   });
 }
@@ -365,7 +387,7 @@ export class SelectorStore {
   private readonly delisted = new Set<string>();
   private meta = new Map<string, Meta>();
   private base = new Map<string, string>();
-  private basePlace = new Map<string, [string, string]>();
+  private basePlace = new Map<string, Place>();
   private baseMeta = new Map<string, Meta>();
 
   constructor(data: StoreData, overridePath: string, options: StoreOptions & { override?: StoreData | null } = {}) {
@@ -399,6 +421,8 @@ export class SelectorStore {
     for (const name of ['lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint', 'lastUrl'] as const) {
       if (name in fields) e[name] = (name === 'pages' || name === 'steps') ? [...(fields[name] as string[])] : fields[name] as any;
     }
+    if ('shadowHosts' in fields) e.shadowHosts = [...(fields.shadowHosts as Hosts)];
+    else delete e.shadowHosts;     // the element is on the page now, or nothing was recorded
   }
 
   /** True when destructiveKeys marks key destructive: nothing in the store can clear it. */
@@ -478,6 +502,10 @@ export class SelectorStore {
         entry.candidates.push({ xpath, source: 'code', addedAt: nowIso(), lastSucceededAt: null, status: 'active' });
       } else if (c.source === 'heal' || (c.status ?? 'active') !== 'active') {
         if (c.source === 'heal') c.source = 'code';
+        // A heal inside a shadow root that mendwright fix wrote into the code as its
+        // Playwright chain: the code's selector runs as Playwright runs it, as the Python
+        // package does. [] stays as a key, so the merge does not take the hosts back.
+        if (savedHosts(c.shadowHosts).length) c.shadowHosts = [];
         if (c.list === true && (LIST_WAITING.includes(c.status as string) || 'proposal' in c || 'acceptedAt' in c)) {
           delete c.list;
           delete c.proposal;
@@ -509,11 +537,28 @@ export class SelectorStore {
 
   /** Set a key's metadata; undefined leaves a field as it is. The file is written only when
    * a saved field changes. destructive: false clears a flag saved this way, never one from
-   * destructiveKeys. */
+   * destructiveKeys. shadowHosts is where the element was found: the selectors of the shadow
+   * hosts around it, outermost first (null for a host nothing tells apart), or [] for the
+   * page, which removes the field (see shadow.ts). */
   setMeta(key: string, fields: { role?: string; text?: string | string[]; destructive?: boolean;
-                                 intent?: string; fingerprint?: Fingerprint }): void {
+                                 intent?: string; fingerprint?: Fingerprint; shadowHosts?: Hosts }): void {
     const e = this.entry(key);
     const changed: Meta = {};
+    let cleared = false;
+    if (fields.shadowHosts !== undefined) {
+      if (!Array.isArray(fields.shadowHosts)) {
+        throw new TypeError('mendwright: setMeta({ shadowHosts }) takes a list of host selectors, got '
+          + JSON.stringify(fields.shadowHosts) + '.');
+      }
+      const hosts = savedHosts([...fields.shadowHosts]);
+      if (hosts.length) {
+        e.shadowHosts = hosts;
+        changed.shadowHosts = [...hosts];
+      } else {
+        delete e.shadowHosts;
+        cleared = true;
+      }
+    }
     if (fields.intent !== undefined) {
       if (typeof fields.intent !== 'string' || !fields.intent.trim()) {
         throw new TypeError('mendwright: intent must be a non-empty string, got ' + JSON.stringify(fields.intent) + '.');
@@ -542,8 +587,11 @@ export class SelectorStore {
       changed.destructive = Boolean(fields.destructive);
     }
     const saved = this.meta.get(key) ?? {};
-    if (Object.entries(changed).some(([f, v]) => !same(saved[f as MetaField], v))) {
-      this.meta.set(key, { ...saved, ...changed });
+    const dropped = cleared && 'shadowHosts' in saved;
+    if (Object.entries(changed).some(([f, v]) => !same(saved[f as MetaField], v)) || dropped) {
+      const next: Meta = { ...saved, ...changed };
+      if (cleared) delete next.shadowHosts;
+      this.meta.set(key, next);
       this.persist();
     }
   }
@@ -595,6 +643,13 @@ export class SelectorStore {
     return this.guessed.has(key) || !knownRole(e?.expectedRole);
   }
 
+  /** Where key's element was the last time it matched: the selectors of the shadow hosts
+   * around it, outermost first (null for a host nothing tells apart), or [] for the page or
+   * when nothing was recorded (see shadow.ts). */
+  shadowHosts(key: string): Hosts {
+    return savedHosts(this.data.selectors[key]?.shadowHosts);
+  }
+
   /** The candidate recordSuccess() last marked for key in this process. */
   lastSuccess(key: string): Candidate | null {
     return this.lastSuccessByKey.get(key) ?? null;
@@ -606,12 +661,16 @@ export class SelectorStore {
     return c ? (c.status ?? 'active') : null;
   }
 
-  /** The selectors of key's quarantined candidates in one place: '' for the page, an
-   * iframe's selector for that iframe, null for all. */
-  quarantined(key: string, frameXPath: string | null = null): string[] {
+  /** The selectors of key's quarantined candidates in one place: frameXPath '' for the page
+   * or an iframe's selector for that iframe, and shadowHosts the hosts of a shadow root ([]
+   * or null for none). null for both lists them all. */
+  quarantined(key: string, frameXPath: string | null = null, shadowHosts: Hosts | null = null): string[] {
+    const whole = frameXPath === null && shadowHosts === null;
+    const hosts = JSON.stringify(savedHosts([...(shadowHosts ?? [])]));
     return (this.data.selectors[key]?.candidates ?? [])
       .filter((c) => c.status === 'quarantined' && c.xpath
-        && (frameXPath === null || ((c.frameXPath as string) || '') === frameXPath))
+        && (whole || (((c.frameXPath as string) || '') === (frameXPath || '')
+                      && JSON.stringify(savedHosts(c.shadowHosts)) === hosts)))
       .map((c) => c.xpath);
   }
 
@@ -791,6 +850,7 @@ export class SelectorStore {
           if (field in c) item[field] = c[field] as any;
         }
         if ('frameXPath' in c) item.frameXPath = c.frameXPath;
+        if (Array.isArray(c.shadowHosts) && c.shadowHosts.length) item.shadowHosts = [...c.shadowHosts];
         if (typeof c.css === 'string' && c.css) item.css = c.css;
         if (c.list === true) item.list = true;
         const evidence = evidenceOf(c);

@@ -314,3 +314,129 @@ with _locked(sys.argv[1], timeout=5, stale_after=30):
     assert.deepEqual(py.during.candidates, [['#during', 'code', null]]);
   });
 });
+
+// Since 0.10.0 the Python package saves where a key's element is when it is inside an open
+// shadow root: the key's shadowHosts, and a heal made there as the chain of its hosts and a
+// CSS selector, with the hosts as the candidate's shadowHosts (mendwright/shadow.py).
+const HOST = 'my-app[id="root"]';
+const CHAIN = HOST + ' >> [data-testid="save"]';
+
+const PY_SHADOW = `
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+store.set_code_candidates('save', ['#save'])
+store.set_meta('save', role='button', shadow_hosts=[args['host']])
+store.add_candidate('save', args['chain'], source='heal', shadow_hosts=[args['host']])
+store.record_success('save', args['chain'])
+store.add_candidate('save', args['host'] + ' >> #wrong', source='heal', shadow_hosts=[args['host']])
+store.quarantine('save', args['host'] + ' >> #wrong')
+store.set_code_candidates('nowhere', ['#nowhere'])
+store.set_meta('nowhere', role='button', shadow_hosts=[None])
+print('null')
+`;
+
+const PY_SHADOW_READ = `
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+out = {}
+for key in args['keys']:
+    out[key] = {'hosts': store.shadow_hosts(key),
+                'rows': [[c['xpath'], c.get('status', 'active'), c.get('shadowHosts')]
+                         for c in store._data['selectors'].get(key, {}).get('candidates', [])],
+                'page_quarantine': store.quarantined(key, ''),
+                'shadow_quarantine': store.quarantined(key, '', [args['host']])}
+print(json.dumps(out))
+`;
+
+describe('shadow roots in a store the Python package wrote', { skip: needsPython() }, () => {
+  const args = () => ({ file, host: HOST, chain: CHAIN });
+
+  test('reads where the element is, and the heals saved inside the shadow root', () => {
+    runPython(PY_SHADOW, args());
+    const store = loadStore(file);
+    assert.deepEqual(store.shadowHosts('save'), [HOST]);
+    assert.deepEqual(store.shadowHosts('nowhere'), [null]);
+    const chain = store.candidates('save').find((c) => c.xpath === CHAIN);
+    assert.deepEqual(chain?.shadowHosts, [HOST]);
+    // A quarantine counts in its own place, as the Python package counts it.
+    assert.deepEqual(store.quarantined('save', ''), []);
+    assert.deepEqual(store.quarantined('save', '', [HOST]), [HOST + ' >> #wrong']);
+    assert.deepEqual(store.quarantined('save'), [HOST + ' >> #wrong']);
+  });
+
+  test('keeps them when it writes, so the Python package still heals the key only inside the shadow root', () => {
+    runPython(PY_SHADOW, args());
+    const store = loadStore(file);
+    store.setLastPage('save', '/cart');                 // writes the key
+    store.recordSuccess('save', CHAIN);
+    store.setCodeCandidates('other', ['#other']);
+    store.setMeta('nowhere', { text: 'Nowhere' });
+    const py = runPython<Record<string, any>>(PY_SHADOW_READ, { ...args(), keys: ['save', 'nowhere'] });
+    assert.deepEqual(py.save.hosts, [HOST]);
+    assert.deepEqual(py.nowhere.hosts, [null]);
+    assert.deepEqual(py.save.rows.find((r: unknown[]) => r[0] === CHAIN), [CHAIN, 'active', [HOST]]);
+    assert.deepEqual(py.save.rows.find((r: unknown[]) => r[0] === HOST + ' >> #wrong'),
+      [HOST + ' >> #wrong', 'quarantined', [HOST]]);
+    assert.deepEqual(py.save.page_quarantine, []);
+    assert.deepEqual(py.save.shadow_quarantine, [HOST + ' >> #wrong']);
+  });
+
+  test('merges them with what the Python package wrote since it read the file', () => {
+    runPython(PY_SHADOW, args());
+    const store = loadStore(file);
+    runPython(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+store.set_meta('save', shadow_hosts=[args['host'], 'inner-box'])
+store.set_meta('nowhere', shadow_hosts=[])
+print('null')`, args());
+    store.setLastPage('save', '/cart');
+    store.setLastPage('nowhere', '/cart');
+    const py = runPython<Record<string, any>>(PY_SHADOW_READ, { ...args(), keys: ['save', 'nowhere'] });
+    assert.deepEqual(py.save.hosts, [HOST, 'inner-box']);
+    assert.deepEqual(py.nowhere.hosts, []);
+    assert.deepEqual(store.shadowHosts('save'), [HOST, 'inner-box']);
+    assert.deepEqual(store.shadowHosts('nowhere'), []);
+  });
+
+  test('a heal mendwright fix wrote into the code as its chain runs as the code passes it', () => {
+    runPython(PY_SHADOW, args());
+    const store = loadStore(file);
+    store.setCodeCandidates('save', [CHAIN]);
+    assert.deepEqual(store.candidates('save').find((c) => c.xpath === CHAIN)?.shadowHosts, []);
+    const py = runPython<Record<string, any>>(PY_SHADOW_READ, { ...args(), keys: ['save'] });
+    assert.deepEqual(py.save.rows.find((r: unknown[]) => r[0] === CHAIN), [CHAIN, 'active', null]);
+  });
+});
+
+describe('shadowHosts in this package', () => {
+  test('setMeta saves where the element is, and [] removes it', () => {
+    const store = loadStore(file);
+    store.setCodeCandidates('save', ['#save']);
+    store.setMeta('save', { shadowHosts: [HOST, null] });
+    assert.deepEqual(read().selectors.save.shadowHosts, [HOST, null]);
+    assert.deepEqual(loadStore(file).shadowHosts('save'), [HOST, null]);
+    store.setMeta('save', { shadowHosts: [] });
+    assert.equal(read().selectors.save.shadowHosts, undefined);
+    assert.deepEqual(loadStore(file).shadowHosts('save'), []);
+    assert.throws(() => store.setMeta('save', { shadowHosts: 'my-app' as any }), TypeError);
+  });
+
+  test('a malformed value reads as a host nothing tells apart, never as the page', () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema: 2, selectors: {
+      a: { shadowHosts: 'my-app', candidates: [] },
+      b: { shadowHosts: [HOST, 7, '  '], candidates: [] },
+      c: { shadowHosts: [], candidates: [] } } }));
+    const store = loadStore(file);
+    assert.deepEqual(store.shadowHosts('a'), [null]);
+    assert.deepEqual(store.shadowHosts('b'), [HOST, null, null]);
+    assert.deepEqual(store.shadowHosts('c'), []);
+  });
+});

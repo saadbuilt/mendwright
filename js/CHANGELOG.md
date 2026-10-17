@@ -16,6 +16,6 @@ The first release: the Python package's `heal.locator()` and `heal.page` for Pla
 - The gate: an XPath is used only when it isn't an index-only path, isn't quarantined or superseded and doesn't reach a quarantined element, and matches exactly one element of the key's role in the captured page and one visible element of that role on the live page.
 - Keys marked destructive, keys on a page they were never found on, keys whose role is unknown and steps while a guard blocks are never healed. A heal whose action fails in the browser is quarantined.
 - `cookies: 'reject'` and `cookies: 'accept'`, and `heal.interrupt()`.
-- The store is the Python package's `.mendwright/overrides.json` (schema 2) with its lock file and merge, and the journal is its `journal.jsonl`, so one store can be shared by both packages.
+- The store is the Python package's `.mendwright/overrides.json` (schema 2) with its lock file and merge, and the journal is its `journal.jsonl`, so one store can be shared by both packages. It keeps the `shadowHosts` the Python package 0.10.0 saves for a key and a heal inside an open shadow root, merges them as it merges `frameXPath`, and, as the Python package does, drops a heal's `shadowHosts` when your code passes that heal's chain.
 
 [0.1.0]: https://github.com/saadbuilt/mendwright/tree/main/js
