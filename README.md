@@ -265,6 +265,7 @@ Where another tool fits better: Healenium covers Java, and any Selenium client t
 
 - [Guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md): configuration, the pytest plugin, CI recipes, the CLI and troubleshooting
 - [Comparison](https://github.com/saadbuilt/mendwright/blob/main/docs/comparison.md)
+- [TypeScript](https://github.com/saadbuilt/mendwright/blob/main/js/README.md): the npm package `mendwright` for Playwright Test, a port of `heal.locator()` and `heal.page` with the same fingerprint scoring, checks and store file (0.1.0, with less than this package)
 - [Contributing](https://github.com/saadbuilt/mendwright/blob/main/CONTRIBUTING.md)
 - [Security](https://github.com/saadbuilt/mendwright/blob/main/SECURITY.md)
 - [Changelog](https://github.com/saadbuilt/mendwright/blob/main/CHANGELOG.md)
