@@ -41,6 +41,8 @@ PHRASES = {
                                    'could propose'),
     'list_proposed': ('selector', 'matched nothing as a list, and mendwright found one for you '
                                   'to check with mendwright lists'),
+    'list_waits_fix': ('selector', 'matched nothing as a list, and the list heal accepted for it '
+                                   'waits for mendwright fix or its seed file'),
     'get_by': ('selector', 'could not be repaired from its fingerprint, and mendwright asks no '
                            'model for a get_by_* call'),
     'frame': ('selector', 'is inside an iframe mendwright did not look into'),
@@ -201,12 +203,15 @@ def summarize(events):
                 bad.add((key, xpath))
             if not event.get('list'):
                 # A heal of a key marked destructive after it was made is quarantined
-                # however right it was: say that, not that the repair was wrong.
-                code = ('destructive' if refused_by.get((key, xpath)) == 'destructive'
+                # however right it was: say that, not that the repair was wrong. The canary
+                # says so for a heal made in this process, the heal.quarantine (by) for one
+                # saved before.
+                code = ('destructive' if 'destructive' in (refused_by.get((key, xpath)),
+                                                           event.get('by'))
                         else 'quarantined')
                 need('selector', key, code, at)
         elif name == 'heal.declined' and key:
-            code = event.get('code')
+            code = _text(event.get('code'))
             if code in ON_PURPOSE:
                 on_purpose[code].add(key)
                 continue
@@ -216,7 +221,7 @@ def summarize(events):
         elif name == 'heal.held' and key:
             need('selector', key, 'list_proposed', at)
         elif name == 'flow.stop':
-            code = event.get('code')
+            code = _text(event.get('code'))
             if code not in _STOP_CODES:
                 continue
             about = PHRASES[code][0]

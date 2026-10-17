@@ -1594,7 +1594,7 @@ The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reaso
 `heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes), a `source` and `provider` of `shadow` for one followed into a [shadow root](#shadow-dom), and a `shadow` with the shadow hosts for every heal inside a shadow root. A model heal of a key that had a selector has no `source`.
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
 The events of a list looked for with `nonempty=True` have `"list": true`. A list heal you rejected, or one quarantined because the selector it replaced matched again, writes a `heal.quarantine` with a `reason` that says which.
-A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
+A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. A heal saved in an earlier run, of a key marked destructive since, has no canary in this run: its `heal.quarantine` has `by` `destructive`. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
 Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`, such as `gh-11893412207.1`. Without one there is no `run`, as before 0.10.0. [`mendwright notify`](#mendwright-notify) picks the events of one run by it, also in a journal the [cache](#keep-heals-between-runs) keeps from run to run. The TypeScript package in `js/` writes `run`, `heal.declined` and its `flow.stop` the same way, so `mendwright notify` sums up its runs too.
 `heal.declined` says why a heal was not tried or did not apply, one line each time: `key`, `code` and `reason`, the text the log line and the error give, which can quote the page, as `reasoning` can. The codes:
 
@@ -1613,6 +1613,7 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 | `dry_run` | Dry run: checked, not applied |
 | `list_empty` | A list whose selectors all match nothing (see [Lists](#lists)) |
 | `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
+| `list_waits_fix` | A list looked up with `nonempty=True`, whose list heal you accepted with `mendwright lists accept` matches now, but is not yet in your code (`mendwright fix --apply` writes it there) or its seed file |
 | `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
 | `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
 | `shadow` | Its element is inside a [shadow root](#shadow-dom) mendwright could not heal it in or follow it into |
@@ -2274,7 +2275,7 @@ Store (where mendwright.open() saves heals)
 ```
 
 `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
-Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as its scheme and host only, as `MENDWRIGHT_GATEWAY` does.
+Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as [`mendwright notify`](#mendwright-notify) names the webhook, its scheme and host, when `mendwright notify` takes the URL, and else as why not, such as `(set, not a URL mendwright notify takes: it does not start with https://)`, never its value.
 With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
 
 ### mendwright report
@@ -2516,7 +2517,7 @@ mendwright notify [--store PATH] [--run ID | --since TIME | --all]
                   [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
 ```
 
-Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, and makes one POST, with one retry.
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, leaves out a line that is not an event it can read, takes a `heal.declined` code that is not one of its own as `other`, and makes one POST, with one retry.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -2531,7 +2532,7 @@ Sums up the events of one run in `journal.jsonl` and posts it to the webhook in 
 | `--run-url URL` | on GitHub Actions, this run's page | `https://`, or `http://` on `localhost`. |
 | `--pr-url URL` | none | The same rule. |
 | `--tests RESULT` | none | How the tests ended: a job result or run conclusion, such as `success` or `failure` (pass `${{ needs.test.result }}`). |
-| `--timeout SECONDS` | `10` | Per attempt, 1 to 30. |
+| `--timeout SECONDS` | `10` | Per attempt, for the whole POST and its answer, 1 to 30. |
 | `--dry-run` | off | Print the payload and send nothing. `MENDWRIGHT_WEBHOOK_URL` is not read. |
 | `--fail-on-error` | off | Exit 1 when nothing could be sent, for any reason but `--when`. |
 
@@ -2547,7 +2548,7 @@ What it counts, from the events of the run only:
 | Code | From | The alert says |
 |---|---|---|
 | a `heal.declined` code | a heal that did not apply | `` `pay` is marked destructive, so mendwright did not repair it ``, `` `email` was never found on this page before, so the flow may have changed ``, `` `email` could not be repaired: the model found no element on this page that fits ``, and so on for each code of [journal.jsonl](#journaljsonl) |
-| `quarantined` | `heal.quarantine` | `` `email` had a repair that was wrong, so it was quarantined `` |
+| `quarantined` | `heal.quarantine` | `` `email` had a repair that was wrong, so it was quarantined ``, or for a heal of a key marked destructive after it (its canary or its `heal.quarantine` says `by` `destructive`) `` `pay` is marked destructive, so mendwright did not repair it `` |
 | `list_proposed` | `heal.held` | `` `cart` matched nothing as a list, and mendwright found one for you to check with mendwright lists `` |
 | `interruption_loop` | `flow.stop` | `` interruption `cookies` came back each time it was handled `` |
 | `popup_loop` | `flow.stop` | `` a popup in front of `email` came back each time it was dismissed `` |
@@ -2574,7 +2575,7 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 | No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
 | Bad arguments | argparse's message | 2 |
 
-Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host; the URL, its path and its query are written as `***` wherever they would show, an error body included (of which the first 100 characters are shown, without control characters). HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
+Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host, with a label of the host that looks random (12 characters or more with a letter and a digit, or 20 or more) as `***`, since for some receivers, such as AWS Lambda function URLs (`https://***.lambda-url.us-east-1.on.aws`) and Pipedream, the host is the key. Of an error body it shows only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL, and leaves any other body out, since a receiver can quote its key in it. The URL, its path, its query, its user info, each path segment and query value of 8 characters or more, and such a label of the host are written as `***` wherever they would show, in any case, as they are and percent-decoded, percent-encoded and JSON-escaped. HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
 
 ## Low-level API
 

@@ -448,7 +448,7 @@ export class Healer {
       const reason = "'" + key + "' was last found inside the iframe " + latest.frameXPath + ', and mendwright for '
         + 'TypeScript does not heal inside an iframe yet, so it did not look for the element on the page around it. '
         + 'Fix the selector by hand, or let the Python package heal it.';
-      this.coordinator.decline(key, reason, 'warning', null, 'frame');
+      this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('frame'));
       throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
     }
     // The same for a key last found inside an open shadow root: where the heal that matched
@@ -486,8 +486,9 @@ export class Healer {
     if (this.coordinator.isPending(key, xpath)) {
       this.coordinator.confirmPending(key, false, { xpath, by: 'destructive' });
     } else {
+      // A heal saved before the key was marked: by says why, as the Python package's does.
       this.store.quarantine(key, xpath);
-      this.coordinator.journal.event('heal.quarantine', { key, xpath });
+      this.coordinator.journal.event('heal.quarantine', { key, xpath, by: 'destructive' });
     }
     const fix = this.store.isLockedDestructive(key) ? 'Fix the selector in your code.'
       : 'Fix the selector in your code, or pass destructive: false to heal.locator() if this control is safe to act on.';

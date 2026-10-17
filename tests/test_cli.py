@@ -651,6 +651,30 @@ def test_doctor_never_shows_the_webhook_url_past_its_host(capsys, monkeypatch):
     assert "MENDWRIGHT_WEBHOOK_URL=https://hooks.slack.com" in out
 
 
+@pytest.mark.parametrize("value, shown", [
+    # A token pasted without the rest of the URL is never read as a host.
+    ("Xk9TokenOnlyAbCdEf", "(set, not a URL mendwright notify takes: it does not start with "
+                           "https://)"),
+    ("T0/B0/Xk9TokenOnlyAbCdEf", "(set, not a URL mendwright notify takes: it does not start "
+                                 "with https://)"),
+    ("hooks.slack.com/services/T0/B0/Xk9TokenOnlyAbCdEf",
+     "(set, not a URL mendwright notify takes: it does not start with https://)"),
+    ("http://hooks.example/Xk9TokenOnlyAbCdEf",
+     "(set, not a URL mendwright notify takes: it does not start with https://)"),
+    ("https://Xk9TokenOnlyAbCdEf", "https://***"),
+    (" https://hooks.example/Xk9TokenOnlyAbCdEf\n", "https://hooks.example"),
+])
+def test_doctor_shows_a_webhook_url_only_as_mendwright_notify_names_it(capsys, monkeypatch,
+                                                                     value, shown):
+    monkeypatch.setenv("MENDWRIGHT_WEBHOOK_URL", value)
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert "xk9tokenonlyabcdef" not in out.lower()
+    assert "MENDWRIGHT_WEBHOOK_URL=" + shown + "\n" in out
+    assert json.dumps(shown) in out
+
+
 def test_doctor_scrubs_secrets_from_a_provider_error(capsys, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-SECRET-abcdef")
 

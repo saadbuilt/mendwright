@@ -4,7 +4,10 @@ path. No real webhook, no network beyond the loopback, no real clock or sleep.""
 
 import http.server
 import json
+import socket
 import threading
+import time
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -357,6 +360,18 @@ def test_dry_run_prints_the_payload_and_reads_no_variable(store, monkeypatch, ca
     assert json.loads(out)['run'] == RUN and 'SeCrEt' not in out
 
 
+def test_a_journal_line_it_cannot_use_never_stops_it(tmp_path, capsys):
+    store = _write(tmp_path, [{'ts': NOW, 'event': 'heal.declined', 'run': RUN, 'key': 'a',
+                               'code': ['x']}])
+    journal = store.parent / 'journal.jsonl'
+    with open(journal, 'a', encoding='utf-8') as handle:
+        handle.write('[' * 100000 + '\n')      # nested too deep for json.loads()
+    assert run_notify(['--store', str(store), '--run', RUN, '--format', 'json', '--dry-run']) == 0
+    sent = json.loads(capsys.readouterr().out)
+    assert [(e['key'], e['code']) for e in sent['needs_human']] == [('a', 'other')]
+    assert cli.main(['report', '--store', str(store)]) == 0
+
+
 @pytest.mark.parametrize('url, ok', [
     ('https://hooks.slack.com/services/x', True), ('https://[2001:db8::1]/x', True),
     ('http://localhost:8080/hook', True), ('http://127.0.0.1/hook', True),
@@ -399,13 +414,14 @@ def test_an_unset_url_sends_nothing(store, capsys):
 
 
 @pytest.mark.parametrize('answers, err, tries, slept', [
+    ([(404, b'no_service\n')], 'answered HTTP 404 (no_service). Nothing was sent. Check the URL '
+     'in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(404, b'no_service ' + URL.encode() + b' \x1b[31m')],
-     'answered HTTP 404 (no_service *** [31m). Nothing was sent. Check the URL in '
-     'MENDWRIGHT_WEBHOOK_URL.', 1, []),
+     'answered HTTP 404. Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(400, b'invalid_payload')], 'answered HTTP 400 (invalid_payload). Nothing was sent. Check '
      'the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(500, PATH.encode()), (500, b'still down')],
-     'answered HTTP 500 (still down) (tried 2 times). Nothing was sent.', 2, [2.0]),
+     'answered HTTP 500 (tried 2 times). Nothing was sent.', 2, [2.0]),
     ([(503, b''), (503, b'')], 'answered HTTP 503 (tried 2 times). Nothing was sent.', 2, [2.0]),
     ([(302, b'')], 'answered HTTP 302, a redirect, which mendwright does not follow. Nothing was '
      'sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
@@ -466,18 +482,18 @@ def test_bad_arguments_are_a_usage_error(store, value, capsys):
     assert cli.main(['notify', '--format', 'teams']) == 2
 
 
-def test_on_github_actions_each_error_is_also_a_warning(store, monkeypatch, capsys):
+def test_on_github_actions_each_error_is_also_a_warning(tmp_path, monkeypatch, capsys):
+    store = tmp_path / '100% gone' / '.mendwright' / 'overrides.json'     # and no journal
     monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', URL)
-    hook = Hook((404, b'100% gone\nnext line'))
-    run_notify(['--store', str(store), '--run', RUN], hook)
+    run_notify(['--store', str(store), '--run', RUN])
     out = capsys.readouterr()
-    assert out.out == '' and out.err.startswith('mendwright notify: the webhook at ')
+    assert out.out == '' and out.err.startswith('mendwright notify: no journal at ')
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
-    run_notify(['--store', str(store), '--run', RUN], Hook((404, b'100% gone\nnext line')))
+    run_notify(['--store', str(store), '--run', RUN])
     out = capsys.readouterr()
     line = out.err.rstrip('\n')
     assert out.out == ('::warning title=mendwright notify::' + line.replace('%', '%25') + '\n')
-    assert '100%25 gone next line' in out.out
+    assert '100%25 gone' in out.out
 
 
 def test_the_default_title_and_run_url_on_github_actions(store, monkeypatch):
@@ -504,11 +520,83 @@ def test_send_never_raises_for_a_broken_http():
     assert (result.ok, result.error, result.attempts) == (False, 'connection', 1)
 
 
+@pytest.mark.parametrize('url, named', [
+    # Hosts that are the key: an AWS Lambda function URL and a Pipedream endpoint.
+    ('https://AbCdEfGh1234567890xyzabcdefghij12.lambda-url.us-east-1.on.aws/',
+     'https://***.lambda-url.us-east-1.on.aws'),
+    ('https://eo1x2y3z4w5v6.m.pipedream.net/', 'https://***.m.pipedream.net'),
+    ('https://abcdefghijklmnopqrstuvwxyz.example.com/', 'https://***.example.com'),
+    # Hosts that are not.
+    ('https://hooks.slack.com/services/T0/B0/x', 'https://hooks.slack.com'),
+    ('https://prod-27.northcentralus.logic.azure.com:443/workflows/x',
+     'https://prod-27.northcentralus.logic.azure.com:443'),
+    ('https://contoso.webhook.office.com/webhookb2/x', 'https://contoso.webhook.office.com'),
+    ('https://chat.googleapis.com/v1/spaces/x', 'https://chat.googleapis.com'),
+    ('http://127.0.0.1:8080/hook', 'http://127.0.0.1:8080'),
+    ('http://[::1]:8080/hook', 'http://[::1]:8080'),
+])
+def test_a_host_label_that_looks_random_is_written_as_stars(store, monkeypatch, capsys, url,
+                                                            named):
+    assert notify.origin(url) == named
+    monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', url)
+    run_notify(['--store', str(store), '--run', RUN], Hook((200, b'ok')))
+    run_notify(['--store', str(store), '--run', RUN], Hook((403, b'Forbidden')))
+    out = capsys.readouterr()
+    assert out.out == 'mendwright notify: sent the summary of run ' + RUN + ' to ' + named + \
+        ' (HTTP 200).\n'
+    assert out.err.startswith('mendwright notify: the webhook at ' + named + ' answered HTTP 403.')
+    label = urlsplit(url).netloc.split('.')[0]
+    if '***' in named:
+        assert notify.mask('id ' + label.upper() + ' ' + label.lower(), url) == 'id *** ***'
+        assert label.lower() not in (out.out + out.err).lower()
+
+
 def test_mask_takes_the_url_its_path_and_query_out():
     url = 'https://user:pw@hooks.example/p/a/t/h?token=abc'
     text = notify.mask('x ' + url + ' /p/a/t/h token=abc user:pw', url)
     assert text == 'x *** *** *** ***'
     assert notify.mask('a / b', 'https://h.example/') == 'a / b'   # a path of one character stays
+
+
+# An n8n production webhook: its id is its key, and n8n names it in a 404 when its workflow
+# is not active.
+HOOK_ID = '0d4f7e5c-1a2b-4c3d-8e9f-0123456789ab'
+N8N = 'https://n8n.example.com/webhook/' + HOOK_ID + '?key=QuErYsEcReT&v=1'
+N8N_404 = json.dumps({'code': 404, 'message': 'The requested webhook "POST ' + HOOK_ID + '" is '
+                      'not registered.', 'hint': 'The workflow must be active.'})
+
+
+@pytest.mark.parametrize('text', [
+    N8N_404,
+    'no hook ' + HOOK_ID.upper(),
+    'key QuErYsEcReT is wrong',
+    'key querysecret is wrong',
+    json.dumps({'url': N8N}).replace('/', '\\/'),        # PHP's json_encode() escapes /
+    'https%3A%2F%2Fn8n.example.com%2Fwebhook%2F' + HOOK_ID,
+])
+def test_mask_takes_each_long_part_of_the_url_out_in_every_form(text):
+    masked = notify.mask(text, N8N).lower()
+    assert '0d4f7e5c' not in masked and 'querysecret' not in masked
+
+
+@pytest.mark.parametrize('body', [
+    N8N_404.encode(),
+    b'invalid_token: ' + HOOK_ID.encode(),
+    b'bad key QuErYsEcReT',
+    json.dumps({'u': N8N}).replace('/', '\\/').encode(),
+    b'Forbidden',
+    b'webhook',             # one word, but a part of the URL
+    b'querysecret',
+])
+def test_an_error_body_is_shown_only_as_one_word_that_is_no_part_of_the_url(store, monkeypatch,
+                                                                           capsys, body):
+    monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', N8N)
+    assert run_notify(['--store', str(store), '--run', RUN], Hook((404, body))) == 0
+    assert capsys.readouterr().err == ('mendwright notify: the webhook at '
+                                       'https://n8n.example.com answered HTTP 404. Nothing was '
+                                       'sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.\n')
+    result = notify.send(N8N, b'{}', http=Hook((404, b' no_service\n')), sleep=lambda s: None)
+    assert result.detail == 'no_service'
 
 
 class _Server(http.server.BaseHTTPRequestHandler):
@@ -558,6 +646,59 @@ def test_urllib_posts_to_a_local_server_and_follows_no_redirect(server, store, m
     assert [s['path'] for s in _Server.seen] == ['/hook/SeCrEt', '/hook/SeCrEt']   # not followed
     err = capsys.readouterr().err
     assert 'answered HTTP 302, a redirect' in err and 'SeCrEt' not in err
+
+
+@pytest.fixture
+def drip():
+    """A webhook on 127.0.0.1 that answers 200 one byte every 0.05 s, each well inside the
+    timeout, so that the whole answer takes about 7 s."""
+    answer = (b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Slow: ' + b'a' * 100
+              + b'\r\n\r\nok')
+    stop = threading.Event()
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    sock.listen(5)
+    sock.settimeout(0.1)
+
+    def reply(conn):
+        with conn:
+            try:
+                conn.settimeout(2)
+                data = b''
+                while b'\r\n\r\n' not in data:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    data += chunk
+                for byte in answer:
+                    if stop.is_set():
+                        return
+                    conn.sendall(bytes([byte]))
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                continue
+            threading.Thread(target=reply, args=(conn,), daemon=True).start()
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    yield 'http://127.0.0.1:' + str(sock.getsockname()[1])
+    stop.set()
+    thread.join(5)
+    sock.close()
+
+
+def test_a_webhook_that_answers_a_byte_at_a_time_is_cut_off_at_the_timeout(drip):
+    started = time.monotonic()
+    result = notify.send(drip + '/hook', b'{}', timeout=0.5, sleep=lambda s: None)
+    took = time.monotonic() - started
+    assert (result.ok, result.error, result.attempts) == (False, 'timeout', 2)
+    assert took < 3, took           # two attempts of 0.5 s, not two of the 7 s the answer takes
 
 
 def test_urllib_says_a_refused_connection_without_the_url():

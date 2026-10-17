@@ -220,6 +220,10 @@ class Journal(_BaseJournal):
     A MENDWRIGHT_RUN_ID that is not a run id is ignored here; open() logs why.
     """
 
+    # No run id for a subclass written for 0.9.0 whose __init__ sets _path and _clock itself
+    # and does not call this one: its lines are written as before, without run.
+    _run = None
+
     def __init__(self, path=DEFAULT_PATH, *, clock=_now_iso, run=_FROM_ENV):
         self._path = Path(path)
         self._clock = clock

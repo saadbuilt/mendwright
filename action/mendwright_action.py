@@ -1388,23 +1388,57 @@ def cmd_publish(action):
 SENT = 'mendwright notify: sent the summary of '
 
 
+SECRET_PART = 8     # a path segment or query value this long is masked on its own
+
+
+def _random_label(label):
+    """mendwright.notify.random_label(): 12 characters or more with a letter and a digit,
+    or 20 or more, as the id in an AWS Lambda function URL is."""
+    if len(label) >= 20:
+        return True
+    return (len(label) >= 12 and any(c.isdigit() for c in label)
+            and any(c.isalpha() for c in label))
+
+
 def webhook_secrets(url):
-    """The webhook URL as the runner should mask it: as given, stripped, its path (when longer
-    than one character) and its query. Its path is its key."""
-    values = [url, url.strip()]
+    """The webhook URL as the runner should mask it: what mendwright.notify's mask() writes
+    as *** (secret_texts() there; a test keeps the two in step), the URL as given first. That
+    is the URL as given and stripped, its path (when longer than one character), its query,
+    its user info, each path segment and query value of 8 characters or more, since a
+    receiver can quote its key on its own, and each label of its host that looks random; each
+    as it is, percent-decoded, percent-encoded and JSON-escaped. Its path is its key, or for
+    some receivers its host."""
+    if not url:
+        return []
+    found = [url, url.strip()]
     try:
         parts = urllib.parse.urlsplit(url.strip())
         if len(parts.path) > 1:
-            values.append(parts.path)
+            found.append(parts.path)
         if parts.query:
-            values.append(parts.query)
+            found.append(parts.query)
+        if '@' in parts.netloc:
+            found.append(parts.netloc.rsplit('@', 1)[0])
+        found.extend(part for part in parts.path.split('/') if len(part) >= SECRET_PART)
+        for piece in re.split('[&;]', parts.query):
+            name, equals, value = piece.partition('=')
+            part = value if equals else name
+            if len(part) >= SECRET_PART:
+                found.append(part)
+        host = parts.netloc.rsplit('@', 1)[-1]
+        if not host.startswith('['):
+            labels = [label for label in host.split(':', 1)[0].split('.')
+                      if _random_label(label)]
+            found.extend(labels + [label.lower() for label in labels])
     except ValueError:
         pass
-    seen = []
-    for value in values:
-        if value and value not in seen:
-            seen.append(value)
-    return seen
+    texts = set()
+    for text in found:
+        escaped = json.dumps(text)[1:-1]
+        texts.update((text, urllib.parse.unquote(text), urllib.parse.quote(text, safe=''),
+                      escaped, escaped.replace('/', '\\/')))
+    given = [t for t in dict.fromkeys(found[:2]) if t]
+    return given + sorted((t for t in texts if t and t not in given), key=lambda t: (-len(t), t))
 
 
 def _https(url):

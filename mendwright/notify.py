@@ -8,22 +8,29 @@
   page paths, node ids, provider or model names, or file paths.
 - url_problem() says why a webhook URL is refused: it must be https:// with a host, or
   http:// on localhost, 127.0.0.1 or [::1].
-- send() makes at most two attempts, one retry after 2 seconds on HTTP 429, a 5xx, a
-  timeout or a connection error, follows no redirect, and verifies TLS.
-- mask() takes the URL, its path and its query out of a text that is printed.
+- send() makes at most two attempts, each cut off after its timeout, one retry after 2
+  seconds on HTTP 429, a 5xx, a timeout or a connection error, follows no redirect, and
+  verifies TLS. Of an error body it keeps only one machine word, such as Slack's
+  no_service, that is no part of the URL.
+- origin() names the webhook in a message: scheme, host and port, with a label of the host
+  that looks random, such as the id of an AWS Lambda function URL, as ***.
+- mask() takes the URL, its path, its query and their parts (see secret_texts) out of a
+  text that is printed.
 
-The webhook URL is a secret (its path is its key): it comes only from the environment, and
-nothing here prints it.
+The webhook URL is a secret (its path is its key, or for some receivers its host): it comes
+only from the environment, and nothing here prints it.
 """
 
 import json
+import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from . import runsummary
 from ._md import _BIDI
@@ -36,7 +43,11 @@ MAX_JSON = 16 * 1024
 ATTEMPTS = 2
 RETRY_AFTER = 2.0
 DEFAULT_TIMEOUT = 10.0
-ERROR_TEXT = 100            # characters of an error body that are shown
+ERROR_TEXT = 100            # characters of why a connection failed that are shown
+# The only error body a message shows: one machine word, such as Slack's no_service. Any
+# other body can quote the URL, or a part of it, in a form mask() does not know.
+ERROR_WORD = re.compile(r'[a-z_]{1,40}')
+SECRET_PART = 8             # a path segment or query value this long is masked on its own
 _LOCAL_HOSTS = ('localhost', '127.0.0.1', '::1')
 
 
@@ -130,39 +141,85 @@ def url_problem(url):
     return ''
 
 
+def random_label(label):
+    """Whether a label of the webhook's host looks random, as the id in an AWS Lambda
+    function URL or a Pipedream endpoint does: 12 characters or more with a letter and a
+    digit, or 20 or more. Such a host is the key, so a message writes the label as ***."""
+    if len(label) >= 20:
+        return True
+    return (len(label) >= 12 and any(c.isdigit() for c in label)
+            and any(c.isalpha() for c in label))
+
+
+def _host_labels(netloc):
+    """The labels of the host in netloc that look random (random_label), as written."""
+    host = netloc.rsplit('@', 1)[-1]
+    if host.startswith('['):            # an IPv6 address
+        return []
+    return [label for label in host.split(':', 1)[0].split('.') if random_label(label)]
+
+
 def origin(url):
-    """scheme://host[:port] of url: how a message names the webhook. Never the path, the
-    query or user info."""
+    """scheme://host[:port] of url: how a message names the webhook, with a label of the host
+    that looks random (random_label) as ***. Never the path, the query or user info."""
     try:
         parts = urlsplit(url)
         host = parts.hostname or ''
         if ':' in host:
             host = '[' + host + ']'
+        else:
+            host = '.'.join('***' if random_label(label) else label
+                            for label in host.split('.'))
         port = ':' + str(parts.port) if parts.port else ''
     except ValueError:
         return '(the webhook)'
     return (parts.scheme.lower() + '://' + host + port) if host else '(the webhook)'
 
 
-def mask(text, url):
-    """text with the URL, its path (when longer than 1 character), its query and its user
-    info written as ***."""
-    text = str(text)
+def _json_forms(text):
+    escaped = json.dumps(text)[1:-1]
+    return escaped, escaped.replace('/', '\\/')     # PHP's json_encode() escapes / too
+
+
+def secret_texts(url):
+    """What mask() writes as ***, longest first: the URL as given and stripped, its path
+    (when longer than 1 character), its query, its user info, each path segment and query
+    value of SECRET_PART characters or more, since a receiver can quote its key on its own,
+    and each label of the host that looks random (random_label); each as it is,
+    percent-decoded, percent-encoded and JSON-escaped. The GitHub Action masks the same texts
+    (webhook_secrets() in action/mendwright_action.py)."""
     if not isinstance(url, str) or not url:
-        return text
-    secrets = [url, url.strip()]
+        return []
+    found = [url, url.strip()]
     try:
         parts = urlsplit(url.strip())
         if len(parts.path) > 1:
-            secrets.append(parts.path)
+            found.append(parts.path)
         if parts.query:
-            secrets.append(parts.query)
+            found.append(parts.query)
         if '@' in parts.netloc:
-            secrets.append(parts.netloc.rsplit('@', 1)[0])
+            found.append(parts.netloc.rsplit('@', 1)[0])
+        found.extend(part for part in parts.path.split('/') if len(part) >= SECRET_PART)
+        for piece in re.split('[&;]', parts.query):
+            name, equals, value = piece.partition('=')
+            part = value if equals else name
+            if len(part) >= SECRET_PART:
+                found.append(part)
+        labels = _host_labels(parts.netloc)
+        found.extend(labels + [label.lower() for label in labels])
     except ValueError:
         pass
-    for value in sorted({s for s in secrets if s}, key=len, reverse=True):
-        text = text.replace(value, '***')
+    texts = set()
+    for text in found:
+        texts.update((text, unquote(text), quote(text, safe='')) + _json_forms(text))
+    return sorted((t for t in texts if t), key=lambda t: (-len(t), t))
+
+
+def mask(text, url):
+    """text with each of secret_texts(url) written as ***, whatever its case."""
+    text = str(text)
+    for value in secret_texts(url):
+        text = re.sub(re.escape(value), '***', text, flags=re.IGNORECASE)
     return text
 
 
@@ -176,9 +233,30 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class UrllibHttp:
     """POST with urllib: TLS verified with the default context, HTTPS_PROXY honoured as urllib
     does, no redirect followed. post() returns (status, body bytes), and raises TimeoutError
-    for a timeout and ConnectionError when the host cannot be reached."""
+    for a timeout and ConnectionError when the host cannot be reached.
+
+    timeout holds for the whole POST, not for each read of the socket, as urllib's does: a
+    webhook (or a proxy) that answers a byte at a time is cut off too. The POST runs in a
+    daemon thread, which is left to end on its own when it is cut off."""
 
     def post(self, url, body, headers, timeout):
+        done = {}
+
+        def run():
+            try:
+                done['answer'] = self._post(url, body, headers, timeout)
+            except Exception as exc:
+                done['error'] = exc
+        worker = threading.Thread(target=run, name='mendwright-notify', daemon=True)
+        worker.start()
+        worker.join(timeout)
+        if worker.is_alive():
+            raise TimeoutError('timed out')
+        if 'error' in done:
+            raise done['error']
+        return done['answer']
+
+    def _post(self, url, body, headers, timeout):
         opener = urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
         request = urllib.request.Request(url, data=body, method='POST', headers=headers)
@@ -212,9 +290,10 @@ def _reason(reason):
 @dataclass
 class SendResult:
     """What send() did. ok: the webhook answered 2xx. status: the last HTTP status, or None.
-    error: None, 'http', 'redirect', 'timeout' or 'connection'. detail: the first characters
-    of the error body, or why the connection failed, with control characters removed (not yet
-    masked). attempts: how many POSTs were made."""
+    error: None, 'http', 'redirect', 'timeout' or 'connection'. detail: the error body when it
+    is one machine word that is no part of the URL (see _answer), else '', or why the
+    connection failed, with control characters removed (not yet masked). attempts: how many
+    POSTs were made."""
     ok: bool
     status: int | None = None
     error: str | None = None
@@ -235,6 +314,16 @@ def _clean(data):
         elif not (n < 0x20 or 0x7F <= n <= 0x9F or n in _HIDDEN or 0xD800 <= n <= 0xDFFF):
             out.append(ch)
     return ' '.join(''.join(out).split())[:ERROR_TEXT]
+
+
+def _answer(data, url):
+    """The error body as a message may show it: one machine word (ERROR_WORD), such as
+    Slack's no_service, that is no part of the URL, else ''."""
+    word = _clean(data or b'')
+    if not ERROR_WORD.fullmatch(word):
+        return ''
+    url = url.lower() if isinstance(url, str) else ''
+    return '' if word in url or word in unquote(url) else word
 
 
 def send(url, body, *, http=None, timeout=DEFAULT_TIMEOUT, sleep=time.sleep):
@@ -265,7 +354,7 @@ def send(url, body, *, http=None, timeout=DEFAULT_TIMEOUT, sleep=time.sleep):
                 result.ok, result.error, result.detail = True, None, ''
                 return result
             result.error = 'redirect' if 300 <= status < 400 else 'http'
-            result.detail = '' if result.error == 'redirect' else _clean(data or b'')
+            result.detail = '' if result.error == 'redirect' else _answer(data, url)
             retry = status == 429 or status >= 500
         if not retry or attempt == ATTEMPTS:
             return result

@@ -214,6 +214,7 @@ DECLINE_CODES = (
     'dry_run',          # dry run: checked, not applied
     'list_empty',       # a list whose selectors all match nothing
     'list_not_found',   # a list looked up with nonempty=True: nothing found to propose
+    'list_waits_fix',   # a list heal a person accepted, not yet in the code or seed file
     'get_by',           # a get_by_* call its fingerprint could not heal (no model is asked)
     'frame',            # found only inside an iframe mendwright did not follow it into
     'shadow',           # inside a shadow root mendwright could not heal it in or follow it into
@@ -434,7 +435,11 @@ class HealCoordinator:
             return self._decline(selector_key, moved, code='page_guard')
         if self.scope_refusal:
             # Last found inside a shadow root that cannot be entered now: never on the page.
-            return self._decline(selector_key, self.scope_refusal, code='shadow')
+            # In dry run and under MENDWRIGHT_DISABLE=1 that is a decline on purpose, as a
+            # follow refused there is (Healer._shadow_stop).
+            return self._decline(selector_key, self.scope_refusal,
+                                 code='disabled' if self.disabled
+                                 else 'dry_run' if self.dry_run else 'shadow')
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
@@ -936,10 +941,10 @@ class HealCoordinator:
         return reason
 
     def waits_for_fix(self, selector_key, meta, row, count):
-        """Record and log why list key, looked up with nonempty=True, raises when a list heal
-        a person accepted for it matches count elements on the page now: mendwright takes a
-        list only from the selectors in the code, and mendwright fix puts it there. Returns
-        the reason."""
+        """Record, log and journal (heal.declined, code list_waits_fix) why list key, looked
+        up with nonempty=True, raises when a list heal a person accepted for it matches count
+        elements on the page now: mendwright takes a list only from the selectors in the
+        code, and mendwright fix puts it there. Returns the reason."""
         from .cli import _when
         lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
         when = (row or {}).get('acceptedAt')
@@ -965,6 +970,8 @@ class HealCoordinator:
                                                           if seeded is None
                                                           else ' waits for its seed file: ')
                    + reason)
+        journal_event(self.journal, 'heal.declined', selector_key, code='list_waits_fix',
+                      reason=reason)
         return reason
 
     def retired_lists(self, selector_key, selector, count, changes, rows):
