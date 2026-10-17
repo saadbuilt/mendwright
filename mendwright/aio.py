@@ -64,7 +64,7 @@ from typing import Any, Callable, Iterable, Sequence
 from . import getby
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
 from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
-                           unsupported_message)
+                           takes_keyword, unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -78,14 +78,15 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
                      _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
-                     latest_success)
+                     HealScope, heal_place, shadow_found, shadow_unreachable)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
 from .limits import Guardrails
-from .resolver import (THROUGH, _frame_chain, _no_match_message, _require_visible,
-                       _split_runnable)
+from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runnable,
+                       _target)
 from .selectors import XPATH, InvalidSelector, classify
+from .shadow import driver_shadowed
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
 
@@ -175,10 +176,9 @@ async def _in_thread(fn, *args):
 
 
 def _scoped_heal(scope, resolve_fn, coordinator, key, meta, context):
-    """resolve_with_heal() with the coordinator scoped to an iframe (see
-    HealCoordinator.scoped). Runs in a worker thread."""
-    frame, bridge = scope
-    with coordinator.scoped(bridge, frame):
+    """resolve_with_heal() with the coordinator scoped to an iframe or an open shadow root,
+    or refusing the heal (see facade.HealScope). Runs in a worker thread."""
+    with scope.entered(coordinator):
         return resolve_with_heal(resolve_fn, coordinator, key, meta, context)
 
 
@@ -231,6 +231,9 @@ class SyncBridge:
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
+        for name in _SHADOW_METHODS:
+            if not callable(_member(driver, name)):
+                setattr(self, name, None)   # no heal runs inside a shadow root
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -304,8 +307,8 @@ class SyncBridge:
     def inventory(self, limit=200):
         return self.run(self._driver.inventory, limit)
 
-    def fingerprint(self, selector, frame_chain=()):
-        return self.run(self._driver.fingerprint, selector, frame_chain)
+    def fingerprint(self, selector, frame_chain=(), **options):
+        return self.run(self._driver.fingerprint, selector, frame_chain, **options)
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
@@ -350,9 +353,21 @@ class SyncBridge:
     def popup_release(self, root):
         return self.run(self._driver.popup_release, root)
 
+    # Open shadow roots (see mendwright.shadow). None when the async driver has none.
+
+    def shadow_html(self, hosts):
+        return self.run(self._driver.shadow_html, hosts)
+
+    def shadow_inventory(self, hosts, limit=200):
+        return self.run(self._driver.shadow_inventory, hosts, limit)
+
+    def shadow_matches(self, selector):
+        return self.run(self._driver.shadow_matches, selector)
+
 
 _POPUP_METHODS = ('popup_probe', 'popup_root', 'popup_controls', 'popup_click', 'press_escape',
                   'popup_release')
+_SHADOW_METHODS = ('shadow_html', 'shadow_inventory', 'shadow_matches')
 
 
 # --- opening -------------------------------------------------------------------------------
@@ -475,7 +490,7 @@ def _quiet_framed(driver):
 async def _match_handle(driver, candidate, require_visible):
     """resolver._match_handle, awaited: the native handle if the candidate matches exactly
     one (visible) element, else None. InvalidSelector propagates."""
-    selector, fc = candidate['xpath'], _frame_chain(candidate)
+    selector, fc = _target(candidate)
     try:
         if (await driver.count(selector, fc)) == 1 and (
                 not require_visible or await driver.is_visible(selector, fc)):
@@ -576,7 +591,7 @@ class AsyncHealer:
         recorded in the store."""
         async with self._turn():
             require_visible = _require_visible(self.store, key)
-            runnable, _errors = _split_runnable(key, self.store.candidates(key))
+            runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
             for candidate in runnable:
                 try:
                     native = await _match_handle(self._driver, candidate, require_visible)
@@ -839,7 +854,7 @@ class AsyncHealer:
             store = self.store
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)
-            runnable, errors = _split_runnable(key, candidates)
+            runnable, errors = _split_runnable(key, candidates, self._driver)
             for candidate in runnable:
                 try:
                     if await _match_handle(self._driver, candidate, require_visible) is not None:
@@ -971,6 +986,8 @@ class AsyncHealer:
                 return _ABSENT
             native = await self._follow_into_frame(key, exc, attempt)
             if native is _NOT_FOLLOWED:
+                native = await self._follow_into_shadow(key, exc, attempt)
+            if native is _NOT_FOLLOWED:
                 native = await self._heal(key, exc, attempt)
         await self._check_healed_target(key)
         await self._learn(key, roles)
@@ -1072,7 +1089,8 @@ class AsyncHealer:
         store, driver = self.store, self._driver
         require_visible = _require_visible(store, key)
         candidates = store.candidates(key)
-        runnable, errors = _split_runnable(key, [c for c in candidates if c.get('xpath') != key])
+        runnable, errors = _split_runnable(
+            key, [c for c in candidates if c.get('xpath') != key], driver)
         deadline = self._clock() + timeout_ms / 1000.0
         while True:
             try:
@@ -1101,7 +1119,7 @@ class AsyncHealer:
                     continue
                 if handle is not None:
                     try:
-                        await driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                        await driver.scroll_into_view(*_target(candidate))
                     except Exception:
                         pass
                     store.record_success(key, candidate['xpath'])
@@ -1120,7 +1138,7 @@ class AsyncHealer:
         if count >= 1:
             return count == 1 and (not require_visible or bool(visible))
         runnable, _errors = _split_runnable(key, [c for c in self.store.candidates(key)
-                                                  if c.get('xpath') != key])
+                                                  if c.get('xpath') != key], self._driver)
         for candidate in runnable:
             try:
                 if await _match_handle(self._driver, candidate, require_visible) is not None:
@@ -1393,7 +1411,7 @@ class AsyncHealer:
         candidates = store.candidates(key)
         if not candidates:
             raise AttentionRequired('No selector candidates for: ' + key)
-        runnable, errors = _split_runnable(key, candidates)
+        runnable, errors = _split_runnable(key, candidates, driver)
         if not runnable:
             raise errors[0]
         require_visible = _require_visible(store, key)
@@ -1410,7 +1428,7 @@ class AsyncHealer:
                     continue
                 if handle is not None:
                     try:
-                        await driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                        await driver.scroll_into_view(*_target(candidate))
                     except Exception:
                         pass
                     store.record_success(key, candidate['xpath'])
@@ -1446,12 +1464,51 @@ class AsyncHealer:
             core._frame_stop(key, exc, selector, frames, opener, why)
         return await attempt()
 
+    async def _follow_into_shadow(self, key, exc, attempt):
+        """Healer._follow_into_shadow(), with the shadow root reads awaited and the live check
+        and the store write in a worker thread (through the coordinator's SyncBridge)."""
+        __tracebackhide__ = True
+        core = self._core
+        if not callable(_member(self._driver, 'shadow_matches')):
+            return _NOT_FOLLOWED
+        matches = []
+        for selector in core._frame_candidates(key):
+            try:
+                roots, cut = await _awaited(self._driver.shadow_matches(selector))
+            except Exception:
+                continue
+            found = shadow_found(selector, roots)
+            if found:
+                matches.append((selector, found, cut))
+        if not matches:
+            return _NOT_FOLLOWED
+        selector, found, root = core._pick_shadow(key, exc, matches)
+        core._frame_guard(key, exc, await _url(self._driver))
+        why = await _in_thread(core._shadow_follow, key, selector, root, self.coordinator.driver)
+        if why:
+            core._shadow_stop(key, exc, selector, found, why)
+        return await attempt()
+
     async def _heal_scope(self, key):
-        """Healer._heal_scope(), with the iframe's driver made on the event loop and wrapped
-        in a SyncBridge for the heal core."""
-        best = latest_success(self.store, key)
-        frame = best.get('frameXPath') if best else None
-        if not isinstance(frame, str) or not frame or not callable(_member(self._driver, 'framed')):
+        """Healer._heal_scope(), with the iframe's driver made, and the shadow root's hosts
+        tried, on the event loop, and wrapped for the heal core: a SyncBridge for the iframe,
+        a ShadowDriver over the coordinator's SyncBridge for the shadow root."""
+        frame, hosts, why = heal_place(self.store, key)
+        if why:
+            return HealScope(hosts=hosts, why=why)
+        if hosts:
+            reaches = callable(_member(self._driver, 'shadow_html'))
+            shadowed = driver_shadowed(self.coordinator.driver, hosts) if reaches else None
+            entered = False
+            if shadowed is not None:
+                try:
+                    entered = isinstance(await _awaited(self._driver.shadow_html(hosts)), str)
+                except Exception:
+                    entered = False
+            why = shadow_unreachable(key, hosts, shadowed is not None, entered)
+            return HealScope(hosts=hosts, why=why) if why else HealScope(hosts=hosts,
+                                                                          driver=shadowed)
+        if not frame or not callable(_member(self._driver, 'framed')):
             return None
         try:
             framed = await _awaited(self._driver.framed(frame))
@@ -1459,7 +1516,7 @@ class AsyncHealer:
             return None
         if framed is None:
             return None
-        return frame, SyncBridge(framed, asyncio.get_running_loop())
+        return HealScope(frame=frame, driver=SyncBridge(framed, asyncio.get_running_loop()))
 
     async def _heal(self, key, exc, attempt):
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
@@ -1480,7 +1537,8 @@ class AsyncHealer:
         if scope is None:
             await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
         else:
-            # The key was last found inside an iframe: capture, check and save the heal there.
+            # The key was last found inside an iframe or a shadow root: capture, check and
+            # save the heal there, or refuse it.
             await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta, context)
         return await attempt()
 
@@ -1499,9 +1557,13 @@ class AsyncHealer:
         if target is None:
             return
         fp = None
-        if callable(_member(self._driver, 'fingerprint')):
+        method = _member(self._driver, 'fingerprint')
+        if callable(method):
+            # With hosts=True when it takes it: where the element is (see mendwright.shadow).
+            options = {'hosts': True} if takes_keyword(method, 'hosts') else {}
             try:
-                fp = await _awaited(self._driver.fingerprint(target, core._winner_target(key)[1]))
+                fp = await _awaited(self._driver.fingerprint(*core._winner_target(key),
+                                                             **options))
             except Exception:
                 fp = None
         core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)

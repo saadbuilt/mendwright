@@ -27,6 +27,18 @@ url and outer_html are expected as well. Optional, and absent from older custom 
                                           live gate checks a heal of a get_by_role() call
                                           with it, and refuses the heal without it
 
+For open shadow roots (see mendwright.shadow). A driver with shadow_html() takes the
+ShadowHost steps of a frame chain in every method above, after its frame selectors: the
+selector then is CSS, and matches only inside the one shadow root those hosts lead to.
+A driver without it never gets such a chain, and no heal runs inside a shadow root on it:
+
+  shadow_html(hosts)                      SHADOW_HTML_JS: that shadow root's HTML, or None
+                                          when the hosts lead to none
+  shadow_inventory(hosts, limit=200)      inventory() of that shadow root, [] when none
+  shadow_matches(selector)                ([{'hosts', 'count', 'html'}], cut): the open
+                                          shadow roots a CSS selector matches in (count),
+                                          or the HTML of each one for an XPath (html)
+
 For lists (see mendwright.lists):
 
   handles(selector, frame_chain=())       a native handle for each element it matches
@@ -73,6 +85,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 import lxml.html
 
+from ..fingerprint import HOST_FACTS_JS
 from ..validation import _norm, _role_of
 
 FrameChain = tuple  # tuple[str, ...] of frame selectors, outermost first
@@ -130,16 +143,22 @@ def driver_describe(driver, selector, frame_chain=()):
     return out if isinstance(out, dict) else None
 
 
-def driver_fingerprint(driver, selector, frame_chain=()):
+def driver_fingerprint(driver, selector, frame_chain=(), *, hosts=False):
     """driver.fingerprint(selector, frame_chain) when the driver has it, else None: the
-    fingerprint (see mendwright.fingerprint) of the one element the selector matches. Any
-    error, or a result that is not a fingerprint, gives None."""
+    fingerprint (see mendwright.fingerprint) of the one element the selector matches. With
+    hosts=True, a driver whose fingerprint() takes hosts= is asked for the shadow hosts
+    around the element too (see mendwright.shadow.with_hosts); any other is called as
+    before, and its fingerprint says nothing about shadow roots. Any error, or a result that
+    is not a fingerprint, gives None."""
     from ..fingerprint import valid
     method = getattr(driver, 'fingerprint', None)
     if not callable(method):
         return None
     try:
-        out = method(selector, frame_chain)
+        if hosts and takes_keyword(method, 'hosts'):
+            out = method(selector, frame_chain, hosts=True)
+        else:
+            out = method(selector, frame_chain)
     except Exception:
         return None
     return out if valid(out) else None
@@ -185,14 +204,20 @@ def driver_handles(driver, selector, frame_chain=()):
     return [driver.handle(selector, frame_chain)]
 
 
-def _takes_place(method):
-    """True when a list_fingerprint() method takes place=: a parameter of that name, or a
-    ** parameter."""
+def takes_keyword(method, name):
+    """True when method takes the keyword argument name: a parameter of that name, or a **
+    parameter. False when its signature can't be read."""
     try:
         params = inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
-    return 'place' in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+    return name in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def _takes_place(method):
+    """True when a list_fingerprint() method takes place=: a parameter of that name, or a
+    ** parameter."""
+    return takes_keyword(method, 'place')
 
 
 def driver_places(driver):
@@ -484,11 +509,12 @@ DESCRIBE_JS = ('els => els.length === 1 ? '
 VISIBLE_MATCH_JS = ('els => els.length ? {tag: els[0].tagName.toLowerCase(), '
                     'html: els[0].outerHTML, visible: Math.min(els.length, 2)} : null')
 
-# inventory(): one pass over the document's interactive elements. Form fields and
-# editable regions report no text, so typed values never leave the page.
-INVENTORY_JS = r"""(limit) => {
+# inventory(): one pass over the interactive elements of scope (the document, or a shadow
+# root for shadow_inventory()). Form fields and editable regions report no text, so typed
+# values never leave the page.
+_INVENTORY_SCAN = r"""(limit, scope) => {
   const out = [];
-  const nodes = document.querySelectorAll('button, a, input, select, textarea, [role]');
+  const nodes = scope.querySelectorAll('button, a, input, select, textarea, [role]');
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const fieldRole = /^(textbox|searchbox|combobox|spinbutton|slider)$/i;
   for (const e of nodes) {
@@ -506,6 +532,114 @@ INVENTORY_JS = r"""(limit) => {
   }
   return out;
 }"""
+INVENTORY_JS = r"""(limit) => (""" + _INVENTORY_SCAN + r""")(limit, document)"""
+
+
+# --- open shadow roots (see mendwright.shadow) ------------------------------------------------
+#
+# A selector inside a shadow root is CSS, run with querySelectorAll() in the one shadow root
+# its hosts lead to. enter() finds that root strictly: each host selector must match exactly
+# one element in the document or shadow root before it, and that element must have an open
+# shadow root (a closed one reads as null). Anything else gives null, and nothing matches.
+
+ENTER_JS = r"""
+  const enter = (doc, hosts) => {
+    let scope = doc;
+    for (const sel of hosts) {
+      let found;
+      try { found = scope.querySelectorAll(sel); } catch (e) { return null; }
+      if (found.length !== 1 || !found[0].shadowRoot) return null;
+      scope = found[0].shadowRoot;
+    }
+    return scope;
+  };
+"""
+
+# shadow_html(): what the shadow root the hosts lead to holds (its innerHTML: not the host,
+# not the light DOM slotted into it, not a nested shadow root's content), or null when the
+# hosts do not lead to one.
+SHADOW_HTML_JS = r"""(hosts) => {""" + ENTER_JS + r"""
+  const root = enter(document, hosts);
+  return root ? root.innerHTML : null;
+}"""
+
+# shadow_inventory(): INVENTORY_JS's rows for the shadow root the hosts lead to, or null.
+SHADOW_INVENTORY_JS = r"""(arg) => {""" + ENTER_JS + r"""
+  const root = enter(document, arg.hosts);
+  return root ? (""" + _INVENTORY_SCAN + r""")(arg.limit, root) : null;
+}"""
+
+# For a Playwright Locator's evaluate_all, whose CSS pierces every open shadow root: how many
+# elements it matches (n), and how many of them are in the shadow root the hosts lead to
+# from their document (inside). A selector inside a shadow root counts only when they agree.
+PLACE_JS = r"""(els, hosts) => {""" + ENTER_JS + r"""
+  if (!els || !els.length) return {n: 0, inside: 0};
+  const root = enter(els[0].ownerDocument, hosts);
+  return {n: els.length, inside: root ? els.filter((e) => e.getRootNode() === root).length : 0};
+}"""
+
+# For Selenium's execute_script: the elements css matches in the shadow root the hosts lead
+# to, [] when they lead to none. An invalid css raises, as find_elements() does.
+SHADOW_FIND_JS = r"""(hosts, css) => {""" + ENTER_JS + r"""
+  const root = enter(document, hosts);
+  return root ? Array.from(root.querySelectorAll(css)) : [];
+}"""
+
+# shadow_matches(): every open shadow root of the document, at any depth, in document order,
+# with its hosts (HOST_FACTS_JS, outermost first). With arg.css, the roots css matches
+# something in, and how many elements (count). Without it, each root's innerHTML (html), for
+# an XPath that mendwright evaluates itself. At most arg.limit roots, and arg.budget
+# characters of HTML; cut says some were left out.
+SHADOW_ROOTS_JS = r"""(arg) => {""" + HOST_FACTS_JS + r"""
+  const roots = [];
+  let cut = false, size = 0;
+  const walk = (scope, chain) => {
+    for (const el of scope.querySelectorAll('*')) {
+      if (cut) return;
+      const root = el.shadowRoot;
+      if (!root) continue;
+      const here = chain.concat([hostFacts(el)]);
+      if (arg.css !== null) {
+        const n = root.querySelectorAll(arg.css).length;
+        if (n) {
+          if (roots.length >= arg.limit) { cut = true; return; }
+          roots.push({hosts: here, count: n});
+        }
+      } else {
+        const html = root.innerHTML;
+        size += html.length;
+        if (roots.length >= arg.limit || size > arg.budget) { cut = true; return; }
+        roots.push({hosts: here, html: html});
+      }
+      walk(root, here);
+    }
+  };
+  walk(document, []);
+  return {roots: roots, cut: cut};
+}"""
+# How many shadow roots, and how many characters of their HTML, shadow_matches() reads at
+# most for an XPath.
+SHADOW_ROOTS_LIMIT = 200
+SHADOW_HTML_BUDGET = 2_000_000
+
+
+def shadow_arg(selector):
+    """SHADOW_ROOTS_JS's argument for shadow_matches(selector), or None for a selector that
+    is neither CSS nor XPath: an engine selector or a get_by_* call is not looked for in
+    shadow roots. Raises InvalidSelector for a malformed one."""
+    from ..selectors import CSS, XPATH, check_syntax, strip_prefix
+    kind = check_syntax(selector, calls=True)
+    if kind not in (CSS, XPATH):
+        return None
+    return {'css': strip_prefix(selector) if kind == CSS else None,
+            'limit': SHADOW_ROOTS_LIMIT, 'budget': SHADOW_HTML_BUDGET}
+
+
+def reaches_shadow(driver):
+    """True when the driver runs a selector inside an open shadow root: it has
+    shadow_html(), and takes the ShadowHost steps of a frame chain (see mendwright.shadow).
+    Looked up without running a property."""
+    return callable(_member(driver, 'shadow_html'))
 
 
 # --- popups, for open(dismiss=True) (see mendwright.dismiss) -------------------------------

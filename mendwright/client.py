@@ -13,10 +13,11 @@ import urllib.request
 import lxml.html
 
 from . import getby
-from .css import css_selectors
+from .css import css_selectors, css_xpath
 from .fit import has_position
 from .gate import list_live_reason, live_reason
-from .selectors import CSS, XPATH, classify, frame_spelling, normalize
+from .selectors import CSS, XPATH, classify, frame_spelling, normalize, strip_prefix
+from .shadow import hosts_of, shadow_text, split_text
 from .validation import validate
 
 DEFAULT_AUTH_HEADER = 'X-Heal-Key'  # generic; a tool may pass its own via auth_header=
@@ -113,35 +114,59 @@ POSITIONAL = ('it uses a position ([2], last() or position()), but parts of the 
               'left out of the snapshot to fit the prompt, so positions there do not match the '
               'live page. Anchor on attributes or text instead')
 
+# apply()'s reason for an element inside a shadow root that no CSS selector tells apart.
+NO_CSS = ('no CSS selector tells its element apart inside the shadow root (mendwright builds '
+          'one from a test id, an id, other attributes or class names, and CSS cannot match '
+          'text), and only CSS runs inside a shadow root')
 
-def _quarantined_paths(store, selector_key, html, frame_xpath=''):
+
+def _listed_quarantines(store, selector_key, frame_xpath, shadow_hosts):
+    """store.quarantined() for one place, for a store that takes fewer arguments too: one
+    without shadow_hosts= gives the quarantines of the frame (more than this place, never
+    fewer), one without frame_xpath= all of them."""
+    listed = getattr(store, 'quarantined', None)
+    if not callable(listed):
+        return []
+    tries = ([{'frame_xpath': frame_xpath, 'shadow_hosts': list(shadow_hosts)}]
+             if shadow_hosts else [])
+    tries += [{'frame_xpath': frame_xpath}, {}]
+    for kwargs in tries:
+        try:
+            return list(listed(selector_key, **kwargs))
+        except TypeError:
+            continue
+        except Exception:
+            return []
+    return []
+
+
+def _quarantined_paths(store, selector_key, html, frame_xpath='', shadow_hosts=()):
     """(doc, paths): the captured page parsed the way validate() parses it, and the tree
     paths of the elements the key's quarantined selectors match in it. Only quarantines of
-    the same place count: the page ('') or the iframe frame_xpath, whose document ``html``
-    then is. A selector quarantined inside an iframe says nothing about an element that
-    looks the same on the page. (None, set()) when the page cannot be parsed; stores
-    without quarantined() give no paths, and a store whose quarantined() takes no
-    frame_xpath gives all of them."""
+    the same place count: the page (''), the iframe frame_xpath, or the shadow root that
+    shadow_hosts lead to, whose document ``html`` then is. A selector quarantined inside an
+    iframe or a shadow root says nothing about an element that looks the same on the page,
+    and the other way round. Inside a shadow root, where a heal is saved as the chain of its
+    hosts and a CSS selector (shadow.shadow_text), that CSS, of the forms mendwright builds, is
+    matched through its XPath twin (css.css_xpath). (None, set()) when the page cannot be
+    parsed; stores without quarantined() give no paths, and a store whose quarantined()
+    takes no frame_xpath gives all of them."""
     try:
         doc = lxml.html.fromstring(html)
     except Exception:
         return None, set()
-    listed = getattr(store, 'quarantined', None)
     tree, paths = doc.getroottree(), set()
-    stored = []
-    if callable(listed):
+    for selector in _listed_quarantines(store, selector_key, frame_xpath, shadow_hosts):
         try:
-            stored = list(listed(selector_key, frame_xpath=frame_xpath))
-        except TypeError:
-            try:
-                stored = list(listed(selector_key))
-            except Exception:
-                stored = []
-        except Exception:
-            stored = []
-    for selector in stored:
-        try:
-            body = _xpath_forms(selector)[0]   # drop any 'xpath=' prefix
+            if shadow_hosts:
+                # Saved as the chain of its hosts and its CSS (shadow.shadow_text).
+                parts = split_text(selector)
+                css = parts[-1] if len(parts) == len(shadow_hosts) + 1 else selector
+                body = css_xpath(strip_prefix(css)) if classify(css) == CSS else None
+                if body is None:
+                    continue
+            else:
+                body = _xpath_forms(selector)[0]   # drop any 'xpath=' prefix
             paths.update(tree.getpath(n) for n in doc.xpath(body) if hasattr(n, 'tag'))
         except Exception:
             continue   # a CSS or engine selector, or one lxml cannot run
@@ -218,21 +243,27 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
     return ''
 
 
-def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
-    """store.add_candidate(key, xpath, source='heal'), with css= and frame_xpath= when they
-    are given. A store whose add_candidate is older still gets the heal: without css= (new
-    in 0.6), and without frame_xpath= when it takes neither and the heal is on the page.
-    Returns False, and saves nothing, when it would have to keep a heal that belongs inside
-    an iframe and cannot."""
+def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, shadow_hosts=None):
+    """store.add_candidate(key, xpath, source='heal'), with css=, frame_xpath= and
+    shadow_hosts= when they are given. A store whose add_candidate is older still gets the
+    heal: without css= (new in 0.6), without shadow_hosts= for a heal outside a shadow root,
+    and without frame_xpath= when it takes neither and the heal is on the page. Returns
+    False, and saves nothing, when it would have to keep a heal that belongs inside an
+    iframe or a shadow root and cannot."""
     extra = {}
     if css is not None:
         extra['css'] = css
     if frame_xpath is not None:
         extra['frame_xpath'] = frame_xpath
+    if shadow_hosts is not None:
+        extra['shadow_hosts'] = list(shadow_hosts)
     tries = [extra]
+    if 'shadow_hosts' in extra and not shadow_hosts:
+        extra = {k: v for k, v in extra.items() if k != 'shadow_hosts'}
+        tries.append(extra)
     if 'css' in extra:
         tries.append({k: v for k, v in extra.items() if k != 'css'})
-    if not frame_xpath:
+    if not frame_xpath and not shadow_hosts:
         tries.append({})
     for kwargs in tries:
         try:
@@ -244,8 +275,36 @@ def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None):
     return False
 
 
+def _shadow_heal(store, selector_key, doc, body, meta, driver, hosts):
+    """apply() for a proposal checked in the HTML of a shadow root (body, which matches one
+    element of doc): (saved, reason). The element's CSS forms (css.css_selectors) are tried
+    in turn: not retired, and the live check inside the shadow root (driver is a
+    shadow.ShadowDriver). The first that passes is saved as the chain of the hosts and the
+    CSS (shadow.shadow_text), with the hosts as its shadowHosts. (None, reason) when none
+    does."""
+    if driver is None:
+        return None, 'there is no live page to check it inside the shadow root'
+    hits = [h for h in doc.xpath(body) if isinstance(getattr(h, 'tag', None), str)]
+    forms = css_selectors(hits[0], doc) if len(hits) == 1 else []
+    reason = NO_CSS
+    for css in forms:
+        saved = shadow_text(hosts, css)
+        retired = _RETIRED.get(_stored_status(store, selector_key, saved))
+        if retired:
+            reason = retired
+            continue
+        live = live_reason(driver, css, meta, call=getby.parse(selector_key))
+        if live:
+            reason = live
+            continue
+        if not add_heal(store, selector_key, saved, frame_xpath='', shadow_hosts=hosts):
+            return None, 'this store cannot save a selector inside a shadow root'
+        return saved, 'ok'
+    return None, reason
+
+
 def apply(store, selector_key, proposal, html, meta, driver=None, positional=True,
-          frame_xpath=None):
+          frame_xpath=None, shadow_hosts=None):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
     (None, <last reason>) so the caller can feed a real reason into a reprompt.
@@ -277,8 +336,16 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
     positional=False rejects any candidate with a position in it ([2], last(),
     position()). The coordinator passes it when the model read a page with parts left out
     (see mendwright.fit), where a position counts different elements than the live page.
+
+    shadow_hosts are the hosts of the open shadow root the heal was made in (see
+    mendwright.shadow): ``html`` is that shadow root's HTML and ``driver`` a ShadowDriver for
+    it. XPath runs inside no shadow root, so a proposal that passes the static checks there is
+    saved as a CSS selector for the same element (_shadow_heal), written as the chain of the
+    hosts and the CSS, with the hosts as its shadowHosts. Only quarantines made in that
+    shadow root block it, and an element no CSS selector tells apart is refused (NO_CSS).
     """
-    doc, bad = _quarantined_paths(store, selector_key, html, frame_xpath or '')
+    hosts = tuple(shadow_hosts or ())
+    doc, bad = _quarantined_paths(store, selector_key, html, frame_xpath or '', hosts)
     candidates = [proposal.get('xpath')] + list(proposal.get('fallbacks') or [])
     reason = 'no candidates in proposal'
     for proposed in candidates:
@@ -293,7 +360,7 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
         if not positional and has_position(body):
             reason = POSITIONAL
             continue
-        retired = _RETIRED.get(_stored_status(store, selector_key, xpath))
+        retired = None if hosts else _RETIRED.get(_stored_status(store, selector_key, xpath))
         if retired:
             reason = retired
             continue
@@ -311,6 +378,11 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
         if classify(xpath) != XPATH:  # defensive: never store a model's engine selector
             reason = 'not an XPath expression'
             continue
+        if hosts:
+            saved, reason = _shadow_heal(store, selector_key, doc, body, meta, driver, hosts)
+            if saved:
+                return saved, reason
+            continue
         live = live_reason(driver, xpath, meta, call=getby.parse(selector_key))
         if live:
             reason = live
@@ -318,9 +390,11 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
         # proposal['frameXPath'] is unvalidated model output and is never stored. Frame
         # context comes from the gate, not from a proposal.
         # frame_xpath '' puts a candidate with the same text, saved inside an iframe before,
-        # on the page, where this heal was checked.
+        # on the page, where this heal was checked, and shadow_hosts [] takes one out of a
+        # shadow root.
         css = css_twin(store, selector_key, doc, body, xpath, driver)
-        if not add_heal(store, selector_key, xpath, css=css, frame_xpath=frame_xpath or ''):
+        if not add_heal(store, selector_key, xpath, css=css, frame_xpath=frame_xpath or '',
+                        shadow_hosts=[]):
             return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason
@@ -337,14 +411,15 @@ _REJECTED_ELEMENTS = ('it takes elements of a list heal you rejected, or of a qu
 
 def _code_back(store, selector_key, driver):
     """For a list found for heal.locator_all(..., nonempty=True): the first of the key's
-    selectors from code or a seed file (on the page, not in an iframe) that matches one
-    element or more on the live page now, as a list that was still loading does once it came
-    while mendwright looked for it, else ''. Driver errors are skipped."""
+    selectors from code or a seed file (on the page, not in an iframe or a shadow root) that
+    matches one element or more on the live page now, as a list that was still loading does
+    once it came while mendwright looked for it, else ''. Driver errors are skipped."""
     if driver is None:
         return ''
     try:
         own = [c['xpath'] for c in store.candidates(selector_key)
-               if c.get('source') in ('code', 'seed') and not c.get('frameXPath')]
+               if c.get('source') in ('code', 'seed') and not c.get('frameXPath')
+               and not hosts_of(c)]
     except Exception:
         return ''
     for selector in own:

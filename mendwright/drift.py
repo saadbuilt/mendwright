@@ -47,7 +47,8 @@ from urllib.parse import urlsplit
 from . import _md, getby
 from .coordinator import HealCoordinator, _list_missing_message
 from .drivers.base import driver_describe, driver_framed
-from .facade import _frame_message, latest_success
+from .facade import (HealScope, _frame_message, _shadow_message, heal_place, latest_success,
+                     shadow_unreachable)
 from .flow import InterruptionLoop, _is_id, page_path, page_url
 from .gate import live_reason
 from .journal import _BaseJournal
@@ -55,6 +56,7 @@ from .lists import valid as _valid_list
 from .resolver import _require_visible, _split_runnable
 from .roles import GATE_ROLES
 from .selectors import InvalidSelector
+from .shadow import driver_shadowed, hosts_of, place_text, run_target, shadow_text
 
 logger = logging.getLogger('mendwright')
 
@@ -125,10 +127,11 @@ class SelectorProbe:
 class KeyDrift:
     """One key's verdict (see VERDICTS) and why, in one paragraph (reason).
 
-    detail is 'fingerprint' or 'frame' for 'would-heal', and the reason code for
+    detail is 'fingerprint', 'frame' or 'shadow' for 'would-heal', and the reason code for
     'skipped' and 'unreachable'. counts_as is 'ok', 'broken', 'unchecked' or 'none'. used is
     the selector a run would use, when one resolves; heal, for 'would-heal', what a run
-    would heal it to ({'source', 'selector', 'frame', 'score', 'runner_up'}); provider, for
+    would heal it to ({'source', 'selector', 'frame', 'score', 'runner_up'}, and 'shadow',
+    the shadow hosts, for a heal inside a shadow root); provider, for
     'needs-model', the provider a run would ask; confirmed, for 'ok-heal', the last canary
     of that heal in the journal (None when there is none)."""
     key: str
@@ -261,6 +264,7 @@ _COUNTED = (
     ('wrong-role', None, 'wrong role', 'wrong role'),
     ('would-heal', 'fingerprint', 'would heal from memory', 'would heal from memory'),
     ('would-heal', 'frame', 'would heal into an iframe', 'would heal into an iframe'),
+    ('would-heal', 'shadow', 'would heal into a shadow root', 'would heal into a shadow root'),
     ('needs-model', None, 'needs a model', 'need a model'),
     ('refused', None, 'refused', 'refused'),
     ('list-missing', None, 'list may be empty', 'lists may be empty'),
@@ -391,7 +395,7 @@ def _quiet_framed(driver):
 class _Key:
     """What the engine knows about one key while it looks at the page."""
 
-    def __init__(self, store, key):
+    def __init__(self, store, key, driver=None):
         self.key = key
         self.meta = store.meta(key)
         # The key of a heal.page.get_by_*() call: looked up as resolver.resolve_get_by() does.
@@ -405,8 +409,9 @@ class _Key:
                                                                     'source': 'code'}]
             rows = mine[:1] + [c for c in rows if c.get('xpath') != key]
         elif self.is_list:
-            # As Healer._list_runnable: no heal and nothing inside an iframe.
-            rows = [c for c in rows if not c.get('frameXPath') and c.get('source') != 'heal']
+            # As Healer._list_runnable: no heal and nothing inside an iframe or a shadow root.
+            rows = [c for c in rows if not c.get('frameXPath') and not hosts_of(c)
+                    and c.get('source') != 'heal']
         else:
             # The code's selectors first: in a run's own process candidates() has the
             # code's order already, and elsewhere this is closest to it.
@@ -424,7 +429,7 @@ class _Key:
         self.runnable = []
         self.errors = []
         for index, row in enumerate(rows):
-            runnable, errors = _split_runnable(key, [row])
+            runnable, errors = _split_runnable(key, [row], driver)
             if runnable:
                 self.runnable.append(index)
             else:
@@ -444,9 +449,10 @@ class _Key:
     def resolved(self):
         return self.used is not None
 
-    def frame_chain(self, index):
-        frame = self.probes[index]['frame']
-        return (frame,) if frame else ()
+    def target(self, index):
+        """(selector, frame_chain) row index runs with (see shadow.run_target), for a row
+        that can run."""
+        return run_target(self.rows[index])
 
 
 def _run_role(store, key, meta):
@@ -478,9 +484,9 @@ def _look(driver, k):
         if resolved is not None:
             probe.update(matches=None, visible=None, result='not tried')
             continue
-        chain = k.frame_chain(index)
+        selector, chain = k.target(index)
         try:
-            count = driver.count(probe['selector'], chain)
+            count = driver.count(selector, chain)
         except InvalidSelector as exc:
             k.runnable.remove(index)
             k._cannot_run(index, exc)
@@ -502,7 +508,7 @@ def _look(driver, k):
             probe['result'] = 'matches ' + _elements(count)
         else:
             try:
-                visible = bool(driver.is_visible(probe['selector'], chain))
+                visible = bool(driver.is_visible(selector, chain))
             except Exception:
                 visible = False
             probe['visible'] = visible
@@ -628,8 +634,9 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     interruptions after a miss (`mendwright check --cookies`): while it returns True, the
     keys still missing get one more wait.
 
-    Calls only count, is_visible, describe, url, outer_html, frame_matches and framed on the
-    page (and, in a preview, the read-only probes of the fingerprint tier and of apply()).
+    Calls only count, is_visible, describe, url, outer_html, frame_matches, framed and the
+    shadow root reads (shadow_matches, shadow_html, shadow_inventory) on the page (and, in a
+    preview, the read-only probes of the fingerprint tier and of apply()).
     Writes nothing anywhere, acts on nothing and asks no model."""
     store, coordinator = core.store, core.coordinator
     driver = core._driver if driver is None else driver
@@ -640,7 +647,7 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     if url is None:
         url = _url_of(driver)
     dry_run = bool(getattr(coordinator, 'dry_run', False))
-    work = [_Key(store, key) for key in keys]
+    work = [_Key(store, key, driver) for key in keys]
 
     for k in work:
         if not k.rows:
@@ -766,7 +773,7 @@ def _article(word):
 def _resolved(driver, store, k, canaries, who, dry_run):
     """The verdict of a key one of whose selectors resolved (see probe_page)."""
     probe = k.probes[k.used]
-    used, chain = probe['selector'], k.frame_chain(k.used)
+    used, (selector, chain) = probe['selector'], k.target(k.used)
     if k.is_list:
         count = probe['matches']
         lfp = k.meta.get('listFingerprint') or {}
@@ -786,7 +793,7 @@ def _resolved(driver, store, k, canaries, who, dry_run):
                 'nothing. Fix the selector in your code.', store, dry_run, used=used)
         return
     try:
-        described = driver_describe(driver, used, chain)
+        described = driver_describe(driver, selector, chain)
     except Exception:
         described = None
     live = (described or {}).get('role') or None
@@ -951,6 +958,8 @@ class _Preview:
             self.snapshot.guess_role(k.key, k.run_role)     # as the run's locator() does
         if self._frame(k, miss, dry_run):
             return
+        if self._shadow(k, miss, dry_run):
+            return
         self._heal(k, miss, dry_run)
 
     def _refused(self, k, miss, reason, dry_run):
@@ -1012,6 +1021,81 @@ class _Preview:
                       'runner_up': None})
         return True
 
+    def _shadow(self, k, miss, dry_run):
+        """Healer._follow_into_shadow(), without saving: True when it decided the key."""
+        core, shadow = self.core, self.shadow
+        finder = getattr(self.driver, 'shadow_matches', None)
+        if k.call or not callable(finder):
+            return False
+        matches = core._shadow_matches(k.key, finder)
+        if not matches:
+            return False
+        plan, refused = None, None
+        for selector, found, cut in matches:
+            root, why = core._shadow_plan(k.key, selector, found, cut, coordinator=shadow)
+            if root is not None:
+                plan = (selector, found, root)
+                break
+            if refused is None:
+                refused = (selector, found, why)
+        if plan is None:
+            self._refused(k, miss, _shadow_message(k.key, *refused), dry_run)
+            return True
+        selector, found, root = plan
+        moved = shadow._flow_change(k.key, core._flow_context(k.key, self.url, quiet=True))
+        if moved:
+            self._refused(k, miss, moved, dry_run)
+            return True
+        why, chosen = None, None
+        shadowed = driver_shadowed(self.driver, root['hosts'])
+        if not shadow.guard():
+            why = 'a transaction guard is currently blocking heals'
+        elif shadowed is None:
+            why = 'this driver does not reach into shadow roots'
+        else:
+            meta = self.snapshot.meta(k.key)
+            why = 'no CSS selector for it passed'
+            for css in root['forms']:
+                live = live_reason(shadowed, css, meta)
+                if not live:
+                    why, chosen = None, css
+                    break
+                why = "its element there failed mendwright's checks (" + live + ')'
+        if why:
+            self._refused(k, miss, _shadow_message(k.key, selector, found, why), dry_run)
+            return True
+        saved = shadow_text(root['hosts'], chosen)
+        text = (miss + ' on the page, but it matches one element inside '
+                + place_text(root['hosts']) + '. A run looks it up there from now on, as '
+                + saved + ', which counts as a heal (--mendwright-strict fails on it). Nothing '
+                'was saved.')
+        if dry_run:
+            text += ' ' + _DRY_RUN_NOTE
+        _decide(k, 'would-heal', 'shadow', text, core.store, dry_run,
+                heal={'source': 'shadow', 'selector': saved, 'frame': None,
+                      'shadow': list(root['hosts']), 'score': None, 'runner_up': None})
+        return True
+
+    def _scope(self, key):
+        """Healer._heal_scope() on the snapshot, with the preview's driver: a HealScope, or
+        None for the page."""
+        frame, hosts, why = heal_place(self.snapshot, key)
+        if why:
+            return HealScope(hosts=hosts, why=why)
+        if hosts:
+            shadowed = driver_shadowed(self.driver, hosts)
+            why = shadow_unreachable(key, hosts, shadowed is not None,
+                                     shadowed is not None and shadowed.inner_html() is not None)
+            return HealScope(hosts=hosts, why=why) if why else HealScope(hosts=hosts,
+                                                                          driver=shadowed)
+        if not frame or self.frames.framed is None:
+            return None
+        try:
+            framed = self.frames.framed(frame)
+        except Exception:
+            framed = None
+        return HealScope(frame=frame, driver=framed) if framed is not None else None
+
     def _call_frame(self, k, miss, finder, dry_run):
         """Healer._get_by_frames(): a call key whose call matches inside an iframe is
         refused, since a run follows neither a call nor a heal of one into an iframe. True
@@ -1031,16 +1115,7 @@ class _Preview:
         core, shadow, snapshot = self.core, self.shadow, self.snapshot
         key = k.key
         context = core._flow_context(key, self.url, quiet=True)
-        scope = None
-        best = latest_success(snapshot, key)
-        frame = best.get('frameXPath') if best else None
-        if isinstance(frame, str) and frame and self.frames.framed is not None:
-            try:
-                framed = self.frames.framed(frame)
-            except Exception:
-                framed = None
-            if framed is not None:
-                scope = (frame, framed)
+        scope = self._scope(key)
         shadow.tier_note = None
         shadow.heal_reasons.pop(key, None)
         start = len(shadow.journal.events)
@@ -1050,7 +1125,7 @@ class _Preview:
             if scope is None:
                 applied = shadow.try_heal(key, meta, broken, context)
             else:
-                with shadow.scoped(scope[1], scope[0]):
+                with scope.entered(shadow):
                     applied = shadow.try_heal(key, meta, broken, context)
         except _ModelWanted:
             note = shadow.tier_note if shadow.fingerprint else 'the fingerprint tier is off'
@@ -1077,14 +1152,17 @@ class _Preview:
                     score, runner_up = float(found.group(1)), float(found.group(2))
         how = ('fingerprint score ' + format(score, '.2f') + ', next best '
                + format(runner_up, '.2f')) if score is not None else 'its fingerprint'
-        text = (miss + '. A run would heal it from memory to ' + applied + ' (' + how + '), '
-                'which passed every check of a heal on this page. Nothing was saved.')
+        hosts = scope.hosts if scope else ()
+        where = ' inside ' + place_text(hosts) if hosts else ''
+        text = (miss + '. A run would heal it from memory' + where + ' to ' + applied + ' ('
+                + how + '), which passed every check of a heal on this page. Nothing was saved.')
         if dry_run:
             text += ' ' + _DRY_RUN_NOTE
-        _decide(k, 'would-heal', 'fingerprint', text, core.store, dry_run,
-                heal={'source': 'fingerprint', 'selector': applied,
-                      'frame': scope[0] if scope else None, 'score': score,
-                      'runner_up': runner_up})
+        heal = {'source': 'fingerprint', 'selector': applied,
+                'frame': scope.frame if scope else None, 'score': score, 'runner_up': runner_up}
+        if hosts:
+            heal['shadow'] = list(hosts)
+        _decide(k, 'would-heal', 'fingerprint', text, core.store, dry_run, heal=heal)
 
 
 _DRY_RUN_NOTE = 'Dry run is on, so a run would check this heal and not apply it.'

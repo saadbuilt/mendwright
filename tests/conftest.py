@@ -10,6 +10,9 @@ kind of read. Locators have nth() and all(). CSS is "#id" only,
 and a selector needs its xpath= or css= prefix, unless the page is made with css=True, when
 cssselect matches the rest and a selector without a prefix is read as mendwright reads it.
 
+ShadowPage (Playwright-shaped) and ShadowDriver (Selenium-shaped) model open and closed shadow
+roots, which lxml has none of (see the comment above ShadowDOM, near the end of this file).
+
 Its get_by_role(), get_by_text(), get_by_label(), get_by_placeholder(), get_by_alt_text(),
 get_by_title() and get_by_test_id() give FakeGetBy locators, which match the way Playwright
 does, near enough for the tests: a role from role= or the element's tag, a name from
@@ -594,3 +597,441 @@ def _fresh_rate_limiters():
     facade._LIMITERS.clear()
     yield
     facade._LIMITERS.clear()
+
+
+# --- open shadow roots ----------------------------------------------------------------------
+#
+# lxml has no shadow roots, so ShadowDOM models them: write each one as declarative shadow DOM,
+# <template shadowrootmode="open"> (or "closed") as a child of its host, and set_html() moves
+# its content into an lxml document of its own. A query in one scope (the page, or a shadow
+# root) then sees that scope's elements only, as querySelectorAll() does in a browser, and the
+# page's own HTML (content(), page_source) has no shadow content, as in a browser.
+# ShadowPage is Playwright-shaped and ShadowDriver Selenium-shaped, so mendwright.open() runs
+# its real drivers on them; they answer the scripts of mendwright.drivers.base and
+# mendwright.fingerprint (PLACE_JS, SHADOW_HTML_JS, FINGERPRINT_JS with its hosts, ...) as a
+# browser does. CSS needs cssselect.
+
+class _Scope:
+    def __init__(self, root, host=None, mode='open'):
+        self.root, self.host, self.mode = root, host, mode
+
+
+def _css(css):
+    try:
+        from lxml.cssselect import CSSSelector
+    except ImportError:
+        pytest.skip('cssselect is not installed')
+    return CSSSelector(css)
+
+
+def _is_shadow_template(el):
+    return el.tag == 'template' and el.get('shadowrootmode') in ('open', 'closed')
+
+
+class ShadowDOM:
+    """A page with shadow roots (see above). Every element knows its scope (owner)."""
+
+    def __init__(self, html):
+        self.set_html(html)
+
+    def set_html(self, html):
+        self.document = _Scope(lxml.html.fromstring(html))
+        self.shadows = {}       # host element -> its _Scope
+        self.owner = {}         # element -> the _Scope it is in
+        self.order = []         # every scope, the page first
+        self._split(self.document)
+
+    def _split(self, scope):
+        self.order.append(scope)
+        tops = [t for t in scope.root.iter('template') if _is_shadow_template(t)
+                and not any(_is_shadow_template(a) for a in t.iterancestors())]
+        hosts = []
+        for tpl in tops:
+            host = tpl.getparent()
+            inner = (tpl.text or '') + ''.join(
+                lxml.html.tostring(c, encoding='unicode') for c in tpl)
+            host.remove(tpl)
+            root = lxml.html.fromstring('<html><body>' + inner + '</body></html>')
+            self.shadows[host] = _Scope(root, host, tpl.get('shadowrootmode'))
+            hosts.append(host)
+        for el in scope.root.iter():
+            if isinstance(el.tag, str):
+                self.owner[el] = scope
+        for host in hosts:
+            self._split(self.shadows[host])
+
+    # what a scope holds
+
+    def elements(self, scope):
+        skip = ('html', 'head', 'body') if scope.host is not None else ()
+        return [e for e in scope.root.iter() if isinstance(e.tag, str) and e.tag not in skip]
+
+    def query(self, scope, css):
+        found = set(_css(css)(scope.root))
+        return [e for e in self.elements(scope) if e in found]
+
+    def xpath(self, scope, expression):
+        try:
+            found = scope.root.xpath(expression)
+        except Exception:
+            return []
+        return [e for e in found if isinstance(getattr(e, 'tag', None), str)]
+
+    def inner_html(self, scope):
+        body = scope.root.find('body')
+        return (body.text or '') + ''.join(lxml.html.tostring(c, encoding='unicode') for c in body)
+
+    def content(self):
+        return lxml.html.tostring(self.document.root, encoding='unicode')
+
+    def open_shadow(self, host):
+        scope = self.shadows.get(host)
+        return scope if scope is not None and scope.mode == 'open' else None
+
+    def enter(self, hosts):
+        """drivers.base.ENTER_JS: the scope the hosts lead to strictly, or None."""
+        scope = self.document
+        for sel in hosts:
+            try:
+                found = self.query(scope, sel)
+            except Exception:
+                return None
+            if len(found) != 1 or self.open_shadow(found[0]) is None:
+                return None
+            scope = self.open_shadow(found[0])
+        return scope
+
+    # what the scripts read
+
+    def host_facts(self, host):
+        from mendwright.fingerprint import HOST_ATTRS
+        same = [e for e in self.elements(self.owner[host]) if e.tag == host.tag]
+        attrs, counts = {}, {'tag': len(same)}
+        for name in HOST_ATTRS:
+            if host.get(name) is not None:
+                attrs[name] = host.get(name)
+                counts[name] = sum(1 for e in same if e.get(name) == host.get(name))
+        return {'tag': host.tag, 'attrs': attrs, 'counts': counts}
+
+    def hosts_of(self, el):
+        out, scope = [], self.owner[el]
+        while scope.host is not None:
+            out.insert(0, self.host_facts(scope.host))
+            scope = self.owner[scope.host]
+        return out
+
+    def fingerprint_raw(self, el):
+        raw = raw_of_element(el)
+        raw['hosts'] = self.hosts_of(el)
+        return raw
+
+    def hidden(self, el):
+        while el is not None:
+            if _hidden(el):
+                return True
+            el = self.owner[el].host
+        return False
+
+    def composed(self, within=None):
+        """What Playwright's CSS pierces to: every element of the page and of its open shadow
+        roots, or of those inside the elements of within (their descendants, and the open
+        shadow roots of any of them and of themselves)."""
+        out = []
+
+        def add_scope(scope):
+            for e in self.elements(scope):
+                out.append(e)
+                if self.open_shadow(e) is not None:
+                    add_scope(self.open_shadow(e))
+        if within is None:
+            add_scope(self.document)
+            return out
+        for top in within:
+            for e in [top] + [d for d in top.iterdescendants() if isinstance(d.tag, str)]:
+                if e is not top:
+                    out.append(e)
+                if self.open_shadow(e) is not None:
+                    add_scope(self.open_shadow(e))
+        return out
+
+    def pierce(self, css, within=None):
+        """Playwright's css= engine: what css matches in each scope, of what composed()
+        gives."""
+        hits = set()
+        for scope in self.order:
+            hits.update(self.query(scope, css))
+        seen, out = set(), []
+        for e in self.composed(within):
+            if e in hits and e not in seen:
+                seen.add(e)
+                out.append(e)
+        return out
+
+    def roots(self, arg):
+        """drivers.base.SHADOW_ROOTS_JS."""
+        roots = []
+
+        def walk(scope, chain):
+            for el in self.elements(scope):
+                inner = self.open_shadow(el)
+                if inner is None:
+                    continue
+                here = chain + [self.host_facts(el)]
+                if arg['css'] is not None:
+                    n = len(self.query(inner, arg['css']))
+                    if n:
+                        roots.append({'hosts': here, 'count': n})
+                else:
+                    roots.append({'hosts': here, 'html': self.inner_html(inner)})
+                walk(inner, here)
+        walk(self.document, [])
+        return {'roots': roots, 'cut': False}
+
+    def inventory(self, scope, limit):
+        rows = []
+        for e in self.elements(scope):
+            if e.tag in ('button', 'a', 'input', 'select', 'textarea') or e.get('role'):
+                rows.append({'tag': e.tag, 'role': e.get('role') or '', 'type': e.get('type') or '',
+                             'id': e.get('id') or '', 'name': e.get('name') or '',
+                             'text': ' '.join(e.text_content().split())[:80],
+                             'aria_label': e.get('aria-label') or ''})
+        return rows[:limit]
+
+
+class ShadowLocator:
+    """A Playwright Locator on a ShadowPage: each step pierces open shadow roots, inside the
+    elements of the step before it, as Playwright's CSS does. An xpath= step runs on the page
+    only. Actions need exactly one element (Playwright's strict mode)."""
+
+    def __init__(self, page, steps, pick=None):
+        from mendwright.shadow import split_text
+        self._page = page
+        self._steps = [part for step in steps for part in split_text(step)]   # ' >> ' chains
+        self._pick = pick
+
+    def _elements(self):
+        dom, els = self._page.dom, None
+        for step in self._steps:
+            if step.startswith('xpath='):
+                found = dom.xpath(dom.document, step[len('xpath='):]) if els is None else []
+            else:
+                css = step[len('css='):] if step.startswith('css=') else step
+                try:
+                    found = dom.pierce(css, els)
+                except Exception:
+                    found = []
+            els = found
+        els = els or []
+        return els[self._pick:self._pick + 1] if self._pick is not None else els
+
+    def locator(self, selector):
+        return ShadowLocator(self._page, self._steps + [selector])
+
+    def count(self):
+        return len(self._elements())
+
+    def is_visible(self):
+        els = self._elements()
+        if len(els) > 1:
+            raise FakeError('strict mode violation: ' + ' >> '.join(self._steps))
+        return bool(els) and not self._page.dom.hidden(els[0])
+
+    def scroll_into_view_if_needed(self, **kwargs):
+        pass
+
+    def nth(self, index):
+        return ShadowLocator(self._page, self._steps, index)
+
+    def evaluate_all(self, js, arg=None):
+        from mendwright.drivers.base import PLACE_JS
+        dom, els = self._page.dom, self._elements()
+        self._page.scripts.append(js)
+        if js == PLACE_JS:
+            root = dom.enter(arg)
+            return {'n': len(els), 'inside': sum(1 for e in els if dom.owner[e] is root)}
+        if js == FINGERPRINT_JS:
+            return dom.fingerprint_raw(els[0]) if len(els) == 1 else None
+        if js == ITEMS_JS:
+            return items_of_elements(els)
+        if js in (LIST_JS, LIST_PLACE_JS):
+            if len(els) < 2:
+                return None
+            raw = raw_of_elements(els, place=js == LIST_PLACE_JS)
+            raw['shadow'] = dom.owner[els[0]].host is not None
+            return raw
+        if len(els) != 1:
+            return None
+        return {'tag': els[0].tag, 'html': lxml.html.tostring(els[0], encoding='unicode',
+                                                             with_tail=False)}
+
+    def __getattr__(self, verb):
+        if verb not in ACTIONS:
+            raise AttributeError("'ShadowLocator' object has no attribute " + repr(verb))
+
+        def action(*args, **kwargs):
+            els = self._elements()
+            if len(els) != 1:
+                raise FakeError('Locator.' + verb + ': strict mode violation or timeout: '
+                                + str(len(els)) + ' elements')
+            self._page.actions.append((els[0], verb, args, kwargs))
+            return None
+        return action
+
+
+class ShadowPage:
+    """A Playwright-shaped page over a ShadowDOM (see above): set_html() stands in for a
+    navigation, actions records (element, verb, args, kwargs), scripts every script run."""
+
+    def __init__(self, html, url='https://example.test/'):
+        self.url = url
+        self.dom = ShadowDOM(html)
+        self.actions = []
+        self.scripts = []
+        self.frames = []
+
+    def set_html(self, html):
+        self.dom.set_html(html)
+
+    def locator(self, selector):
+        return ShadowLocator(self, [selector])
+
+    def frame_locator(self, selector):
+        return self
+
+    def content(self):
+        return self.dom.content()
+
+    def evaluate(self, js, arg=None):
+        from mendwright.drivers.base import (INVENTORY_JS, SHADOW_HTML_JS, SHADOW_INVENTORY_JS,
+                                             SHADOW_ROOTS_JS)
+        self.scripts.append(js)
+        dom = self.dom
+        if js == SHADOW_HTML_JS:
+            scope = dom.enter(arg)
+            return dom.inner_html(scope) if scope is not None else None
+        if js == SHADOW_INVENTORY_JS:
+            scope = dom.enter(arg['hosts'])
+            return dom.inventory(scope, arg['limit']) if scope is not None else None
+        if js == SHADOW_ROOTS_JS:
+            return dom.roots(arg)
+        if js == INVENTORY_JS:
+            return dom.inventory(dom.document, arg)
+        return None
+
+
+class ShadowElement:
+    """A Selenium WebElement on a ShadowDriver."""
+
+    def __init__(self, driver, el):
+        self._driver, self.el = driver, el
+
+    def __eq__(self, other):
+        return isinstance(other, ShadowElement) and other.el is self.el
+
+    def __hash__(self):
+        return id(self.el)
+
+    @property
+    def tag_name(self):
+        return self.el.tag
+
+    def is_displayed(self):
+        return not self._driver.dom.hidden(self.el)
+
+    def get_attribute(self, name):
+        if name == 'outerHTML':
+            return lxml.html.tostring(self.el, encoding='unicode', with_tail=False)
+        return self.el.get(name)
+
+    def _act(self, verb, *args):
+        self._driver.actions.append((self.el, verb, args))
+
+    def click(self):
+        self._act('click')
+
+    def clear(self):
+        self._act('clear')
+
+    def send_keys(self, *args):
+        self._act('send_keys', *args)
+
+
+class _ShadowSwitch:
+    def default_content(self):
+        pass
+
+    def frame(self, element):
+        raise LookupError('no frames here')
+
+
+class _NoWait:
+    implicit_wait = 0
+
+
+class ShadowDriver:
+    """A Selenium-shaped WebDriver over a ShadowDOM (see above): find_elements() looks at the
+    page only, as Selenium's does, and execute_script() answers mendwright's scripts."""
+
+    def __init__(self, html, url='https://example.test/'):
+        self.current_url = url
+        self.dom = ShadowDOM(html)
+        self.switch_to = _ShadowSwitch()
+        self.timeouts = _NoWait()
+        self.actions = []
+        self.scripts = []
+        self._wrapped = {}
+
+    def set_html(self, html):
+        self.dom.set_html(html)
+        self._wrapped = {}
+
+    def implicitly_wait(self, seconds):
+        pass
+
+    def _wrap(self, els):
+        return [self._wrapped.setdefault(e, ShadowElement(self, e)) for e in els]
+
+    @property
+    def page_source(self):
+        return self.dom.content()
+
+    def find_elements(self, by, value):
+        dom = self.dom
+        if by == 'xpath':
+            return self._wrap(dom.xpath(dom.document, value))
+        return self._wrap(dom.query(dom.document, value))
+
+    def execute_script(self, script, *args):
+        from mendwright.drivers import selenium as sel
+        self.scripts.append(script)
+        dom = self.dom
+        if script == sel._SHADOW_FIND:
+            scope = dom.enter(args[0])
+            return self._wrap(dom.query(scope, args[1])) if scope is not None else []
+        if script == sel._SHADOW_HTML:
+            scope = dom.enter(args[0])
+            return dom.inner_html(scope) if scope is not None else None
+        if script == sel._SHADOW_INVENTORY:
+            scope = dom.enter(args[0]['hosts'])
+            return dom.inventory(scope, args[0]['limit']) if scope is not None else None
+        if script == sel._SHADOW_ROOTS:
+            return dom.roots(args[0])
+        if script == 'return (' + FINGERPRINT_JS + ')([arguments[0]]);':
+            return dom.fingerprint_raw(args[0].el)
+        if script.startswith('return {tag: arguments[0].tagName'):
+            return {'tag': args[0].el.tag, 'html': args[0].get_attribute('outerHTML')}
+        if script == 'return window.self === window.top;':
+            return True
+        if script == 'return window.self !== window.top;':
+            return False
+        return None
+
+
+@pytest.fixture
+def make_shadow_page():
+    return ShadowPage
+
+
+@pytest.fixture
+def make_shadow_driver():
+    return ShadowDriver

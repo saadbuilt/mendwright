@@ -18,17 +18,40 @@ The key of a heal.page.get_by_*() call (see mendwright.getby) is looked up by
 resolve_get_by() instead, whose rule differs: the call itself first, and its saved heals
 only while the call matches nothing. A call that matches several elements, or one hidden
 element, is not broken, and goes to Playwright as written (THROUGH).
+
+A candidate saved inside an open shadow root (its shadowHosts, see mendwright.shadow) runs
+with a ShadowHost step per host at the end of its frame chain, and only on a driver that
+reaches into shadow roots (drivers.base.reaches_shadow). On any other driver it cannot run,
+as an engine selector cannot run on Selenium: a driver that knows nothing of shadow roots
+could run it on the page, outside its host.
 """
 import time
 
 from .drivers import wrap
+from .drivers.base import reaches_shadow
 from .exceptions import AttentionRequired
 from .selectors import InvalidSelector, check_syntax
+from .shadow import chain_of, hosts_of, run_target
 
 
 def _frame_chain(candidate):
-    fx = candidate.get('frameXPath')
-    return (fx,) if fx else ()
+    """The frame chain a candidate runs in: its iframe, then its shadow hosts."""
+    return chain_of(candidate)
+
+
+def _target(candidate):
+    """(selector, frame_chain) a candidate runs with (see shadow.run_target): for one inside
+    a shadow root, the CSS its text ends in. Call only for a candidate _split_runnable()
+    kept."""
+    return run_target(candidate)
+
+
+def _no_shadow(candidate):
+    selector = candidate.get('xpath')
+    return InvalidSelector.build(
+        selector, 'css', repr(selector) + ' was saved inside a shadow root, and this driver '
+        'does not reach into shadow roots.', 'Use a Playwright page or a Selenium driver, or '
+        "give the driver shadow_html() and ShadowHost steps (see mendwright.drivers.base).")
 
 
 def _require_visible(store, key):
@@ -40,16 +63,22 @@ def _require_visible(store, key):
         return True
 
 
-def _split_runnable(key, candidates):
+def _split_runnable(key, candidates, driver=None):
     """(runnable, errors): candidates whose selector and frame selector pass
     check_syntax, and the errors for the ones that do not. A get_by_* call is a candidate
-    like any selector (calls=True); the driver runs it, or refuses it."""
+    like any selector (calls=True); the driver runs it, or refuses it. A candidate inside a
+    shadow root needs CSS, hosts saved as CSS selectors, and, when driver is given, a driver
+    that reaches into shadow roots."""
     runnable, errors = [], []
     for candidate in candidates:
         try:
             check_syntax(candidate.get('xpath'), calls=True)
             if candidate.get('frameXPath'):
                 check_syntax(candidate['frameXPath'])
+            if hosts_of(candidate):
+                run_target(candidate)
+                if driver is not None and not reaches_shadow(driver):
+                    raise _no_shadow(candidate)
         except InvalidSelector as exc:
             errors.append(exc.for_key(key))
         except TypeError as exc:
@@ -62,7 +91,7 @@ def _split_runnable(key, candidates):
 def _match_handle(driver, candidate, require_visible):
     """The native handle if the candidate matches exactly one (visible) element, else None.
     InvalidSelector propagates; any other driver error counts as no match."""
-    selector, fc = candidate['xpath'], _frame_chain(candidate)
+    selector, fc = _target(candidate)
     try:
         if driver.count(selector, fc) == 1 and (not require_visible or driver.is_visible(selector, fc)):
             return driver.handle(selector, fc)
@@ -88,7 +117,7 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
     candidates = store.candidates(key)
     if not candidates:
         raise AttentionRequired('No selector candidates for: ' + key)
-    runnable, errors = _split_runnable(key, candidates)
+    runnable, errors = _split_runnable(key, candidates, driver)
     if not runnable:
         raise errors[0]
     require_visible = _require_visible(store, key)
@@ -106,7 +135,7 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
                 continue
             if handle is not None:
                 try:
-                    driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                    driver.scroll_into_view(*_target(candidate))
                 except Exception:
                     pass
                 store.record_success(key, candidate['xpath'])
@@ -162,7 +191,8 @@ def resolve_get_by(store, page, key, *, timeout_ms, poll_ms=200, first=None,
     driver = wrap(page)
     require_visible = _require_visible(store, key)
     candidates = store.candidates(key)
-    runnable, errors = _split_runnable(key, [c for c in candidates if c.get('xpath') != key])
+    runnable, errors = _split_runnable(key, [c for c in candidates if c.get('xpath') != key],
+                                       driver)
     deadline = monotonic() + timeout_ms / 1000.0
     while True:
         try:
@@ -190,7 +220,7 @@ def resolve_get_by(store, page, key, *, timeout_ms, poll_ms=200, first=None,
                 continue
             if handle is not None:
                 try:
-                    driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                    driver.scroll_into_view(*_target(candidate))
                 except Exception:
                     pass
                 store.record_success(key, candidate['xpath'])
@@ -215,7 +245,7 @@ def present_get_by(store, page, key):
     if state[0] >= 1:
         return _call_usable(state, require_visible)
     runnable, _errors = _split_runnable(key, [c for c in store.candidates(key)
-                                              if c.get('xpath') != key])
+                                              if c.get('xpath') != key], driver)
     for candidate in runnable:
         try:
             if _match_handle(driver, candidate, require_visible) is not None:
@@ -231,7 +261,7 @@ def present(store, page, key):
     driver = wrap(page)
     require_visible = _require_visible(store, key)
     candidates = store.candidates(key)
-    runnable, errors = _split_runnable(key, candidates)
+    runnable, errors = _split_runnable(key, candidates, driver)
     for candidate in runnable:
         try:
             if _match_handle(driver, candidate, require_visible) is not None:

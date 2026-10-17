@@ -22,6 +22,11 @@ their Selenium equivalents; anything else is called on the element as is.
 Probe calls (count, is_visible, scroll_into_view, the lookup in handle) run with the
 WebDriver's implicit wait set to 0 and restore it afterwards, so a user's
 driver.implicitly_wait(10) does not turn every missed candidate into a 10 second stall.
+
+A frame chain may end in ShadowHost steps (see mendwright.shadow): the selector is then
+CSS, and is looked up with one execute_script (SHADOW_FIND_JS) that enters the shadow root
+those hosts lead to strictly and runs querySelectorAll() there. The WebElements it returns
+work as any other, outside that call too: no frame is switched for a shadow root.
 """
 
 import contextlib
@@ -31,9 +36,18 @@ from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS
 from ..lists import from_raw as list_from_raw
 from ..selectors import CSS, GET_BY, XPATH, InvalidSelector, check_syntax, strip_prefix
+from ..shadow import host_css, inner_css, roots_of, split_chain, with_hosts
 from .base import (FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS, POPUP_CONTROLS_JS,
-                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE, element_summary,
-                   frame_selector, inventory_rows, is_async_api, item_rows)
+                   POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, SHADOW_FIND_JS,
+                   SHADOW_HTML_JS, SHADOW_INVENTORY_JS, SHADOW_ROOTS_JS, UNSURE,
+                   element_summary, frame_selector, inventory_rows, is_async_api, item_rows,
+                   shadow_arg)
+
+# The scripts of the shadow root lookups, as execute_script() runs them.
+_SHADOW_FIND = 'return (' + SHADOW_FIND_JS + ')(arguments[0], arguments[1]);'
+_SHADOW_HTML = 'return (' + SHADOW_HTML_JS + ')(arguments[0]);'
+_SHADOW_INVENTORY = 'return (' + SHADOW_INVENTORY_JS + ')(arguments[0]);'
+_SHADOW_ROOTS = 'return (' + SHADOW_ROOTS_JS + ')(arguments[0]);'
 
 # How many matches SeleniumDriver.visible_match() asks is_displayed() of, one round trip
 # each, for the first two that are.
@@ -430,14 +444,21 @@ class SeleniumDriver:
     outer_html. All take a selector of any kind Selenium can run plus an optional frame
     chain (frame selectors, outermost first). Optional extras, which callers reach
     through the driver_* helpers in mendwright.drivers.base: act_on, describe, inventory,
-    fingerprint, visible_match, and for lists handles, list_fingerprint and list_items. The
-    interruption checks also use covered and inside_frame, which only this driver has."""
+    fingerprint, visible_match, for lists handles, list_fingerprint and list_items, and for
+    open shadow roots shadow_html, shadow_inventory and shadow_matches. The interruption
+    checks also use covered and inside_frame, which only this driver has."""
 
     def __init__(self, driver):
         self._driver = driver
+        # The shadow hosts of the frame chain _run() is in: _find_all() looks inside the
+        # shadow root they lead to while it runs.
+        self._shadow = ()
 
     def _find_all(self, selector):
-        """find_elements for any selector kind, in the current frame context."""
+        """find_elements for any selector kind, in the current frame context, or inside the
+        shadow root of the chain _run() is in (_find_in_shadow)."""
+        if self._shadow:
+            return self._find_in_shadow(self._shadow, selector)
         by, value = selenium_locator(selector)
         try:
             return self._driver.find_elements(by, value)
@@ -454,10 +475,31 @@ class SeleniumDriver:
                 "Fix the selector, or use an XPath such as \"//button[@id='save']\", which "
                 "mendwright.selectors.check_syntax() can check without a browser.") from exc
 
+    def _find_in_shadow(self, hosts, selector):
+        """The elements the CSS selector matches inside the open shadow root that hosts lead
+        to (SHADOW_FIND_JS), [] when they lead to none. A CSS selector the browser rejects
+        raises InvalidSelector, as find_elements() does."""
+        css = inner_css(selector)
+        try:
+            found = self._driver.execute_script(_SHADOW_FIND, list(hosts), css)
+        except Exception as exc:
+            said = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+            if 'is not a valid selector' in said or 'SyntaxError' in said:
+                raise InvalidSelector.build(
+                    selector, CSS, 'the browser rejected ' + repr(css) + ' (' + said.rstrip('.: ')
+                    + ').', "Fix the selector inside the shadow root.") from exc
+            raise
+        return list(found) if isinstance(found, list) else []
+
     def _precheck(self, selector, frame_chain):
-        """Raise for a bad selector before any switching, outside the read methods' try."""
-        selenium_locator(selector)
-        for frame in frame_chain:
+        """Raise for a bad selector before any switching, outside the read methods' try. A
+        selector inside a shadow root must be CSS."""
+        frames, hosts = split_chain(frame_chain)
+        if hosts:
+            inner_css(selector)
+        else:
+            selenium_locator(selector)
+        for frame in frames:
             selenium_locator(frame)
 
     def _find_one(self, selector):
@@ -480,16 +522,21 @@ class SeleniumDriver:
         return self._switch_and_run(frame_chain, op)
 
     def _switch_and_run(self, frame_chain, op):
+        chain, hosts = split_chain(frame_chain)
         entered = False
+        outer = self._shadow
         try:
-            for frame_selector in frame_chain:
+            self._shadow = ()
+            for frame_selector in chain:
                 frames = self._find_all(frame_selector)
                 if not frames:
                     raise LookupError('mendwright[selenium]: frame not found: ' + str(frame_selector))
                 entered = True  # set before the switch so finally restores even if it raises
                 self._driver.switch_to.frame(frames[0])
+            self._shadow = hosts
             return op()
         finally:
+            self._shadow = outer
             if entered:
                 self._driver.switch_to.default_content()
 
@@ -522,12 +569,13 @@ class SeleniumDriver:
         self._read(selector, frame_chain, op, None)
 
     def handle(self, selector, frame_chain=()):
-        """The native WebElement. For a frame chain, a FramedElement that switches into
-        the frames on each use (a raw WebElement would fail once the driver is back at
-        the top document)."""
+        """The native WebElement. For a frame chain with an iframe in it, a FramedElement
+        that switches into the frames on each use (a raw WebElement would fail once the
+        driver is back at the top document). One inside a shadow root of the page is the
+        WebElement itself."""
         self._precheck(selector, frame_chain)
         el = self._run(frame_chain, lambda: self._find_all(selector)[0])
-        if not frame_chain:
+        if not split_chain(frame_chain)[0]:
             return el
         return FramedElement(self, selector, frame_chain, type(el))
 
@@ -642,17 +690,20 @@ class SeleniumDriver:
 
         return self._read(selector, frame_chain, op, None)
 
-    def fingerprint(self, selector, frame_chain=()):
+    def fingerprint(self, selector, frame_chain=(), *, hosts=False):
         """The fingerprint of the one element the selector matches (see
-        mendwright.fingerprint), or None when it matches none or several. One round trip
-        (execute_script), inside the frame chain with the implicit wait at 0. Reads no input
-        value. A malformed selector raises InvalidSelector; any other error gives None."""
+        mendwright.fingerprint), or None when it matches none or several; with hosts=True,
+        with the shadow hosts around the element under shadowHosts too (see
+        mendwright.shadow.with_hosts). One round trip (execute_script), inside the frame
+        chain with the implicit wait at 0. Reads no input value. A malformed selector raises
+        InvalidSelector; any other error gives None."""
         def op():
             els = self._find_all(selector)
             if len(els) != 1:
                 return None
-            return from_raw(self._driver.execute_script(
-                'return (' + FINGERPRINT_JS + ')([arguments[0]]);', els[0]))
+            raw = self._driver.execute_script(
+                'return (' + FINGERPRINT_JS + ')([arguments[0]]);', els[0])
+            return with_hosts(from_raw(raw), raw) if hosts else from_raw(raw)
 
         return self._read(selector, frame_chain, op, None)
 
@@ -765,6 +816,40 @@ class SeleniumDriver:
         except Exception:
             return []
         return inventory_rows(raw, limit)
+
+    # --- open shadow roots (see mendwright.shadow) -----------------------------------------
+
+    def shadow_html(self, hosts):
+        """The HTML in the open shadow root that hosts (CSS selectors, outermost first) lead
+        to in the current document, or None when they lead to none. One round trip."""
+        try:
+            out = self._driver.execute_script(_SHADOW_HTML, [host_css(h) for h in hosts])
+        except Exception:
+            return None
+        return out if isinstance(out, str) else None
+
+    def shadow_inventory(self, hosts, limit=200):
+        """inventory() of the open shadow root that hosts lead to, [] when they lead to none.
+        One round trip."""
+        try:
+            raw = self._driver.execute_script(_SHADOW_INVENTORY, {
+                'hosts': [host_css(h) for h in hosts], 'limit': limit})
+        except Exception:
+            return []
+        return inventory_rows(raw, limit)
+
+    def shadow_matches(self, selector):
+        """(roots, cut) for the open shadow roots of the current document (see
+        PlaywrightSyncDriver.shadow_matches). One round trip. ([], False) for a selector
+        Selenium cannot run, or a read that failed. A malformed one raises InvalidSelector."""
+        arg = shadow_arg(selector)
+        if arg is None:
+            return [], False
+        try:
+            raw = self._driver.execute_script(_SHADOW_ROOTS, arg)
+        except Exception:
+            return [], False
+        return roots_of(raw)
 
     # --- popups, for open(dismiss=True) (see mendwright.dismiss) ---------------------------
 
@@ -893,8 +978,8 @@ class SeleniumFrameDriver:
     def describe(self, selector, frame_chain=()):
         return self._base.describe(selector, self._in(frame_chain))
 
-    def fingerprint(self, selector, frame_chain=()):
-        return self._base.fingerprint(selector, self._in(frame_chain))
+    def fingerprint(self, selector, frame_chain=(), *, hosts=False):
+        return self._base.fingerprint(selector, self._in(frame_chain), hosts=hosts)
 
     def visible_match(self, selector, frame_chain=()):
         return self._base.visible_match(selector, self._in(frame_chain))

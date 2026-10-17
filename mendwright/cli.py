@@ -560,6 +560,9 @@ def collect_report(path):
                    'last_success': c.get('lastSucceededAt'), 'added': c.get('addedAt')}
             if c.get('frameXPath'):
                 row['frame'] = str(c['frameXPath'])
+            if c.get('shadowHosts'):
+                from .shadow import hosts_of
+                row['shadow'] = [h if h else None for h in hosts_of(c)]
             if isinstance(c.get('css'), str) and c['css']:
                 row['css'] = c['css']
             if c.get('list') is True:
@@ -690,6 +693,9 @@ def _report_text(r):
             lines.append('  ' + c['status'].ljust(11) + ' ' + c['source'].ljust(4) + '  '
                          + c['selector'] + frame + '  (last success: ' + _when(c['last_success'])
                          + ')')
+            if c.get('shadow'):
+                from .shadow import place_text
+                lines.append('  ' + ' ' * 18 + 'inside ' + place_text(c['shadow']))
             if c.get('css'):
                 lines.append('  ' + ' ' * 18 + 'as CSS: ' + c['css'])
             if list_note(c, seeded):
@@ -742,6 +748,9 @@ def _report_md(r):
                 selector = _md_code(c['selector'])
                 if c.get('frame'):
                     selector += ' in frame ' + _md_code(c['frame'])
+                if c.get('shadow'):
+                    selector += (' inside the shadow root of '
+                                 + ' inside '.join(_md_code(h or '?') for h in reversed(c['shadow'])))
                 if c.get('css'):
                     selector += ' (as CSS: ' + _md_code(c['css']) + ')'
                 if list_note(c, seeded):

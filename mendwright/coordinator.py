@@ -68,6 +68,9 @@ FINGERPRINT_PROVIDER = 'fingerprint'
 # The source of a key's own selector that matched inside an iframe and is now looked up
 # there (see Healer.locator): no model and no new selector, only a new place.
 FRAME_PROVIDER = 'frame'
+# The source of a key's own selector that matched only inside an open shadow root and is now
+# looked up there, as CSS (see Healer._follow_into_shadow and mendwright.shadow).
+SHADOW_PROVIDER = 'shadow'
 
 
 def _no_fingerprint(selector_key):
@@ -288,6 +291,12 @@ class HealCoordinator:
         self.entry = entry
         # The selector of the iframe a heal runs in (see scoped()), saved with what it applies.
         self.frame_xpath = None
+        # The hosts of the open shadow root a heal runs in (see scoped() and
+        # mendwright.shadow), saved with what it applies, or None for the page.
+        self.shadow_hosts = None
+        # Why no heal may run for the key now, whatever else holds (see refusing()): its
+        # element was last found inside a shadow root that mendwright cannot enter now.
+        self.scope_refusal = None
         # Set by mendwright.open() under MENDWRIGHT_DISABLE=1; stops the iframe follow too.
         self.disabled = False
         # selector_key -> applied_xpath awaiting an action-outcome canary. A dict (not a
@@ -308,13 +317,15 @@ class HealCoordinator:
         self.held = []
 
     @contextlib.contextmanager
-    def scoped(self, driver, frame_xpath):
-        """Heal inside an iframe for the duration: capture, inventory and checks use
-        ``driver``, a driver for the iframe's document, and an applied heal is saved with
-        ``frame_xpath``, the iframe's selector in the page, so the resolver looks for it
-        there. Restores the page's driver afterwards."""
+    def scoped(self, driver, frame_xpath, shadow_hosts=None):
+        """Heal inside an iframe or an open shadow root for the duration: capture, inventory
+        and checks use ``driver``, a driver for the iframe's document or a shadow.ShadowDriver
+        for the shadow root, and an applied heal is saved with ``frame_xpath``, the iframe's
+        selector in the page, or ``shadow_hosts``, the shadow root's hosts, so the resolver
+        looks for it there. Restores the page's driver afterwards."""
         from .drivers import driver_inventory
-        saved = (self.driver, self.html_provider, self.inventory_provider, self.frame_xpath)
+        saved = (self.driver, self.html_provider, self.inventory_provider, self.frame_xpath,
+                 self.shadow_hosts)
 
         def html():
             try:
@@ -326,10 +337,42 @@ class HealCoordinator:
         self.html_provider = html
         self.inventory_provider = lambda: driver_inventory(driver)
         self.frame_xpath = frame_xpath
+        self.shadow_hosts = tuple(shadow_hosts) if shadow_hosts else None
         try:
             yield self
         finally:
-            self.driver, self.html_provider, self.inventory_provider, self.frame_xpath = saved
+            (self.driver, self.html_provider, self.inventory_provider, self.frame_xpath,
+             self.shadow_hosts) = saved
+
+    @contextlib.contextmanager
+    def refusing(self, reason):
+        """Decline every heal with ``reason`` for the duration, after the checks for a key
+        marked destructive and the page guard: the key's element was last found inside an
+        open shadow root that mendwright cannot enter now, or one it does not heal in, such as
+        a shadow root inside an iframe (see Healer._heal_scope). Neither the fingerprint tier
+        nor a model then looks for it on the page outside that shadow root."""
+        saved = self.scope_refusal
+        self.scope_refusal = reason
+        try:
+            yield self
+        finally:
+            self.scope_refusal = saved
+
+    def record_shadow(self, selector_key, old, new, hosts):
+        """Journal, remember and log that the key's own selector ``old`` matched only inside
+        the open shadow root that ``hosts`` lead to, and is now saved there as ``new``, the
+        chain of the hosts and a CSS selector (shadow.shadow_text). It counts as a heal (strict
+        mode fails on it, and the canary checks it) with source 'shadow'."""
+        from .shadow import place_text
+        self.journal.applied(selector_key, xpath=new, old=[old], provider=SHADOW_PROVIDER,
+                             model=None, latency_ms=0, source=SHADOW_PROVIDER,
+                             shadow=list(hosts))
+        self.heal_reasons.pop(selector_key, None)
+        self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
+                           'source': SHADOW_PROVIDER})
+        self._emit(logging.WARNING, 'found ' + repr(selector_key) + ' inside '
+                   + place_text(hosts) + ': ' + old + ' matches nothing on the page, so it is '
+                   'looked up there as ' + new + ' from now on')
 
     def record_frame(self, selector_key, old, new, frame):
         """Journal, remember and log that the key's own selector ``old`` matched only inside
@@ -388,6 +431,9 @@ class HealCoordinator:
         moved = self._flow_change(selector_key, context)
         if moved:
             return self._decline(selector_key, moved, code='page_guard')
+        if self.scope_refusal:
+            # Last found inside a shadow root that cannot be entered now: never on the page.
+            return self._decline(selector_key, self.scope_refusal)
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
@@ -508,7 +554,8 @@ class HealCoordinator:
                     level=logging.INFO, code='dry_run')
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
-                                    frame_xpath=self.frame_xpath)
+                                    frame_xpath=self.frame_xpath,
+                                    shadow_hosts=self.shadow_hosts)
             if applied:
                 self._record_applied(selector_key, broken_candidates, applied, started,
                                      type(self.provider).__name__, self._provider_model(),
@@ -569,7 +616,7 @@ class HealCoordinator:
             return None, _no_fingerprint(selector_key), False
         self.journal.requested(selector_key)
         match = _fingerprint.find(stored, html, meta.get('expectedRole'),
-                                  visible=self._live_visible if self.driver is not None else None)
+                                  visible=self._visible_check(html))
         if not match.xpath:
             return None, ("the fingerprint match for '" + selector_key + "' was not confident: "
                           + match.reason), True
@@ -589,7 +636,7 @@ class HealCoordinator:
                 level=logging.INFO, code='dry_run'), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
-                                frame_xpath=self.frame_xpath)
+                                frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts)
         if applied:
             self._record_applied(selector_key, broken_candidates, applied, started,
                                  FINGERPRINT_PROVIDER, None, FINGERPRINT_PROVIDER)
@@ -618,8 +665,9 @@ class HealCoordinator:
         selectors in your code give a list. Returns a ListOutcome; every refusal is recorded
         and logged as a heal that did not apply (see ``explain``).
 
-        In order, it refuses a key marked destructive, a key with no list fingerprint, no live
-        driver or one without list_items(), a list fingerprint without where the list sat
+        In order, it refuses a key marked destructive, a key with no list fingerprint, a list
+        whose items were inside a shadow root (lists.in_shadow), no live driver or one without
+        list_items(), a list fingerprint without where the list sat
         (recorded by 0.8.0, or before a call with nonempty=True matched), a page the key was
         never found on, an unknown role, the guard and a store that can't save a proposal.
         Then it captures the page and looks (lists.find), refuses a group picked by a word
@@ -636,6 +684,11 @@ class HealCoordinator:
                 selector_key, 'mendwright has never seen this list match 2 or more elements, '
                 "so it has nothing to look for. It records a list each time the list's "
                 'selector matches 2 or more.'))
+        if _lists.in_shadow(lfp):
+            return self._list_refused(selector_key, nonempty_unsearched(
+                selector_key, 'The list was inside a shadow root when its list fingerprint was '
+                "recorded, and mendwright looks for a list only in the page's own HTML, where "
+                "it would find another list's items, so it did not look."))
         driver = self.driver
         what = None
         if driver is None:
@@ -829,7 +882,8 @@ class HealCoordinator:
             return None
         if not rows or any(c.get('source') == 'code' for c in rows):
             return None
-        return [c['xpath'] for c in rows if c.get('source') != 'heal' and not c.get('frameXPath')]
+        return [c['xpath'] for c in rows if c.get('source') != 'heal' and not c.get('frameXPath')
+                and not c.get('shadowHosts')]
 
     def _list_heals(self, selector_key):
         """store.list_heals(key), or [] for a store without it, or that raised."""
@@ -958,14 +1012,40 @@ class HealCoordinator:
         except Exception:
             return None
 
+    def _visible_check(self, html):
+        """The fingerprint tier's visible(xpath): _live_visible() on the page or in an iframe,
+        None without a live driver. Inside a shadow root, where no XPath runs, the element
+        the XPath matches in the captured ``html`` is checked through its first CSS form
+        (mendwright.css), and one with none reads as unknown (None)."""
+        if self.driver is None:
+            return None
+        if not self.shadow_hosts:
+            return self._live_visible
+        import lxml.html
+        from .css import css_selectors
+        try:
+            doc = lxml.html.fromstring(html)
+        except Exception:
+            return None
+
+        def visible(xpath):
+            try:
+                hits = [h for h in doc.xpath(xpath) if isinstance(getattr(h, 'tag', None), str)]
+            except Exception:
+                return None
+            forms = css_selectors(hits[0], doc, limit=1) if len(hits) == 1 else []
+            return self._live_visible(forms[0]) if forms else None
+        return visible
+
     def _record_applied(self, selector_key, broken_candidates, applied, started, provider,
                         model, source):
         """Journal, remember and log a heal that was applied."""
         seconds = max(0.0, self.clock() - started)
+        where = {'shadow': list(self.shadow_hosts)} if self.shadow_hosts else {}
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
-                             source=source if source != 'model' else None)
+                             source=source if source != 'model' else None, **where)
         self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
         self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
                            'new': applied, 'confirmed': None, 'source': source})
@@ -1015,20 +1095,26 @@ class HealCoordinator:
             was = old[0]
         else:
             was = old[0] + ' (+' + str(len(old) - 1) + ' more)'
-        self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
+        where = ''
+        if self.shadow_hosts:
+            from .shadow import place_text
+            where = ' inside ' + place_text(self.shadow_hosts)
+        self._emit(logging.WARNING, 'healed ' + repr(selector_key) + where + ': ' + was + ' -> '
                    + applied + timing)
 
     def confirm(self, selector_key, xpath, success, reason=None, *, by=None, test=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
         candidate whose retry failed. A heal from the fingerprint tier, or a key followed
-        into an iframe, is not reported to the provider, which did not propose it. reason,
+        into an iframe or a shadow root, is not reported to the provider, which did not
+        propose it. reason,
         when given, is journaled with the canary (see mendwright.values). by says what
         confirmed or refused the heal ('test', 'expect', 'expect_value', 'confirm', 'action'
         or 'destructive'), and test is the pytest node id for by='test'; both are journaled
         when given, so mendwright fix can say what confirmed each heal it writes back."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
-        if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER):
+        if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER,
+                                                      SHADOW_PROVIDER):
             try:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:

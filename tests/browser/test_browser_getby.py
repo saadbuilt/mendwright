@@ -218,23 +218,29 @@ def test_a_banner_that_hides_the_page_is_handled_before_the_wait(tab, store_file
         ('cookies', 'get_by_role("button", name="Sign in")')]
 
 
+# In a function: set_content() keeps the window, and a second top-level const would throw.
 _SHADOW = """<buy-box id="box"></buy-box>
 <script>
-const root = document.getElementById('box').attachShadow({mode: 'open'});
-root.innerHTML = '<button id="buy" type="button">LABEL</button>';
+(() => {
+  const root = document.getElementById('box').attachShadow({mode: 'open'});
+  root.innerHTML = '<button id="buy" type="button" onclick="done(\\'buy\\')">LABEL</button>';
+})();
 </script>"""
 
 
-def test_a_renamed_element_in_a_shadow_root_is_refused(tab, store_file, stub_provider):
+def test_a_renamed_element_in_a_shadow_root_heals_only_there(tab, store_file, stub_provider):
+    # Its fingerprint and its host were recorded inside the shadow root, and the heal runs
+    # there (see mendwright.shadow), from the fingerprint only, as for any call.
     provider = stub_provider("//button[@id='buy']")
     tab.load(_page(_SHADOW.replace('LABEL', 'Buy now')))
     heal = _open(tab, provider, store_file)
     heal.page.get_by_role('button', name='Buy now').click()
+    assert heal.store.shadow_hosts('get_by_role("button", name="Buy now")') == ['buy-box[id="box"]']
     tab.load(_page(_SHADOW.replace('LABEL', 'Purchase')))
     heal = _open(tab, provider, store_file)
-    with pytest.raises(getby.GetByNotFound, match='was not confident'):
-        heal.page.get_by_role('button', name='Buy now').click()
-    assert heal.heals == [] and provider.bundles == []
+    heal.page.get_by_role('button', name='Buy now').click()
+    assert [(h.source, h.new) for h in heal.heals] == [('fingerprint', 'buy-box[id="box"] >> #buy')]
+    assert tab.text('#done') == 'buy ' and provider.bundles == []
 
 
 _IFRAME = page('<p>Pay below.</p><iframe name="payment" srcdoc="'
