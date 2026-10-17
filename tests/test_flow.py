@@ -521,6 +521,11 @@ def test_at_most_three_interruptions_per_step(side, tmp_path, stub_provider):
     assert page.clicks('css=#cookie-accept') == 3
     assert provider.bundles == []
     assert len(heal.handled_interruptions) == 3
+    # One flow.stop, after the three it handled and before the raise, with no message text.
+    events = [{k: v for k, v in e.items() if k != 'ts'} for e in _events(tmp_path)]
+    assert [e['event'] for e in events] == ['flow.interrupt'] * 3 + ['flow.stop']
+    assert events[-1] == {'event': 'flow.stop', 'key': 'cookies', 'code': 'interruption_loop',
+                          'before': 'email'}
 
 
 def test_an_intercepted_action_is_retried_once_after_the_banner_is_handled(side, tmp_path):

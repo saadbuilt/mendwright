@@ -1986,6 +1986,8 @@ class Healer:
                         return False    # not in the step's way; it may be part of the step
                     uncovered = None
                 if budget.used >= MAX_INTERRUPTIONS_PER_STEP:
+                    journal_event(self.coordinator.journal, 'flow.stop', item.key,
+                                  code='interruption_loop', before=before)
                     raise InterruptionLoop(loop_message(
                         before, item.key, budget.used,
                         function_name(item.run) if item.run is not None else None))
@@ -2415,6 +2417,9 @@ class Healer:
                     budget.gave_up = popup.summary
                     return dismissed
                 if budget.used >= MAX_INTERRUPTIONS_PER_STEP:
+                    # No popup text in the event: the code and the step it was in front of.
+                    journal_event(self.coordinator.journal, 'flow.stop', DISMISS_KEY,
+                                  code='popup_loop', before=before)
                     raise InterruptionLoop(dismiss_loop_message(
                         before, popup.summary, budget.used, DISMISS_KEY in budget.handled))
                 root = driver_popup_root(driver, native, expect_of(popup))
