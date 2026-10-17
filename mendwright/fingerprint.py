@@ -54,11 +54,46 @@ ANCESTOR_ATTRS = ('id', 'class', 'role')
 TEST_ATTRS = ('data-testid', 'data-test', 'data-qa')
 _LOWER = ('type', 'role', 'autocomplete')
 
+# The attributes that can tell a shadow host apart where it sits, best first: the test ids
+# of mendwright.candidates.TEST_ATTRS, then id and name (see mendwright.shadow).
+HOST_ATTRS = ('data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy', 'data-e2e',
+              'data-automation-id', 'id', 'name')
+
+# Helpers for a script that reads where an element is: hostsOf(el) gives the shadow hosts
+# around el, outermost first, each as {tag, attrs, counts}: its tag, the HOST_ATTRS it has,
+# and how many elements of its document or shadow root have its tag (counts.tag), and its
+# tag and that attribute's value (counts[name]). [] for an element on the page itself.
+# isRoot() tells a shadow root by its node type, which holds across frames.
+HOST_FACTS_JS = r"""
+  const isRoot = (r) => !!r && r.nodeType === 11 && !!r.host && r.host.nodeType === 1;
+  const hostFacts = (host) => {
+    const scope = host.getRootNode();
+    const tag = host.localName;
+    const same = Array.from(scope.querySelectorAll('*')).filter((e) => e.localName === tag);
+    const attrs = {}, counts = {tag: same.length};
+    for (const name of """ + '[' + ', '.join("'" + a + "'" for a in HOST_ATTRS) + ']' + r""") {
+      const v = host.getAttribute(name);
+      if (v === null) continue;
+      attrs[name] = v;
+      counts[name] = same.filter((e) => e.getAttribute(name) === v).length;
+    }
+    return {tag: tag, attrs: attrs, counts: counts};
+  };
+  const hostsOf = (el) => {
+    const out = [];
+    for (let r = el.getRootNode(); isRoot(r); r = r.host.getRootNode()) out.unshift(hostFacts(r.host));
+    return out;
+  };
+"""
+
 # One round trip: Playwright's locator.evaluate_all() passes the matches as an array, and
 # Selenium runs it as (FINGERPRINT_JS)([element]). null unless exactly one element matched.
+# hosts is where the element is (HOST_FACTS_JS), which from_raw() leaves out of the
+# fingerprint and mendwright.shadow.with_hosts() reads. A label is looked for in the
+# element's own document or shadow root, as raw_of_element() does in the HTML it has.
 FINGERPRINT_JS = r"""(els) => {
   if (!els || els.length !== 1) return null;
-  const el = els[0];
+  const el = els[0];""" + HOST_FACTS_JS + r"""
   const read = (e, names) => {
     const out = {};
     for (const n of names) { const v = e.getAttribute(n); if (v !== null) out[n] = v; }
@@ -76,7 +111,10 @@ FINGERPRINT_JS = r"""(els) => {
     } else {
       const id = el.getAttribute('id');
       if (id) {
-        for (const l of el.ownerDocument.getElementsByTagName('label')) {
+        const root = el.getRootNode();
+        const labels = isRoot(root) ? root.querySelectorAll('label')
+          : el.ownerDocument.getElementsByTagName('label');
+        for (const l of labels) {
           if (l.getAttribute('for') === id) { label = l.textContent; break; }
         }
       }
@@ -94,7 +132,7 @@ FINGERPRINT_JS = r"""(els) => {
           'data-test', 'data-qa', 'aria-label', 'placeholder', 'title', 'alt', 'href',
           'autocomplete']),
           field: field, text: field ? null : el.textContent, label: label,
-          ancestors: ancestors};
+          ancestors: ancestors, hosts: hostsOf(el)};
 }"""
 
 # XPath's normalize-space() collapses only these, so a non-breaking space stays text.

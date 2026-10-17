@@ -1,0 +1,80 @@
+{
+  "name": "mendwright",
+  "version": "0.1.0",
+  "description": "Self-healing selectors for Playwright Test. When a selector breaks, mendwright finds the element again from a saved fingerprint or asks a model, checks the new selector against the live page, and retries the step.",
+  "license": "MIT",
+  "author": "saadbuilt",
+  "homepage": "https://github.com/saadbuilt/mendwright/tree/main/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saadbuilt/mendwright.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/saadbuilt/mendwright/issues"
+  },
+  "keywords": [
+    "playwright",
+    "playwright-test",
+    "selectors",
+    "locators",
+    "xpath",
+    "self-healing",
+    "self-healing-tests",
+    "test-automation",
+    "e2e-testing",
+    "flaky-tests"
+  ],
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "test": [
+        "./dist/test.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./test": {
+      "types": "./dist/test.d.ts",
+      "default": "./dist/test.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('build', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test \"build/test/unit/**/*.test.js\"",
+    "test:browser": "npm run build && playwright test"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/jsdom": "28.0.3",
+    "@types/node": "22.19.0",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.3"
+  }
+}

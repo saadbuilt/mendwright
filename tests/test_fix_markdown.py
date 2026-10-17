@@ -250,6 +250,12 @@ def _list_key(status, was=(".c",), code=(".c",), at=T1, **extra):
                   "candidates": [cand(c, "code", T0) for c in code] + [row], **extra}}
 
 
+def _shadow_key(key="k", old="#a"):
+    """A key whose heal sits inside a shadow root (see tests/test_fix_shadow.py)."""
+    return {key: {"expectedRole": "button", "candidates": [
+        cand(old, "code", T0), cand("my-app >> #b", "heal", T1, shadowHosts=["my-app"])]}}
+
+
 CODE_CASES = {
     "destructive": (_one(destructive=True), [canary("k", NEW)], {"a.py": 'x = "#a"\n'}, []),
     "iframe": ({"k": {"expectedRole": "button", "candidates": [
@@ -280,6 +286,10 @@ CODE_CASES = {
     "not_python": (_one(), [canary("k", NEW)], {"a.py": 'x = "#a"\nif\n'}, []),
     "css_only": (_one(), [canary("k", NEW)],
                  {"a.py": 'driver.find_element(By.CSS_SELECTOR, "#a")\n'}, []),
+    "shadow_driver": (_shadow_key(key="css selector=#a"), [canary("css selector=#a", "my-app >> #b")],
+                      {"a.py": 'driver.find_element(By.CSS_SELECTOR, "#a")\n'}, []),
+    "shadow_call": (_shadow_key(), [canary("k", "my-app >> #b")],
+                    {"a.py": 'heal.locator("k", "#a")\n'}, []),
     "no_escape": (_one(new="//button[@id=\"new\"]"), [canary("k", "//button[@id=\"new\"]")],
                   {"a.go": 'sel := "#a"\n'}, ["--glob", "*.go"]),
     "flow_selector": (_one(), [canary("k", NEW)], {"a.py": 'heal.interrupt("i", "#a")\n'}, []),
@@ -314,11 +324,12 @@ def test_every_left_alone_code_with_the_text_of_the_text_output(root, capsys, co
     assert [i["code"] for i in data["left_alone"]] == (
         [code] + (["not_found"] if code == "not_python" else []))
     item = data["left_alone"][0]
-    if code in ("ambiguous", "not_python", "css_only", "no_escape", "flow_selector"):
+    if code in ("ambiguous", "not_python", "css_only", "no_escape", "flow_selector",
+                "shadow_call"):
         assert item["key"] is None and item["path"] in ("a.py", "a.go")
         assert (item["line"] is None) == (code == "not_python")
     else:
-        assert item["key"] in ("k", "id=login", CALL) and item["path"] is None
+        assert item["key"] in ("k", "id=login", CALL, "css selector=#a") and item["path"] is None
         assert item["line"] is None
     assert code in fixback.CODES
 

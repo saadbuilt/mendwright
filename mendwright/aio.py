@@ -63,8 +63,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
-from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
-                           unsupported_message)
+from .drivers.base import (NOWHERE, PLACED, _member, _takes_place, css_pierces, is_async_api,
+                           is_driver, looks_like_locator, takes_keyword, unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -78,14 +78,16 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
                      _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
-                     latest_success)
+                     HealScope, follow_allowed, heal_place, moved_message, shadow_found,
+                     shadow_unreachable, ABSENT_ANSWERS)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
 from .limits import Guardrails
-from .resolver import (THROUGH, _frame_chain, _no_match_message, _require_visible,
-                       _split_runnable)
-from .selectors import XPATH, InvalidSelector, classify
+from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runnable,
+                       _target)
+from .selectors import CSS, XPATH, InvalidSelector, classify
+from .shadow import driver_shadowed
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
 
@@ -106,6 +108,15 @@ async def _awaited(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _placement(driver, native, hosts):
+    """facade._placement(), awaited: driver.placement(native, hosts), or PLACED or None from
+    placed() on a driver that has only that."""
+    placement = getattr(driver, 'placement', None)
+    if callable(placement):
+        return await _awaited(placement(native, hosts))
+    return PLACED if await _awaited(driver.placed(native, hosts)) else None
 
 
 def _registering(shared):
@@ -175,10 +186,9 @@ async def _in_thread(fn, *args):
 
 
 def _scoped_heal(scope, resolve_fn, coordinator, key, meta, context):
-    """resolve_with_heal() with the coordinator scoped to an iframe (see
-    HealCoordinator.scoped). Runs in a worker thread."""
-    frame, bridge = scope
-    with coordinator.scoped(bridge, frame):
+    """resolve_with_heal() with the coordinator scoped to an iframe or an open shadow root,
+    or refusing the heal (see facade.HealScope). Runs in a worker thread."""
+    with scope.entered(coordinator):
         return resolve_with_heal(resolve_fn, coordinator, key, meta, context)
 
 
@@ -200,7 +210,8 @@ class SyncBridge:
     (popup_probe and the others), run() for any other callable, and wait() for a run=
     function of heal.interrupt(). describe, fingerprint, role_match, visible_match,
     list_items, list_fingerprint and the popup methods are None when the async driver has
-    none, and list_fingerprint takes no place= when the async driver's does not."""
+    none, and list_fingerprint takes no place= when the async driver's does not.
+    pierces_shadow is the async driver's (see drivers.base.css_pierces)."""
 
     timeout = 30.0
 
@@ -231,6 +242,11 @@ class SyncBridge:
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
+        for name in _SHADOW_METHODS:
+            if not callable(_member(driver, name)):
+                setattr(self, name, None)   # no heal runs inside a shadow root
+        # Whether the async driver's CSS pierces open shadow roots (base.css_pierces).
+        self.pierces_shadow = css_pierces(driver)
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -304,8 +320,8 @@ class SyncBridge:
     def inventory(self, limit=200):
         return self.run(self._driver.inventory, limit)
 
-    def fingerprint(self, selector, frame_chain=()):
-        return self.run(self._driver.fingerprint, selector, frame_chain)
+    def fingerprint(self, selector, frame_chain=(), **options):
+        return self.run(self._driver.fingerprint, selector, frame_chain, **options)
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
@@ -350,9 +366,21 @@ class SyncBridge:
     def popup_release(self, root):
         return self.run(self._driver.popup_release, root)
 
+    # Open shadow roots (see mendwright.shadow). None when the async driver has none.
+
+    def shadow_html(self, hosts):
+        return self.run(self._driver.shadow_html, hosts)
+
+    def shadow_inventory(self, hosts, limit=200):
+        return self.run(self._driver.shadow_inventory, hosts, limit)
+
+    def shadow_matches(self, selector):
+        return self.run(self._driver.shadow_matches, selector)
+
 
 _POPUP_METHODS = ('popup_probe', 'popup_root', 'popup_controls', 'popup_click', 'press_escape',
                   'popup_release')
+_SHADOW_METHODS = ('shadow_html', 'shadow_inventory', 'shadow_matches')
 
 
 # --- opening -------------------------------------------------------------------------------
@@ -475,7 +503,7 @@ def _quiet_framed(driver):
 async def _match_handle(driver, candidate, require_visible):
     """resolver._match_handle, awaited: the native handle if the candidate matches exactly
     one (visible) element, else None. InvalidSelector propagates."""
-    selector, fc = candidate['xpath'], _frame_chain(candidate)
+    selector, fc = _target(candidate)
     try:
         if (await driver.count(selector, fc)) == 1 and (
                 not require_visible or await driver.is_visible(selector, fc)):
@@ -576,7 +604,7 @@ class AsyncHealer:
         recorded in the store."""
         async with self._turn():
             require_visible = _require_visible(self.store, key)
-            runnable, _errors = _split_runnable(key, self.store.candidates(key))
+            runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
             for candidate in runnable:
                 try:
                     native = await _match_handle(self._driver, candidate, require_visible)
@@ -712,7 +740,8 @@ class AsyncHealer:
         async with self._turn():
             natives = await self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
-        return [_guarded(self, key, native, timeout, due) for native in natives]
+        hosts = self._core._shadow_place(key, self._driver) if natives else None
+        return [_guarded(self, key, native, timeout, due, hosts) for native in natives]
 
     async def _list_look(self, key, runnable):
         """Healer._list_look(), awaited."""
@@ -839,7 +868,7 @@ class AsyncHealer:
             store = self.store
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)
-            runnable, errors = _split_runnable(key, candidates)
+            runnable, errors = _split_runnable(key, candidates, self._driver)
             for candidate in runnable:
                 try:
                     if await _match_handle(self._driver, candidate, require_visible) is not None:
@@ -941,6 +970,7 @@ class AsyncHealer:
                     native = None
                 else:
                     proxy._healed = self._core._healed(proxy._key)
+                    proxy._hosts = self._core._shadow_place(proxy._key, self._driver)
                 proxy._native = native
         return proxy._native
 
@@ -970,6 +1000,8 @@ class AsyncHealer:
                 core._record_skip(key, skip)
                 return _ABSENT
             native = await self._follow_into_frame(key, exc, attempt)
+            if native is _NOT_FOLLOWED:
+                native = await self._follow_into_shadow(key, exc, attempt)
             if native is _NOT_FOLLOWED:
                 native = await self._heal(key, exc, attempt)
         await self._check_healed_target(key)
@@ -1037,6 +1069,7 @@ class AsyncHealer:
         proxy._native = native
         proxy._healed = core._healed(key)
         proxy._canary = proxy._healed is not None
+        proxy._hosts = core._shadow_place(key, self._driver)
 
     def _get_by_through(self, proxy, target, why):
         """Leave proxy on the real Locator of a call that goes to Playwright as written:
@@ -1072,7 +1105,8 @@ class AsyncHealer:
         store, driver = self.store, self._driver
         require_visible = _require_visible(store, key)
         candidates = store.candidates(key)
-        runnable, errors = _split_runnable(key, [c for c in candidates if c.get('xpath') != key])
+        runnable, errors = _split_runnable(
+            key, [c for c in candidates if c.get('xpath') != key], driver)
         deadline = self._clock() + timeout_ms / 1000.0
         while True:
             try:
@@ -1101,7 +1135,7 @@ class AsyncHealer:
                     continue
                 if handle is not None:
                     try:
-                        await driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                        await driver.scroll_into_view(*_target(candidate))
                     except Exception:
                         pass
                     store.record_success(key, candidate['xpath'])
@@ -1120,7 +1154,7 @@ class AsyncHealer:
         if count >= 1:
             return count == 1 and (not require_visible or bool(visible))
         runnable, _errors = _split_runnable(key, [c for c in self.store.candidates(key)
-                                                  if c.get('xpath') != key])
+                                                  if c.get('xpath') != key], self._driver)
         for candidate in runnable:
             try:
                 if await _match_handle(self._driver, candidate, require_visible) is not None:
@@ -1381,8 +1415,10 @@ class AsyncHealer:
             await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending, key,
                                                False, None, xpath, by='destructive'))
         else:
+            # A heal saved before the key was marked: by says why, so mendwright notify
+            # does not call the repair wrong.
             self.store.quarantine(key, xpath)
-            coordinator.journal.quarantine(key, xpath=xpath)
+            coordinator.journal.quarantine(key, xpath=xpath, by='destructive')
         raise _healed_target_error(key, xpath, core._locked(key))
 
     async def _resolve(self, key, timeout_ms, poll_ms):
@@ -1393,7 +1429,7 @@ class AsyncHealer:
         candidates = store.candidates(key)
         if not candidates:
             raise AttentionRequired('No selector candidates for: ' + key)
-        runnable, errors = _split_runnable(key, candidates)
+        runnable, errors = _split_runnable(key, candidates, driver)
         if not runnable:
             raise errors[0]
         require_visible = _require_visible(store, key)
@@ -1410,7 +1446,7 @@ class AsyncHealer:
                     continue
                 if handle is not None:
                     try:
-                        await driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                        await driver.scroll_into_view(*_target(candidate))
                     except Exception:
                         pass
                     store.record_success(key, candidate['xpath'])
@@ -1446,12 +1482,61 @@ class AsyncHealer:
             core._frame_stop(key, exc, selector, frames, opener, why)
         return await attempt()
 
+    async def _follow_into_shadow(self, key, exc, attempt):
+        """Healer._follow_into_shadow(), with the shadow root reads awaited and the live check
+        and the store write in a worker thread (through the coordinator's SyncBridge)."""
+        __tracebackhide__ = True
+        core = self._core
+        if not callable(_member(self._driver, 'shadow_matches')):
+            return _NOT_FOLLOWED
+        pierces = css_pierces(self._driver)
+        selectors = core._frame_candidates(key)
+        matches = []
+        for selector in selectors:
+            if pierces and classify(selector) == CSS:
+                continue        # what Playwright's CSS matches there, it matches on the page
+            try:
+                roots, cut = await _awaited(self._driver.shadow_matches(selector))
+            except Exception:
+                continue
+            found = shadow_found(selector, roots)
+            if found and follow_allowed(core.store, key, found):
+                matches.append((selector, found, cut))
+        if not matches:
+            return _NOT_FOLLOWED
+        for selector in selectors:      # one that matches on the page may be the element
+            try:
+                if await _awaited(self._driver.count(selector)) != 0:
+                    return _NOT_FOLLOWED
+            except Exception:
+                return _NOT_FOLLOWED
+        selector, found, root = core._pick_shadow(key, exc, matches)
+        core._frame_guard(key, exc, await _url(self._driver))
+        why = await _in_thread(core._shadow_follow, key, selector, root, self.coordinator.driver)
+        if why:
+            core._shadow_stop(key, exc, selector, found, why)
+        return await attempt()
+
     async def _heal_scope(self, key):
-        """Healer._heal_scope(), with the iframe's driver made on the event loop and wrapped
-        in a SyncBridge for the heal core."""
-        best = latest_success(self.store, key)
-        frame = best.get('frameXPath') if best else None
-        if not isinstance(frame, str) or not frame or not callable(_member(self._driver, 'framed')):
+        """Healer._heal_scope(), with the iframe's driver made, and the shadow root's hosts
+        tried, on the event loop, and wrapped for the heal core: a SyncBridge for the iframe,
+        a ShadowDriver over the coordinator's SyncBridge for the shadow root."""
+        frame, hosts, why = heal_place(self.store, key)
+        if why:
+            return HealScope(hosts=hosts, why=why)
+        if hosts:
+            reaches = callable(_member(self._driver, 'shadow_html'))
+            shadowed = driver_shadowed(self.coordinator.driver, hosts) if reaches else None
+            entered = False
+            if shadowed is not None:
+                try:
+                    entered = isinstance(await _awaited(self._driver.shadow_html(hosts)), str)
+                except Exception:
+                    entered = False
+            why = shadow_unreachable(key, hosts, shadowed is not None, entered)
+            return HealScope(hosts=hosts, why=why) if why else HealScope(hosts=hosts,
+                                                                          driver=shadowed)
+        if not frame or not callable(_member(self._driver, 'framed')):
             return None
         try:
             framed = await _awaited(self._driver.framed(frame))
@@ -1459,7 +1544,7 @@ class AsyncHealer:
             return None
         if framed is None:
             return None
-        return frame, SyncBridge(framed, asyncio.get_running_loop())
+        return HealScope(frame=frame, driver=SyncBridge(framed, asyncio.get_running_loop()))
 
     async def _heal(self, key, exc, attempt):
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
@@ -1480,7 +1565,8 @@ class AsyncHealer:
         if scope is None:
             await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
         else:
-            # The key was last found inside an iframe: capture, check and save the heal there.
+            # The key was last found inside an iframe or a shadow root: capture, check and
+            # save the heal there, or refuse it.
             await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta, context)
         return await attempt()
 
@@ -1499,9 +1585,13 @@ class AsyncHealer:
         if target is None:
             return
         fp = None
-        if callable(_member(self._driver, 'fingerprint')):
+        method = _member(self._driver, 'fingerprint')
+        if callable(method):
+            # With hosts=True when it takes it: where the element is (see mendwright.shadow).
+            options = {'hosts': True} if takes_keyword(method, 'hosts') else {}
             try:
-                fp = await _awaited(self._driver.fingerprint(target, core._winner_target(key)[1]))
+                fp = await _awaited(self._driver.fingerprint(*core._winner_target(key),
+                                                             **options))
             except Exception:
                 fp = None
         core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)
@@ -1638,6 +1728,9 @@ class AsyncActionProxy:
     # (GetByCall, real Locator) for a heal.page.get_by_*() call (see
     # AsyncHealer._get_by_locator), else None.
     _get_by = None
+    # The CSS of the shadow hosts of the shadow root the element was found in, as on
+    # ActionProxy (see Healer._shadow_place), else None.
+    _hosts = None
 
     def __init__(self, healer: AsyncHealer, key: str, plan: tuple) -> None:
         self._healer = healer
@@ -1709,6 +1802,7 @@ class AsyncActionProxy:
         self._reads_due[0] = False      # its reads need not look again (see _before_read)
         await healer._dismiss_before(self._key, native, verb, budget, timeout, poll_ms)
         with healer._core._running(self._key, budget, timeout, poll_ms):
+            await self._wait_placed(verb)
             try:
                 result = await _act_on(healer._driver, native, verb, *args, **kwargs)
             except _USAGE_ERRORS:
@@ -1724,6 +1818,7 @@ class AsyncActionProxy:
                         healer._core._report_nothing_matched(self._key)
                     await self._failed(exc)  # the browser action failed
                     raise
+                await self._wait_placed(verb)
                 try:
                     result = await _act_on(healer._driver, native, verb, *args, **kwargs)
                 except _USAGE_ERRORS:
@@ -1740,6 +1835,33 @@ class AsyncActionProxy:
                 ok = False
             await self._confirm(ok, 'expect')
         return result
+
+    async def _wait_placed(self, verb):
+        """ActionProxy._wait_placed(), awaited: for an element found inside a shadow root,
+        wait up to the proxy's timeout until its Locator matches one element and that one
+        inside the shadow root, right before an action or a read; else AttentionRequired.
+        Returns True when the action or read may run, and False at once for is_visible()
+        and is_hidden() (ABSENT_ANSWERS) when the Locator matches nothing at all, which then
+        answer as Playwright's do."""
+        __tracebackhide__ = True  # pytest shows the caller
+        hosts = self._hosts
+        if not hosts:
+            return True
+        driver, answers = self._healer._driver, verb in ABSENT_ANSWERS
+        timeout, poll_ms = self._plan[4], self._plan[5]
+        deadline = time.monotonic() + timeout / 1000.0
+        while True:
+            try:
+                where = await _placement(driver, self._native, hosts)
+            except Exception:
+                where = None
+            if where == PLACED:
+                return True
+            if where == NOWHERE and answers:
+                return False
+            if time.monotonic() >= deadline:
+                raise AttentionRequired(moved_message(self._key, hosts, verb))
+            await asyncio.sleep(max(poll_ms, 20) / 1000.0)
 
     async def _failed(self, error):
         """ActionProxy._failed(), awaited: report a failed action to the heal canary, unless
@@ -1833,12 +1955,15 @@ class AsyncActionProxy:
             checked = (name in VALUE_READS and self.__dict__.get('_expect') is not None
                        and self.__dict__.get('_healed') is not None)
             handles = name in LOCATOR_READS and self._healer._handles_reads()
-            if not callable(attr) or not (checked or handles):
+            placed = name in LOCATOR_READS and bool(self.__dict__.get('_hosts'))
+            if not callable(attr) or not (checked or handles or placed):
                 return attr
 
             async def read(*args, **kwargs):
                 if handles:
                     await self._before_read()
+                if placed and not await self._wait_placed(name):
+                    return ABSENT_ANSWERS[name]     # matches nothing (see _wait_placed)
                 value = await _awaited(attr(*args, **kwargs))
                 return await self._checked(name, args, value) if checked else value
             read.__name__ = name
@@ -1858,6 +1983,8 @@ class AsyncActionProxy:
                     + name)
             if name in LOCATOR_READS and self._healer._handles_reads():
                 await self._before_read()
+            if name in LOCATOR_READS and not await self._wait_placed(name):
+                return ABSENT_ANSWERS[name]         # matches nothing (see _wait_placed)
             value = await _awaited(attr(*args, **kwargs))
             return await self._checked(name, args, value) if name in VALUE_READS else value
 
@@ -1888,16 +2015,18 @@ class AsyncActionProxy:
         return '<AsyncActionProxy key=' + repr(self._key) + ' native=' + native + '>'
 
 
-def _guarded(healer, key, native, timeout_ms=None, due=None):
+def _guarded(healer, key, native, timeout_ms=None, due=None, hosts=None):
     """An AsyncActionProxy on a Locator mendwright did not resolve, for heal.page's
     guard-only locators with open(dismiss=True) (see mendwright.proxies.GuardedLocator), and
     for the elements of a list (AsyncHealer.locator_all): its actions get the checks of
     AsyncActionProxy._act, and nothing is healed, confirmed or saved. due, when given, is
-    shared by the elements of one lookup (see AsyncActionProxy._before_read)."""
+    shared by the elements of one lookup (see AsyncActionProxy._before_read), and hosts are
+    those of the shadow root a list was found in (see Healer._shadow_place)."""
     timeout = healer.timeout_ms if timeout_ms is None else timeout_ms
     proxy = AsyncActionProxy(healer, key, ((), None, None, None, timeout, 200, False, None))
     proxy._native = native
     proxy._canary = False
+    proxy._hosts = hosts
     if due is not None:
         proxy._reads_due = due
     return proxy

@@ -59,7 +59,7 @@ In the Actions tab, open Release, click Run workflow and choose `main`. It build
 
    The reinstall matters. `mendwright.__version__` is read from the installed package metadata, so an old editable install still reports the previous version and `tests/test_version.py` fails.
 5. Open a pull request, wait for CI to pass, and merge it to `main`.
-   The same tag releases the GitHub Action (`action.yml` at the root). Its pinned actions must be the ones `ci.yml` and `release.yml` use, which `tests/test_action_yml.py` checks. Before tagging a release that changes `action.yml` or `action/`, run the action once against a scratch repository with a real token, through a run that creates the pull request, one that updates it, one that leaves it unchanged and one that closes it: the offline tests push over the file protocol and never reach GitHub's HTTP authentication or its API.
+   The same tag releases the GitHub Action (`action.yml` at the root). Its pinned actions must be the ones `ci.yml` and `release.yml` use, which `tests/test_action_yml.py` checks. Before tagging a release that changes `action.yml` or `action/`, run the action once against a scratch repository with a real token, through a run that creates the pull request, one that updates it, one that leaves it unchanged and one that closes it: the offline tests push over the file protocol and never reach GitHub's HTTP authentication or its API. Give one of those runs a `webhook-url` secret for a test channel and check that the alert arrives and that the job log shows the URL as `***`: the offline tests post to a local server, not to a real webhook.
 6. Tag the merge commit and push the tag:
 
    ```
@@ -120,3 +120,24 @@ From 0.3.1 on, follow Each release.
 
 - The build job failed: nothing was uploaded. Fix the problem on `main`, delete the tag (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), and tag the fixed commit.
 - The PyPI upload failed partway, or a broken release went out: release X.Y.Z+1. Deleting the tag doesn't help, because PyPI won't take X.Y.Z again. You can yank the broken version on PyPI (Manage, Releases, Options, Yank). Yanking hides it from new installs but keeps it available to anyone who pinned it.
+
+## The npm package
+
+The TypeScript package in `js/` goes to npm from `.github/workflows/release-npm.yml`, through npm's trusted publishing, so no npm token is stored either. Nothing triggers that workflow yet: it runs only by hand (Actions, Release npm, Run workflow).
+The Python sdist and wheel never hold `js/`: the wheel has only the `mendwright` package, and `MANIFEST.in` prunes `js` last (`tests/test_package_files.py` checks both).
+
+- With publish off, it builds and tests `js/` and packs it, and uploads nothing. Use this as a rehearsal.
+- With publish on, it does the same, then publishes the packed file once you approve the `npm` environment. The package gets npm provenance: a signed statement, shown on its npm page, that this workflow built it from this commit.
+
+The name `mendwright` is reserved on npm with a 0.0.1 placeholder. Before the first upload from the workflow:
+
+1. On npmjs.com, open the settings of the package `mendwright`, and add a trusted publisher: GitHub Actions, owner `saadbuilt`, repository `mendwright`, workflow `release-npm.yml`, environment `npm`.
+2. In the repository's Settings, Environments, create `npm` with Required reviewers, as for `pypi`.
+
+Each release:
+
+1. Set the version in `js/package.json` and in `version` in `js/src/index.ts` (the unit suite checks they match), and date its section in `js/CHANGELOG.md`.
+2. In `js/`, run `npm install` (so `package-lock.json` carries the version), `npm test` and `npm run test:browser`.
+3. Merge to `main`. Run Release npm from `main` with publish on, and approve `npm` when the publish job asks.
+
+npm never takes the same version twice, so if anything goes wrong after an upload, the fix is a new version number. The workflow stops before building if the version is on npm already.

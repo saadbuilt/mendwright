@@ -101,6 +101,19 @@ If you change `mendwright/prompt.py`, make the same change in `examples/heal_gat
 python -m pytest tests/test_prompt.py tests/test_gateway_worker.py
 ```
 
+### The TypeScript package
+
+`js/` is the npm package, a port of `heal.locator()` and `heal.page` that reads and writes the same store and journal. Its unit suite runs the Python package from this checkout (Python 3.12 or later, with lxml) to check that both give the same scores, prompt and task text, run ids and decline codes, and share one store file, `shadowHosts` and list heals included:
+
+```bash
+cd js
+npm ci
+npm test
+npm run test:browser
+```
+
+When the store, the journal, the fingerprint or the prompt changes in the Python package, change `js/` to match, or make it refuse what it does not support, as it refuses to heal a key last found inside a shadow root.
+
 ## Lint
 
 ```bash
@@ -146,10 +159,11 @@ The modules:
 - `store.py` and `roles.py`: the seed and override layers, candidate status, per-key metadata, the lock file and the merge; and the role vocabulary.
 - `capture.py`: `build_bundle()`, `redact()` and `clean_html()`.
 - `providers/`: the `HealProvider` protocol (`base.py`), the built-in providers, `auto_provider()` (`detect.py`) and the error text (`_errors.py`). `prompt.py` holds the one prompt every provider uses.
-- `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal.
+- `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal, with the run id every event gets (`run_id()`).
+- `runsummary.py` and `notify.py`: `mendwright notify`. `runsummary.select()` picks the events of one run and `summarize()` and `message()` sum them up in mendwright's own words; `notify.payload()` builds what is sent and `notify.send()` makes the one POST, with no redirect and one retry.
 - `publish.py`: writes a confirmed selector into a seed JSON file.
 - `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel. `fixback.py` is `mendwright fix`, its JSON and its Markdown, `report_html.py` is `mendwright report --format html`, and `_md.py` puts text from a store or a journal into Markdown, in code spans and code blocks.
-- `action.yml` and `action/` (not part of the package): the GitHub Action. `action/mendwright_action.py` holds its steps, standard library only, and `action/requirements.txt` the one hash-pinned lxml wheel it installs. `tests/test_action_script.py` runs the steps against a real git repository and a fake GitHub API.
+- `action.yml` and `action/` (not part of the package): the GitHub Action. `action/mendwright_action.py` holds its steps (the alert's included), standard library only, and `action/requirements.txt` the one hash-pinned lxml wheel it installs. `tests/test_action_script.py` runs the steps against a real git repository and a fake GitHub API.
 - `pytest_plugin.py`: the `heal` fixture, confirmation from test results, strict mode and the summary.
 
 ## Writing a driver
@@ -170,17 +184,23 @@ A driver wraps one live page or session.
 | `describe(selector, frame_chain=())` | optional | `{'tag', 'role', 'text', 'outer_html'}` for a single match, else `None`. Without it, `driver_describe()` returns `None` and the role is guessed from the selector text. |
 | `frame_matches(selector)` | optional | The iframes of the page in which the selector matches, as `[{'name', 'url', 'count', 'nested', 'selector'}]`; `selector` is a CSS selector for the iframe element (see `frame_selector()` in `mendwright/drivers/base.py`), or `None`. Without it, mendwright doesn't look into iframes on its own. |
 | `framed(frame_selector)` | optional | A driver for the document inside the one iframe `frame_selector` matches, or `None`. Without it, a key found inside an iframe heals on the page. |
-| `fingerprint(selector, frame_chain=())` | optional | The fingerprint (see `mendwright/fingerprint.py`) of the one element the selector matches, else `None`. Run `FINGERPRINT_JS` on the match and pass the result through `from_raw()`. Without it, `driver_fingerprint()` returns `None` and the fingerprint tier never has anything to look for. |
+| `fingerprint(selector, frame_chain=())` | optional | The fingerprint (see `mendwright/fingerprint.py`) of the one element the selector matches, else `None`. Run `FINGERPRINT_JS` on the match and pass the result through `from_raw()`. One that takes `hosts=True` also says where the element is: pass the result through `shadow.with_hosts()` then, which adds the shadow hosts around it as `shadowHosts`. Without it, `driver_fingerprint()` returns `None` and the fingerprint tier never has anything to look for. |
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
 | `visible_match(selector, frame_chain=())` | optional | `describe()`'s result for the first visible element of those the selector matches, plus `'visible'`: how many of the matches are visible, counted up to 2. `None` when none is. The WARNING for an interruption or a landmark whose selector matches several elements builds the selectors it suggests from it when exactly one is visible. Without it, or without `'visible'`, the WARNING suggests none. |
 | `handles(selector, frame_chain=())` | optional | A native handle for each element the selector matches, for a list. Without it, `driver_handles()` gives `[handle(selector)]`. |
 | `list_fingerprint(selector, frame_chain=(), *, place=False)` | optional | The list fingerprint (see `mendwright/lists.py`) of the elements the selector matches, else `None` for fewer than two. Run `LIST_JS` on the matches, or `LIST_PLACE_JS` with `place=True`, and pass the result through `lists.from_raw()`. Without it, no list is recorded, so a list lookup that matches nothing gives `[]` at once. One without `place=` is called as before, and `nonempty=True` can't look for its lists. |
 | `list_items(selector, frame_chain=())` | optional | `[{'tag', 'role', 'type', 'visible'}]` for the first 200 elements the selector matches: run `ITEMS_JS` on them and pass the result through `item_rows()` in `drivers/base.py`. Raise on any error. Without it, `nonempty=True` can't check a list it finds. |
+| `shadow_html(hosts)` | optional | The HTML inside the open shadow root that `hosts` (CSS selectors, outermost first) lead to, or `None` when they lead to none: run `SHADOW_HTML_JS` from `drivers/base.py`. A driver with it takes `ShadowHost` steps (see `mendwright/shadow.py`) at the end of a frame chain in every method: the selector is then CSS, and must match only inside that shadow root, never in the host's light DOM or a shadow root inside it (Playwright's CSS pierces, so its drivers check `PLACE_JS`). Without it, no heal runs inside a shadow root, and a candidate saved inside one can't run. |
+| `shadow_inventory(hosts, limit=200)` | optional | `inventory()` of that shadow root (`SHADOW_INVENTORY_JS`), `[]` when there is none. |
+| `shadow_matches(selector)` | optional | `(roots, cut)`: the open shadow roots a CSS selector matches in, or the HTML of each one for an XPath (`SHADOW_ROOTS_JS`, then `shadow.roots_of()`). Without it, mendwright doesn't follow a selector into a shadow root. |
+| `pierces_shadow` | optional | A class attribute, `True` for a driver whose CSS finds elements inside open shadow roots by itself, as Playwright's does. mendwright then follows only an XPath into a shadow root: a CSS selector that matches there matches on the page too. |
+| `placed(native, hosts)` | optional | For a driver with `pierces_shadow`: whether a `handle()` result for a selector inside the shadow root that `hosts` lead to matches one element now, and that one inside that shadow root (`PLACE_JS`). The proxy checks it right before each action and read, since a `Locator` is looked up again each time. Without it, nothing is checked after the lookup. |
+| `placement(native, hosts)` | optional | For a driver with `placed()`: where that `handle()` result matches now, from `PLACE_JS` through `placement_of()` in `drivers/base.py`: `PLACED` (one element, inside that shadow root), `NOWHERE` (nothing at all) or `ELSEWHERE` (something outside it, or several elements), `None` on any error. The proxy asks it in place of `placed()`, so that `is_visible()` and `is_hidden()` answer `False` and `True` at once when the `Locator` matches nothing, as Playwright's do. Without it, they wait for the element as the other reads do. |
 | `role_match(selector, role, level=None, frame_chain=())` | optional | `True` when the browser gives the one element the selector matches the ARIA role `role` (and heading level `level`), `False` when it doesn't, `None` when it can't tell. The built-in Playwright drivers ask `get_by_role(role, level=level).and_(the selector's locator).count() == 1`. The live check of a heal of a `get_by_role()` call key needs it: without it, `driver_role_match()` returns `None` and such a heal is refused. |
 
 Rules:
 
-- `frame_chain` is a tuple of frame selectors, outermost first.
+- `frame_chain` is a tuple of frame selectors, outermost first, then, for a driver with `shadow_html()`, the `ShadowHost` steps of the shadow hosts, outermost first.
 - A selector can be XPath, CSS, a Playwright engine selector or a `get_by_*` call, the kind `get_by` (see `mendwright/selectors.py` and `mendwright/getby.py`). Raise `InvalidSelector` for a kind your library can't run, or one the browser rejects; check it with `check_syntax(selector, calls=True)`, which returns the kind. For any other error, the read methods return `0`, `False` or `None`, so the resolver keeps polling.
 - `outer_html(scope)` must capture the same document or frame that resolution runs against. Otherwise a selector can be unique in the snapshot and not on the page.
 - `describe()` must compute `role` and `text` the way `validate()` does: `validation._role_of()` on the element, and its whitespace-normalised text, cut to 200 characters. The built-in drivers do this with `DESCRIBE_JS` and `summary_from_js()` in `drivers/base.py`.
@@ -233,6 +253,7 @@ Before you open one, check:
 - [ ] If `mendwright/prompt.py` changed, `examples/heal_gateway.mjs` changed to match, and `tests/test_gateway_worker.py` passes with node installed.
 - [ ] If the change is user-visible, `CHANGELOG.md` has an entry under the next version.
 - [ ] If a driver changed, `python -m pytest -m browser` passes for the engines you have.
+- [ ] If `js/` changed, or the store, journal or fingerprint did, `npm test` and `npm run test:browser` pass in `js/`, and `js/CHANGELOG.md` has an entry when the change is user-visible.
 
 Keep pull requests small and about one thing.
 
@@ -264,6 +285,7 @@ python -m pytest tests/test_success_heal.py
 | lowest-deps | The offline suite on Python 3.10 with lxml 5.0.0 and pytest 7. |
 | browsers | `python -m pytest -m browser -q -rs` on Ubuntu with Python 3.12. It installs Playwright's three browsers, uses the runner image's Chrome and Firefox for Selenium, and sets `MENDWRIGHT_REQUIRE_ENGINES`. patchright and camoufox aren't installed there, so their tests skip. |
 | package | Builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a fresh venv, runs `mendwright --version`, `python -m mendwright doctor` and `mendwright demo`, then runs the sdist's tests against the installed wheel. |
+| js | In `js/` on Node 22: `npm ci`, the typecheck, the build, `npm test` with Python 3.12 and this checkout installed, the browser suite on Chromium, and `npm pack --dry-run`. |
 
 ### Charts
 

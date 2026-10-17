@@ -110,7 +110,9 @@ def test_a_grid_whose_card_class_changed_is_not_healed(tab, store_file):
     key = _key(tab, '.product-card')
     assert heal.heals == []
     assert [x for x, c in saved_candidates(store_file, key).items() if c['source'] == 'heal'] == []
-    assert not [e for e in journal_events(store_file) if e['event'].startswith('heal.')]
+    # Nothing was looked for: the only heal events are the declines, which say why.
+    assert {(e['event'], e['code']) for e in journal_events(store_file)
+            if e['event'].startswith('heal.')} == {('heal.declined', 'list_empty')}
 
     # The next run raises again; fixed in the code, the list is found.
     again = _open(tab, store_file)
@@ -242,7 +244,9 @@ def test_a_list_that_is_still_loading_is_not_healed_onto_its_skeletons(tab, stor
     assert heal.heals == []
     key = _key(tab, '.product-card')
     assert [x for x, c in saved_candidates(store_file, key).items() if c['source'] == 'heal'] == []
-    assert not [e for e in journal_events(store_file) if e['event'].startswith('heal.')]
+    # Nothing was looked for: the only heal events are the declines, which say why.
+    assert {(e['event'], e['code']) for e in journal_events(store_file)
+            if e['event'].startswith('heal.')} == {('heal.declined', 'list_empty')}
 
 
 def test_a_heal_of_one_card_never_answers_for_the_list(tab, store_file, stub_provider):

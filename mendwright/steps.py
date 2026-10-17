@@ -80,7 +80,7 @@ from typing import Callable
 from .exceptions import AttentionRequired
 from .flow import _is_id, _listed, journal_event, page_path
 from .interruptions import Budget, nth_targets
-from .journal import FLOW_STEP
+from .journal import FLOW_STEP, FLOW_STOP
 from .selectors import XPATH, InvalidSelector, check_syntax, classify, normalize
 
 # What an interruption handled while run_steps() waits is logged as handled before: no step
@@ -516,7 +516,13 @@ class Run:
     def check_cap(self):
         __tracebackhide__ = True
         if len(self.ran) >= self.cap:
+            self._stopped(WAITING_STEP, 'step_cap', ran=len(self.ran))
             raise AttentionRequired(cap_message(len(self.ran), self.registered))
+
+    def _stopped(self, key, code, **fields):
+        """The flow.stop journal event, right before run_steps() raises because the flow
+        cannot go on: the code and the fields, never the message."""
+        journal_event(self.core.coordinator.journal, FLOW_STOP, key, code=code, **fields)
 
     def waiting(self):
         """The steps that have not run, in the order registered."""
@@ -537,17 +543,21 @@ class Run:
         return shown[0]
 
     def stuck(self, again, page):
-        """The AttentionRequired for a wait that ran out. again are the steps that ran and
-        show now, most recent first. One that shows on another page than the one it ran on
-        is probably part of a step the site added, not a submit that failed."""
+        """The AttentionRequired for a wait that ran out, which the caller raises, after its
+        flow.stop journal event. again are the steps that ran and show now, most recent
+        first. One that shows on another page than the one it ran on is probably part of a
+        step the site added, not a submit that failed."""
         if again:
             name = again[0].name
             ran_on = self.ran_on.get(name)
             if ran_on and page and ran_on != page:
+                self._stopped(name, 'step_moved', page=page)
                 return AttentionRequired(changed_message(name, ran_on, page, self.timeout_ms,
                                                          self.ran))
+            self._stopped(name, 'step_again', page=page)
             return AttentionRequired(again_message(name, page, self.timeout_ms, self.ran))
         no_last = bool(self.ran) and not any(s.last for s in self.steps())
+        self._stopped(WAITING_STEP, 'no_step', page=page)
         return AttentionRequired(unknown_message(page, self.waiting(), self.ran,
                                                  self.timeout_ms, no_last=no_last))
 
