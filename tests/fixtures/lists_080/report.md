@@ -1,6 +1,6 @@
 ## mendwright heal report
 
-Store: `<FOLDER>\overrides.json` with 3 key(s) and 5 selector(s).
+Store: `<FOLDER>/overrides.json` with 3 key(s) and 5 selector(s).
 
 | Key | Selector | Source | Status | Last success |
 | --- | --- | --- | --- | --- |

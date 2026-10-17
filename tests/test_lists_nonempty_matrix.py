@@ -357,6 +357,8 @@ def report_080(cli, write_store, root, fmt):
         assert cli.main(['report', '--store', str(store), '--format', fmt]) == 0
     text = out.getvalue().replace(json.dumps(str(root / 's'))[1:-1], '<FOLDER>')
     text = text.replace(str(root / 's'), '<FOLDER>')
+    # The store's path uses the system's separator; the saved reports use '/'.
+    text = text.replace('<FOLDER>\\\\', '<FOLDER>/').replace('<FOLDER>\\', '<FOLDER>/')
     return re.sub(r'Made by mendwright [^<]*<', 'Made by mendwright <VERSION><', text)
 
 

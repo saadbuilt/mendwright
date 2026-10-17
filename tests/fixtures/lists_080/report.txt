@@ -1,4 +1,4 @@
-Store: <FOLDER>\overrides.json
+Store: <FOLDER>/overrides.json
 3 key(s), 5 selector(s)
 
 accept_terms  (checkbox)

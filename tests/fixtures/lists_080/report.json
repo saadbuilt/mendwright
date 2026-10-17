@@ -1,5 +1,5 @@
 {
-  "store": "<FOLDER>\\overrides.json",
+  "store": "<FOLDER>/overrides.json",
   "keys": [
     {
       "key": "accept_terms",
@@ -59,7 +59,7 @@
     }
   ],
   "journal": {
-    "path": "<FOLDER>\\journal.jsonl",
+    "path": "<FOLDER>/journal.jsonl",
     "exists": true,
     "counts": {
       "requested": 3,

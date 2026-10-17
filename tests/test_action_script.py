@@ -348,7 +348,9 @@ class World:
                 return self.steps
             later['MW_FOUND'] = found['found']
             if found['found'] == 'true':
-                shutil.copytree(str(self.uploaded), str(self.temp / 'artifact'))
+                # symlinks=True: a link in the artifact arrives as a link, as it can from a
+                # downloaded archive, so the action's own check is what refuses it.
+                shutil.copytree(str(self.uploaded), str(self.temp / 'artifact'), symlinks=True)
                 if self.after_download:
                     self.after_download(self.temp / 'artifact')
         code, fix = step('fix', **later)
