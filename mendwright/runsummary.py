@@ -41,6 +41,8 @@ PHRASES = {
                                    'could propose'),
     'list_proposed': ('selector', 'matched nothing as a list, and mendwright found one for you '
                                   'to check with mendwright lists'),
+    'list_waits_fix': ('selector', 'matched nothing as a list, and the list heal accepted for it '
+                                   'waits for mendwright fix or its seed file'),
     'get_by': ('selector', 'could not be repaired from its fingerprint, and mendwright asks no '
                            'model for a get_by_* call'),
     'frame': ('selector', 'is inside an iframe mendwright did not look into'),

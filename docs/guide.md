@@ -1613,6 +1613,7 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 | `dry_run` | Dry run: checked, not applied |
 | `list_empty` | A list whose selectors all match nothing (see [Lists](#lists)) |
 | `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
+| `list_waits_fix` | A list looked up with `nonempty=True`, whose list heal you accepted with `mendwright lists accept` matches now, but is not yet in your code (`mendwright fix --apply` writes it there) or its seed file |
 | `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
 | `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
 | `shadow` | Its element is inside a [shadow root](#shadow-dom) mendwright could not heal it in or follow it into |
