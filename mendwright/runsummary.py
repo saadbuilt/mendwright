@@ -206,7 +206,7 @@ def summarize(events):
                         else 'quarantined')
                 need('selector', key, code, at)
         elif name == 'heal.declined' and key:
-            code = event.get('code')
+            code = _text(event.get('code'))
             if code in ON_PURPOSE:
                 on_purpose[code].add(key)
                 continue
@@ -216,7 +216,7 @@ def summarize(events):
         elif name == 'heal.held' and key:
             need('selector', key, 'list_proposed', at)
         elif name == 'flow.stop':
-            code = event.get('code')
+            code = _text(event.get('code'))
             if code not in _STOP_CODES:
                 continue
             about = PHRASES[code][0]

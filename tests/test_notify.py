@@ -360,6 +360,18 @@ def test_dry_run_prints_the_payload_and_reads_no_variable(store, monkeypatch, ca
     assert json.loads(out)['run'] == RUN and 'SeCrEt' not in out
 
 
+def test_a_journal_line_it_cannot_use_never_stops_it(tmp_path, capsys):
+    store = _write(tmp_path, [{'ts': NOW, 'event': 'heal.declined', 'run': RUN, 'key': 'a',
+                               'code': ['x']}])
+    journal = store.parent / 'journal.jsonl'
+    with open(journal, 'a', encoding='utf-8') as handle:
+        handle.write('[' * 100000 + '\n')      # nested too deep for json.loads()
+    assert run_notify(['--store', str(store), '--run', RUN, '--format', 'json', '--dry-run']) == 0
+    sent = json.loads(capsys.readouterr().out)
+    assert [(e['key'], e['code']) for e in sent['needs_human']] == [('a', 'other')]
+    assert cli.main(['report', '--store', str(store)]) == 0
+
+
 @pytest.mark.parametrize('url, ok', [
     ('https://hooks.slack.com/services/x', True), ('https://[2001:db8::1]/x', True),
     ('http://localhost:8080/hook', True), ('http://127.0.0.1/hook', True),

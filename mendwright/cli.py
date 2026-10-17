@@ -540,7 +540,7 @@ def _read_journal(path):
                     continue
                 try:
                     event = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):    # nested too deep to read
                     continue
                 if isinstance(event, dict) and isinstance(event.get('event'), str):
                     events.append(event)
@@ -1011,7 +1011,7 @@ def _journal_lines(path, seen):
                     continue
                 try:
                     event = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):    # nested too deep to read
                     continue
                 if isinstance(event, dict) and isinstance(event.get('event'), str):
                     seen['events'] += 1

@@ -2516,7 +2516,7 @@ mendwright notify [--store PATH] [--run ID | --since TIME | --all]
                   [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
 ```
 
-Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, and makes one POST, with one retry.
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, leaves out a line that is not an event it can read, takes a `heal.declined` code that is not one of its own as `other`, and makes one POST, with one retry.
 
 | Option | Default | Meaning |
 |---|---|---|

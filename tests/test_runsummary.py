@@ -203,6 +203,17 @@ def test_a_list_heal_quarantined_is_not_a_thing_for_a_human():
     assert s['needs_human'] == []
 
 
+def test_a_code_that_is_not_a_string_is_other_and_never_raises():
+    # A line another tool or a broken write left: a list or a dict is no key of PHRASES.
+    events = [ev('heal.declined', 'a', code=['x']), ev('heal.declined', 'b', code={'y': 1}),
+              ev('heal.declined', 'c', code=7), ev('heal.declined', 'd', code=['dry_run']),
+              ev('flow.stop', 'e', code=['interruption_loop']), ev('flow.stop', 'f', code={})]
+    s = summarize(events)
+    assert [(e['key'], e['code']) for e in s['needs_human']] == [
+        ('a', 'other'), ('b', 'other'), ('c', 'other'), ('d', 'other')]
+    assert message(s).startswith('mendwright: the site changed.\n4 need a human: ')
+
+
 # --- the message --------------------------------------------------------------------------------
 
 EXAMPLE = [
