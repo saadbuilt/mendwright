@@ -66,7 +66,9 @@ from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runn
                        present_get_by, resolve, resolve_get_by)
 from .roles import infer_role, role_choices
 from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
-                        normalize)
+                        normalize, strip_prefix)
+from .shadow import (MISSING, as_document, driver_shadowed, hosts_of, place_text, saved_hosts,
+                     shadow_text, take_hosts)
 from . import steps as _steps
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
@@ -206,8 +208,10 @@ class HealEvent:
     """One heal a Healer applied: the key, the selectors that had stopped matching, the
     new xpath, the canary result (None while unconfirmed, then True or False), and where
     the new xpath came from: 'fingerprint' (no model call), 'model', 'intent' (a key
-    that had no selector, found by a model from its intent=), or 'frame' (the key's own
-    selector, which matched only inside an iframe and is looked up there now)."""
+    that had no selector, found by a model from its intent=), 'frame' (the key's own
+    selector, which matched only inside an iframe and is looked up there now), or 'shadow'
+    (the key's own selector, which matched only inside an open shadow root, see
+    mendwright.shadow)."""
     key: str
     old: tuple
     new: str
@@ -567,6 +571,118 @@ def latest_success(store, key):
     except Exception:
         return None
     return max(found, key=lambda c: str(c['lastSucceededAt'])) if found else None
+
+
+# --- where a heal runs: the page, an iframe or an open shadow root ------------------------------
+
+@dataclass(frozen=True)
+class HealScope:
+    """Where a heal of a key runs when not on the page (see heal_place and
+    Healer._heal_scope): inside the iframe ``frame``, or inside the open shadow root that
+    ``hosts`` lead to, through ``driver`` (a driver for the iframe's document, or a
+    shadow.ShadowDriver); or nowhere, with ``why``."""
+    frame: str | None = None
+    hosts: tuple = ()
+    driver: Any = None
+    why: str = ''
+
+    def entered(self, coordinator):
+        """The coordinator, scoped to this place for a with block (or refusing every heal
+        with why)."""
+        if self.why:
+            return coordinator.refusing(self.why)
+        return coordinator.scoped(self.driver, self.frame, shadow_hosts=self.hosts or None)
+
+
+def heal_place(store, key):
+    """(frame, hosts, why): where a heal of key runs. frame is the iframe its latest match
+    was in ('' for none); hosts the shadow hosts of the open shadow root its element was last
+    found in: those its latest match runs inside, else the key's shadowHosts (see
+    mendwright.shadow), () for none; why says why no heal may run anywhere, '' else: an
+    element inside a shadow root inside an iframe, or behind a host nothing tells apart. A
+    key last found inside a shadow root is never healed on the page outside it."""
+    best = latest_success(store, key)
+    frame = best.get('frameXPath') if best else None
+    frame = frame if isinstance(frame, str) and frame else ''
+    hosts = hosts_of(best) if best else ()
+    if not hosts:
+        recorded = getattr(store, 'shadow_hosts', None)
+        try:
+            hosts = saved_hosts(recorded(key)) if callable(recorded) else ()
+        except Exception:
+            hosts = ()
+    if hosts and frame:
+        return frame, hosts, (
+            "'" + key + "' was last found inside a shadow root in the iframe " + frame + ', and '
+            'mendwright heals a key inside a shadow root only in the page or frame it was '
+            'opened on, so it did not heal it, there or anywhere else. Open mendwright on that '
+            'frame to heal it there.')
+    if any(h is None for h in hosts):
+        return '', hosts, (
+            "'" + key + "' was last found inside a shadow root whose host nothing tells apart "
+            'from the elements around it (it has no test id, id or name that no other element '
+            'of its tag there has, and is not the only element of its custom tag), so '
+            'mendwright cannot find that shadow root again, and did not heal the key on the page '
+            'outside it either. Give the host an id or a test id, or fix the selector by hand.')
+    return frame, hosts, ''
+
+
+def shadow_unreachable(key, hosts, reaches, entered):
+    """Why a heal of key, last found inside the open shadow root that hosts lead to, cannot
+    run there now, or '': the driver does not reach into shadow roots (reaches False), or the
+    hosts lead to no open shadow root on the page now (entered False)."""
+    where = place_text(hosts)
+    if not reaches:
+        return ("'" + key + "' was last found inside " + where + ', and this driver does not '
+                'reach into shadow roots, so mendwright did not heal it, there or on the page.')
+    if not entered:
+        return ("'" + key + "' was last found inside " + where + ', and mendwright cannot enter '
+                'that shadow root now: one of its hosts (' + ' >> '.join(hosts) + ') is not on '
+                'the page, matches more than one element, or has a closed shadow root. '
+                'mendwright heals the key only inside that shadow root, never on the page outside '
+                'it, so it did not heal it. Fix the selector in your code.')
+    return ''
+
+
+def shadow_found(selector, roots):
+    """The open shadow roots (as driver.shadow_matches() gives them) that one of a key's own
+    selectors matches in, for the follow (see Healer._follow_into_shadow): dicts of 'hosts',
+    'count' (the elements it matches there) and 'forms', the CSS selectors to look it up with
+    there: the selector itself for CSS, the CSS forms of its one element (css.css_selectors)
+    for an XPath, which mendwright evaluates in the root's HTML itself."""
+    from .css import css_selectors
+    import lxml.html
+    kind = classify(selector)
+    body = strip_prefix(selector)
+    out = []
+    for root in roots:
+        if kind == CSS:
+            if root.get('count'):
+                out.append({'hosts': root['hosts'], 'count': root['count'], 'forms': [body]})
+            continue
+        if kind != XPATH or root.get('html') is None:
+            continue
+        try:
+            doc = lxml.html.fromstring(as_document(root['html']))
+            hits = [h for h in doc.xpath(body) if isinstance(getattr(h, 'tag', None), str)]
+        except Exception:
+            continue
+        if hits:
+            out.append({'hosts': root['hosts'], 'count': len(hits),
+                        'forms': css_selectors(hits[0], doc) if len(hits) == 1 else []})
+    return out
+
+
+def _shadow_message(key, selector, found, why):
+    """Why a key whose selector matches only inside an open shadow root was not followed
+    there."""
+    where = place_text(found[0]['hosts'])
+    if len(found) > 1:
+        where += ' (and ' + str(len(found) - 1) + ' more)'
+    return ("'" + key + "' is inside a shadow root: " + selector + ' matches nothing on the '
+            'page, but matches inside ' + where + '. mendwright did not look for it there, '
+            'because ' + why + ', and did not ask a model to heal it. Fix the selector in your '
+            'code.')
 
 
 _NOT_FOLLOWED = object()
@@ -941,7 +1057,7 @@ class Healer:
         wait, no heal, no scrolling, and nothing recorded in the store."""
         from .resolver import _match_handle, _require_visible, _split_runnable
         require_visible = _require_visible(self.store, key)
-        runnable, _errors = _split_runnable(key, self.store.candidates(key))
+        runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
         for candidate in runnable:
             try:
                 native = _match_handle(self._driver, candidate, require_visible)
@@ -1128,6 +1244,8 @@ class Healer:
                     return ActionProxy(self, key, None, present=False)
                 native = self._follow_into_frame(key, exc, attempt)
                 if native is _NOT_FOLLOWED:
+                    native = self._follow_into_shadow(key, exc, attempt)
+                if native is _NOT_FOLLOWED:
                     native = self._heal(key, exc, attempt)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
@@ -1137,7 +1255,7 @@ class Healer:
         target = self._fingerprint_target(key)
         if target is not None:
             self._keep_fingerprint(key, target, driver_fingerprint(
-                self._driver, target, self._winner_target(key)[1]))
+                self._driver, *self._winner_target(key), hosts=True))
         return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
                            healed=self._healed(key), expect=expect)
 
@@ -1225,7 +1343,7 @@ class Healer:
         fp_target = self._fingerprint_target(key)
         if fp_target is not None:
             self._keep_fingerprint(key, fp_target, driver_fingerprint(
-                self._driver, fp_target, self._winner_target(key)[1]))
+                self._driver, *self._winner_target(key), hosts=True))
         proxy = ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
                             healed=self._healed(key), expect=self._expect_values.get(key))
         proxy._canary = proxy._healed is not None
@@ -1402,13 +1520,14 @@ class Healer:
 
     def _list_runnable(self, key):
         """key's candidates a list lookup tries: those on the page (lists are not looked for
-        inside an iframe) that can run, without heals. A list key can also be the key of
+        inside an iframe, nor through a row saved inside a shadow root) that can run, without
+        heals. A list key can also be the key of
         locator(), of a heal.page shortcut or of heal.driver's find_element(), and a heal of
         the first card is no heal of the cards. A list heal (saved with "list": true by a
         build of 0.8.0 before its release) is not used either: it can be another list that
         holds the items of an emptied one. Raises the first InvalidSelector when none can."""
         candidates = [c for c in self.store.candidates(key) if not c.get('frameXPath')
-                      and c.get('source') != 'heal']
+                      and not hosts_of(c) and c.get('source') != 'heal']
         if not candidates:
             raise AttentionRequired('No selector candidates for: ' + key)
         runnable, errors = _split_runnable(key, candidates)
@@ -1730,12 +1849,17 @@ class Healer:
                 store.guess_role(key, guess)
 
     def _winner_target(self, key):
-        """(selector, frame_chain) of the candidate that just matched, or None."""
+        """(selector, frame_chain) the candidate that just matched runs with, or None: for
+        one inside a shadow root, its CSS, and a chain that ends in its shadow hosts (see
+        shadow.run_target)."""
+        from .shadow import chain_of, run_target
         winner = self.store.last_success(key)
         if not winner:
             return None
-        frames = (winner['frameXPath'],) if winner.get('frameXPath') else ()
-        return winner['xpath'], frames
+        try:
+            return run_target(winner)
+        except InvalidSelector:
+            return winner['xpath'], chain_of(winner)    # no driver runs it: reads give None
 
     def _describe_winner(self, key):
         """driver.describe() for the candidate that just matched, or None."""
@@ -2672,12 +2796,21 @@ class Healer:
         return xpath
 
     def _keep_fingerprint(self, key, xpath, fp):
-        """Save fp as key's fingerprint (the store writes the file only when it changed)."""
+        """Save fp as key's fingerprint, and the shadow hosts the read gave as its
+        shadowHosts, [] removing them for an element on the page (see mendwright.shadow). The
+        store writes the file only when one of them changed. A read without hosts (a driver
+        that does not read where an element is) leaves shadowHosts as it is."""
         self._fingerprinted.add((key, xpath))
+        fp, hosts = take_hosts(fp)
         if fp is None:
             return
         try:
-            self.store.set_meta(key, fingerprint=fp)
+            if hosts is MISSING:
+                self.store.set_meta(key, fingerprint=fp)
+            else:
+                self.store.set_meta(key, fingerprint=fp, shadow_hosts=hosts)
+        except TypeError:
+            self.store.set_meta(key, fingerprint=fp)     # a store without shadow_hosts=
         except Exception:
             logger.debug('mendwright: could not save the fingerprint of %r', key, exc_info=True)
 
@@ -2695,9 +2828,10 @@ class Healer:
     # --- healing -------------------------------------------------------------------
 
     def _frame_candidates(self, key):
-        """The selectors of key that are looked up in the page itself (no frameXPath)."""
+        """The selectors of key that are looked up in the page itself (no frameXPath and no
+        shadowHosts)."""
         return [c['xpath'] for c in self.store.candidates(key)
-                if not c.get('frameXPath') and isinstance(c.get('xpath'), str)]
+                if not c.get('frameXPath') and not hosts_of(c) and isinstance(c.get('xpath'), str)]
 
     def _frame_stop(self, key, exc, selector, frames, opener, why=None):
         """Record and raise the AttentionRequired for a key found only inside an iframe
@@ -2778,7 +2912,7 @@ class Healer:
         reason = live_reason(driver, alt, self.store.meta(key), (frame,))
         if reason:
             return "its element there failed mendwright's checks (" + reason + ')'
-        if not add_heal(self.store, key, alt, frame_xpath=frame):
+        if not add_heal(self.store, key, alt, frame_xpath=frame, shadow_hosts=[]):
             return 'this store cannot save a selector inside an iframe'
         self.coordinator.record_frame(key, selector, alt, frame)
         self.coordinator.pending[key] = alt
@@ -2819,14 +2953,24 @@ class Healer:
         return attempt()
 
     def _heal_scope(self, key):
-        """(iframe selector, driver for that iframe) when key was last found inside an
-        iframe that is still on the page, so the heal runs there; else None."""
-        best = latest_success(self.store, key)
-        frame = best.get('frameXPath') if best else None
-        if not isinstance(frame, str) or not frame:
+        """The HealScope of a heal of key (see heal_place), or None for the page: inside the
+        iframe it was last found in when that iframe is still on the page; inside the open
+        shadow root it was last found in, through a shadow.ShadowDriver; or, for an element
+        last found inside a shadow root that cannot be entered now, nowhere, with the reason.
+        Such a key is never healed on the page outside its shadow root."""
+        frame, hosts, why = heal_place(self.store, key)
+        if why:
+            return HealScope(hosts=hosts, why=why)
+        if hosts:
+            shadowed = driver_shadowed(self._driver, hosts)
+            why = shadow_unreachable(key, hosts, shadowed is not None,
+                                     shadowed is not None and shadowed.inner_html() is not None)
+            return HealScope(hosts=hosts, why=why) if why else HealScope(hosts=hosts,
+                                                                          driver=shadowed)
+        if not frame:
             return None
         framed = driver_framed(self._driver, frame)
-        return (frame, framed) if framed is not None else None
+        return HealScope(frame=frame, driver=framed) if framed is not None else None
 
     def _heal(self, key, exc, attempt):
         """Heal through the coordinator after attempt() raised exc, then retry attempt()."""
@@ -2843,10 +2987,147 @@ class Healer:
         if scope is None:
             return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
                                      context)
-        # The key was last found inside an iframe: capture, check and save the heal there.
-        with self.coordinator.scoped(scope[1], scope[0]):
+        # The key was last found inside an iframe or a shadow root: capture, check and save
+        # the heal there, or refuse it.
+        with scope.entered(self.coordinator):
             return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
                                      context)
+
+    # --- following a key's own selector into an open shadow root -----------------------
+
+    def _shadow_plan(self, key, selector, found, cut, coordinator=None):
+        """(root, why): the one shadow root of ``found`` (see shadow_found) that key can be
+        followed into with ``selector``, its own selector, else (None, why not). The same
+        refusals as _frame_plan, and: several shadow roots or elements, a host on the way that
+        nothing tells apart, an XPath whose element no CSS selector tells apart, and, for an
+        XPath, a page with more shadow roots than mendwright reads (cut)."""
+        coord = self.coordinator if coordinator is None else coordinator
+        if getattr(coord, 'disabled', False):
+            return None, 'healing is turned off by MENDWRIGHT_DISABLE=1'
+        if coord.dry_run:
+            return None, 'dry-run mode is on'
+        try:
+            destructive = bool(self.store.meta(key).get('destructive'))
+        except Exception:
+            destructive = False
+        if destructive:
+            return None, "'" + key + "' is marked as a destructive control"
+        if len(found) > 1:
+            return None, 'it matches in more than one shadow root'
+        if cut and classify(selector) == XPATH:
+            return None, ('the page has more shadow roots than mendwright reads, so it cannot '
+                          'tell that the selector matches in that one only')
+        root = found[0]
+        if root['count'] != 1:
+            return None, 'it matches ' + str(root['count']) + ' elements there'
+        if any(h is None for h in root['hosts']):
+            return None, ('nothing tells one of the shadow hosts on the way apart from the '
+                          'elements around it (no test id, id or name of its own there, and not '
+                          'the only element of its custom tag)')
+        if not root['forms']:
+            return None, ('no CSS selector tells its element apart there, and only CSS runs '
+                          'inside a shadow root')
+        statuses = [_stored_status(self.store, key, shadow_text(root['hosts'], f))
+                    for f in root['forms']]
+        if all(s == 'quarantined' for s in statuses):
+            return None, ('it was looked up in that shadow root before and an action on it '
+                          'failed there, so that lookup is quarantined')
+        if all(s in ('quarantined', 'superseded') for s in statuses):
+            return None, ('it was looked up in that shadow root before and that lookup was '
+                          'superseded')
+        return root, None
+
+    def _pick_shadow(self, key, exc, matches):
+        """From [(selector, found, cut)], the key's selectors that match inside shadow roots,
+        the first one that can be followed, as (selector, found, root). Raises the
+        AttentionRequired for the first refusal when none can."""
+        __tracebackhide__ = True
+        refused = None
+        for selector, found, cut in matches:
+            root, why = self._shadow_plan(key, selector, found, cut)
+            if root is not None:
+                return selector, found, root
+            if refused is None:
+                refused = (selector, found, why)
+        self._shadow_stop(key, exc, *refused)
+
+    def _shadow_stop(self, key, exc, selector, found, why):
+        """Record and raise the AttentionRequired for a key found only inside a shadow root
+        that mendwright did not follow it into."""
+        __tracebackhide__ = True
+        reason = _shadow_message(key, selector, found, why)
+        self.coordinator._decline(key, reason)
+        raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+
+    def _shadow_follow(self, key, selector, root, driver):
+        """Check the guard, then each CSS form of ``root`` inside its shadow root on the live
+        page (exactly one visible element of the key's role, not retired), and save the
+        first that passes there, as the chain of the hosts and the CSS (shadow.shadow_text)
+        with the hosts as its shadowHosts, and record it. Returns '' when the key was
+        followed, else why not."""
+        if not self.coordinator.guard():
+            return 'a transaction guard is currently blocking heals'
+        shadowed = driver_shadowed(driver, root['hosts'])
+        if shadowed is None:
+            return 'this driver does not reach into shadow roots'
+        meta = self.store.meta(key)
+        why = 'no CSS selector for it passed'
+        for css in root['forms']:
+            saved = shadow_text(root['hosts'], css)
+            if _stored_status(self.store, key, saved) in ('quarantined', 'superseded'):
+                continue
+            reason = live_reason(shadowed, css, meta)
+            if reason:
+                why = "its element there failed mendwright's checks (" + reason + ')'
+                continue
+            if not add_heal(self.store, key, saved, frame_xpath='', shadow_hosts=root['hosts']):
+                return 'this store cannot save a selector inside a shadow root'
+            self.coordinator.record_shadow(key, selector, saved, root['hosts'])
+            self.coordinator.pending[key] = saved
+            return ''
+        return why
+
+    def _shadow_matches(self, key, finder):
+        """[(selector, found, cut)] for the key's own selectors on the page that match inside
+        open shadow roots (see shadow_found), through finder (driver.shadow_matches)."""
+        matches = []
+        for selector in self._frame_candidates(key):
+            try:
+                roots, cut = finder(selector)
+            except Exception:
+                continue
+            found = shadow_found(selector, roots)
+            if found:
+                matches.append((selector, found, cut))
+        return matches
+
+    def _follow_into_shadow(self, key, exc, attempt):
+        """After key missed on the page, and in no iframe: if one of its own selectors
+        matches one element inside one open shadow root of the page (a driver with
+        shadow_matches(), as the built-in ones have), look for it there from now on and
+        return the retried step. A CSS selector is looked up there as it is; an XPath, which
+        runs inside no shadow root, is evaluated in the root's HTML and its element looked up
+        through a CSS form of it. No model is asked: the selector is the key's own, and only
+        the place changed. It counts as a heal with source 'shadow'.
+
+        Playwright's CSS pierces open shadow roots by itself, so there only an XPath is
+        followed. Not followed, with AttentionRequired saying why: the refusals of
+        _shadow_plan, a page the key was never found on (the page guard), a guard that
+        blocks heals, or an element that fails the live check. Returns _NOT_FOLLOWED when no
+        selector of the key matches inside a shadow root."""
+        __tracebackhide__ = True
+        finder = getattr(self._driver, 'shadow_matches', None)
+        if not callable(finder):
+            return _NOT_FOLLOWED
+        matches = self._shadow_matches(key, finder)
+        if not matches:
+            return _NOT_FOLLOWED
+        selector, found, root = self._pick_shadow(key, exc, matches)
+        self._frame_guard(key, exc, self._url())
+        why = self._shadow_follow(key, selector, root, self._driver)
+        if why:
+            self._shadow_stop(key, exc, selector, found, why)
+        return attempt()
 
     # --- steps in any order: step() and run_steps() (see mendwright.steps) -------------
 
