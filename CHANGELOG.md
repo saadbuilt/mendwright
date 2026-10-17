@@ -18,7 +18,7 @@ While the version starts with 0, a minor release can change the public API.
 ### Changed
 
 - The journal grows by one line for each heal that did not apply (`heal.declined`) and each flow mendwright stopped (`flow.stop`), and each line by the run id. `mendwright report` and `mendwright fix` ignore them, and so does 0.9.0.
-- `mendwright doctor` shows `MENDWRIGHT_WEBHOOK_URL` as its scheme and host only, masks the value of any variable whose name holds `WEBHOOK` in its error text, and masks secret values in the variables it shows too.
+- `mendwright doctor` shows `MENDWRIGHT_WEBHOOK_URL` as its scheme and host only, masks the value of any variable whose name holds `WEBHOOK` in its error text, and masks secret values in the variables it shows too, such as a key pasted into `MENDWRIGHT_STORE`. A variable's own value is shown as before, so `MENDWRIGHT_AUTH_HEADER` still shows its header name.
 
 ## [0.9.0] - 2026-10-17
 

@@ -651,6 +651,22 @@ def test_doctor_never_shows_the_webhook_url_past_its_host(capsys, monkeypatch):
     assert "MENDWRIGHT_WEBHOOK_URL=https://hooks.slack.com" in out
 
 
+def test_doctor_shows_the_auth_header_and_masks_a_secret_pasted_into_it(capsys, monkeypatch):
+    # The header's name is safe to print, although the variable's name holds AUTH.
+    monkeypatch.setenv("MENDWRIGHT_GATEWAY", "https://gw.example.test/heal")
+    monkeypatch.setenv("MENDWRIGHT_KEY", "mw-SECRET-download-key")
+    monkeypatch.setenv("MENDWRIGHT_AUTH_HEADER", "X-Team-Key")
+    assert cli.main(["doctor"]) == 0
+    assert "  MENDWRIGHT_AUTH_HEADER=X-Team-Key" in capsys.readouterr().out.splitlines()
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["env"]["MENDWRIGHT_AUTH_HEADER"] == "X-Team-Key"
+    # The key pasted into it stays hidden.
+    monkeypatch.setenv("MENDWRIGHT_AUTH_HEADER", "mw-SECRET-download-key")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "SECRET" not in out and "  MENDWRIGHT_AUTH_HEADER=***" in out.splitlines()
+
+
 def test_doctor_scrubs_secrets_from_a_provider_error(capsys, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-SECRET-abcdef")
 

@@ -79,12 +79,15 @@ def _wrap(text, indent='  ', width=88):
 
 # --- doctor ----------------------------------------------------------------------------
 
-def _scrub(text):
-    """text with the value of every secret-looking environment variable masked."""
+def _scrub(text, skip=None):
+    """text with the value of every secret-looking environment variable masked, except the
+    variable named skip: the one whose own value text is."""
     if not isinstance(text, str):
         return text
     for name, value in os.environ.items():
         upper = name.upper()
+        if upper == (skip or '').upper():
+            continue
         if value and len(value) >= 4 and any(word in upper for word in _SECRET_WORDS):
             text = text.replace(value, '***')
     return text
@@ -255,7 +258,9 @@ def _env_info():
             from .journal import valid_run_id
             out[name] = value if valid_run_id(value) else repr(value)   # no escape reaches a terminal
         elif name.upper() in _SHOWN_VALUES:
-            out[name] = _scrub(value)   # a secret pasted into the wrong variable stays hidden
+            # A secret pasted into the wrong variable stays hidden. A variable's own value is
+            # safe to print, even when its name reads as a secret's (MENDWRIGHT_AUTH_HEADER).
+            out[name] = _scrub(value, skip=name)
         else:
             out[name] = '(set, value hidden)'
     return out
