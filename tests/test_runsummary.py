@@ -176,6 +176,16 @@ def test_dry_run_and_disabled_are_counted_never_a_thing_for_a_human():
     assert s['not_repaired_on_purpose'] == {'dry_run': 2, 'disabled': 1}
 
 
+def test_a_heal_quarantined_because_its_key_is_destructive_says_so():
+    events = [ev('heal.canary', 'pay', xpath='//p', success=False, by='destructive'),
+              ev('heal.quarantine', 'pay', xpath='//p'),
+              applied('email', '//e'), ev('heal.canary', 'email', xpath='//e', success=False,
+                                          by='expect'),
+              ev('heal.quarantine', 'email', xpath='//e')]
+    assert [(e['key'], e['code']) for e in summarize(events)['needs_human']] == [
+        ('pay', 'destructive'), ('email', 'quarantined')]
+
+
 def test_a_list_heal_quarantined_is_not_a_thing_for_a_human():
     s = summarize([ev('heal.quarantine', 'cart', xpath='//li', list=True)])
     assert s['needs_human'] == []

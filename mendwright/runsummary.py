@@ -170,6 +170,7 @@ def summarize(events):
     applied = {}            # (key, xpath) -> tier, in the order first applied
     applied_at = []         # (index, key, xpath)
     good, bad = set(), set()
+    refused_by = {}         # (key, xpath) -> the by of its latest canary
     handled = {'cookie_banners': 0, 'popups': 0, 'interruptions': 0}
     needs = {}              # (about, key) -> {'key', 'code', 'about', 'at'}
     on_purpose = {code: set() for code in ON_PURPOSE}
@@ -191,11 +192,16 @@ def summarize(events):
             applied_at.append((at, key, xpath))
         elif name == 'heal.canary' and key and xpath:
             (good if event.get('success') is True else bad).add((key, xpath))
+            refused_by[(key, xpath)] = event.get('by')
         elif name == 'heal.quarantine' and key:
             if xpath:
                 bad.add((key, xpath))
             if not event.get('list'):
-                need('selector', key, 'quarantined', at)
+                # A heal of a key marked destructive after it was made is quarantined
+                # however right it was: say that, not that the repair was wrong.
+                code = ('destructive' if refused_by.get((key, xpath)) == 'destructive'
+                        else 'quarantined')
+                need('selector', key, code, at)
         elif name == 'heal.declined' and key:
             code = event.get('code')
             if code in ON_PURPOSE:
