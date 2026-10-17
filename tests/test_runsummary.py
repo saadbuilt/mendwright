@@ -93,12 +93,24 @@ def test_repairs_by_tier_and_state():
         applied('search', '//s', provider='AnthropicProvider', source='intent'),
         canary('search', '//s', success=False), ev('heal.quarantine', 'search', xpath='//s'),
         applied('terms', 'css=#t', provider='frame', source='frame'),
+        applied('save', 'my-app[id="root"] >> #save', provider='shadow', source='shadow',
+                shadow=['my-app[id="root"]']),
         applied('accept_terms', '//a', provider='fingerprint', source='fingerprint'),  # again
     ]
     r = summarize(events)['repaired']
-    assert r == {'total': 4, 'fingerprint': 1, 'model': 2, 'frame': 1, 'confirmed': 1,
-                 'not_confirmed': 2, 'quarantined': 1,
-                 'keys': ['accept_terms', 'email', 'search', 'terms']}
+    assert r == {'total': 5, 'fingerprint': 1, 'model': 2, 'frame': 1, 'shadow': 1,
+                 'confirmed': 1, 'not_confirmed': 3, 'quarantined': 1,
+                 'keys': ['accept_terms', 'email', 'save', 'search', 'terms']}
+
+
+def test_a_selector_found_inside_a_shadow_root_is_no_model_heal():
+    # The follow of a key's own selector into a shadow root asks no model (source 'shadow').
+    s = summarize([applied('save', 'my-app[id="root"] >> #save', provider='shadow',
+                           source='shadow', shadow=['my-app[id="root"]'])])
+    assert (s['repaired']['model'], s['repaired']['shadow']) == (0, 1)
+    text = message(s)
+    assert '1 selector repaired: 1 found inside a shadow root. 1 not confirmed: `save`.' in text
+    assert 'by the model' not in text and 'my-app' not in text
 
 
 def test_a_quarantine_wins_over_a_canary_success():

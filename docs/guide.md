@@ -2539,7 +2539,7 @@ Sums up the events of one run in `journal.jsonl` and posts it to the webhook in 
 
 What it counts, from the events of the run only:
 
-- Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included) or found inside an iframe. It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
+- Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included), or found inside an iframe or a [shadow root](#shadow-dom) (source `frame` or `shadow`, with no model call). It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
 - Handled: cookie banners closed by the `cookies=` preset, popups `dismiss=True` closed, and the other interruptions.
 - Needs a human: one line per key, the latest reason winning, in the words below. A key healed later in the run is left out, unless that heal was quarantined too.
 - Not repaired on purpose: keys declined in dry run or under `MENDWRIGHT_DISABLE=1`. They never need a human.
@@ -2558,7 +2558,7 @@ What it counts, from the events of the run only:
 | `no_step`, `step_cap` | `flow.stop` | `run_steps() stopped: no registered step showed`, `run_steps() stopped: it ran more steps than it allows` |
 
 The message names at most 10 keys on a line, then `and N more`, cuts each key to 80 characters, and stays under 3,000 characters. For Slack, `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;`, so a key can't mention `@channel` or a person, and a backtick in a key is written as `'`.
-The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr_url`, `tests`, `changed`, `repaired` (`total`, `fingerprint`, `model`, `frame`, `confirmed`, `not_confirmed`, `quarantined`, `keys`, `more_keys`), `handled` (`cookie_banners`, `popups`, `interruptions`), `needs_human` (each with `key`, `code`, `about`, the subject, and `text`, the words after it), `more_needs_human`, `not_repaired_on_purpose` (`dry_run`, `disabled`), `text` (the message, without Slack's escapes) and `sent_at`. Lists are cut to keep it under 16 KiB. With `--detail counts`, `keys` is empty and no entry has a `key`.
+The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr_url`, `tests`, `changed`, `repaired` (`total`, `fingerprint`, `model`, `frame`, `shadow`, `confirmed`, `not_confirmed`, `quarantined`, `keys`, `more_keys`), `handled` (`cookie_banners`, `popups`, `interruptions`), `needs_human` (each with `key`, `code`, `about`, the subject, and `text`, the words after it), `more_needs_human`, `not_repaired_on_purpose` (`dry_run`, `disabled`), `text` (the message, without Slack's escapes) and `sent_at`. Lists are cut to keep it under 16 KiB. With `--detail counts`, `keys` is empty and no entry has a `key`.
 
 | Situation | Output | Exit |
 |---|---|---|

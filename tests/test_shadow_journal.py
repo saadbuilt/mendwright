@@ -106,3 +106,18 @@ def test_the_summary_of_a_refused_shadow_heal_names_the_key_and_no_host(make_sha
     assert ('1 needs a human: `save` is inside a shadow root, where mendwright could not '
             'repair it.') in text
     assert HOST not in text and CHAIN not in text and 'my-app' not in text
+
+
+def test_a_follow_into_a_shadow_root_is_counted_as_one_and_carries_the_run(make_shadow_driver,
+                                                                          tmp_path):
+    driver = make_shadow_driver(V1)
+    heal = _open(driver, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert heal.heals[-1].source == 'shadow'
+    [applied] = [e for e in _events(tmp_path) if e['event'] == 'heal.applied']
+    assert applied['run'] == RUN and applied['source'] == 'shadow' and applied['shadow'] == [HOST]
+    events, _ = runsummary.select(_events(tmp_path), run=RUN)
+    repaired = runsummary.summarize(events)['repaired']
+    assert (repaired['total'], repaired['shadow'], repaired['model']) == (1, 1, 0)
+    text = runsummary.message(runsummary.summarize(events))
+    assert '1 found inside a shadow root' in text and HOST not in text

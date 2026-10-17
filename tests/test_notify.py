@@ -151,7 +151,7 @@ def test_the_json_payload_has_its_schema(store, monkeypatch):
     assert data == {
         'schema': 1, 'mendwright': mendwright.__version__, 'title': 'saadbuilt/shop', 'run': RUN,
         'run_url': None, 'pr_url': None, 'tests': 'success', 'changed': True,
-        'repaired': {'total': 2, 'fingerprint': 1, 'model': 1, 'frame': 0, 'confirmed': 1,
+        'repaired': {'total': 2, 'fingerprint': 1, 'model': 1, 'frame': 0, 'shadow': 0, 'confirmed': 1,
                      'not_confirmed': 1, 'quarantined': 0, 'keys': ['accept_terms', 'search'],
                      'more_keys': 0},
         'handled': {'cookie_banners': 0, 'popups': 1, 'interruptions': 1},

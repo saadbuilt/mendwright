@@ -148,6 +148,8 @@ def _tier(event):
         return 'fingerprint'
     if 'frame' in (source, provider):
         return 'frame'
+    if 'shadow' in (source, provider):
+        return 'shadow'       # the key's own selector, found inside a shadow root: no model
     return 'model'
 
 
@@ -158,7 +160,7 @@ def _text(value):
 def summarize(events):
     """What the events of one run add up to, as a dict (see the module's docstring):
 
-    repaired: total, fingerprint, model, frame, confirmed, not_confirmed, quarantined and
+    repaired: total, fingerprint, model, frame, shadow, confirmed, not_confirmed, quarantined and
       keys (sorted), over the distinct (key, xpath) of heal.applied. A heal is quarantined
       when a failed canary or a heal.quarantine names it, else confirmed when a canary
       success does, else not confirmed.
@@ -250,6 +252,7 @@ def summarize(events):
         entries.append({'key': entry['key'], 'code': entry['code'], 'about': entry['about']})
     repaired = {'total': len(applied), 'fingerprint': tiers.count('fingerprint'),
                 'model': tiers.count('model'), 'frame': tiers.count('frame'),
+                'shadow': tiers.count('shadow'),
                 'confirmed': len(confirmed), 'quarantined': len(quarantined),
                 'not_confirmed': len(applied) - len(confirmed) - len(quarantined),
                 'keys': sorted({key for key, _ in applied})}
@@ -320,6 +323,8 @@ def _repaired_line(r, detail, keys_shown):
         parts.append(str(r['model']) + ' by the model')
     if r['frame']:
         parts.append(str(r['frame']) + ' found inside an iframe')
+    if r.get('shadow'):
+        parts.append(str(r['shadow']) + ' found inside a shadow root')
     states = []
     for name, label in (('confirmed', 'confirmed'), ('not_confirmed', 'not confirmed'),
                         ('quarantined', 'quarantined')):
