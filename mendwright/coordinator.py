@@ -29,6 +29,7 @@ from .fit import fit_bundle, has_position
 from .flow import flow_change_message, journal_event
 from .journal import NullJournal
 from .providers import GatewayProvider
+from .providers._errors import NOT_HERE_HINT
 from .validation import validate
 
 logger = logging.getLogger('mendwright')
@@ -194,6 +195,28 @@ def _in_seed(selectors, then=''):
                                        if selectors else '') + '.')
 
 
+# The code of each heal.declined event (see HealCoordinator._decline), which mendwright notify
+# turns into one of its own phrases. dry_run and disabled are declines on purpose.
+DECLINE_CODES = (
+    'destructive',      # the key is marked destructive
+    'page_guard',       # the page is not one the key was found on
+    'disabled',         # MENDWRIGHT_DISABLE=1
+    'no_provider',      # no model provider, and the fingerprint did not heal it
+    'role_unknown',     # the key's role is unknown, so a heal could not be checked
+    'guard',            # guard= blocked heals
+    'rate_limit',       # the hourly heal limit was reached
+    'not_here',         # the model found no element on this page that fits, or was not sure
+    'no_proposal',      # the provider gave no usable selector
+    'gate',             # no proposed selector passed the checks
+    'dry_run',          # dry run: checked, not applied
+    'list_empty',       # a list whose selectors all match nothing
+    'list_not_found',   # a list looked up with nonempty=True: nothing found to propose
+    'get_by',           # a get_by_* call its fingerprint could not heal (no model is asked)
+    'frame',            # found only inside an iframe mendwright did not follow it into
+    'other',
+)
+
+
 @dataclass(frozen=True)
 class ListOutcome:
     """What HealCoordinator.propose_list() did: kind is 'proposed' (saved for a person to
@@ -332,13 +355,21 @@ class HealCoordinator:
         else:
             logger.log(level, 'mendwright: ' + message)
 
-    def _decline(self, selector_key, reason, level=logging.WARNING, logged=None):
-        """Record why a heal did not apply (for resolve_with_heal to surface), log it, and
-        return the falsy value try_heal uses for 'not applied'. ``logged`` is a shorter
-        reason for the log line, when the full one was already logged elsewhere."""
+    def _decline(self, selector_key, reason, level=logging.WARNING, logged=None, *,
+                 code='other'):
+        """Record why a heal did not apply (for resolve_with_heal to surface), log it, journal
+        it as heal.declined with ``code`` (one of DECLINE_CODES), and return the falsy value
+        try_heal uses for 'not applied'. ``logged`` is a shorter reason for the log line,
+        when the full one was already logged elsewhere."""
         self.heal_reasons[selector_key] = reason
         self._emit(level, 'did not heal ' + repr(selector_key) + ': ' + str(logged or reason))
+        journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason)
         return False
+
+    def _unavailable_code(self):
+        """The code of a decline because no model provider can be asked: 'disabled' under
+        MENDWRIGHT_DISABLE=1, else 'no_provider'."""
+        return 'disabled' if self.disabled else 'no_provider'
 
     def try_heal(self, selector_key, meta, broken_candidates, context, row=None):
         """Heal + apply a validated selector. Returns the applied xpath (truthy) if a
@@ -352,10 +383,11 @@ class HealCoordinator:
         if meta.get('destructive'):
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
-            return self._decline(selector_key, _destructive_message(selector_key))
+            return self._decline(selector_key, _destructive_message(selector_key),
+                                 code='destructive')
         moved = self._flow_change(selector_key, context)
         if moved:
-            return self._decline(selector_key, moved)
+            return self._decline(selector_key, moved, code='page_guard')
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
@@ -372,13 +404,15 @@ class HealCoordinator:
             if role_unknown:
                 # Both need fixing: say so now, so fixing one does not just reveal the other.
                 unavailable = unavailable.rstrip() + ' Also, mendwright ' + _role_needed(selector_key)
-            return self._decline(selector_key, unavailable, logged=summary)
+            return self._decline(selector_key, unavailable, logged=summary,
+                                 code=self._unavailable_code())
         if role_unknown:
             # Every proposal would fail the gate's role check, so asking costs model calls
             # for nothing.
-            return self._decline(selector_key, 'mendwright ' + _role_needed(selector_key))
+            return self._decline(selector_key, 'mendwright ' + _role_needed(selector_key),
+                                 code='role_unknown')
         if not self.guard():
-            return self._decline(selector_key, GUARD_REASON)
+            return self._decline(selector_key, GUARD_REASON, code='guard')
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -389,7 +423,7 @@ class HealCoordinator:
                 selector_key, "'" + selector_key + "' has no selector yet, and only a model can "
                 'find it from intent=, but no model provider is configured. ' + unavailable,
                 logged=("'" + selector_key + "' has no selector yet, and " + summary)
-                if summary else None)
+                if summary else None, code=self._unavailable_code())
         if self.fingerprint and source != 'intent':
             html = self.html_provider()
             applied, note, requested = self._fingerprint_tier(selector_key, meta,
@@ -402,7 +436,8 @@ class HealCoordinator:
                 return self._decline(
                     selector_key, note + ', and no model provider is configured to try '
                     'instead. ' + unavailable,
-                    logged=(note + ', and ' + summary) if summary else None)
+                    logged=(note + ', and ' + summary) if summary else None,
+                    code=self._unavailable_code())
         # Direct-mode budget: fail closed when the rate/spend cap is reached (one heal
         # attempt == one slot), mirroring the gateway's server-side needs_human.
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
@@ -410,7 +445,8 @@ class HealCoordinator:
             return self._decline(selector_key,
                 "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
                 "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
-                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).")
+                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).",
+                code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:
             self.journal.requested(selector_key)
@@ -440,13 +476,18 @@ class HealCoordinator:
                     # key, a rate limit, a weak reply, a gateway's needs_human), so it is
                     # quoted as it is. Adding a guess of our own would contradict it.
                     self.journal.rejected(selector_key, reason='no proposal', error=error)
+                    # The model found no element on this page that fits, or was not sure
+                    # which: the providers end that sentence with NOT_HERE_HINT, so the code
+                    # does not depend on its wording.
                     return self._decline(selector_key,
                         type(self.provider).__name__ + " returned no selector for '"
-                        + selector_key + "': " + error)
+                        + selector_key + "': " + error,
+                        code='not_here' if NOT_HERE_HINT in error else 'no_proposal')
                 self.journal.rejected(selector_key, reason='no proposal')
                 return self._decline(selector_key,
                     "the model returned no usable selector for '" + selector_key + "'. Try a "
-                    "different or stronger model, or repair the selector by hand.")
+                    "different or stronger model, or repair the selector by hand.",
+                    code='no_proposal')
             self.journal.proposed(selector_key, xpath=proposal.get('xpath'),
                                   reasoning=proposal.get('reasoning'), source=tag)
             if self.dry_run:
@@ -464,7 +505,7 @@ class HealCoordinator:
                 return self._decline(selector_key,
                     "dry-run mode is on, so the proposal for '" + selector_key + "' was checked "
                     "but not applied. Turn off dry_run to let mendwright apply and retry.",
-                    level=logging.INFO)
+                    level=logging.INFO, code='dry_run')
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath)
@@ -480,7 +521,8 @@ class HealCoordinator:
         self._decline(selector_key,
             "no selector the model proposed for '" + selector_key + "' passed mendwright's local "
             "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
-            "matches exactly one element of the expected role and is present on the live page.")
+            "matches exactly one element of the expected role and is present on the live page.",
+            code='gate')
         return None
 
     def _heal_get_by(self, selector_key, meta, broken_candidates):
@@ -498,21 +540,24 @@ class HealCoordinator:
         not heal. Its pick goes through apply(), whose live check also asks Playwright for
         the ARIA role of a get_by_role() call (gate.live_reason)."""
         if self.disabled:
-            return self._decline(selector_key, DISABLED_REASON)
+            return self._decline(selector_key, DISABLED_REASON, code='disabled')
         if not self.fingerprint:
-            return self._decline(selector_key, getby.tier_off_message(selector_key))
+            return self._decline(selector_key, getby.tier_off_message(selector_key),
+                                 code='get_by')
         if not _fingerprint.valid(meta.get('fingerprint')):
-            return self._decline(selector_key, getby.no_fingerprint_message(selector_key))
+            return self._decline(selector_key, getby.no_fingerprint_message(selector_key),
+                                 code='get_by')
         role = meta.get('expectedRole')
         if not role or role == 'unknown':
-            return self._decline(selector_key, getby.role_unknown_message(selector_key))
+            return self._decline(selector_key, getby.role_unknown_message(selector_key),
+                                 code='role_unknown')
         if not self.guard():
-            return self._decline(selector_key, GUARD_REASON)
+            return self._decline(selector_key, GUARD_REASON, code='guard')
         applied, note, _requested = self._fingerprint_tier(
             selector_key, meta, broken_candidates, self.html_provider(), self.clock())
         if applied is not None:
             return applied      # the heal, or False after the dry run declined it
-        return self._decline(selector_key, note + '. ' + getby.NO_MODEL)
+        return self._decline(selector_key, note + '. ' + getby.NO_MODEL, code='get_by')
 
     def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
         """The first tier: (applied, note, requested). applied is the xpath applied, False
@@ -541,7 +586,7 @@ class HealCoordinator:
             return self._decline(selector_key,
                 "dry-run mode is on, so the fingerprint match for '" + selector_key + "' was "
                 "checked but not applied. Turn off dry_run to let mendwright apply and retry.",
-                level=logging.INFO), '', True
+                level=logging.INFO, code='dry_run'), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
                                 frame_xpath=self.frame_xpath)
@@ -563,7 +608,7 @@ class HealCoordinator:
         So nothing is looked for on the page, no model is asked and nothing is saved."""
         lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
         self._decline(selector_key, _list_missing_message(
-            selector_key, lfp.get('count') if isinstance(lfp, dict) else None))
+            selector_key, lfp.get('count') if isinstance(lfp, dict) else None), code='list_empty')
         return self.explain(selector_key)
 
     def propose_list(self, selector_key, meta, broken, context):
@@ -584,7 +629,8 @@ class HealCoordinator:
         from .drivers.base import driver_places
         lfp = meta.get('listFingerprint')
         if meta.get('destructive'):
-            return self._list_refused(selector_key, _destructive_message(selector_key))
+            return self._list_refused(selector_key, _destructive_message(selector_key),
+                                      code='destructive')
         if not _lists.valid(lfp):
             return self._list_refused(selector_key, nonempty_unsearched(
                 selector_key, 'mendwright has never seen this list match 2 or more elements, '
@@ -612,13 +658,13 @@ class HealCoordinator:
                 'with nonempty=True'))
         moved = self._flow_change(selector_key, context)
         if moved:
-            return self._list_refused(selector_key, moved)
+            return self._list_refused(selector_key, moved, code='page_guard')
         role = meta.get('expectedRole')
         if not role or role == 'unknown':
             return self._list_refused(selector_key, 'mendwright ' + _role_needed(
-                selector_key, call='heal.locator_all()'))
+                selector_key, call='heal.locator_all()'), code='role_unknown')
         if not self.guard():
-            return self._list_refused(selector_key, _GUARD_BLOCKS)
+            return self._list_refused(selector_key, _GUARD_BLOCKS, code='guard')
         if not callable(getattr(self.store, 'propose_list_heal', None)):
             return self._list_refused(selector_key, self._unsaved(selector_key, 'it has no '
                                                                   'propose_list_heal()'))
@@ -668,7 +714,7 @@ class HealCoordinator:
             reason = ('dry-run mode is on, so the list mendwright found for '
                       + repr_key(selector_key) + ', ' + match.xpath + ', was checked but not '
                       'saved. Turn off dry_run to save it for you to check.')
-            self._decline(selector_key, reason, level=logging.INFO)
+            self._decline(selector_key, reason, level=logging.INFO, code='dry_run')
             return ListOutcome('dry_run', reason=reason, xpath=match.xpath)
         return self._hold_list(selector_key, meta, lfp, match, css, broken, context, started)
 
@@ -800,16 +846,17 @@ class HealCoordinator:
                                    'save a list heal for you to check (' + why + '), so '
                                    'mendwright did not look.')
 
-    def _list_refused(self, selector_key, reason, level=logging.WARNING):
-        """Decline a list looked up with nonempty=True (see _decline), as a ListOutcome."""
-        self._decline(selector_key, reason, level=level)
+    def _list_refused(self, selector_key, reason, level=logging.WARNING, code='list_not_found'):
+        """Decline a list looked up with nonempty=True (see _decline), as a ListOutcome. code
+        is 'list_not_found' unless a check every heal has refused it."""
+        self._decline(selector_key, reason, level=level, code=code)
         return ListOutcome('refused', reason=reason)
 
     def decline_nonempty(self, selector_key, text):
         """Decline list key, looked up with nonempty=True, before anything was looked for:
         text says why (see nonempty_unsearched). Returns the reason."""
         reason = nonempty_unsearched(selector_key, text)
-        self._decline(selector_key, reason)
+        self._decline(selector_key, reason, code='list_not_found')
         return reason
 
     def came(self, selector_key, selector):
@@ -830,7 +877,7 @@ class HealCoordinator:
         reason = nonempty_searched(selector_key, (lfp or {}).get('count'),
                                    'the group it found, ' + str(xpath) + ", failed mendwright's "
                                    'list checks (' + why + ')')
-        self._decline(selector_key, reason)
+        self._decline(selector_key, reason, code='list_not_found')
         return reason
 
     def waits_for_fix(self, selector_key, meta, row, count):

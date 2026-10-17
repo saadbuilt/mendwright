@@ -524,13 +524,14 @@ def absent_message(key):
 
 _JOURNAL_HELPERS = {'flow.interrupt': 'interrupted', 'flow.skip': 'skipped',
                     'flow.page_guard': 'page_guard', 'flow.dismiss': 'dismissed',
-                    'flow.step': 'stepped'}
+                    'flow.step': 'stepped', 'flow.stop': 'stopped',
+                    'heal.declined': 'declined'}
 
 
 def journal_event(journal, name, key, **fields):
-    """Write one flow.* event to ``journal``. A journal passed to open() that predates
-    these events (it has event() but not the named helper) still gets the line; one that
-    has neither is skipped. Never raises, like every journal write."""
+    """Write one flow.* or heal.declined event to ``journal``. A journal passed to open()
+    that predates these events (it has event() but not the named helper) still gets the
+    line; one that has neither is skipped. Never raises, like every journal write."""
     try:
         helper = getattr(journal, _JOURNAL_HELPERS.get(name, ''), None)
         if callable(helper):

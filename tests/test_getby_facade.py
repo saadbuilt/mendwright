@@ -555,7 +555,8 @@ def test_the_page_guard_applies_to_call_keys(tmp_path, make_page, stub_provider)
     page.set_html(RENAMED)
     with pytest.raises(getby.GetByNotFound, match="was last found on /login, and this page is /checkout"):
         _sign_in(heal)
-    assert [e['event'] for e in _journal(tmp_path)] == ['flow.page_guard']
+    assert [e['event'] for e in _journal(tmp_path)] == ['flow.page_guard', 'heal.declined']
+    assert _journal(tmp_path)[-1]['code'] == 'page_guard'
 
 
 def test_dry_run_checks_and_applies_nothing(tmp_path, make_page, stub_provider):
@@ -565,7 +566,9 @@ def test_dry_run_checks_and_applies_nothing(tmp_path, make_page, stub_provider):
     provider = stub_provider(HEAL)
     with pytest.raises(getby.GetByNotFound, match='dry-run mode is on'):
         _sign_in(_open(page, tmp_path, provider, dry_run=True))
-    assert [e['event'] for e in _journal(tmp_path)] == ['heal.requested', 'heal.proposed']
+    assert [e['event'] for e in _journal(tmp_path)] == ['heal.requested', 'heal.proposed',
+                                                         'heal.declined']
+    assert _journal(tmp_path)[-1]['code'] == 'dry_run'
     assert [c['xpath'] for c in _saved(tmp_path)[KEY]['candidates']] == [KEY]
     assert provider.bundles == []
 

@@ -141,6 +141,8 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` | The least probability a pick of the local model needs to be used, from 0 to 1 (default 0.8, 0 turns the check off) |
 | `MENDWRIGHT_KEY` | The client key the gateway checks |
 | `MENDWRIGHT_AUTH_HEADER` | The header that carries it, `X-Heal-Key` by default |
+| `MENDWRIGHT_RUN_ID` | The run id every journal event gets in `run`, for [`mendwright notify`](#mendwright-notify): 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-`, starting with a letter or digit. On GitHub Actions it defaults to `gh-<run id>.<attempt>`. Any other value is ignored, with one WARNING from `open()` |
+| `MENDWRIGHT_WEBHOOK_URL` | The webhook [`mendwright notify`](#mendwright-notify) posts to: `https://`, or `http://` on `localhost`. Never printed |
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
 
 Flags take `1`, `true`, `yes` or `on`, and `0`, `false`, `no`, `off` or empty.
@@ -1338,6 +1340,7 @@ INFO mendwright: the page guard lets '#ship-name' heal on /checkout/step-b: it w
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
 | `flow.step` | `key` (the step's name), `outcome` (`ran`, `failed` when its function raised, or `missing` for a step that isn't optional and never showed), `error` (the error's type, for `failed`), `position` (1 for the first step that ran), `registered` (its place in the order the steps were registered), `page`, `seconds` |
+| `flow.stop` | Written right before mendwright raises because the flow can't go on. `code`: `interruption_loop` (`key` is the interruption's, with `before`), `popup_loop` (`key` is `<popup>`, with `before`), `step_cap` (`key` is `<next step>`, with `ran`, the number of steps that ran), `step_again` or `step_moved` (`key` is the step's name, with `page`) and `no_step` (`key` is `<next step>`, with `page`). It holds no message text, so no popup text either |
 
 ## Selectors
 
@@ -1505,6 +1508,29 @@ The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reaso
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
 The events of a list looked for with `nonempty=True` have `"list": true`. A list heal you rejected, or one quarantined because the selector it replaced matched again, writes a `heal.quarantine` with a `reason` that says which.
 A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
+Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`, such as `gh-11893412207.1`. Without one there is no `run`, as before 0.10.0. [`mendwright notify`](#mendwright-notify) picks the events of one run by it, also in a journal the [cache](#keep-heals-between-runs) keeps from run to run.
+`heal.declined` says why a heal was not tried or did not apply, one line each time: `key`, `code` and `reason`, the text the log line and the error give, which can quote the page, as `reasoning` can. The codes:
+
+| `code` | Why |
+|---|---|
+| `destructive` | The key is marked destructive |
+| `page_guard` | The page is not one the key was found on (see [Steps that moved to another page](#steps-that-moved-to-another-page)) |
+| `disabled` | `MENDWRIGHT_DISABLE=1` |
+| `no_provider` | No model provider is set up, and the fingerprint did not heal it |
+| `role_unknown` | The key's role is unknown, so a heal could not be checked |
+| `guard` | `guard=` blocked heals |
+| `rate_limit` | The hourly heal limit was reached |
+| `not_here` | The model found no element on this page that fits, or was not sure which (see [When the model finds no element](#when-the-model-finds-no-element)) |
+| `no_proposal` | The provider gave no usable selector |
+| `gate` | No proposed selector passed the checks |
+| `dry_run` | Dry run: checked, not applied |
+| `list_empty` | A list whose selectors all match nothing (see [Lists](#lists)) |
+| `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
+| `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
+| `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
+| `other` | Anything else |
+
+`flow.stop` is in [Log lines and journal events](#log-lines-and-journal-events). `mendwright report` and `mendwright fix` don't read `run`, `heal.declined` or `flow.stop`, and a 0.9.0 `mendwright fix` reading a 0.10.0 journal ignores them.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1625,12 +1651,12 @@ jobs:
       - uses: actions/checkout@<sha>  # v7.0.1
         with:
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.9.0
+      - uses: saadbuilt/mendwright@v0.10.0
         with:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.9.0` can be a SHA too, with a `# v0.9.0` comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.0` can be a SHA too, with a `# v0.10.0` comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -1676,7 +1702,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.9.0
+      - uses: saadbuilt/mendwright@v0.10.0
         with:
           tests-result: ${{ github.event.workflow_run.conclusion }}
 ```
@@ -1771,8 +1797,13 @@ On a public repository it adds a notice: the branch and the pull request are pub
 | `commit-author-name` | `github-actions[bot]` | The author of its commits. |
 | `commit-author-email` | `41898282+github-actions[bot]@users.noreply.github.com` | Also how the action knows its own commits. |
 | `python-version` | `3.12` | Passed to `actions/setup-python`. Empty: the runner's `python3` or `python`, which must be 3.10 to 3.14. |
+| `webhook-url` | empty | A webhook that gets a summary of the run, such as a Slack incoming webhook (see [Alerts](#alerts)). Pass a secret, such as `${{ secrets.SLACK_WEBHOOK_URL }}`. Empty: no alert. |
+| `webhook-format` | `slack` | `slack`, or `json` for any other receiver. |
+| `notify-when` | `changes` | `changes`, `attention` or `always`, as `mendwright notify --when`. |
+| `notify-detail` | `keys` | `keys` names the keys in the alert; `counts` names none. |
+| `journal-run` | empty | The run id of the journal events to summarize. Empty: `gh-<run id>` of the run that tested the code, its newest attempt. Pass it only when your test job sets its own `MENDWRIGHT_RUN_ID`. |
 
-Boolean inputs take `true` or `false` only.
+Boolean inputs take `true` or `false` only. `webhook-format`, `notify-when`, `notify-detail` and `journal-run` are checked before anything else, as the boolean inputs are.
 
 | Output | Value |
 |---|---|
@@ -1781,6 +1812,7 @@ Boolean inputs take `true` or `false` only.
 | `pull-request-url` | That pull request's address |
 | `written` | How many keys were written back (in a dry run, would be) |
 | `left-alone` | How many items are under "Left alone" |
+| `notified` | `true` when the webhook took the summary, `false` when it did not, empty without `webhook-url` |
 
 #### Limits
 
@@ -1791,6 +1823,51 @@ Boolean inputs take `true` or `false` only.
 - Keep the action and the mendwright your tests install on the same version. Dependabot's `pip` and `github-actions` updates do that. The action reads stores and journals of older versions; a canary from before 0.9.0 shows as "a check before mendwright 0.9.0".
 - GitHub Enterprise Server is not tested.
 - What review still has to catch: a store is only as trustworthy as your test job. Anything that can write the test job's files can name a string literal in your code and propose any XPath that compiles in its place. `mendwright fix` refuses values mendwright could not have saved, but an XPath such as `//cdn.example/x.js` is also a protocol-relative URL. Read the pull request as you would read a change from a contributor.
+
+### Alerts
+
+[`mendwright notify`](#mendwright-notify) posts a short summary of one run to a webhook: how many selectors were repaired and how, what was handled on the way, and what needs a human.
+It sends a Slack message, which Slack incoming webhooks take, and so do Mattermost, Rocket.Chat, Google Chat and Discord's Slack-compatible endpoint (`.../slack`). `--format json` sends a JSON document for any other receiver.
+A webhook that fails never fails the job.
+
+```text
+mendwright, saadbuilt/shop: the site changed.
+3 selectors repaired: 2 from fingerprints, 1 by the model. 2 confirmed, 1 not confirmed: `accept_terms`, `email`, `search`.
+Handled: 1 cookie banner, 1 popup.
+1 needs a human: `pay` is marked destructive, so mendwright did not repair it.
+The tests passed.
+Pull request: https://github.com/saadbuilt/shop/pull/12
+Run: https://github.com/saadbuilt/shop/actions/runs/11893412207
+```
+
+With the GitHub Action, pass the webhook as a secret:
+
+```yaml
+      - uses: saadbuilt/mendwright@v0.10.0
+        with:
+          tests-result: ${{ needs.test.result }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+The action sends the alert after it opened or updated the pull request, with a link to it. It sends nothing on `pull_request`, and nothing for a run it skipped or refused. The job summary gets a "This run" section with the same text, and says whether it was sent. The alert's inputs are in [Inputs and outputs](#inputs-and-outputs): `notify-when: attention` sends only when something needs a human or the tests did not pass.
+Only the step that sends the alert gets the URL, and it masks it before it prints anything.
+
+Each journal event of a run on GitHub Actions has the run's id, `gh-<run id>.<attempt>`, so the action finds the events of the run that tested the code, also in a journal the cache keeps from run to run. On other CI, give each run an id of its own with `MENDWRIGHT_RUN_ID`, where the tests run and where `mendwright notify` runs:
+
+```bash
+export MENDWRIGHT_RUN_ID="nightly-$CI_PIPELINE_ID"
+python -m pytest; status=$?
+mendwright notify --tests "$([ $status -eq 0 ] && echo success || echo failure)"
+exit $status
+```
+
+`MENDWRIGHT_WEBHOOK_URL` holds the webhook there, as a masked CI variable.
+
+What an alert holds: counts, codes, mendwright's own phrases, key names, the title (the repository, or `--title`), the links to the run and the pull request, how the tests ended and mendwright's version.
+What it never holds: page HTML, input values, selectors (old or healed), the model's reasoning, the reason text of a heal that did not happen, popup text and button labels, page paths, interruption selectors, test names, store and journal paths, and provider and model names.
+`--detail counts` (`notify-detail: counts` in the action) leaves out the key names too. The keys of `heal.page` and `heal.driver` calls are the selectors in your code, such as `#email`, so use it for a channel people outside the team read.
+
+The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, never from an option, since a command line shows in process lists, shell history and CI logs. It must be `https://` (`http://` only on `localhost`, `127.0.0.1` and `[::1]`). mendwright never prints it, follows no redirect, and tries at most twice.
 
 ## Checking for drift before a run
 
@@ -2108,6 +2185,7 @@ Store (where mendwright.open() saves heals)
 ```
 
 `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
+Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as its scheme and host only, as `MENDWRIGHT_GATEWAY` does.
 With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
 
 ### mendwright report
@@ -2337,6 +2415,75 @@ It exits 0 after a listing, even an empty one, and after an accept or a reject, 
 Loads the page where each key was last found, on a site you name with `--origin` or `--base-url`, in a headless Playwright browser, and says which keys still resolve, which a run would heal and which it would refuse, without acting on the page, saving anything or asking a model. It exits 1 when a key broke and 3 when one couldn't be checked.
 [Checking for drift before a run](#checking-for-drift-before-a-run) has the results, the exit codes and every option.
 
+### mendwright notify
+
+```text
+mendwright notify [--store PATH] [--run ID | --since TIME | --all]
+                  [--format {slack,json}] [--when {changes,attention,always}]
+                  [--detail {keys,counts}] [--title TEXT] [--run-url URL] [--pr-url URL]
+                  [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
+```
+
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, and makes one POST, with one retry.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--store PATH` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | The journal is `journal.jsonl` next to it. The store itself is not read. |
+| `--run ID` | see below | The events whose `run` is `ID`. `gh-<digits>` without an attempt takes its highest attempt. |
+| `--since TIME` | | The events at or after an ISO 8601 time with a time zone, such as `2026-10-16T05:00:00Z`. Lines whose `ts` doesn't parse are left out. |
+| `--all` | | Every event of the journal. |
+| `--format` | `slack` | `slack`: `{"text": "..."}`. `json`: a JSON document of at most 16 KiB. |
+| `--when` | `changes` | `changes`: send when something was repaired or needs a human (handled popups alone don't count). `attention`: only when something needs a human or the tests did not pass. `always`. |
+| `--detail` | `keys` | `counts` names no key. |
+| `--title TEXT` | `GITHUB_REPOSITORY`, else the name of the folder that holds the store's folder | The name the message starts with, cut to 80 characters. |
+| `--run-url URL` | on GitHub Actions, this run's page | `https://`, or `http://` on `localhost`. |
+| `--pr-url URL` | none | The same rule. |
+| `--tests RESULT` | none | How the tests ended: a job result or run conclusion, such as `success` or `failure` (pass `${{ needs.test.result }}`). |
+| `--timeout SECONDS` | `10` | Per attempt, 1 to 30. |
+| `--dry-run` | off | Print the payload and send nothing. `MENDWRIGHT_WEBHOOK_URL` is not read. |
+| `--fail-on-error` | off | Exit 1 when nothing could be sent, for any reason but `--when`. |
+
+`--run`, `--since` and `--all` go one at a time. With none of them, the run is `MENDWRIGHT_RUN_ID`, or on GitHub Actions this run, `gh-<GITHUB_RUN_ID>` (its highest attempt). mendwright never falls back to the newest run in the journal, which would report an old run as this one. A run id that matches no event is a run in which mendwright recorded nothing, and its summary says `nothing changed`. A journal whose events have no run id at all (written before 0.10.0, or without `MENDWRIGHT_RUN_ID` off GitHub Actions) is refused, not taken for an empty run.
+
+What it counts, from the events of the run only:
+
+- Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included) or found inside an iframe. It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
+- Handled: cookie banners closed by the `cookies=` preset, popups `dismiss=True` closed, and the other interruptions.
+- Needs a human: one line per key, the latest reason winning, in the words below. A key healed later in the run is left out, unless that heal was quarantined too.
+- Not repaired on purpose: keys declined in dry run or under `MENDWRIGHT_DISABLE=1`. They never need a human.
+
+| Code | From | The alert says |
+|---|---|---|
+| a `heal.declined` code | a heal that did not apply | `` `pay` is marked destructive, so mendwright did not repair it ``, `` `email` was never found on this page before, so the flow may have changed ``, `` `email` could not be repaired: the model found no element on this page that fits ``, and so on for each code of [journal.jsonl](#journaljsonl) |
+| `quarantined` | `heal.quarantine` | `` `email` had a repair that was wrong, so it was quarantined `` |
+| `list_proposed` | `heal.held` | `` `cart` matched nothing as a list, and mendwright found one for you to check with mendwright lists `` |
+| `interruption_loop` | `flow.stop` | `` interruption `cookies` came back each time it was handled `` |
+| `popup_loop` | `flow.stop` | `` a popup in front of `email` came back each time it was dismissed `` |
+| `popup_failed` | `flow.dismiss`, `failed` or `lost` | `` a popup in front of `email` could not be dismissed `` |
+| `run_failed` | `flow.interrupt`, `failed` | `` interruption `session` could not be handled: its run= function raised an error `` |
+| `step_missing` | `flow.step`, `missing` | `` step `gift` never showed, so the site may have dropped it `` |
+| `step_again`, `step_moved` | `flow.stop` | `` step `payment` showed again after it ran ``, `` step `payment` showed on another page than before `` |
+| `no_step`, `step_cap` | `flow.stop` | `run_steps() stopped: no registered step showed`, `run_steps() stopped: it ran more steps than it allows` |
+
+The message names at most 10 keys on a line, then `and N more`, cuts each key to 80 characters, and stays under 3,000 characters. For Slack, `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;`, so a key can't mention `@channel` or a person, and a backtick in a key is written as `'`.
+The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr_url`, `tests`, `changed`, `repaired` (`total`, `fingerprint`, `model`, `frame`, `confirmed`, `not_confirmed`, `quarantined`, `keys`, `more_keys`), `handled` (`cookie_banners`, `popups`, `interruptions`), `needs_human` (each with `key`, `code`, `about`, the subject, and `text`, the words after it), `more_needs_human`, `not_repaired_on_purpose` (`dry_run`, `disabled`), `text` (the message, without Slack's escapes) and `sent_at`. Lists are cut to keep it under 16 KiB. With `--detail counts`, `keys` is empty and no entry has a `key`.
+
+| Situation | Output | Exit |
+|---|---|---|
+| Sent | `mendwright notify: sent the summary of run gh-11893412207.1 to https://hooks.slack.com (HTTP 200).` | 0 |
+| `--dry-run` | the payload | 0 |
+| `--when` says no | `mendwright notify: nothing to send for run gh-11893412207.1: nothing was repaired and nothing needs a human (--when changes).` | 0 |
+| `MENDWRIGHT_WEBHOOK_URL` unset or empty | `mendwright notify: MENDWRIGHT_WEBHOOK_URL is not set, so nothing was sent.` | 0, or 1 with `--fail-on-error` |
+| The URL is refused | `mendwright notify: the webhook URL in MENDWRIGHT_WEBHOOK_URL must start with https:// (http:// only for localhost), so nothing was sent.` | 0 / 1 |
+| An HTTP error | `mendwright notify: the webhook at https://hooks.slack.com answered HTTP 404 (no_service). Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.` | 0 / 1 |
+| A redirect | `... answered HTTP 302, a redirect, which mendwright does not follow. ...` | 0 / 1 |
+| The network | `mendwright notify: could not reach the webhook at https://hooks.slack.com (timed out after 10 s, tried 2 times). Nothing was sent.` | 0 / 1 |
+| No journal | `mendwright notify: no journal at <path>, so there is nothing to summarize. Run your tests with mendwright first, or pass --store.` | 0 / 1 |
+| No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
+| Bad arguments | argparse's message | 2 |
+
+Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host; the URL, its path and its query are written as `***` wherever they would show, an error body included (of which the first 100 characters are shown, without control characters). HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
+
 ## Low-level API
 
 `mendwright.open()` is built from public functions you can call yourself, for example to use a seed file or your own resolution loop:
@@ -2457,6 +2604,10 @@ Each message starts with `mendwright:`. A notice or a warning leaves the job gre
 | is still open: | The job summary says why the action could not tell whether the pull request is still needed. Close it by hand when it isn't. |
 | rate limit stopped the action | Run the workflow again later. |
 | a redirect, which the action does not follow | The repository was probably renamed or moved. Run the workflow from its new place. |
+| the input webhook-format takes | `webhook-format` takes `slack` or `json`, `notify-when` `changes`, `attention` or `always`, and `notify-detail` `keys` or `counts`. |
+| the input journal-run takes a run id | Pass the `MENDWRIGHT_RUN_ID` your test job sets, or leave `journal-run` empty. |
+| no alert was sent | The job summary's "This run" says why: no journal in the artifact, nothing to send for `notify-when`, or the webhook's answer. The job stays green. |
+| mendwright notify: no event in ... has a run id | The test job ran mendwright 0.9.0 or older, which writes no run id. Keep the action and the test job's mendwright on the same version. |
 
 ### Other problems
 

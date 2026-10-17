@@ -216,3 +216,159 @@ def test_file_permissions_are_0o600(tmp_path):
     j.requested('terms')
     mode = (tmp_path / '.mendwright' / 'journal.jsonl').stat().st_mode & 0o777
     assert mode == 0o600
+
+
+# --- run ids --------------------------------------------------------------------------------
+
+def _run_journal(tmp_path, **kwargs):
+    return Journal(tmp_path / 'journal.jsonl', clock=lambda: FIXED, **kwargs)
+
+
+def _lines(tmp_path, name='journal.jsonl'):
+    return [json.loads(line) for line in
+            (tmp_path / name).read_text(encoding='utf-8').splitlines()]
+
+
+def test_the_run_id_comes_from_mendwright_run_id(tmp_path, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'pipeline-4711')
+    j = _run_journal(tmp_path)
+    assert j.run == 'pipeline-4711'
+    j.requested('terms')
+    line = (tmp_path / 'journal.jsonl').read_text(encoding='utf-8')
+    # run comes right after event, so a line reads ts, event, run, key.
+    assert line == ('{"ts":"' + FIXED + '","event":"heal.requested","run":"pipeline-4711",'
+                    '"key":"terms"}\n')
+
+
+def test_on_github_actions_the_run_id_is_the_run_and_its_attempt(tmp_path, monkeypatch):
+    from mendwright.journal import run_id
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.setenv('GITHUB_RUN_ID', '11893412207')
+    monkeypatch.setenv('GITHUB_RUN_ATTEMPT', '2')
+    assert _run_journal(tmp_path).run == 'gh-11893412207.2'
+    assert run_id() == ('gh-11893412207.2', 'github', None)
+    for attempt in (None, '', 'two', '²'):
+        if attempt is None:
+            monkeypatch.delenv('GITHUB_RUN_ATTEMPT')
+        else:
+            monkeypatch.setenv('GITHUB_RUN_ATTEMPT', attempt)
+        assert run_id()[0] == 'gh-11893412207.1', attempt
+    # Not GitHub Actions, or a run id that is not all ASCII digits: no id.
+    for actions, number in (('false', '11893412207'), ('true', '12x'),
+                            ('true', '١٢'), ('true', '')):
+        monkeypatch.setenv('GITHUB_ACTIONS', actions)
+        monkeypatch.setenv('GITHUB_RUN_ID', number)
+        assert run_id() == (None, None, None), (actions, number)
+        assert _run_journal(tmp_path).run is None
+
+
+def test_mendwright_run_id_comes_before_github(monkeypatch):
+    from mendwright.journal import run_id
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.setenv('GITHUB_RUN_ID', '5')
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'gl/123:4_a.b-c')
+    assert run_id() == ('gl/123:4_a.b-c', 'MENDWRIGHT_RUN_ID', None)
+
+
+def test_without_an_id_events_have_no_run_field(tmp_path):
+    j = _run_journal(tmp_path)
+    assert j.run is None
+    j.requested('terms')
+    assert 'run' not in _lines(tmp_path)[0]
+
+
+def test_run_none_turns_it_off_and_a_string_sets_it(tmp_path, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'from-env')
+    assert _run_journal(tmp_path, run=None).run is None
+    assert _run_journal(tmp_path, run='mine.1').run == 'mine.1'
+    for bad in ('', ' x', 'has space', 'a\n', 'x' * 101, '-leading', 5):
+        with pytest.raises(ValueError):
+            _run_journal(tmp_path, run=bad)
+
+
+def test_a_callers_run_field_never_overwrites_the_run_id(tmp_path):
+    j = _run_journal(tmp_path, run='real-run')
+    j.event('flow.step', key='pay', run='forged')
+    j.stepped('pay', run='forged')
+    assert [row['run'] for row in _lines(tmp_path)] == ['real-run', 'real-run']
+    # With no run id, a caller's run= is dropped too: run is part of the frame.
+    j = Journal(tmp_path / 'other.jsonl', clock=lambda: FIXED, run=None)
+    j.event('flow.step', key='pay', run='forged')
+    assert 'run' not in _lines(tmp_path, 'other.jsonl')[0]
+
+
+@pytest.mark.parametrize('value', ['run id with spaces', 'a\nb', 'trailing\n', '.dot-first',
+                                   'x' * 101, 'ok;rm -rf', 'ünï'])
+def test_an_invalid_mendwright_run_id_is_ignored_as_if_unset(tmp_path, monkeypatch, value):
+    from mendwright.journal import run_id, run_id_problem
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', value)
+    assert run_id() == (None, None, value)
+    assert _run_journal(tmp_path).run is None
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.setenv('GITHUB_RUN_ID', '77')
+    assert run_id() == ('gh-77.1', 'github', value)      # as if MENDWRIGHT_RUN_ID were unset
+    assert run_id_problem(value).startswith(
+        "MENDWRIGHT_RUN_ID must be 1 to 100 letters, digits, '.', '_', ':', '/' or '-', "
+        'starting with a letter or digit, got ')
+    assert run_id_problem(value).endswith('. It is ignored, so journal events get no run id '
+                                          'from it.')
+
+
+def test_open_warns_about_an_invalid_run_id_once_and_does_not_raise(tmp_path, monkeypatch,
+                                                                    caplog, make_page):
+    import logging
+
+    import mendwright
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'run id with spaces')
+    with caplog.at_level(logging.WARNING, logger='mendwright'):
+        heal = mendwright.open(make_page('<html><body></body></html>'),
+                               store_path=str(tmp_path / 'overrides.json'))
+    said = [r.getMessage() for r in caplog.records if 'MENDWRIGHT_RUN_ID' in r.getMessage()]
+    assert said == ["mendwright: MENDWRIGHT_RUN_ID must be 1 to 100 letters, digits, '.', '_', "
+                    "':', '/' or '-', starting with a letter or digit, got 'run id with spaces'. "
+                    'It is ignored, so journal events get no run id from it.']
+    assert heal.coordinator.journal.run is None
+
+
+def test_doctor_lists_an_invalid_run_id_and_shows_a_valid_one(capsys, monkeypatch, tmp_path):
+    from mendwright import cli
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'bad id')
+    assert cli.main(['doctor']) == 0
+    out = capsys.readouterr().out
+    assert 'Problems' in out and "got 'bad id'. It is ignored" in out
+    assert "  run id for the journal: none (set MENDWRIGHT_RUN_ID to group a run's events)" in out
+    assert "MENDWRIGHT_RUN_ID='bad id'" in out
+    assert cli.main(['doctor', '--json']) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data['run'] == {'id': None, 'source': None}
+
+    monkeypatch.setenv('MENDWRIGHT_RUN_ID', 'nightly-7')
+    assert cli.main(['doctor']) == 0
+    out = capsys.readouterr().out
+    assert '  run id for the journal: nightly-7 (from MENDWRIGHT_RUN_ID)' in out
+    assert '  MENDWRIGHT_RUN_ID=nightly-7' in out and 'Problems' not in out
+
+    monkeypatch.delenv('MENDWRIGHT_RUN_ID')
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.setenv('GITHUB_RUN_ID', '11893412207')
+    monkeypatch.setenv('GITHUB_RUN_ATTEMPT', '1')
+    assert cli.main(['doctor', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['run'] == {'id': 'gh-11893412207.1',
+                                                          'source': 'github'}
+    assert cli.main(['doctor']) == 0
+    assert ('  run id for the journal: gh-11893412207.1 (from GitHub Actions)'
+            in capsys.readouterr().out)
+
+
+def test_declined_and_stopped_have_helpers(tmp_path):
+    from mendwright.journal import DECLINED, FLOW_STOP
+    assert (DECLINED, FLOW_STOP) == ('heal.declined', 'flow.stop')
+    j = _run_journal(tmp_path, run=None)
+    j.declined('pay', code='destructive', reason='r')
+    j.stopped('<next step>', code='step_cap', ran=40)
+    assert _lines(tmp_path) == [
+        {'ts': FIXED, 'event': DECLINED, 'key': 'pay', 'code': 'destructive', 'reason': 'r'},
+        {'ts': FIXED, 'event': FLOW_STOP, 'key': '<next step>', 'code': 'step_cap', 'ran': 40}]
+    assert NullJournal().declined('pay') is None
+    assert NullJournal().stopped('pay') is None
