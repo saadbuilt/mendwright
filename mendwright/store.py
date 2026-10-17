@@ -10,10 +10,11 @@ Per-key metadata set with ``set_meta`` (expectedRole, expectedText, destructive,
 fingerprint and listFingerprint) is saved in the override file next to the candidates, so the next process
 sees it, and so is where the key's element was last found (``set_last_page``: lastPage
 and pages; ``set_last_url``: lastUrl, the page's address with its record ids masked, see
-mendwright.flow.page_url) and the steps of run_steps() it was found during
-(``set_last_step``: steps). The file stays schema 2; the fields are optional. A key is
-destructive when the seed says so, when it is in ``destructive_keys``, or when
-``set_meta`` marked it.
+mendwright.flow.page_url, and ``set_meta(shadow_hosts=...)``: shadowHosts, the shadow hosts
+around it, see mendwright.shadow) and the steps of run_steps() it was found during
+(``set_last_step``: steps). A candidate inside an open shadow root has shadowHosts too.
+The file stays schema 2; the fields are optional. A key is destructive when the seed says
+so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these. A key of ``destructive_keys``
 or of a seed file written as a get_by_* call in another spelling than mendwright's, such as
 get_by_role('button', name='Pay'), stands for the call's key (getby.canonical_key).
@@ -52,6 +53,7 @@ from .flow import page_url
 from .lists import valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
+from .shadow import saved_hosts
 
 logger = logging.getLogger('mendwright')
 
@@ -115,12 +117,19 @@ def merge(seed, override):
     return out
 
 
-_PLACE_FIELDS = ('frameXPath', 'css')
+_PLACE_FIELDS = ('frameXPath', 'css', 'shadowHosts')
+
+
+def _place_value(c, field):
+    """A candidate's place field as it is compared: '' when it has none, a tuple for its
+    shadowHosts."""
+    value = c.get(field) or ''
+    return tuple(value) if isinstance(value, list) else value
 
 
 def _place(c):
-    """(frameXPath, css) of a candidate, '' for either one it doesn't have."""
-    return tuple(c.get(field) or '' for field in _PLACE_FIELDS)
+    """(frameXPath, css, shadowHosts) of a candidate, '' for each one it doesn't have."""
+    return tuple(_place_value(c, field) for field in _PLACE_FIELDS)
 
 
 def _row_state(c):
@@ -129,14 +138,15 @@ def _row_state(c):
 
 
 def _merge_place(local, theirs, base):
-    """Three-way merge of a candidate's frameXPath and css (see SelectorStore._absorb).
-    base is the pair the store last read or wrote, or None when it never saw the row."""
+    """Three-way merge of a candidate's frameXPath, css and shadowHosts (see
+    SelectorStore._absorb). base is what the store last read or wrote, or None when it
+    never saw the row."""
     for i, field in enumerate(_PLACE_FIELDS):
         if base is None:
             if field in theirs and field not in local:
-                local[field] = theirs[field]
-        elif (local.get(field) or '') == base[i] and (theirs.get(field) or '') != base[i]:
-            local[field] = theirs.get(field) or ''
+                local[field] = copy.deepcopy(theirs[field])
+        elif _place_value(local, field) == base[i] and _place_value(theirs, field) != base[i]:
+            local[field] = copy.deepcopy(theirs.get(field)) or ''
 
 
 class StoreReadError(ValueError):
@@ -327,8 +337,11 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
 # is for, in words (locator(intent=)); fingerprint is what the element looked like the last
 # time it matched (see mendwright.fingerprint), and listFingerprint what the items of a
 # list looked like the last time it matched two or more (see mendwright.lists).
+# shadowHosts is where the element was the last time it matched, when that was inside an
+# open shadow root: the selectors of its shadow hosts, outermost first (see
+# mendwright.shadow).
 META_FIELDS = ('expectedRole', 'expectedText', 'destructive', 'lastPage', 'pages', 'intent',
-               'fingerprint', 'steps', 'listFingerprint', 'lastUrl')
+               'fingerprint', 'steps', 'listFingerprint', 'lastUrl', 'shadowHosts')
 
 # How many pages set_last_page() keeps per key, most recent first, and how many steps
 # set_last_step() keeps.
@@ -371,6 +384,11 @@ def _meta_fields(entry):
         out['fingerprint'] = entry['fingerprint']
     if _valid_list_fingerprint(entry.get('listFingerprint')):
         out['listFingerprint'] = entry['listFingerprint']
+    # A malformed value keeps a host nothing tells apart (None), so the key is never taken
+    # to be on the page because of it.
+    hosts = list(saved_hosts(entry.get('shadowHosts')))
+    if hosts:
+        out['shadowHosts'] = hosts
     return out
 
 
@@ -512,9 +530,17 @@ class SelectorStore:
         if 'destructive' in fields:
             e['destructive'] = fields['destructive']
         for name in ('lastPage', 'pages', 'steps', 'intent', 'fingerprint', 'listFingerprint',
-                     'lastUrl'):
+                     'lastUrl', 'shadowHosts'):
             if name in fields:
-                e[name] = list(fields[name]) if name in ('pages', 'steps') else fields[name]
+                e[name] = (list(fields[name]) if name in ('pages', 'steps', 'shadowHosts')
+                           else fields[name])
+
+    def _drop_meta(self, key, names):
+        """Take saved metadata off a loaded entry when another process removed it, for the
+        fields that can be removed (shadowHosts: the element is on the page now)."""
+        e = self._data['selectors'].get(key)
+        if isinstance(e, dict) and 'shadowHosts' in names:
+            e.pop('shadowHosts', None)
 
     def is_locked_destructive(self, key):
         """True when the seed or destructive_keys marks key destructive. set_meta() cannot
@@ -541,6 +567,14 @@ class SelectorStore:
                 'listFingerprint': (e['listFingerprint']
                                     if _valid_list_fingerprint(e.get('listFingerprint')) else None)}
 
+    def shadow_hosts(self, key):
+        """Where key's element was the last time it matched: the selectors of the shadow
+        hosts around it, outermost first (None for a host nothing tells apart), or [] for the
+        page or when nothing was recorded (see mendwright.shadow). Not part of meta(), which
+        keeps the keys 0.9.0 gave."""
+        e = self._data['selectors'].get(key)
+        return list(saved_hosts(e.get('shadowHosts'))) if isinstance(e, dict) else []
+
     def _by_recency(self, key):
         e = self._data['selectors'].get(key)
         if not e:
@@ -565,7 +599,8 @@ class SelectorStore:
         Each one becomes an active candidate with source 'code' (a healed or retired
         candidate with the same text is taken over and made active again; a list heal taken
         over drops its "list" mark, proposal and acceptedAt, as mendwright fix put it in the
-        code; an accepted list heal whose CSS form is passed is superseded, for the same
+        code, and a heal inside a shadow root its shadowHosts, so its Playwright chain runs as
+        written; an accepted list heal whose CSS form is passed is superseded, for the same
         reason). Older 'code' candidates that are no longer passed get status 'superseded':
         they stay in the file but are not resolved. Seed and heal candidates stay as
         fallbacks. For the rest of this process, candidates() lists these selectors first,
@@ -582,6 +617,10 @@ class SelectorStore:
             elif c.get('source') == 'heal' or c.get('status', 'active') != 'active':
                 if c.get('source') == 'heal':
                     c['source'] = 'code'
+                if c.get('shadowHosts'):
+                    # A heal inside a shadow root that mendwright fix wrote into the code as
+                    # its Playwright chain: the code's selector runs as Playwright runs it.
+                    c['shadowHosts'] = []
                 if c.get('list') is True and (c.get('status') in LIST_WAITING
                                               or 'proposal' in c or 'acceptedAt' in c):
                     for name in ('list', 'proposal', 'acceptedAt'):
@@ -614,18 +653,33 @@ class SelectorStore:
             'maxCandidates': 5, 'stage': None, 'action': None, 'candidates': []})
 
     def set_meta(self, key, *, role=None, text=None, destructive=None, stage=None, action=None,
-                 intent=None, fingerprint=None, list_fingerprint=None):
+                 intent=None, fingerprint=None, list_fingerprint=None, shadow_hosts=None):
         """Set a key's metadata. None leaves a field as it is.
 
-        role, text, destructive, intent, fingerprint and list_fingerprint are saved in the
-        override file, so the next process sees them; the file is written only when one of
-        them changes. destructive=False clears a flag an earlier set_meta() saved, but never
-        one from the seed or from destructive_keys: meta() still reports those keys as
-        destructive. intent is a description of the element in words; fingerprint a dict
-        from mendwright.fingerprint and list_fingerprint one from mendwright.lists (anything
-        else raises ValueError). stage and action stay in memory."""
+        role, text, destructive, intent, fingerprint, list_fingerprint and shadow_hosts are
+        saved in the override file, so the next process sees them; the file is written only
+        when one of them changes. destructive=False clears a flag an earlier set_meta()
+        saved, but never one from the seed or from destructive_keys: meta() still reports
+        those keys as destructive. intent is a description of the element in words;
+        fingerprint a dict from mendwright.fingerprint and list_fingerprint one from
+        mendwright.lists (anything else raises ValueError). shadow_hosts is where the
+        element was found: the selectors of the shadow hosts around it, outermost first (None
+        for a host nothing tells apart), or [] for the page, which removes the field (see
+        mendwright.shadow). stage and action stay in memory."""
         e = self._entry(key)
         changed = {}
+        cleared = []
+        if shadow_hosts is not None:
+            if not isinstance(shadow_hosts, (list, tuple)):
+                raise ValueError('mendwright: set_meta(shadow_hosts=...) takes a list of host '
+                                 'selectors, got ' + type(shadow_hosts).__name__ + '.')
+            hosts = list(saved_hosts(list(shadow_hosts)))
+            if hosts:
+                e['shadowHosts'] = hosts
+                changed['shadowHosts'] = hosts
+            else:
+                e.pop('shadowHosts', None)
+                cleared.append('shadowHosts')
         if intent is not None:
             if not isinstance(intent, str) or not intent.strip():
                 raise ValueError('mendwright: intent must be a non-empty string, got '
@@ -665,8 +719,9 @@ class SelectorStore:
         if action is not None:
             e['action'] = action
         saved = self._meta.get(key, {})
-        if any(saved.get(f) != v for f, v in changed.items()):
-            self._meta[key] = dict(saved, **changed)
+        if any(saved.get(f) != v for f, v in changed.items()) or any(f in saved for f in cleared):
+            self._meta[key] = {f: v for f, v in dict(saved, **changed).items()
+                               if f not in cleared}
             self._persist_override()
 
     def set_last_page(self, key, path):
@@ -781,15 +836,21 @@ class SelectorStore:
                 return c.get('status', 'active')
         return None
 
-    def quarantined(self, key, frame_xpath=None):
+    def quarantined(self, key, frame_xpath=None, shadow_hosts=None):
         """The selectors of key's quarantined candidates, in stored order. apply() uses them
         to refuse a proposal that selects the same element under another spelling.
-        frame_xpath limits them to one place: '' for the page, an iframe's selector for that
-        iframe. None lists them all."""
+        frame_xpath and shadow_hosts limit them to one place: frame_xpath '' for the page or
+        an iframe's selector for that iframe, and shadow_hosts the hosts of a shadow root
+        (None or [] for none). None for both lists them all."""
         entry = self._data['selectors'].get(key)
+        whole = frame_xpath is None and shadow_hosts is None
+        hosts = tuple(saved_hosts(list(shadow_hosts or ())))
+
+        def here(c):
+            return whole or ((c.get('frameXPath') or '') == (frame_xpath or '')
+                             and saved_hosts(c.get('shadowHosts')) == hosts)
         return [c['xpath'] for c in (entry or {}).get('candidates', [])
-                if c.get('status') == 'quarantined' and c.get('xpath')
-                and (frame_xpath is None or (c.get('frameXPath') or '') == frame_xpath)]
+                if c.get('status') == 'quarantined' and c.get('xpath') and here(c)]
 
     def _find(self, key, xpath):
         for c in self._entry(key)['candidates']:
@@ -820,23 +881,28 @@ class SelectorStore:
         return not was_top
 
     def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
-                      list_heal=None, now=None):
+                      list_heal=None, shadow_hosts=None, now=None):
         """Add a candidate selector for key, or update the one with the same text.
 
         frame_xpath is the selector of the iframe the candidate runs in: '' moves an
-        existing candidate to the page, None leaves it where it is. css is a CSS selector
-        checked to match the same element as a healed XPath (see mendwright.css), saved for
-        mendwright fix and never run: '' drops one saved before, None leaves it. list_heal
-        True marks a heal of a list, saved as "list": true, as a build of 0.8.0 before its
-        release did: list lookups use no heal (see Healer.locator_all), and mendwright fix
-        writes none of these back. False clears the mark, None leaves it."""
+        existing candidate to the page, None leaves it where it is. shadow_hosts are the
+        selectors of the shadow hosts of the open shadow root it runs in, outermost first
+        (see mendwright.shadow): [] moves it out of one, None leaves it. css is a CSS
+        selector checked to match the same element as a healed XPath (see mendwright.css),
+        saved for mendwright fix and never run: '' drops one saved before, None leaves it.
+        list_heal True marks a heal of a list, saved as "list": true, as a build of 0.8.0
+        before its release did: list lookups use no heal (see Healer.locator_all), and
+        mendwright fix writes none of these back. False clears the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
+        hosts = None if shadow_hosts is None else list(saved_hosts(list(shadow_hosts)))
         if not found:
             cand = {'xpath': xpath, 'source': source, 'addedAt': now or _now_iso(),
                     'lastSucceededAt': None, 'status': 'active'}
             if frame_xpath:
                 cand['frameXPath'] = frame_xpath
+            if hosts:
+                cand['shadowHosts'] = hosts
             if css:
                 cand['css'] = css
             if list_heal:
@@ -844,9 +910,11 @@ class SelectorStore:
             entry['candidates'].append(cand)
         else:
             # An empty value stays as a key, so _absorb() does not take an old one back
-            # from the file; _payload() writes no empty css.
+            # from the file; _payload() writes no empty css or shadowHosts.
             if frame_xpath is not None and (found.get('frameXPath') or '') != frame_xpath:
                 found['frameXPath'] = frame_xpath
+            if hosts is not None and list(saved_hosts(found.get('shadowHosts'))) != hosts:
+                found['shadowHosts'] = hosts
             if css is not None and (found.get('css') or '') != css:
                 found['css'] = css
             if list_heal:
@@ -1128,8 +1196,10 @@ class SelectorStore:
             merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
                                  self._base_meta.get(key, {}))
             if merged != self._meta.get(key, {}):
+                gone = set(self._meta.get(key, {})) - set(merged)
                 self._meta[key] = merged
                 self._overlay_meta(key, merged)
+                self._drop_meta(key, gone)
 
     def _payload(self):
         """The override file's content: per key, the candidates worth keeping (see
@@ -1163,6 +1233,8 @@ class SelectorStore:
                 item = {k: c[k] for k in ('xpath', 'source', 'addedAt', 'lastSucceededAt', 'status') if k in c}
                 if 'frameXPath' in c:
                     item['frameXPath'] = c['frameXPath']
+                if isinstance(c.get('shadowHosts'), list) and c['shadowHosts']:
+                    item['shadowHosts'] = list(c['shadowHosts'])
                 if isinstance(c.get('css'), str) and c['css']:
                     item['css'] = c['css']
                 if c.get('list') is True:
