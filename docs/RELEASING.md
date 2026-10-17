@@ -59,7 +59,7 @@ In the Actions tab, open Release, click Run workflow and choose `main`. It build
 
    The reinstall matters. `mendwright.__version__` is read from the installed package metadata, so an old editable install still reports the previous version and `tests/test_version.py` fails.
 5. Open a pull request, wait for CI to pass, and merge it to `main`.
-   The same tag releases the GitHub Action (`action.yml` at the root). Its pinned actions must be the ones `ci.yml` and `release.yml` use, which `tests/test_action_yml.py` checks. Before tagging a release that changes `action.yml` or `action/`, run the action once against a scratch repository with a real token, through a run that creates the pull request, one that updates it, one that leaves it unchanged and one that closes it: the offline tests push over the file protocol and never reach GitHub's HTTP authentication or its API.
+   The same tag releases the GitHub Action (`action.yml` at the root). Its pinned actions must be the ones `ci.yml` and `release.yml` use, which `tests/test_action_yml.py` checks. Before tagging a release that changes `action.yml` or `action/`, run the action once against a scratch repository with a real token, through a run that creates the pull request, one that updates it, one that leaves it unchanged and one that closes it: the offline tests push over the file protocol and never reach GitHub's HTTP authentication or its API. Give one of those runs a `webhook-url` secret for a test channel and check that the alert arrives and that the job log shows the URL as `***`: the offline tests post to a local server, not to a real webhook.
 6. Tag the merge commit and push the tag:
 
    ```
