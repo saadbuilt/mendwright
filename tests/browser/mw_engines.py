@@ -94,7 +94,7 @@ SIGNUP_V2 = page("""
 # A checkout page before and after a redesign that breaks three selectors: the checkbox
 # loses its id (the fingerprint finds it), the search box is new (a model finds it),
 # and the pay button loses its id. A OneTrust cookie banner covers the new page, and
-# its Reject All button writes 'rejected' into #consent. See test_action_flow_browser.py.
+# its Reject All button writes 'rejected' into #consent. See test_browser_action_flow.py.
 CHECKOUT_V1 = page("""
 <form id="checkout">
   <label for="email">Email</label><input id="email" name="email" type="email">

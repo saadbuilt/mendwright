@@ -460,11 +460,16 @@ def test_demo_rejects_an_unknown_browser(capsys):
 
 
 @pytest.mark.browser
-def test_demo_in_real_chromium(capsys):
+def test_demo_in_real_chromium():
+    # In a child process: a browser test that ran before it in this process can leave a sync
+    # Playwright running here, and Playwright's sync API won't start inside its loop.
     pytest.importorskip("playwright.sync_api")
-    assert cli.main(["demo", "--browser", "chromium"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[2:] == DEMO_LINES[2:]
+    env = _child_env()
+    env["NO_COLOR"] = "1"
+    proc = subprocess.run([sys.executable, "-m", "mendwright", "demo", "--browser", "chromium"],
+                          env=env, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines()[2:] == DEMO_LINES[2:]
 
 
 def test_python_dash_m_demo_from_a_temp_folder(tmp_path):
