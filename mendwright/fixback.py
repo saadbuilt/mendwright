@@ -70,7 +70,7 @@ from dataclasses import dataclass, field
 
 from . import _md, getby
 from .selectors import CSS, XPATH, check_syntax, classify, normalize
-from .shadow import hosts_of, place_text, run_target
+from .shadow import chain_hosts, hosts_of, place_text, run_target
 
 # Folders that never hold your code. A folder is skipped by name, at any depth. .github holds
 # workflows and local actions, which a heal must never change.
@@ -362,7 +362,11 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
             continue
         # client.apply() saves only an XPath that lxml compiles, and css.css_selectors() only
         # the forms of _CSS_TWIN: anything else in the store was written by something else.
-        # A heal inside a shadow root is the chain of its hosts and such a CSS selector.
+        # A heal inside a shadow root is the chain of its hosts and such a CSS selector. A
+        # 0.9.0 process drops every shadowHosts when it writes the store, and the chain still
+        # names them (shadow.chain_hosts).
+        if not hosts_of(best) and chain_hosts(best):
+            best = dict(best, shadowHosts=list(chain_hosts(best)))
         shadow = hosts_of(best)
         problem = _shadow_problem(best) if shadow else ''
         if problem:

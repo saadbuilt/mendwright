@@ -1041,8 +1041,8 @@ A driver of your own runs none of these unless it has `shadow_html()` and takes 
 
 The text of the heal is the chain so that a mendwright that knows nothing of `shadowHosts` (0.9.0 and before) runs it as Playwright does, inside the host, and refuses it on Selenium, instead of running the bare CSS on the whole page.
 
-A 0.9.0 process that writes the store, for any key, drops every `shadowHosts` in it: each key's and each heal's.
-mendwright reads a heal's hosts back from its chain when it reads the store, since 0.9.0 never saves a heal whose text is a chain of shadow hosts and a CSS selector, so such a heal still runs, and its key still heals, only inside its shadow root.
+A 0.9.0 process that writes the store, for any key, such as a branch still on 0.9.0 that restores the same CI cache, drops every `shadowHosts` in it: each key's and each heal's.
+mendwright reads a heal's hosts back from its chain when it reads the store, since 0.9.0 never saves a heal whose text is a chain of shadow hosts and a CSS selector, so such a heal still runs, and its key still heals, only inside its shadow root, and `mendwright fix` still writes the chain.
 The key's own `shadowHosts` can't be read back. A key whose element a selector in your code found inside a shadow root (on Playwright, whose CSS pierces) and that has no heal there heals on the page after that, as 0.9.0 heals it, until a 0.10.0 run finds its element again and saves where it is.
 Keep every process that writes a shared store on 0.10.0.
 
@@ -1067,6 +1067,7 @@ A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not lo
 - A quarantine counts in its own place: a selector quarantined inside a shadow root blocks its element there, under any CSS form, and says nothing about the page, and the other way round.
 - `heal.locator_all()` gives what your selectors match, also inside a shadow root, but with `nonempty=True` a list that was inside a shadow root is never looked for: mendwright looks for lists only in the page's own HTML, where it could only find another list.
 - The selectors of `heal.interrupt()` and `heal.step(when=)`, and `get_by_*` calls, run as written; Playwright's CSS and `get_by_*` reach into open shadow roots by themselves.
+- A 0.9.0 process that writes the store drops every `shadowHosts`. A heal's are read back from its chain, but a key that only your own selector found inside a shadow root has no heal to say so, and until it matches again it heals on the page like any other key (see [How a heal inside a shadow root runs](#how-a-heal-inside-a-shadow-root-runs)). Don't share a store with 0.9.0.
 
 ### mendwright fix, check and report
 
@@ -2551,7 +2552,7 @@ What it counts, from the events of the run only:
 - Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included), or found inside an iframe or a [shadow root](#shadow-dom) (source `frame` or `shadow`, with no model call). It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
 - Handled: cookie banners closed by the `cookies=` preset, popups `dismiss=True` closed, and the other interruptions.
 - Needs a human: one line per key, the latest reason winning, in the words below. A key healed later in the run is left out, unless that heal was quarantined too.
-- Not repaired on purpose: keys declined in dry run or under `MENDWRIGHT_DISABLE=1`. They never need a human.
+- Not repaired on purpose: keys declined with the code `dry_run` or `disabled`, because of dry run or `MENDWRIGHT_DISABLE=1`. They never need a human.
 
 | Code | From | The alert says |
 |---|---|---|
@@ -2614,7 +2615,7 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve(store, page, key)` returns the native locator or element, or raises `AttentionRequired`.
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
-- These paths skip what the facade adds: the code-first selector order and role learning. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
+- These paths skip what the facade adds: the code-first selector order and role learning, and iframes and shadow roots: `HealCoordinator` heals in the page it was given, never inside an iframe or a shadow root. A key last found inside an iframe is looked for on that page. A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`), because only the page around its host could be searched. Use `mendwright.open()` for those. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
 
 ## Troubleshooting

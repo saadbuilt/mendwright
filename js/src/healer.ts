@@ -38,7 +38,7 @@ import { pyRepr } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
-import { hostsOf, placeText, runTarget, type Target } from './shadow';
+import { chainHosts, hostsOf, placeText, runTarget, type Target } from './shadow';
 import { expandPath, loadStore, type Candidate, type SelectorStore } from './store';
 
 export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
@@ -471,7 +471,8 @@ export class Healer {
     const latest = found.length
       ? found.reduce((a, b) => (String(b.lastSucceededAt) > String(a.lastSucceededAt) ? b : a)) : null;
     // The same for a key last found inside an open shadow root: where the heal that matched
-    // last runs, else the key's shadowHosts. Neither the page's HTML nor its elements hold
+    // last runs (or the hosts its chain names, when the Python package 0.9.0 dropped its
+    // shadowHosts), else the key's shadowHosts. Neither the page's HTML nor its elements hold
     // what a shadow root contains, so a heal here could only find something outside it.
     // Both are refused after the checks for a key marked destructive and the page guard.
     let refusal: Refusal | null = null;
@@ -481,6 +482,7 @@ export class Healer {
         + 'the page around it. Fix the selector by hand, or let the Python package heal it.' };
     } else {
       let hosts = hostsOf(latest);
+      if (!hosts.length) hosts = chainHosts(latest);
       if (!hosts.length) hosts = this.store.shadowHosts(key);
       if (hosts.length) {
         refusal = { code: 'shadow', reason: "'" + key + "' was last found inside " + placeText(hosts) + ', and '

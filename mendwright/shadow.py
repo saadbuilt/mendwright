@@ -79,6 +79,22 @@ def hosts_of(candidate):
     return saved_hosts(candidate.get(HOSTS)) if isinstance(candidate, dict) else ()
 
 
+def chain_hosts(candidate):
+    """The shadow hosts that a heal saved inside a shadow root names in its text, for one
+    that has lost its shadowHosts: a 0.9.0 process drops every shadowHosts when it writes the
+    store, a candidate's as well as the key's. () unless the candidate is a heal (source
+    'heal') with no frameXPath and no shadowHosts field, whose text is the chain (shadow_text)
+    of hosts of the form host_selector() builds and a CSS selector. mendwright saves no other
+    heal with ' >> ' in it: a heal on the page is an XPath, a key's own selector followed into
+    an iframe has a frameXPath, and a heal your code passes again is a 'code' candidate. The
+    text is read as text_hosts() reads it when the store is read."""
+    if not isinstance(candidate, dict) or candidate.get('source') != 'heal':
+        return ()
+    if candidate.get('frameXPath') or HOSTS in candidate:
+        return ()
+    return text_hosts(candidate.get('xpath'))
+
+
 def chain_of(candidate):
     """The frame chain a candidate runs in: its iframe's selector (frameXPath), then a
     ShadowHost step per shadow host. A host nothing tells apart gives an empty step, which

@@ -37,6 +37,19 @@ export function hostsOf(candidate: Candidate | null | undefined): Hosts {
   return candidate && typeof candidate === 'object' ? savedHosts(candidate[HOSTS]) : [];
 }
 
+/** The shadow hosts that a heal the Python package saved inside a shadow root names in its
+ * text, for one that has lost its shadowHosts: the Python package 0.9.0 drops every
+ * shadowHosts when it writes the store, a candidate's as well as the key's (Python's
+ * shadow.chain_hosts). [] unless the candidate is a heal with no frameXPath and no
+ * shadowHosts field, whose text is the chain of hosts of the form the Python package builds
+ * and a CSS selector. No other heal has ' >> ' in it. The text is read as textHosts reads
+ * it when the store is read. */
+export function chainHosts(candidate: Candidate | null | undefined): string[] {
+  if (!candidate || typeof candidate !== 'object' || candidate.source !== 'heal') return [];
+  if (candidate.frameXPath || HOSTS in candidate) return [];
+  return textHosts(candidate.xpath);
+}
+
 /** The shadow root the hosts lead to, in words. */
 export function placeText(hosts: Hosts): string {
   const names = hosts.map((h) => h || 'an element nothing tells apart');
