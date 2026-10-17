@@ -2,11 +2,12 @@
 // /chat/completions format. baseUrl picks the service: OpenAI by default
 // (OPENAI_BASE_URL overrides it), or a local Ollama through forOllama(). The model comes
 // from model or OPENAI_MODEL (there is no default), the key from apiKey or OPENAI_API_KEY.
-// A local Ollama never gets the OpenAI key.
+// A local Ollama never gets the OpenAI key. A baseUrl with a user name or password in it
+// is refused, naming only its scheme and host.
 
 import { buildPrompt, parseProposal, type Bundle, type Proposal } from '../prompt';
 import type { HealProvider } from './base';
-import { Describer, type Hints } from './errors';
+import { Describer, refuseCredentials, type Hints } from './errors';
 import { fetchHttp, parseJson, type Http } from './http';
 
 export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -35,6 +36,7 @@ export class OpenAICompatibleProvider implements HealProvider {
 
   constructor(options: OpenAIOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || OPENAI_BASE_URL).replace(/\/+$/, '');
+    refuseCredentials('OpenAICompatibleProvider', this.baseUrl, 'from baseUrl, OPENAI_BASE_URL or OLLAMA_HOST');
     // A key is optional (Ollama needs none); '' means no key, never OPENAI_API_KEY.
     this.apiKey = options.apiKey !== undefined ? (options.apiKey || undefined) : process.env.OPENAI_API_KEY || undefined;
     const model = options.model || process.env.OPENAI_MODEL;

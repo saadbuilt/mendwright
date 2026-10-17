@@ -104,6 +104,8 @@ new LocalModelProvider();                                       // mendwright-se
 
 Any object with `propose(bundle)` that returns `{ xpath, fallbacks, reasoning }` or `null` works as a provider.
 
+A base URL with a user name or password in it, such as `https://user:token@llm-gw.example`, is refused when the provider is built: Node's `fetch` can't send one, and the error names only the scheme and host, so the credentials never reach stderr, the journal or a test's error. For a proxy that needs them, pass the provider an `http` client that sends them in a header. A provider's error text never shows the user info of a URL.
+
 The local selector model is installed with the Python package's command, `mendwright model install` (it downloads the model from the GitHub release, checks its SHA-256 and registers it with Ollama). It is never sent the page: mendwright lists at most 40 elements of the step's role, one short line each, and the model answers with the number of the one the step meant, or says that none fits. mendwright then builds the XPath for that element itself. A pick it is less than 80% sure of is declined (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes that).
 
 With a hosted provider, a cleaned, redacted copy of the page is sent whenever the fingerprint match isn't confident: scripts and styles are removed, and so are quoted `value` attributes, absolute URLs and runs of 12 to 19 digits, but visible text and other attributes stay. A page that can't be cleaned isn't sent at all, and the heal says why. The key's fingerprint goes only to the local model.

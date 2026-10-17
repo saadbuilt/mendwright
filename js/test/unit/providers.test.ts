@@ -17,7 +17,7 @@ import { autoProvider } from '../../src/providers/detect';
 import { scrub } from '../../src/providers/errors';
 import { LocalModelProvider, ollamaHost } from '../../src/providers/local';
 import { OpenAICompatibleProvider } from '../../src/providers/openai';
-import { cleanEnv } from '../support/env';
+import { cleanEnv, journalOf, world } from '../support/env';
 
 interface Seen {
   path: string;
@@ -240,8 +240,80 @@ describe('autoProvider', () => {
   });
 });
 
+describe('a base URL with a user name or password in it', () => {
+  const PROXY = 'https://proxyuser:Hunter2Password@proxy.example.test';
+  const leaks = (text: unknown) => /proxyuser|Hunter2Password/.test(String(text));
+
+  const ANTHROPIC = 'AnthropicProvider: the base URL https://proxy.example.test (from baseUrl or ANTHROPIC_BASE_URL)';
+  const OPENAI = 'OpenAICompatibleProvider: the base URL https://proxy.example.test (from baseUrl, OPENAI_BASE_URL or OLLAMA_HOST)';
+
+  function refused(build: () => unknown, start: string): void {
+    assert.throws(build, (error: unknown) => {
+      assert.ok(error instanceof TypeError);
+      assert.ok(!leaks(error.message), error.message);
+      assert.ok(error.message.startsWith(start + ' has a user name or password in it, which mendwright does not send.'),
+        error.message);
+      return true;
+    });
+  }
+
+  test('is refused when the provider is built, naming only its scheme and host', () => {
+    refused(() => new AnthropicProvider({ model: 'm', baseUrl: PROXY }), ANTHROPIC);
+    refused(() => new OpenAICompatibleProvider({ model: 'm', baseUrl: PROXY + '/v1' }), OPENAI);
+    refused(() => OpenAICompatibleProvider.forOllama('llama3', { baseUrl: PROXY + '/v1' }), OPENAI);
+    refused(() => new LocalModelProvider({ baseUrl: PROXY }),
+      'LocalModelProvider: the base URL https://proxy.example.test (from baseUrl or OLLAMA_HOST)');
+    // A URL that does not parse is refused too.
+    refused(() => new AnthropicProvider({ model: 'm', baseUrl: 'https://proxyuser:Hunter2 Password@proxy.example.test' }), ANTHROPIC);
+  });
+
+  test('from the environment, as ANTHROPIC_BASE_URL, OPENAI_BASE_URL and OLLAMA_HOST', () => {
+    process.env.ANTHROPIC_API_KEY = 'k';
+    process.env.ANTHROPIC_MODEL = 'm';
+    process.env.ANTHROPIC_BASE_URL = PROXY;
+    refused(() => autoProvider(), ANTHROPIC);
+    cleanEnv();
+    process.env.OPENAI_API_KEY = 'k';
+    process.env.OPENAI_MODEL = 'm';
+    process.env.OPENAI_BASE_URL = PROXY + '/v1';
+    refused(() => autoProvider(), OPENAI);
+    cleanEnv();
+    process.env.OLLAMA_MODEL = 'llama3';
+    process.env.OLLAMA_HOST = 'proxyuser:Hunter2Password@127.0.0.1:9';
+    refused(() => autoProvider(),
+      'OpenAICompatibleProvider: the base URL http://127.0.0.1:9 (from baseUrl, OPENAI_BASE_URL or OLLAMA_HOST)');
+    process.env.MENDWRIGHT_LOCAL_MODEL = 'mendwright-selector';
+    refused(() => autoProvider(), 'LocalModelProvider: the base URL http://127.0.0.1:9 (from baseUrl or OLLAMA_HOST)');
+  });
+
+  test('from the environment, open() says so without them, in its warning, the error and the journal', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-0000';
+    process.env.ANTHROPIC_MODEL = 'm';
+    process.env.ANTHROPIC_BASE_URL = PROXY;
+    const w = world('<html><body><button id="go2">Go</button></body></html>');
+    const error = await w.open().locator('go', '#go', { role: 'button' }).click().catch((e) => e);
+    assert.match(String(error?.message), /AnthropicProvider: the base URL https:\/\/proxy\.example\.test \(from baseUrl/);
+    const lines = w.lines.join('\n');
+    assert.ok(lines.includes('open(): no model provider is available'), lines);
+    assert.ok(!leaks(error.message) && !leaks(lines) && !leaks(JSON.stringify(journalOf(w.dir))));
+  });
+
+  test('a failed request that names one shows no user name or password', async () => {
+    // As fetch() words it, with the URL of a client that put the credentials back in.
+    const failing = { post: async () => {
+      throw new TypeError('Request cannot be constructed from a URL that includes credentials: ' + PROXY + '/v1/messages');
+    } };
+    const provider = new AnthropicProvider({ model: 'm', apiKey: 'k', baseUrl: base, http: failing });
+    assert.equal(await provider.propose(BUNDLE), null);
+    assert.ok(!leaks(provider.lastError), String(provider.lastError));
+    assert.match(String(provider.lastError), /https:\/\/\[redacted\]@proxy\.example\.test\/v1\/messages/);
+  });
+});
+
 test('a reason never shows a key or a token', () => {
   const text = scrub('bad key sk-ant-api03-abcdefghijk, Authorization: Bearer abcdefghijklmnopqrstu, url https://x.test/?key=s3cr3t');
   assert.ok(!/abcdefghijk|abcdefghijklmnopqrstu|s3cr3t/.test(text), text);
   assert.equal(scrub('my own secret-value here', ['secret-value']), 'my own [redacted] here');
+  assert.equal(scrub('at https://user:p@ss@gw.test/v1 and http://u@h.test'), 'at https://[redacted]@gw.test/v1 and http://[redacted]@h.test');
+  assert.equal(scrub('see https://gw.test/a@b and mail ada@example.com'), 'see https://gw.test/a@b and mail ada@example.com');
 });
