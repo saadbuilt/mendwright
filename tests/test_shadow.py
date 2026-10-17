@@ -147,7 +147,8 @@ data-testid="save-btn" name="s" aria-label='Save "it" \\ now'>Save</button>
 
 def test_css_xpath_matches_what_each_css_form_mendwright_builds_matches():
     doc = lxml.html.fromstring(DOC)
-    cssselect = pytest.importorskip('lxml.cssselect')
+    pytest.importorskip('cssselect')     # lxml.cssselect raises a plain ImportError without it
+    import lxml.cssselect as cssselect
     for el in doc.iter('button', 'input'):
         for css in css_selectors(el, doc, limit=10):
             xpath = css_xpath(css)
