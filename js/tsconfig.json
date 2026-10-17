@@ -11,7 +11,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "mendwright": ["./src/index.ts"],
+      "mendwright/test": ["./src/test.ts"]
+    }
   },
   "include": ["src", "test", "playwright.config.ts"]
 }
