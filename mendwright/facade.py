@@ -43,7 +43,7 @@ from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, ex
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
-from .drivers.base import (UNSURE, _member, css_pierces, driver_handles,
+from .drivers.base import (NOWHERE, PLACED, UNSURE, _member, css_pierces, driver_handles,
                            driver_list_fingerprint, driver_popup_click, driver_popup_controls,
                            driver_popup_probe, driver_popup_release, driver_popup_root,
                            driver_press_escape, driver_visible_match)
@@ -729,6 +729,15 @@ def moved_message(key, hosts, verb):
             'reaches into every open shadow root, so mendwright did not run ' + verb + '(), '
             'which could have reached an element outside that shadow root. Look the element '
             'up again with heal.locator().')
+
+
+def _placement(driver, native, hosts):
+    """driver.placement(native, hosts) (see PlaywrightSyncDriver.placement): PLACED, NOWHERE
+    or ELSEWHERE. On a driver with placed() and no placement(), PLACED or None."""
+    placement = getattr(driver, 'placement', None)
+    if callable(placement):
+        return placement(native, hosts)
+    return PLACED if driver.placed(native, hosts) else None
 
 
 def _locator_args(key, selector, role, inline_xpath, intent=None, entry='heal.locator()'):
@@ -3347,6 +3356,12 @@ LOCATOR_READS = frozenset(('text_content', 'inner_text', 'inner_html', 'get_attr
                            'input_value', 'is_visible', 'is_hidden', 'is_checked',
                            'is_enabled', 'is_disabled', 'is_editable'))
 
+# The reads that answer at once for a Locator that matches nothing, as Playwright's do, and
+# what they answer: the element went away, as a dialog does once its close button is
+# clicked. For an element found inside a shadow root they answer so too, instead of waiting
+# for it (see ActionProxy._wait_placed).
+ABSENT_ANSWERS = {'is_visible': False, 'is_hidden': True}
+
 # Errors raised before an action reaches the browser: a verb the element does not have,
 # or arguments it does not take. They say nothing about the selector, so they never
 # quarantine a heal.
@@ -3390,7 +3405,8 @@ class ActionProxy:
     For an element found inside a shadow root on Playwright, each action and each read of
     LOCATOR_READS first waits until the Locator matches one element inside that shadow
     root and nothing outside it, and raises AttentionRequired when it never does (see
-    _wait_placed).
+    _wait_placed). When it matches nothing at all, is_visible() and is_hidden() answer
+    False and True at once instead, as Playwright's do.
 
     With expect_value= (see Healer.locator), the value a read returns for an element found
     through a heal is checked, and one that fails raises AttentionRequired instead.
@@ -3503,24 +3519,34 @@ class ActionProxy:
     def _wait_placed(self, verb):
         """For an element found inside a shadow root on Playwright (_hosts), right before an
         action or a read: wait, up to the proxy's timeout, until its Locator matches one
-        element and that one inside the shadow root (driver.placed()). Playwright resolves
-        the Locator again for each action and read, and its CSS pierces every open shadow
-        root, so a re-render after the lookup could otherwise send it to an element outside
-        that shadow root. Raises AttentionRequired when it never does, and reports nothing
-        to the heal canary: the page changed after the lookup, which says nothing about the
-        heal."""
+        element and that one inside the shadow root (driver.placement()). Playwright
+        resolves the Locator again for each action and read, and its CSS pierces every open
+        shadow root, so a re-render after the lookup could otherwise send it to an element
+        outside that shadow root. Raises AttentionRequired when it never does, and reports
+        nothing to the heal canary: the page changed after the lookup, which says nothing
+        about the heal.
+
+        Returns True when the action or read may run. For is_visible() and is_hidden()
+        (ABSENT_ANSWERS) it returns False at once when the Locator matches nothing at all,
+        inside the shadow root or outside it: the element went away, as a dialog does once
+        its close button is clicked, and the read answers as Playwright's does for such a
+        Locator, without running. A match outside the shadow root, or several matches,
+        still waits, and raises."""
         __tracebackhide__ = True  # pytest shows the caller
         hosts = self._hosts
         if not hosts:
-            return
-        driver = self._healer._driver
+            return True
+        driver, answers = self._healer._driver, verb in ABSENT_ANSWERS
         deadline = time.monotonic() + self._timeout_ms / 1000.0
         while True:
             try:
-                if driver.placed(self._native, hosts):
-                    return
+                where = _placement(driver, self._native, hosts)
             except Exception:
-                pass
+                where = None
+            if where == PLACED:
+                return True
+            if where == NOWHERE and answers:
+                return False
             if time.monotonic() >= deadline:
                 raise AttentionRequired(moved_message(self._key, hosts, verb))
             time.sleep(max(self._poll_ms, 20) / 1000.0)
@@ -3638,8 +3664,8 @@ class ActionProxy:
             __tracebackhide__ = True  # pytest shows the caller
             if handles:
                 self._before_read()
-            if placed:
-                self._wait_placed(name)
+            if placed and not self._wait_placed(name):
+                return ABSENT_ANSWERS[name]     # matches nothing: answered as Playwright does
             result = value(*args, **kwargs)
             if not checked:
                 return result

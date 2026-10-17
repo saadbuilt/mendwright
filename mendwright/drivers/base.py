@@ -578,6 +578,21 @@ PLACE_JS = r"""(els, hosts) => {""" + ENTER_JS + r"""
   return {n: els.length, inside: root ? els.filter((e) => e.getRootNode() === root).length : 0};
 }"""
 
+# What a Playwright driver's placement() says of the Locator of a selector inside a shadow
+# root, from PLACE_JS: it matches one element, and that one is in the shadow root (PLACED);
+# it matches nothing at all, inside or outside (NOWHERE); or it matches something outside
+# the shadow root, or several elements (ELSEWHERE).
+PLACED, NOWHERE, ELSEWHERE = 'placed', 'nowhere', 'elsewhere'
+
+
+def placement_of(found):
+    """PLACED, NOWHERE or ELSEWHERE from PLACE_JS's result, None for one it cannot read."""
+    if not isinstance(found, dict) or not isinstance(found.get('n'), int):
+        return None
+    if found['n'] == 0:
+        return NOWHERE
+    return PLACED if found['n'] == 1 and found.get('inside') == 1 else ELSEWHERE
+
 # For Selenium's execute_script: the elements css matches in the shadow root the hosts lead
 # to, [] when they lead to none. An invalid css raises, as find_elements() does.
 SHADOW_FIND_JS = r"""(hosts, css) => {""" + ENTER_JS + r"""

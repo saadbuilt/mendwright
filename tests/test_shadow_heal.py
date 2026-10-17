@@ -12,6 +12,7 @@ of a key's own selector into a shadow root refuses what it cannot tell apart.
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -323,6 +324,95 @@ def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(make_
     assert _clicked(page_).get('id') == 'save-2'
 
 
+# The dialog the button was in closed after the lookup, as a close button's click does: the
+# shadow root is still there, and nothing matches the Locator, inside it or outside.
+CLOSED = page(LOOKALIKE + shadow('<p>closed</p>'))
+
+
+def test_is_visible_and_is_hidden_answer_at_once_when_the_element_is_gone(make_shadow_page,
+                                                                         tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    heal = _open(page_, tmp_path)
+    proxy = heal.locator('save', '#save', role='button', timeout_ms=3000, poll_ms=0)
+    assert heal.heals[-1].new == CHAIN
+    other = heal.locator('save', '#save', role='button', poll_ms=0)    # timeout_ms=0
+    page_.set_html(CLOSED)
+    # As Playwright answers for a Locator that matches nothing, and as the same reads of a
+    # key on the page do: at once, without AttentionRequired.
+    started = time.monotonic()
+    assert proxy.is_hidden() is True
+    assert proxy.is_visible() is False
+    assert time.monotonic() - started < 1.5
+    # An action still waits for the element, and raises when it never comes back.
+    with pytest.raises(AttentionRequired, match=r'when it came to click\(\)'):
+        other.click()
+    assert page_.actions == []
+    # Nothing says the heal was wrong: it stays active.
+    assert [c['status'] for c in _rows(tmp_path) if c['xpath'] == CHAIN] == ['active']
+
+
+@pytest.mark.parametrize('html', [RERENDERED, page(shadow(SAVE_V2 + SAVE_V2))],
+                         ids=['outside', 'several'])
+def test_is_visible_and_is_hidden_still_raise_for_a_match_outside_or_several(make_shadow_page,
+                                                                            tmp_path, html):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    heal = _open(page_, tmp_path)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=0)
+    page_.set_html(html)
+    for read in ('is_hidden', 'is_visible'):
+        with pytest.raises(AttentionRequired, match=r'when it came to ' + read + r'\(\)'):
+            getattr(proxy, read)()
+
+
+class PlacedOnlyDriver:
+    """A custom driver: the Playwright driver of a ShadowPage with placed() and no
+    placement() (see CONTRIBUTING.md)."""
+
+    def __init__(self, page_):
+        from mendwright.drivers.playwright_sync import PlaywrightSyncDriver
+        self._d = PlaywrightSyncDriver(page_)
+
+    def __getattr__(self, name):
+        if name == 'placement':
+            raise AttributeError(name)
+        return getattr(self._d, name)
+
+
+def test_a_driver_with_placed_only_still_checks_before_each_read(make_shadow_page, tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0)    # healed
+    heal = _open(PlacedOnlyDriver(page_), tmp_path)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=0)
+    assert proxy.is_visible() is True
+    page_.set_html(CLOSED)
+    # It can't tell nothing from a match outside, so is_hidden() waits, as the other reads do.
+    with pytest.raises(AttentionRequired, match=r'when it came to is_hidden\(\)'):
+        proxy.is_hidden()
+
+
+def test_a_heal_whose_click_closes_its_dialog_is_confirmed_by_expect_is_hidden(
+        make_shadow_page, tmp_path):
+    # docs/guide.md: when the element went away, the heal stays as it was. The click of a
+    # close button removes its dialog, so expect=lambda: el.is_hidden() is the right check.
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    heal = _open(page_, tmp_path)
+    el = heal.locator('save', '#save', role='button', timeout_ms=3000, poll_ms=0)
+    assert heal.heals[-1].new == CHAIN
+
+    def closed():
+        page_.set_html(CLOSED)      # what the click did
+        return el.is_hidden()
+
+    el.click(expect=closed)
+    assert _clicked(page_).get('id') == 'save-2'
+    assert heal.heals[-1].confirmed is True
+    assert [c['status'] for c in _rows(tmp_path) if c['xpath'] == CHAIN] == ['active']
+
+
 def test_the_async_healer_never_acts_outside_the_shadow_root_after_a_re_render(
         make_shadow_page, tmp_path):
     sync = make_shadow_page(V1)
@@ -344,6 +434,50 @@ def test_the_async_healer_never_acts_outside_the_shadow_root_after_a_re_render(
     with pytest.raises(AttentionRequired, match=r'when it came to click\(\)'):
         asyncio.run(main())
     assert sync.actions == []
+
+
+def test_the_async_healer_answers_is_visible_and_is_hidden_at_once_when_the_element_is_gone(
+        make_shadow_page, tmp_path):
+    sync = make_shadow_page(V1)
+
+    async def lookup(**kwargs):
+        heal = await mendwright.aio.open(AsyncShadowPage(sync), provider=None, timeout_ms=0,
+                                         store_path=str(tmp_path / 'o.json'),
+                                         journal=NullJournal())
+        return heal, heal.locator('save', '#save', role='button', poll_ms=0, **kwargs)
+
+    async def record():
+        await (await lookup())[1]
+
+    asyncio.run(record())
+    sync.set_html(V2)
+
+    async def main():
+        heal, el = await lookup(timeout_ms=3000)
+
+        async def closed():
+            sync.set_html(CLOSED)       # what the click of a close button did
+            return await el.is_hidden()
+
+        await el.click(expect=closed)
+        started = time.monotonic()
+        answers = await el.is_hidden(), await el.is_visible()
+        return heal, answers, time.monotonic() - started
+
+    heal, answers, took = asyncio.run(main())
+    assert answers == (True, False) and took < 1.5
+    assert heal.heals[-1].new == CHAIN and heal.heals[-1].confirmed is True
+    assert [c['status'] for c in _rows(tmp_path) if c['xpath'] == CHAIN] == ['active']
+
+    async def outside():
+        sync.set_html(V2)
+        _, el = await lookup()
+        await el
+        sync.set_html(RERENDERED)
+        await el.is_hidden()
+
+    with pytest.raises(AttentionRequired, match=r'when it came to is_hidden\(\)'):
+        asyncio.run(outside())
 
 
 def test_two_matches_in_the_shadow_root_match_nothing(make_shadow_page, tmp_path):

@@ -28,11 +28,12 @@ from ..lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS
 from ..lists import from_raw as list_from_raw
 from ..selectors import CSS, GET_BY, XPATH, InvalidSelector, check_syntax, strip_prefix
 from ..shadow import ShadowHost, host_css, inner_css, roots_of, split_chain, with_hosts
-from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, PLACE_JS, POPUP_CONTROL_JS,
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, PLACE_JS, PLACED, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS,
                    SHADOW_HTML_JS, SHADOW_INVENTORY_JS, SHADOW_ROOTS_JS, UNSURE,
                    VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api, item_rows,
-                   looks_like_locator, shadow_arg, summary_from_js, visible_match_from_js)
+                   looks_like_locator, placement_of, shadow_arg, summary_from_js,
+                   visible_match_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
 # Playwright's own parser and read the same in Chromium, Firefox and WebKit; the XPath
@@ -270,18 +271,25 @@ class PlaywrightSyncDriver:
         Locator does not have raises AttributeError before anything reaches the browser."""
         return getattr(native, verb)(*args, **kwargs)
 
-    def placed(self, native, hosts):
-        """Whether a handle() result for a selector inside the shadow root that hosts (CSS
-        selectors, outermost first) lead to matches one element now, and that one inside
-        the shadow root (PLACE_JS). Playwright resolves a Locator again for each action and
-        read, and its CSS pierces every open shadow root, so the facade checks this right
+    def placement(self, native, hosts):
+        """Where a handle() result for a selector inside the shadow root that hosts (CSS
+        selectors, outermost first) lead to matches now (PLACE_JS, see base.placement_of):
+        PLACED when it matches one element and that one inside the shadow root, NOWHERE
+        when it matches nothing at all, ELSEWHERE when it matches something outside the
+        shadow root or several elements. Playwright resolves a Locator again for each action
+        and read, and its CSS pierces every open shadow root, so the facade checks this right
         before each one (see ActionProxy._wait_placed). One round trip that does not wait;
-        False on any error."""
+        None on any error."""
         try:
             found = native.evaluate_all(PLACE_JS, [host_css(h) for h in hosts])
         except Exception:
-            return False
-        return all_placed(found) and found['n'] == 1
+            return None
+        return placement_of(found)
+
+    def placed(self, native, hosts):
+        """Whether placement() is PLACED: the Locator matches one element now, and that one
+        inside the shadow root. False on any error."""
+        return self.placement(native, hosts) == PLACED
 
     def url(self):
         try:

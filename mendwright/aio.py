@@ -63,8 +63,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
-from .drivers.base import (_member, _takes_place, css_pierces, is_async_api, is_driver,
-                           looks_like_locator, takes_keyword, unsupported_message)
+from .drivers.base import (NOWHERE, PLACED, _member, _takes_place, css_pierces, is_async_api,
+                           is_driver, looks_like_locator, takes_keyword, unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -79,7 +79,7 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
                      HealScope, follow_allowed, heal_place, moved_message, shadow_found,
-                     shadow_unreachable)
+                     shadow_unreachable, ABSENT_ANSWERS)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
@@ -108,6 +108,15 @@ async def _awaited(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _placement(driver, native, hosts):
+    """facade._placement(), awaited: driver.placement(native, hosts), or PLACED or None from
+    placed() on a driver that has only that."""
+    placement = getattr(driver, 'placement', None)
+    if callable(placement):
+        return await _awaited(placement(native, hosts))
+    return PLACED if await _awaited(driver.placed(native, hosts)) else None
 
 
 def _registering(shared):
@@ -1830,20 +1839,26 @@ class AsyncActionProxy:
     async def _wait_placed(self, verb):
         """ActionProxy._wait_placed(), awaited: for an element found inside a shadow root,
         wait up to the proxy's timeout until its Locator matches one element and that one
-        inside the shadow root, right before an action or a read; else AttentionRequired."""
+        inside the shadow root, right before an action or a read; else AttentionRequired.
+        Returns True when the action or read may run, and False at once for is_visible()
+        and is_hidden() (ABSENT_ANSWERS) when the Locator matches nothing at all, which then
+        answer as Playwright's do."""
         __tracebackhide__ = True  # pytest shows the caller
         hosts = self._hosts
         if not hosts:
-            return
-        driver = self._healer._driver
+            return True
+        driver, answers = self._healer._driver, verb in ABSENT_ANSWERS
         timeout, poll_ms = self._plan[4], self._plan[5]
         deadline = time.monotonic() + timeout / 1000.0
         while True:
             try:
-                if await _awaited(driver.placed(self._native, hosts)):
-                    return
+                where = await _placement(driver, self._native, hosts)
             except Exception:
-                pass
+                where = None
+            if where == PLACED:
+                return True
+            if where == NOWHERE and answers:
+                return False
             if time.monotonic() >= deadline:
                 raise AttentionRequired(moved_message(self._key, hosts, verb))
             await asyncio.sleep(max(poll_ms, 20) / 1000.0)
@@ -1947,8 +1962,8 @@ class AsyncActionProxy:
             async def read(*args, **kwargs):
                 if handles:
                     await self._before_read()
-                if placed:
-                    await self._wait_placed(name)
+                if placed and not await self._wait_placed(name):
+                    return ABSENT_ANSWERS[name]     # matches nothing (see _wait_placed)
                 value = await _awaited(attr(*args, **kwargs))
                 return await self._checked(name, args, value) if checked else value
             read.__name__ = name
@@ -1968,8 +1983,8 @@ class AsyncActionProxy:
                     + name)
             if name in LOCATOR_READS and self._healer._handles_reads():
                 await self._before_read()
-            if name in LOCATOR_READS:
-                await self._wait_placed(name)
+            if name in LOCATOR_READS and not await self._wait_placed(name):
+                return ABSENT_ANSWERS[name]         # matches nothing (see _wait_placed)
             value = await _awaited(attr(*args, **kwargs))
             return await self._checked(name, args, value) if name in VALUE_READS else value
 

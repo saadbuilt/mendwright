@@ -232,6 +232,42 @@ def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(tab, 
     assert clicked(tab) is None
 
 
+def dialog(ident, closes=False):
+    """A dialog with a Close button, which removes the dialog when closes is True."""
+    return ('<div id="dlg"><button type="button" id="' + ident + '" data-testid="close"'
+            + (' onclick="this.parentNode.remove()"' if closes else '') + '>Close</button></div>')
+
+
+@pytest.mark.engines('pw-chromium')
+def test_a_heal_whose_click_closes_its_dialog_is_confirmed_by_is_hidden(tab, store_file):
+    # The element goes away on purpose, so is_hidden() answers True at once, as Playwright
+    # and a key on the page do, instead of waiting for it inside the shadow root, and the
+    # right heal stays active (docs/guide.md: the heal stays as it was).
+    tab.load(app_page(dialog('close')))
+    _open(tab, store_file).locator('close', '#close', role='button',
+                                   poll_ms=POLL_MS).click(expect=lambda: True)
+    tab.load(app_page(dialog('close-2', closes=True)))
+    heal = _open(tab, store_file)
+    el = heal.locator('close', '#close', role='button', poll_ms=POLL_MS)
+    assert heal.heals[-1].new == HOST + ' >> [data-testid="close"]'
+    el.click(expect=lambda: el.is_hidden())
+    assert tab.js('document.querySelector("my-app").shadowRoot.querySelector("#dlg")') is None
+    assert heal.heals[-1].confirmed is True
+    assert el.is_visible() is False and el.is_hidden() is True
+    row = [c for c in saved_entry(store_file, 'close')['candidates']
+           if c['xpath'] == heal.heals[-1].new][0]
+    assert row['status'] == 'active'
+
+    # The next run uses the heal at once, and it is not blocked.
+    tab.load(app_page(dialog('close-2', closes=True)))
+    rerun = _open(tab, store_file)
+    box = rerun.locator('close', '#close', role='button', poll_ms=POLL_MS)
+    box.click(expect=lambda: box.is_hidden())
+    assert rerun.heals == []
+    assert [c['status'] for c in saved_entry(store_file, 'close')['candidates']
+            if c['xpath'] == HOST + ' >> [data-testid="close"]'] == ['active']
+
+
 def test_an_element_in_a_closed_shadow_root_is_never_healed(tab, store_file, stub_provider):
     tab.load(app_page(button('save', 'inside'), mode='closed'))
     provider = stub_provider("//button[@data-testid='save']")

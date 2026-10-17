@@ -22,11 +22,12 @@ from ..getby import GetByCall
 from ..lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS
 from ..lists import from_raw as list_from_raw
 from ..shadow import ShadowHost, host_css, roots_of, with_hosts
-from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, PLACE_JS, POPUP_CONTROL_JS,
+from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, PLACE_JS, PLACED, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS,
                    SHADOW_HTML_JS, SHADOW_INVENTORY_JS, SHADOW_ROOTS_JS, UNSURE, _member,
                    VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api, item_rows,
-                   looks_like_locator, shadow_arg, summary_from_js, visible_match_from_js)
+                   looks_like_locator, placement_of, shadow_arg, summary_from_js,
+                   visible_match_from_js)
 from .playwright_sync import (_frame_locator, _raise_if_invalid, all_placed, chain_steps,
                               child_frames, frame_info, is_direct_child, placed_count,
                               playwright_target, step_hosts)
@@ -136,15 +137,20 @@ class AsyncPlaywrightDriver:
         reaches the browser."""
         return await _awaited(getattr(native, verb)(*args, **kwargs))
 
-    async def placed(self, native, hosts):
-        """PlaywrightSyncDriver.placed(), awaited: whether the Locator of a selector inside
-        the shadow root that hosts lead to matches one element now, and that one inside it.
-        False on any error."""
+    async def placement(self, native, hosts):
+        """PlaywrightSyncDriver.placement(), awaited: where the Locator of a selector inside
+        the shadow root that hosts lead to matches now, PLACED, NOWHERE or ELSEWHERE. None
+        on any error."""
         try:
             found = await native.evaluate_all(PLACE_JS, [host_css(h) for h in hosts])
         except Exception:
-            return False
-        return all_placed(found) and found['n'] == 1
+            return None
+        return placement_of(found)
+
+    async def placed(self, native, hosts):
+        """PlaywrightSyncDriver.placed(), awaited: whether placement() is PLACED: the Locator
+        matches one element now, and that one inside the shadow root. False on any error."""
+        return await self.placement(native, hosts) == PLACED
 
     async def url(self):
         try:

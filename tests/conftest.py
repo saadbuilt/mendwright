@@ -836,6 +836,9 @@ class ShadowLocator:
             raise FakeError('strict mode violation: ' + ' >> '.join(self._steps))
         return bool(els) and not self._page.dom.hidden(els[0])
 
+    def is_hidden(self):
+        return not self.is_visible()
+
     def scroll_into_view_if_needed(self, **kwargs):
         pass
 
