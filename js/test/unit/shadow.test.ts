@@ -141,6 +141,44 @@ describe('a heal the Python package saved inside a shadow root', () => {
     assert.equal(w.page.clicked[0].id, 'save-2');
   });
 
+  test('answers isVisible() and isHidden() at once when its element went away, as Playwright does', async () => {
+    // A close button whose click removes its dialog: the element goes away on purpose.
+    const closes = '<div id="dlg"><button id="save-2" data-testid="save" type="button" data-click-removes="#dlg">'
+      + 'Save</button></div>';
+    const w = world(page(LOOKALIKE + shadow(closes)));
+    pythonHealed(w.storePath);
+    const box = await w.open({ timeoutMs: 5000 }).locator('save', '#save', { role: 'button' }).resolve();
+    const other = await w.open().locator('save', '#save', { role: 'button' }).resolve();   // timeoutMs: 100
+    let hidden: unknown;
+    await box.click({ expect: async () => (hidden = await box.isHidden()) });
+    assert.equal(w.page.clicked[0].id, 'save-2');
+    assert.equal(hidden, true);
+    const started = Date.now();
+    assert.equal(await box.isHidden(), true);
+    assert.equal(await box.isVisible(), false);
+    assert.ok(Date.now() - started < 1500, 'answered at once');
+    assert.deepEqual(loadStore(w.storePath).candidates('save').filter((c) => c.xpath === CHAIN).map((c) => c.status),
+      ['active']);
+    // An action still waits for the element, and throws when it never comes back.
+    await assert.rejects(other.click(), (error: unknown) => error instanceof AttentionRequired
+      && /when it came to click\(\)/.test((error as Error).message));
+    assert.equal(w.page.clicked.length, 1);
+  });
+
+  for (const [name, html] of [
+    ['matches outside its shadow root', page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE))],
+    ['matches several elements in it', page(shadow(SAVE_V2 + SAVE_V2))],
+  ] as const) {
+    test('still throws from isVisible() and isHidden() when its Locator ' + name, async () => {
+      const w = world(V2);
+      pythonHealed(w.storePath);
+      const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();
+      w.page.goto(html);
+      await assert.rejects(box.isHidden(), /when it came to isHidden\(\)/);
+      await assert.rejects(box.isVisible(), /when it came to isVisible\(\)/);
+    });
+  }
+
   test('keeps to its shadow root after the Python package 0.9.0 wrote the store without its shadowHosts', async () => {
     // 0.9.0 drops every shadowHosts, the key's and the heal's. The button is renamed again,
     // and the look-alike outside the host keeps the old test id.

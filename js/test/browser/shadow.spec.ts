@@ -90,6 +90,24 @@ test('a heal saved inside a shadow root never acts outside it after a re-render'
   expect(await page.evaluate(() => (window as any).clicked)).toBeUndefined();
 });
 
+test('a heal saved inside a shadow root answers isHidden() at once after its click closed its dialog', async ({ page }) => {
+  // A close button whose click removes its dialog: Playwright says hidden at once, and so does
+  // the HealLocator, instead of waiting for the element inside the shadow root.
+  await serve(page, { '/shop': shop('<div id="dlg"><button id="save-2" data-testid="save" type="button" '
+    + 'onclick="this.parentNode.remove()">Save</button></div>') });
+  const store = tempStore('shadow-closed');
+  pythonHealed(store);
+  const box = open(page, { provider: null, storePath: store, timeoutMs: 3000 }).locator('save', '#save', { role: 'button' });
+  let hidden: unknown;
+  await box.click({ expect: async () => (hidden = await box.isHidden()) });
+  expect(hidden).toBe(true);
+  const started = Date.now();
+  expect(await box.isHidden()).toBe(true);
+  expect(await box.isVisible()).toBe(false);
+  expect(Date.now() - started).toBeLessThan(1500);
+  expect(readStore(store).selectors.save.candidates.find((c: any) => c.xpath === CHAIN).status).toBe('active');
+});
+
 for (const [name, html] of [
   ['only the light DOM of the host has it', shop('<p>Nothing to save</p>', {
     light: '<button data-testid="save" type="button" onclick="window.clicked = \'light\'">Save</button>' })],

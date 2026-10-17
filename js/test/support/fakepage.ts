@@ -1,7 +1,8 @@
 // A stand-in for a Playwright Page, backed by a jsdom document: what the unit tests drive
 // mendwright with, so they need no browser. It answers the calls mendwright makes (locator(),
-// count(), isVisible(), evaluate(), evaluateAll(), evaluateHandle(), content(), url()) and runs
-// the browser-side code (browser/lib.ts) inside the jsdom window, as a page would.
+// count(), isVisible(), isHidden(), evaluate(), evaluateAll(), evaluateHandle(), content(),
+// url()) and runs the browser-side code (browser/lib.ts) inside the jsdom window, as a page
+// would.
 //
 // Selectors: 'xpath=...' and 'css=...' (what the driver passes). CSS pierces open shadow
 // roots, as Playwright's does, and locator().locator() looks inside the elements before it;
@@ -91,6 +92,10 @@ export class FakeLocator {
     return els.length === 1 && this.page.visible(els[0]);
   }
 
+  async isHidden(): Promise<boolean> {
+    return !(await this.isVisible());
+  }
+
   async scrollIntoViewIfNeeded(): Promise<void> {}
 
   async evaluateAll(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
@@ -119,7 +124,12 @@ export class FakeLocator {
   async click(): Promise<void> {
     const el = this.act('click');
     const remove = el.getAttribute('data-click-removes');
-    if (remove) for (const target of Array.from(this.page.document.querySelectorAll(remove))) target.remove();
+    if (remove) {
+      // On the page, and in the shadow root the element is in, as the element's own script would.
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const scopes = root === this.page.document ? [root] : [this.page.document, root];
+      for (const scope of scopes) for (const target of Array.from(scope.querySelectorAll(remove))) target.remove();
+    }
     this.page.clicked.push(el);
   }
 

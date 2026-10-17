@@ -19,7 +19,7 @@ import type { Frame, Locator, Page } from '@playwright/test';
 import {
   DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord, type Refusal,
 } from './coordinator';
-import { PlaywrightDriver, type PageLike } from './driver';
+import { PlaywrightDriver, type PageLike, type Placement } from './driver';
 import { AttentionRequired, InterruptionLoop, InvalidSelector } from './errors';
 import {
   MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, absentMessage, handledMessage, isInterceptionError, loopMessage,
@@ -54,6 +54,12 @@ export const READS = ['textContent', 'innerText', 'innerHTML', 'getAttribute', '
 
 export type Action = typeof ACTIONS[number];
 export type Read = typeof READS[number];
+
+/** The reads that answer at once for a Locator that matches nothing, as Playwright's do, and
+ * what they answer: the element went away, as a dialog does once its close button is clicked.
+ * For an element found inside a shadow root they answer so too, instead of waiting for it
+ * (see HealLocator.waitPlaced). */
+const ABSENT_ANSWERS: ReadonlyMap<string, boolean> = new Map([['isVisible', false], ['isHidden', true]]);
 
 /** One heal a healer applied: the key, the selectors that had stopped matching, the new
  * XPath, the canary result (null while unconfirmed), and where it came from: 'fingerprint'
@@ -387,10 +393,11 @@ export class Healer {
     });
   }
 
-  /** @internal Whether the Locator of an element found inside the shadow root that hosts lead
-   * to still matches one element, and that one inside it (see HealLocator.waitPlaced). */
-  placedOne(native: Locator, hosts: string[]): Promise<boolean> {
-    return this.driver.placedOne(native, hosts);
+  /** @internal Where the Locator of an element found inside the shadow root that hosts lead
+   * to matches now: 'placed' when it still matches one element, and that one inside it (see
+   * HealLocator.waitPlaced). */
+  placement(native: Locator, hosts: string[]): Promise<Placement | null> {
+    return this.driver.placement(native, hosts);
   }
 
   private prime(key: string, plan: Plan): void {
@@ -798,13 +805,22 @@ export class HealLocator {
    * element and that one inside the shadow root. Playwright resolves the Locator again for each
    * action and read, and its CSS pierces every open shadow root, so a re-render after the
    * lookup could otherwise send it to an element outside that shadow root. Throws
-   * AttentionRequired when it never does, and reports nothing to the heal canary. */
-  private async waitPlaced(native: Locator, verb: string): Promise<void> {
+   * AttentionRequired when it never does, and reports nothing to the heal canary.
+   *
+   * Resolves to true when the action or read may run. For isVisible() and isHidden()
+   * (ABSENT_ANSWERS) it resolves to false at once when the Locator matches nothing at all,
+   * inside the shadow root or outside it: the element went away, and the read answers as
+   * Playwright's does for such a Locator, without running. A match outside the shadow root,
+   * or several matches, still waits, and throws. */
+  private async waitPlaced(native: Locator, verb: string): Promise<boolean> {
     const hosts = this.hosts;
-    if (!hosts) return;
+    if (!hosts) return true;
+    const answers = ABSENT_ANSWERS.has(verb);
     const deadline = Date.now() + this.plan.timeoutMs;
     for (;;) {
-      if (await this.healer.placedOne(native, hosts)) return;
+      const where = await this.healer.placement(native, hosts);
+      if (where === 'placed') return true;
+      if (where === 'nowhere' && answers) return false;
       if (Date.now() >= deadline) throw new AttentionRequired(movedMessage(this.key, hosts, verb));
       await sleep(Math.max(this.plan.pollMs, 20));
     }
@@ -896,7 +912,8 @@ export class HealLocator {
       await this.healer.beforeAction(this.key, this.plan.timeoutMs, this.plan.pollMs);
       this.readsDue = false;
     }
-    await this.waitPlaced(native, name);
+    // A Locator that matches nothing: answered as Playwright does (see waitPlaced).
+    if (!(await this.waitPlaced(native, name))) return ABSENT_ANSWERS.get(name);
     return (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name](...args);
   }
 

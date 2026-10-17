@@ -142,6 +142,20 @@ function allPlaced(placed: unknown): boolean {
   return !!p && typeof p.n === 'number' && p.n > 0 && p.inside === p.n;
 }
 
+/** Where the Locator of a selector inside a shadow root matches, as the Python package's
+ * placement_of() says: one element, and that one in the shadow root ('placed'); nothing at
+ * all, inside or outside ('nowhere'); or something outside the shadow root, or several
+ * elements ('elsewhere'). */
+export type Placement = 'placed' | 'nowhere' | 'elsewhere';
+
+/** The Placement from placed()'s result, null for one it cannot read. */
+function placementOf(placed: unknown): Placement | null {
+  const p = placed as Placed | null;
+  if (!p || typeof p.n !== 'number') return null;
+  if (p.n === 0) return 'nowhere';
+  return p.n === 1 && p.inside === 1 ? 'placed' : 'elsewhere';
+}
+
 /** What a fingerprint read gives: the fingerprint, and the shadow hosts around the element
  * ([] for one on the page), or undefined when the read said nothing about them. */
 export interface FingerprintRead {
@@ -210,16 +224,16 @@ export class PlaywrightDriver {
     return loc.evaluateAll(elementsFunction('placed') as (els: Element[], arg: unknown) => unknown, hosts);
   }
 
-  /** Whether the Locator of a selector inside the shadow root that hosts lead to matches one
-   * element now, and that one inside the shadow root. Playwright resolves a Locator again for
-   * each action and read, and its CSS pierces, so HealLocator checks this right before each
-   * one. One round trip that does not wait; false on any error. */
-  async placedOne(loc: Locator, hosts: string[]): Promise<boolean> {
+  /** Where the Locator of a selector inside the shadow root that hosts lead to matches now
+   * (see Placement): 'placed' when it matches one element and that one inside the shadow
+   * root. Playwright resolves a Locator again for each action and read, and its CSS pierces,
+   * so HealLocator checks this right before each one. One round trip that does not wait;
+   * null on any error. */
+  async placement(loc: Locator, hosts: string[]): Promise<Placement | null> {
     try {
-      const placed = await this.place(loc, hosts);
-      return allPlaced(placed) && (placed as Placed).n === 1;
+      return placementOf(await this.place(loc, hosts));
     } catch {
-      return false;
+      return null;
     }
   }
 
