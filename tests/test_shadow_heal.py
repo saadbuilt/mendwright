@@ -346,6 +346,72 @@ def test_on_selenium_a_key_in_a_shadow_root_heals_there(make_shadow_driver, tmp_
     assert driver.actions[-1][0].get('id') == 'save-2'
 
 
+# --- a store a 0.9.0 process wrote -----------------------------------------------------------
+
+def _as_0_9_0_writes_it(tmp_path, earlier=()):
+    """The store as a 0.9.0 process writes it back: it keeps only the fields it knows, so
+    every shadowHosts is gone, the key's and each candidate's. The selectors in earlier last
+    matched in a run before (timestamps have a one second resolution)."""
+    data = _store(tmp_path)
+    for entry in data['selectors'].values():
+        entry.pop('shadowHosts', None)
+        for c in entry['candidates']:
+            c.pop('shadowHosts', None)
+            if c['xpath'] in earlier:
+                c['lastSucceededAt'] = '2026-10-01T00:00:00+00:00'
+    (tmp_path / 'o.json').write_text(json.dumps(data), encoding='utf-8')
+
+
+def test_on_selenium_a_followed_key_0_9_0_wrote_back_still_heals_inside_its_shadow_root(
+        make_shadow_driver, tmp_path):
+    driver = make_shadow_driver(V1)
+    heal = _open(driver, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()     # followed in
+    heal.confirm_all(True)
+    _open(make_shadow_driver(V1), tmp_path).locator('save', '#save', role='button', poll_ms=0)
+    _as_0_9_0_writes_it(tmp_path)
+    assert 'shadowHosts' not in json.dumps(_store(tmp_path))
+    # Selenium refuses the chain as a Playwright selector, and #save misses on the page.
+    driver.set_html(V2)
+    heal = _open(driver, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert driver.actions[-1][0].get('id') == 'save-2'      # not the look-alike on the page
+    assert heal.heals[-1].new == CHAIN and heal.heals[-1].source == 'fingerprint'
+    row = [c for c in _rows(tmp_path) if c['xpath'] == CHAIN][0]
+    assert row['shadowHosts'] == [HOST]
+
+
+def test_on_playwright_a_heal_0_9_0_wrote_back_still_heals_inside_its_shadow_root(
+        make_shadow_page, tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0)    # CHAIN
+    _as_0_9_0_writes_it(tmp_path, earlier=['#save'])
+    page_.set_html(page(LOOKALIKE + shadow(SAVE_V2.replace('"save"', '"save-3"'))))
+    heal = _open(page_, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert _clicked(page_).get('id') == 'save-2'
+    assert page_.dom.owner[_clicked(page_)] is not page_.dom.document
+    assert heal.heals[-1].new.startswith(HOST + ' >> ')
+
+
+@pytest.mark.parametrize('row', [
+    {'xpath': HOST + ' >> #save', 'source': 'code'},                 # your code passes it
+    {'xpath': HOST + ' >> #save', 'source': 'heal', 'shadowHosts': []},   # on the page now
+    {'xpath': HOST + ' >> #save', 'source': 'heal', 'frameXPath': 'iframe[id="f"]'},
+    {'xpath': 'div >> #save', 'source': 'heal'},                     # not a host mendwright builds
+    {'xpath': HOST + ' >> //button', 'source': 'heal'},              # XPath runs in no shadow root
+    {'xpath': HOST + ' >> text=Save', 'source': 'heal'},
+    {'xpath': "//button[@id='save']", 'source': 'heal'},
+], ids=['code', 'page', 'iframe', 'div-host', 'xpath', 'engine', 'plain'])
+def test_only_a_heal_mendwright_saved_inside_a_shadow_root_names_its_hosts(row):
+    from mendwright.shadow import chain_hosts
+    assert chain_hosts(row) == ()
+    assert chain_hosts({'xpath': CHAIN, 'source': 'heal'}) == (HOST,)
+    assert chain_hosts({'xpath': HOST + ' >> settings-panel >> .panel > button',
+                        'source': 'heal'}) == (HOST, 'settings-panel')
+
+
 # --- the follow: a key's own selector that matches only inside a shadow root -----------------
 
 def test_selenium_follows_a_css_selector_into_the_one_shadow_root_it_matches_in(

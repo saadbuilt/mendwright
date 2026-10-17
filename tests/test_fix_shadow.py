@@ -71,6 +71,21 @@ def test_a_shadow_heal_is_written_into_a_playwright_call_as_its_chain(root, caps
     assert "  now  " + CHAIN in out
 
 
+def test_a_shadow_heal_whose_hosts_0_9_0_dropped_is_still_written_as_its_chain(root, capsys):
+    # A 0.9.0 process drops every shadowHosts when it writes the store, a heal's too; the
+    # chain still names the hosts, so it is not read as an XPath someone else wrote.
+    stripped = {"#save": {"expectedRole": "button", "candidates": [
+        cand("#save", "code", T0), cand(CHAIN, "heal", T1)]}}
+    write_store(root, stripped, [canary("#save", CHAIN)])
+    source = write(root, "test_a.py", 'page.locator("#save").click()\nheal.locator("k", "#save")\n')
+    code, out = run(capsys, "--apply")
+    assert code == 0 and "not one mendwright saves" not in out and "lxml" not in out
+    assert source.read_text(encoding="utf-8").splitlines()[0] == (
+        "page.locator('" + CHAIN + "').click()")
+    note = [lin for lin in out.splitlines() if "test_a.py:2 was not changed" in lin][0]
+    assert "inside the shadow root of " + HOST in note
+
+
 @pytest.mark.parametrize("line", [
     'heal.locator("save", "#save").click()\n',                          # may run on Selenium
     'driver.find_element(By.CSS_SELECTOR, "#save")\n',

@@ -79,6 +79,42 @@ def hosts_of(candidate):
     return saved_hosts(candidate.get(HOSTS)) if isinstance(candidate, dict) else ()
 
 
+# A shadow host's selector as host_selector() builds it: its tag with one of HOST_ATTRS and a
+# value in css_string's quoting, or a custom element's tag alone.
+_BUILT_HOST = re.compile(
+    r'[a-z][a-z0-9_-]*\[(?:' + '|'.join(re.escape(name) for name in HOST_ATTRS) + ')='
+    r'"(?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*"\]'
+    r'|[a-z][a-z0-9_]*-[a-z0-9_-]*')
+
+
+def built_host(selector):
+    """Whether selector is a shadow host's selector of the form host_selector() builds."""
+    return isinstance(selector, str) and _BUILT_HOST.fullmatch(selector) is not None
+
+
+def chain_hosts(candidate):
+    """The shadow hosts that a heal saved inside a shadow root names in its text, for one
+    that has lost its shadowHosts: a 0.9.0 process drops every shadowHosts when it writes the
+    store, a candidate's as well as the key's. () unless the candidate is a heal (source
+    'heal') with no frameXPath and no shadowHosts field, whose text is the chain (shadow_text)
+    of hosts of the form host_selector() builds and a CSS selector. mendwright saves no other
+    heal with ' >> ' in it: a heal on the page or in an iframe is an XPath, or the key's own
+    selector, and a heal your code passes again is a 'code' candidate."""
+    if not isinstance(candidate, dict) or candidate.get('source') != 'heal':
+        return ()
+    if candidate.get('frameXPath') or HOSTS in candidate:
+        return ()
+    text = candidate.get('xpath')
+    parts = split_text(text) if isinstance(text, str) else []
+    if len(parts) < 2 or not all(built_host(part) for part in parts[:-1]):
+        return ()
+    try:
+        inner_css(parts[-1])
+    except (TypeError, ValueError):     # InvalidSelector is a ValueError
+        return ()
+    return tuple(parts[:-1])
+
+
 def chain_of(candidate):
     """The frame chain a candidate runs in: its iframe's selector (frameXPath), then a
     ShadowHost step per shadow host. A host nothing tells apart gives an empty step, which

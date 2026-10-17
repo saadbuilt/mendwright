@@ -67,8 +67,8 @@ from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runn
 from .roles import infer_role, role_choices
 from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
                         normalize, strip_prefix)
-from .shadow import (MISSING, as_document, driver_shadowed, hosts_of, place_text, saved_hosts,
-                     shadow_text, take_hosts)
+from .shadow import (MISSING, as_document, chain_hosts, driver_shadowed, hosts_of, place_text,
+                     saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
@@ -602,14 +602,15 @@ class HealScope:
 def heal_place(store, key):
     """(frame, hosts, why): where a heal of key runs. frame is the iframe its latest match
     was in ('' for none); hosts the shadow hosts of the open shadow root its element was last
-    found in: those its latest match runs inside, else the key's shadowHosts (see
-    mendwright.shadow), () for none; why says why no heal may run anywhere, '' else: an
+    found in: those its latest match runs inside, or those the chain of a heal names when a
+    0.9.0 process dropped its shadowHosts (shadow.chain_hosts), else the key's shadowHosts
+    (see mendwright.shadow), () for none; why says why no heal may run anywhere, '' else: an
     element inside a shadow root inside an iframe, or behind a host nothing tells apart. A
     key last found inside a shadow root is never healed on the page outside it."""
     best = latest_success(store, key)
     frame = best.get('frameXPath') if best else None
     frame = frame if isinstance(frame, str) and frame else ''
-    hosts = hosts_of(best) if best else ()
+    hosts = (hosts_of(best) or chain_hosts(best)) if best else ()
     if not hosts:
         recorded = getattr(store, 'shadow_hosts', None)
         try:
