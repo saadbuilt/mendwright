@@ -22,6 +22,7 @@ import { expect, test as base, type Frame, type Page, type TestInfo } from '@pla
 
 import { addHealerListener, open, removeHealerListener, type Healer, type OpenOptions } from './healer';
 import type { HealProvider } from './providers/base';
+import { expandPath } from './store';
 
 export { expect };
 
@@ -44,15 +45,18 @@ export interface MendwrightFixtures {
 
 const healers = new WeakMap<object, Healer>();
 
-/** Where the fixtures keep heals: the mendwrightStore option (relative to the config file),
+/** Where the fixtures keep heals: storePath, the open() option of mendwrightOptions (relative
+ * to where Playwright was started), the mendwrightStore option (relative to the config file),
  * MENDWRIGHT_STORE (relative to where Playwright was started), then .mendwright/overrides.json
- * next to the config file. */
-export function storePathFor(testInfo: TestInfo, option: string | undefined): string {
+ * next to the config file. A leading ~ is the home directory in each, as for open() and the
+ * Python package's pytest plugin: a CI workflow's YAML passes ~ on as it is. */
+export function storePathFor(testInfo: TestInfo, option: string | undefined, storePath?: string): string {
+  if (storePath) return path.resolve(expandPath(storePath));
   const configFile = testInfo.config.configFile;
   const root = configFile ? path.dirname(configFile) : process.cwd();
-  if (option) return path.resolve(root, option);
+  if (option) return path.resolve(root, expandPath(option));
   const env = (process.env.MENDWRIGHT_STORE || '').trim();
-  if (env) return path.resolve(env);
+  if (env) return path.resolve(expandPath(env));
   return path.join(root, '.mendwright', 'overrides.json');
 }
 
@@ -104,7 +108,7 @@ export const test = base.extend<MendwrightOptions & MendwrightFixtures & { _mend
     const healer = open(page, {
       ...mendwrightOptions,
       provider: mendwrightProvider ?? mendwrightOptions.provider,
-      storePath: mendwrightOptions.storePath ? path.resolve(mendwrightOptions.storePath) : storePathFor(testInfo, mendwrightStore),
+      storePath: storePathFor(testInfo, mendwrightStore, mendwrightOptions.storePath),
     });
     const value = mendwrightPage ? healer.page : page;
     healers.set(value, healer);
