@@ -1053,7 +1053,7 @@ A CSS selector is looked up there as it is. An XPath is evaluated in each shadow
 It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
 
 It does this only for a key that mendwright has no record of, or one last found in that same shadow root.
-A key last found on the page, in an iframe or in another shadow root heals where it was last found, as any key does (see [When the selector breaks](#when-the-selector-breaks)), and so does a selector that still matches on the page, such as one that matches two elements there or a hidden one.
+A key last found on the page, in an iframe or in another shadow root heals where it was last found, as any key does (see [When the selector breaks](#when-the-selector-breaks)), and so does a key one of whose selectors still matches something on the page, such as two elements or a hidden one.
 
 Playwright's CSS reaches into open shadow roots by itself, so there only an XPath is followed: what a CSS selector matches inside a shadow root, it matches on the page too. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
 

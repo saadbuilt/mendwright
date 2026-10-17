@@ -695,6 +695,15 @@ def follow_allowed(store, key, found):
     return latest_success(store, key) is None
 
 
+def _matches_nothing(count, selector):
+    """True when count(selector), a driver's count on the page, is 0; False for any other
+    count and when it raises."""
+    try:
+        return count(selector) == 0
+    except Exception:
+        return False
+
+
 def _shadow_message(key, selector, found, why):
     """Why a key whose selector matches only inside an open shadow root was not followed
     there."""
@@ -3156,14 +3165,16 @@ class Healer:
         """[(selector, found, cut)] for the key's own selectors on the page that a follow may
         take into open shadow roots (see _follow_into_shadow): each matches inside them (see
         shadow_found), through finder (driver.shadow_matches), where the key may be followed
-        (follow_allowed), and nothing on the page (driver.count; one that raises keeps the
-        selector out). On a driver whose CSS pierces shadow roots (base.css_pierces), a CSS
-        selector is never one: what it matches there, it matches on the page. driver is this
+        (follow_allowed). On a driver whose CSS pierces shadow roots (base.css_pierces), a
+        CSS selector is never one: what it matches there, it matches on the page. [] when
+        any of the key's selectors on the page matches something there (driver.count; one
+        that raises counts as a match): the key's element may be that one. driver is this
         healer's unless given (heal.drift()'s preview passes its own)."""
         driver = self._driver if driver is None else driver
         pierces = css_pierces(driver)
+        selectors = self._frame_candidates(key)
         matches = []
-        for selector in self._frame_candidates(key):
+        for selector in selectors:
             if pierces and classify(selector) == CSS:
                 continue
             try:
@@ -3171,14 +3182,10 @@ class Healer:
             except Exception:
                 continue
             found = shadow_found(selector, roots)
-            if not found or not follow_allowed(self.store, key, found):
-                continue
-            try:
-                on_page = driver.count(selector)
-            except Exception:
-                continue
-            if on_page == 0:
+            if found and follow_allowed(self.store, key, found):
                 matches.append((selector, found, cut))
+        if matches and not all(_matches_nothing(driver.count, s) for s in selectors):
+            return []
         return matches
 
     def _follow_into_shadow(self, key, exc, attempt):
@@ -3191,10 +3198,10 @@ class Healer:
         key's own, and only the place changed. It counts as a heal with source 'shadow'.
 
         Playwright's CSS pierces open shadow roots by itself, so there only an XPath is
-        followed. A selector that matches on the page (several elements, or a hidden one) is
-        not followed, and neither is a key last found on the page, in an iframe or in
-        another shadow root (follow_allowed): it heals where it was last found, as any key
-        does. Not followed, with AttentionRequired saying why: the refusals of
+        followed. A key one of whose selectors matches something on the page (several
+        elements, or a hidden one) is not followed, and neither is a key last found on the
+        page, in an iframe or in another shadow root (follow_allowed): it heals where it was
+        last found, as any key does. Not followed, with AttentionRequired saying why: the refusals of
         _shadow_plan, a page the key was never found on (the page guard), a guard that
         blocks heals, or an element that fails the live check. Returns _NOT_FOLLOWED when no
         selector of the key may be followed into a shadow root (see _shadow_matches)."""

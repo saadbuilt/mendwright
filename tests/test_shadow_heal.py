@@ -551,6 +551,21 @@ def test_selenium_never_follows_a_selector_that_matches_several_elements_on_the_
     assert driver.actions == [] and heal.heals == []
 
 
+def test_selenium_never_follows_a_key_another_of_whose_selectors_matches_on_the_page(
+        make_shadow_driver, tmp_path):
+    # .send matches two buttons on the page, and #send nothing there but one element in the
+    # component's shadow root: the key's element may be one of the two on the page.
+    driver = make_shadow_driver(page(
+        '<button type="submit" id="send-1" class="send">Send</button>'
+        '<button type="submit" id="send-2" class="send">Send</button>'
+        + shadow('<button type="submit" id="send">Join</button>', host='<news-letter>')))
+    heal = _open(driver, tmp_path)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('send', ['.send', '#send'], role='button', poll_ms=0)
+    assert 'inside a shadow root' not in str(info.value)
+    assert driver.actions == [] and heal.heals == []
+
+
 def test_a_key_last_found_on_the_page_is_not_followed_into_a_shadow_root(make_shadow_driver,
                                                                         tmp_path):
     # The page's button is no longer a submit button, and the component's is the only one:

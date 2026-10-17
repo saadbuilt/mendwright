@@ -1479,8 +1479,9 @@ class AsyncHealer:
         if not callable(_member(self._driver, 'shadow_matches')):
             return _NOT_FOLLOWED
         pierces = css_pierces(self._driver)
+        selectors = core._frame_candidates(key)
         matches = []
-        for selector in core._frame_candidates(key):
+        for selector in selectors:
             if pierces and classify(selector) == CSS:
                 continue        # what Playwright's CSS matches there, it matches on the page
             try:
@@ -1488,16 +1489,16 @@ class AsyncHealer:
             except Exception:
                 continue
             found = shadow_found(selector, roots)
-            if not found or not follow_allowed(core.store, key, found):
-                continue
-            try:
-                on_page = await _awaited(self._driver.count(selector))
-            except Exception:
-                continue
-            if on_page == 0:
+            if found and follow_allowed(core.store, key, found):
                 matches.append((selector, found, cut))
         if not matches:
             return _NOT_FOLLOWED
+        for selector in selectors:      # one that matches on the page may be the element
+            try:
+                if await _awaited(self._driver.count(selector)) != 0:
+                    return _NOT_FOLLOWED
+            except Exception:
+                return _NOT_FOLLOWED
         selector, found, root = core._pick_shadow(key, exc, matches)
         core._frame_guard(key, exc, await _url(self._driver))
         why = await _in_thread(core._shadow_follow, key, selector, root, self.coordinator.driver)
