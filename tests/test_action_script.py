@@ -386,6 +386,8 @@ class World:
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # The action runs on the Python that runs the tests; CI also tries one it refuses.
+    monkeypatch.setattr(ma, '_python', lambda: ((3, 12), '3.12.0'))
     return World(tmp_path)
 
 
@@ -672,8 +674,7 @@ def test_a_working_directory_that_is_not_a_checkout_is_refused(world, tmp_path):
 
 
 def test_an_old_python_is_refused(world, monkeypatch):
-    monkeypatch.setattr(ma.sys, 'version_info', (3, 9, 18, 'final', 0))
-    monkeypatch.setattr(ma.platform, 'python_version', lambda: '3.9.18')
+    monkeypatch.setattr(ma, '_python', lambda: ((3, 9), '3.9.18'))
     world.run()
     assert notices(world, kind='error') == [
         'mendwright: the action needs Python 3.10 to 3.14, for its lxml wheel, and got 3.9.18. Set '
@@ -1735,6 +1736,8 @@ def test_guard_find_artifact_and_publish_import_neither_mendwright_nor_lxml(worl
     """Run the script by itself, with python -I, from a folder where a mendwright and an lxml
     package raise when imported; the script's own folder is first on sys.path. The API is the
     fake, served on 127.0.0.1, so the script's own urllib transport is used too."""
+    if not ma.PYTHONS[0] <= tuple(sys.version_info[:2]) <= ma.PYTHONS[1]:
+        pytest.skip('the action refuses this Python, and this test runs its steps as they are')
     import http.server
     import threading
 

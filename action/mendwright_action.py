@@ -433,10 +433,10 @@ def _check_inputs(action):
     if not _inside(action.working_directory(), action.workspace()):
         raise Stop('mendwright: working-directory ' + wd + ' is outside the workspace ('
                    + action.workspace() + '). Pass a folder inside your checkout.')
-    version = sys.version_info[:2]
+    version, text = _python()
     if not PYTHONS[0] <= version <= PYTHONS[1]:
         raise Stop('mendwright: the action needs Python 3.10 to 3.14, for its lxml wheel, and '
-                   'got ' + platform.python_version() + '. Set python-version to 3.12, or leave '
+                   'got ' + text + '. Set python-version to 3.12, or leave '
                    'it at its default.')
 
 
@@ -619,6 +619,11 @@ def cmd_find_artifact(action):
 
 
 # --- fix -----------------------------------------------------------------------------------
+
+def _python():
+    """(major, minor) and the version text of the Python that runs the action."""
+    return tuple(sys.version_info[:2]), platform.python_version()
+
 
 def _regular(path):
     """True for a regular file that is not a link."""
