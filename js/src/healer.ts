@@ -27,7 +27,7 @@ import {
   COOKIE_CHOICES, cookieChoiceError, cookiePreset, makeInterruption, nthTargets,
   type CookieChoice, type Interruption, type InterruptionEvent,
 } from './interruptions';
-import { Journal, type JournalLike } from './journal';
+import { Journal, runId, runIdProblem, type JournalLike } from './journal';
 import { sharedLimiter, type Guardrails } from './limits';
 import { log, type LogSink } from './log';
 import { NullProvider, type HealProvider } from './providers/base';
@@ -448,7 +448,7 @@ export class Healer {
       const reason = "'" + key + "' was last found inside the iframe " + latest.frameXPath + ', and mendwright for '
         + 'TypeScript does not heal inside an iframe yet, so it did not look for the element on the page around it. '
         + 'Fix the selector by hand, or let the Python package heal it.';
-      this.coordinator.decline(key, reason);
+      this.coordinator.decline(key, reason, 'warning', null, 'frame');
       throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
     }
     // The same for a key last found inside an open shadow root: where the heal that matched
@@ -624,7 +624,10 @@ export class Healer {
       if (key === before) continue;
       const target = await this.interruptionTarget(item);
       if (target === null) continue;
-      if (budget.used >= MAX_INTERRUPTIONS_PER_STEP) throw new InterruptionLoop(loopMessage(before, item.key, budget.used));
+      if (budget.used >= MAX_INTERRUPTIONS_PER_STEP) {
+        this.coordinator.journal.event('flow.stop', { key: item.key, code: 'interruption_loop', before });
+        throw new InterruptionLoop(loopMessage(before, item.key, budget.used));
+      }
       budget.used += 1;
       if (await this.runInterruption(item, target, before, timeoutMs, pollMs)) handled = true;
     }
@@ -1091,6 +1094,10 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
       provider = new NullProvider(reason, 'no model provider is configured (see the open() warning)');
     }
   }
+  // A run id only groups journal lines, so a MENDWRIGHT_RUN_ID that is not one must not fail
+  // the tests: it is ignored, and said once per open(), as the Python package says it.
+  const badRunId = runId().bad;
+  if (badRunId !== null) emit(options.log, 'warning', runIdProblem(badRunId));
   const store = options.store ?? loadStore(storePath, { destructiveKeys: options.destructiveKeys });
   const storeFile = store.overridePath;
   const journal = options.journal ?? new Journal(path.join(path.dirname(storeFile), 'journal.jsonl'));

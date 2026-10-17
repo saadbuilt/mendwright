@@ -145,6 +145,8 @@ A heal is quarantined when an action on it fails in the browser, when `expect` r
 
 Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`mendwrightStore`, or `MENDWRIGHT_STORE`; for `open()`, `storePath`, else `./.mendwright/overrides.json`), and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it. It is the Python package's file format, schema 2: a team that uses both packages can share one store, and the Python package's `mendwright report` lists what this package saved. Writes take a lock file and merge with what other processes wrote, so Playwright Test workers can share one store. What only the Python package uses stays in the file as it wrote it: list heals, and where a key's element is inside an iframe or an open shadow root (`frameXPath`, `shadowHosts`).
 
+The journal has the Python package's events, with the same fields: each line has the id of the run that wrote it in `run` (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`), a heal that was not tried or did not apply is a `heal.declined` with the Python package's `code` and the `reason`, and an interruption that kept coming back is a `flow.stop` with the code `interruption_loop`. So the Python package's `mendwright notify` posts the summary of a run of this package as it does its own. A `MENDWRIGHT_RUN_ID` that is not 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-` is ignored, with one warning from `open()`.
+
 ## Settings
 
 | `open()` option | Environment variable | Default |
@@ -154,6 +156,7 @@ Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`
 | `timeoutMs` | `MENDWRIGHT_TIMEOUT_MS` | 10000 |
 | `dryRun` (check proposals, apply none) | `MENDWRIGHT_DRY_RUN` | off |
 | `fingerprint` | `MENDWRIGHT_FINGERPRINT` | on |
+| `journal` (where the events go) | `MENDWRIGHT_RUN_ID` (the run id of each line) | `journal.jsonl` next to the store; the run id on GitHub Actions is `gh-<run id>.<attempt>`, else none |
 | `destructiveKeys`, `guard`, `healAcrossPages`, `cookies`, `ratePerKeyPerHour`, `rateGlobalPerHour`, `log` | | |
 
 `MENDWRIGHT_DISABLE=1` resolves selectors but never heals or calls a provider, even one passed as `provider`. The fixtures take `mendwrightProvider`, `mendwrightStore`, `mendwrightOptions` (any other `open()` option), `mendwrightPage` and `mendwrightStrict` through `test.use()`.

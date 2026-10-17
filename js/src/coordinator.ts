@@ -21,6 +21,7 @@ import { log, type LogLevel, type LogSink } from './log';
 import { MAX_PROMPT_PART, type Bundle, type Proposal } from './prompt';
 import { pyRepr } from './py';
 import { providerName, type HealProvider, type ProviderTools } from './providers/base';
+import { NOT_HERE_HINT } from './providers/errors';
 import { hasPosition } from './selectors';
 import type { KeyMeta, SelectorStore } from './store';
 import { findMatch } from './tier';
@@ -30,6 +31,13 @@ export const DISABLED_REASON = 'healing is turned off by MENDWRIGHT_DISABLE=1, s
   + 'Unset MENDWRIGHT_DISABLE to let mendwright heal again.';
 export const GUARD_REASON = 'a transaction guard is currently blocking heals (a payment or registration submission '
   + 'is pending), so mendwright did not try to heal. Run the step again once the guard allows heals.';
+
+/** The code of each heal.declined event, as the Python package names them
+ * (coordinator.DECLINE_CODES), which its mendwright notify turns into its own words. dry_run
+ * and disabled are declines on purpose. */
+export const DECLINE_CODES = ['destructive', 'page_guard', 'disabled', 'no_provider', 'role_unknown', 'guard',
+  'rate_limit', 'not_here', 'no_proposal', 'gate', 'dry_run', 'frame', 'shadow', 'other'] as const;
+export type DeclineCode = typeof DECLINE_CODES[number];
 
 export interface HealRecord {
   key: string;
@@ -125,10 +133,19 @@ export class HealCoordinator {
     }
   }
 
-  decline(key: string, reason: string, level: LogLevel = 'warning', logged?: string | null): false {
+  /** Record why a heal did not apply, log it, journal it as heal.declined with code, and
+   * return false. logged is a shorter reason for the log line. */
+  decline(key: string, reason: string, level: LogLevel = 'warning', logged?: string | null,
+          code: DeclineCode = 'other'): false {
     this.healReasons.set(key, reason);
     this.emit(level, 'did not heal ' + pyRepr(key) + ': ' + (logged || reason));
+    this.journal.event('heal.declined', { key, code, reason });
     return false;
+  }
+
+  /** The code of a decline because no model provider can be asked. */
+  private unavailableCode(): DeclineCode {
+    return this.disabled ? 'disabled' : 'no_provider';
   }
 
   explain(key: string): string {
@@ -157,10 +174,10 @@ export class HealCoordinator {
    * root, where this package does not heal. */
   async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
                 refusal: string | null = null): Promise<string | false> {
-    if (meta.destructive) return this.decline(key, destructiveMessage(key));
+    if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
     const moved = this.flowChange(key, context);
-    if (moved) return this.decline(key, moved);
-    if (refusal) return this.decline(key, refusal);
+    if (moved) return this.decline(key, moved, 'warning', null, 'page_guard');
+    if (refusal) return this.decline(key, refusal, 'warning', null, 'shadow');
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
@@ -169,10 +186,10 @@ export class HealCoordinator {
     const summary = typeof summaryRaw === 'string' ? summaryRaw : null;
     if (unavailable && (roleUnknown || !this.fingerprint)) {
       if (roleUnknown) unavailable = unavailable.trimEnd() + ' Also, mendwright ' + roleNeeded(key);
-      return this.decline(key, unavailable, 'warning', summary);
+      return this.decline(key, unavailable, 'warning', summary, this.unavailableCode());
     }
-    if (roleUnknown) return this.decline(key, 'mendwright ' + roleNeeded(key));
-    if (!this.guard()) return this.decline(key, GUARD_REASON);
+    if (roleUnknown) return this.decline(key, 'mendwright ' + roleNeeded(key), 'warning', null, 'role_unknown');
+    if (!this.guard()) return this.decline(key, GUARD_REASON, 'warning', null, 'guard');
     const started = this.clock();
     let html: string | null = null;
     let requested = false;
@@ -180,7 +197,7 @@ export class HealCoordinator {
     if (source === 'intent' && unavailable) {
       return this.decline(key, "'" + key + "' has no selector yet, and only a model can find it from intent, but no model "
         + 'provider is configured. ' + unavailable,
-      'warning', summary ? "'" + key + "' has no selector yet, and " + summary : null);
+      'warning', summary ? "'" + key + "' has no selector yet, and " + summary : null, this.unavailableCode());
     }
     if (this.fingerprint && source !== 'intent') {
       html = await this.driver.content();
@@ -189,13 +206,14 @@ export class HealCoordinator {
       if (applied !== null) return applied;
       if (unavailable) {
         return this.decline(key, note + ', and no model provider is configured to try instead. ' + unavailable,
-          'warning', summary ? note + ', and ' + summary : null);
+          'warning', summary ? note + ', and ' + summary : null, this.unavailableCode());
       }
     }
     if (this.guardrails && !this.guardrails.allow(key)) {
       this.journal.event('heal.rejected', { key, reason: 'rate/spend cap' });
       return this.decline(key, "the hourly rate cap for '" + key + "' was reached, so mendwright stopped (fail-closed). "
-        + 'Wait for the hourly window to reset, or raise the cap with open({ ratePerKeyPerHour, rateGlobalPerHour }).');
+        + 'Wait for the hourly window to reset, or raise the cap with open({ ratePerKeyPerHour, rateGlobalPerHour }).',
+      'warning', null, 'rate_limit');
     }
     const tag = source !== 'model' ? source : null;
     if (!requested) this.journal.event('heal.requested', { key });
@@ -221,17 +239,21 @@ export class HealCoordinator {
       } catch (error) {
         const detail = (error as Error)?.message ?? String(error);
         this.journal.event('heal.rejected', { key, reason: 'no proposal', error: detail });
-        return this.decline(key, providerName(this.provider) + " failed for '" + key + "': " + detail);
+        return this.decline(key, providerName(this.provider) + " failed for '" + key + "': " + detail,
+          'warning', null, 'no_proposal');
       }
       if (!proposal || typeof proposal !== 'object') {
         const error = this.providerError();
         if (error) {
           this.journal.event('heal.rejected', { key, reason: 'no proposal', error });
-          return this.decline(key, providerName(this.provider) + " returned no selector for '" + key + "': " + error);
+          // The model found no element on this page that fits, or was not sure which: the
+          // providers end that sentence with NOT_HERE_HINT, so the code does not depend on its wording.
+          return this.decline(key, providerName(this.provider) + " returned no selector for '" + key + "': " + error,
+            'warning', null, error.includes(NOT_HERE_HINT) ? 'not_here' : 'no_proposal');
         }
         this.journal.event('heal.rejected', { key, reason: 'no proposal' });
         return this.decline(key, "the model returned no usable selector for '" + key + "'. Try a different or stronger "
-          + 'model, or repair the selector by hand.');
+          + 'model, or repair the selector by hand.', 'warning', null, 'no_proposal');
       }
       this.journal.event('heal.proposed', { key, xpath: proposal.xpath, reasoning: proposal.reasoning, source: tag });
       if (this.dryRun) {
@@ -245,7 +267,7 @@ export class HealCoordinator {
         }
         this.emit('info', '[heal dry-run] key=' + key + ' proposed=' + proposal.xpath + ' valid=' + ok + ' (not applied)');
         return this.decline(key, "dry-run mode is on, so the proposal for '" + key + "' was checked but not applied. "
-          + 'Turn off dryRun to let mendwright apply and retry.', 'info');
+          + 'Turn off dryRun to let mendwright apply and retry.', 'info', null, 'dry_run');
       }
       const [applied, why] = await apply(this.store, key, proposal, html, meta, this.driver, !cut);
       reason = why;
@@ -258,7 +280,7 @@ export class HealCoordinator {
     }
     this.decline(key, "no selector the model proposed for '" + key + "' passed mendwright's local gate (last reason: "
       + reason + '). The gate requires a non-brittle xpath that matches exactly one element of the expected role and '
-      + 'is present on the live page.');
+      + 'is present on the live page.', 'warning', null, 'gate');
     return false;
   }
 
@@ -279,7 +301,7 @@ export class HealCoordinator {
       const ok = (await validateStatic(this.driver, match.xpath, html, meta.expectedRole, this.store.quarantined(key, ''))).ok;
       this.emit('info', '[heal dry-run] key=' + key + ' proposed=' + match.xpath + ' (fingerprint) valid=' + ok + ' (not applied)');
       return [this.decline(key, "dry-run mode is on, so the fingerprint match for '" + key + "' was checked but not "
-        + 'applied. Turn off dryRun to let mendwright apply and retry.', 'info'), '', true];
+        + 'applied. Turn off dryRun to let mendwright apply and retry.', 'info', null, 'dry_run'), '', true];
     }
     const [applied, reason] = await apply(this.store, key, { xpath: match.xpath, fallbacks: [], reasoning }, html, meta, this.driver);
     if (applied) {
