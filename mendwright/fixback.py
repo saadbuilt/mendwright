@@ -17,11 +17,13 @@ What it will and will not touch:
   otherwise the healed XPath.
 - A heal inside an open shadow root (see mendwright.shadow) is written as the Playwright
   selector chain it is saved as, 'my-app[id="root"] >> #save', and only where the old
-  selector is passed to a Playwright page or locator method in a Python file
-  (page.locator(), page.click() and the other methods of PLAYWRIGHT_CALLS). Anywhere else
-  (heal.locator(), which may run on Selenium, find_element(), another kind of file) it is
-  listed with the chain to write by hand: Selenium's find_element() cannot reach into a
-  shadow root, and a key of heal.driver is never written.
+  selector is passed to a method of a Playwright page or frame (page.locator(),
+  frame.click(), heal.page.fill() and the other methods of PLAYWRIGHT_CALLS, on a receiver
+  of PLAYWRIGHT_RECEIVERS) in a Python file that does not import Selenium. Anywhere else
+  (heal.locator(), which may run on Selenium, a page object's own click(), a Locator such
+  as app.locator(), inside whose elements the chain finds nothing, find_element(), another
+  kind of file) it is listed with the chain to write by hand: Selenium's find_element()
+  cannot reach into a shadow root, and a key of heal.driver is never written.
 - Never a key marked destructive (in the store, or with --destructive-key, which reads a
   get_by_* call written in another spelling as the call's key), never a heal that sits
   inside an iframe, never a heal mendwright could not have saved (an XPath lxml cannot
@@ -832,10 +834,11 @@ _BY_VALUES = {v: k for k, v in _BY_NAMES.items()}
 SKIP = 'skip'           # not a selector at all
 CSS_ONLY = 'css'        # a selector, but in a place that cannot run an XPath
 FLOW = 'flow'           # an interruption's selector or a step's landmark: never rewritten
-PLAYWRIGHT = 'playwright'   # the selector of a Playwright page or locator method
+PLAYWRIGHT = 'playwright'   # the selector of a method of a Playwright page or frame
 
-# The Playwright Page, Frame and Locator methods that take a selector first. A string passed
-# there runs on Playwright, which a heal inside a shadow root needs (see Fix.shadow).
+# The Playwright Page and Frame methods that take a selector first. A string passed to one on
+# a page or frame (PLAYWRIGHT_RECEIVERS) runs on Playwright, from the document, which a heal
+# inside a shadow root needs (see Fix.shadow).
 PLAYWRIGHT_CALLS = frozenset({
     'locator', 'click', 'dblclick', 'fill', 'check', 'uncheck', 'set_checked',
     'select_option', 'press', 'type', 'hover', 'tap', 'focus', 'is_checked', 'is_visible',
@@ -843,6 +846,17 @@ PLAYWRIGHT_CALLS = frozenset({
     'inner_html', 'get_attribute', 'input_value', 'wait_for_selector', 'query_selector',
     'query_selector_all', 'set_input_files', 'dispatch_event', 'eval_on_selector',
     'eval_on_selector_all'})
+# What a Playwright Page or Frame goes by, as the receiver of one of PLAYWRIGHT_CALLS: a name
+# (page.locator(), frame.click()) or an attribute (heal.page.fill(), self.page.click(),
+# page.main_frame.click()). A selector passed there runs from the document a heal's shadow
+# hosts are in. One passed to a Locator (app.locator("#save"), where app is
+# page.locator("my-app")) runs inside its elements, where a chain that starts with the host
+# finds nothing, and one passed to anything else (a page object's own click(), which may run
+# on Selenium) may not run on Playwright at all.
+PLAYWRIGHT_RECEIVERS = frozenset({'page', 'frame', 'main_frame'})
+# The top-level packages of a Python file that drives Selenium: there, no shadow chain is
+# written (see python_contexts).
+SELENIUM_MODULES = frozenset({'selenium', 'seleniumbase'})
 # Calls whose second argument (or this keyword) is a selector mendwright fix never rewrites:
 # another key's heal written there would make the interruption act on that key's element,
 # or the step wait for it.
@@ -1110,6 +1124,27 @@ class _FlowTrace:
         return out
 
 
+def _playwright_receiver(func):
+    """True when the call func (an ast.Attribute) is made on a Playwright Page or Frame by
+    its name or attribute (PLAYWRIGHT_RECEIVERS)."""
+    value = func.value
+    if isinstance(value, ast.Name):
+        return value.id in PLAYWRIGHT_RECEIVERS
+    return isinstance(value, ast.Attribute) and value.attr in PLAYWRIGHT_RECEIVERS
+
+
+def _imports_selenium(tree):
+    """True when the module imports Selenium (SELENIUM_MODULES) anywhere."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name.split('.')[0] in SELENIUM_MODULES for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            if (node.module or '').split('.')[0] in SELENIUM_MODULES:
+                return True
+    return False
+
+
 def python_contexts(text):
     """{(line, column): context} for the string literals of Python source that are not a
     plain selector. The context is SKIP for a literal that is no selector at all (a role=,
@@ -1118,12 +1153,15 @@ def python_contexts(text):
     one string of a list or tuple passed there, or (CSS_ONLY, by) for one that sits where an
     XPath cannot run: the value next to a Selenium By other than By.XPATH (in a call or a
     (By, value) pair), or an argument of a function with css in its name. One that is both
-    FLOW and CSS_ONLY is FLOW. Columns count characters, as tokenize does. {} when the source
-    does not parse."""
+    FLOW and CSS_ONLY is FLOW. (PLAYWRIGHT, call) is the selector of one of PLAYWRIGHT_CALLS
+    made on a Playwright Page or Frame (_playwright_receiver), in a file that does not import
+    Selenium: the only place a heal inside a shadow root is written. Columns count
+    characters, as tokenize does. {} when the source does not parse."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return {}
+    playwright = not _imports_selenium(tree)
     lines = _split_lines(text)
     out = {}
     through = []        # (expression, what): a selector passed to a FLOW call by name
@@ -1177,7 +1215,8 @@ def python_contexts(text):
             if 'css' in name.lower():
                 for arg in list(args) + [keywords[k] for k in ('value', 'selector') if k in keywords]:
                     mark(arg, (CSS_ONLY, name + '()'))
-            if name in PLAYWRIGHT_CALLS and not keyed and isinstance(node.func, ast.Attribute):
+            if (playwright and name in PLAYWRIGHT_CALLS and not keyed
+                    and isinstance(node.func, ast.Attribute) and _playwright_receiver(node.func)):
                 target = args[0] if args else keywords.get('selector')
                 if target is not None:
                     mark(target, (PLAYWRIGHT, name + '()'))
@@ -1528,9 +1567,10 @@ def scan_file(path, plan, result, needles):
                         'changed: ' + lit.source + ' is the old selector of '
                         + ', '.join(plan.keys_for[selector]) + ', whose heal sits inside '
                         + place_text(hosts) + '. Only a Playwright selector chain reaches it, '
-                        'and this string is not passed to a Playwright page or locator method '
-                        '(page.locator(), page.click() and the like). Where it runs on '
-                        'Playwright, change it by hand to: ' + new + ". Selenium's "
+                        'and this string is not passed to a method of a Playwright page or '
+                        'frame (page.locator(), page.click(), heal.page.fill() and the like) in '
+                        'a file that does not import Selenium. Where it runs on Playwright from '
+                        'the page or frame, change it by hand to: ' + new + ". Selenium's "
                         'find_element() cannot reach into a shadow root; the heal stays in the '
                         'store and keeps working.')
             continue
@@ -1861,8 +1901,8 @@ CODES = {
     'ambiguous': 'holds a string that belongs to more than one key',
     'not_python': 'could not be read as Python',
     'css_only': 'passes the selector where only CSS runs',
-    'shadow_call': 'passes the selector somewhere other than a Playwright page or locator '
-                   'method, and its heal sits inside a shadow root',
+    'shadow_call': 'passes the selector somewhere other than a method of a Playwright page or '
+                   'frame, and its heal sits inside a shadow root',
     'no_escape': 'needs escapes mendwright does not know for this kind of file',
     'flow_selector': 'passes the old selector to `heal.interrupt()` or `heal.step(when=)`, which '
                      'mendwright never rewrites',

@@ -1070,8 +1070,8 @@ A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not lo
 
 ### mendwright fix, check and report
 
-`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a Playwright page or locator method (`page.locator()`, `page.click()` and the other methods that take a selector) in a Python file.
-Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`); the heal stays in the store and keeps working.
+`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a method of a Playwright page or frame (`page.locator()`, `page.click()` and the other methods that take a selector, called on a name or attribute `page`, `frame` or `main_frame`, such as `heal.page.fill()` or `self.page.click()`) in a Python file that doesn't import Selenium.
+Everywhere else, such as `heal.locator()`, which can run on Selenium, a page object's own `click()`, a `Locator` (`app.locator("#save")`, where the chain, which starts with the host, finds nothing inside `app`), `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright from the page or frame (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`); the heal stays in the store and keeps working.
 
 `mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
 `mendwright report` shows the shadow root each selector runs in.
@@ -2370,7 +2370,7 @@ Which keys it changes:
 - The key's most recently successful active selector is a heal, and that heal matched at least once.
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
 - Never a key marked destructive (in the store, or with `--destructive-key`), a heal inside an iframe, or a key whose selectors came only from a seed file.
-- A heal inside a shadow root only as its Playwright chain, and only where the old selector is passed to a Playwright page or locator method in a Python file (see [Shadow DOM](#shadow-dom)). Everywhere else it is listed with the chain, and never for the key of a `heal.driver.find_element()` call.
+- A heal inside a shadow root only as its Playwright chain, and only where the old selector is passed to a method of a Playwright page or frame in a Python file that doesn't import Selenium (see [Shadow DOM](#shadow-dom)). Everywhere else it is listed with the chain, and never for the key of a `heal.driver.find_element()` call.
 - Never a heal mendwright could not have saved: one whose selector is not an XPath lxml can compile, or whose CSS form is not one mendwright builds (a tag name, `#id`, `.class` and `[attribute="value"]`, with at most one ancestor before it). Something else wrote it into the store, so it is listed with the reason.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - A list heal you accepted with `mendwright lists accept` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)), under the same rules as a heal, and only in place of the selectors it replaced. Its header line says `list heal, accepted DATE`, and it shows where the group is and what is not the same. Never when your last run passed other selectors for the key, such as another page's or one you fixed by hand, or when one of the key's selectors matched after the list heal was found: the reason says to change the selector by hand, or to drop the list heal with `mendwright lists reject KEY`. Never a list heal that waits for you to check it, with any option: it is left alone with the command that accepts it. Never an accepted one next to a newer proposal for the same key, until you accept or reject that one.
@@ -2457,7 +2457,7 @@ A file is written through a temporary file next to it and then replaced, and a f
 | `ambiguous` | a file with a string that belongs to more than one key |
 | `not_python` | a file that couldn't be read as Python |
 | `css_only` | a place that passes the selector where only CSS runs |
-| `shadow_call` | a place that isn't a Playwright page or locator method, for a heal inside a shadow root |
+| `shadow_call` | a place that isn't a method of a Playwright page or frame, for a heal inside a shadow root |
 | `no_escape` | a place that needs escapes mendwright doesn't know |
 | `flow_selector` | a place that passes the old selector to `heal.interrupt()` or `heal.step(when=)` |
 | `already_in_code` | a key whose healed selector your code already has |
