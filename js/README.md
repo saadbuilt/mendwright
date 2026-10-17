@@ -12,7 +12,7 @@ This is the first release of the TypeScript package, 0.1.0. It is a port of the 
 npm install --save-dev mendwright
 ```
 
-It needs `@playwright/test` 1.40 or later and Node 18 or later, and has no dependencies of its own.
+It needs `@playwright/test` 1.40 or later and Node 18 or later, and has no dependencies of its own. Its types resolve under every TypeScript `moduleResolution`, `node10` (the default with `"module": "commonjs"`) included.
 
 ## The one-line change
 
@@ -104,9 +104,13 @@ new LocalModelProvider();                                       // mendwright-se
 
 Any object with `propose(bundle)` that returns `{ xpath, fallbacks, reasoning }` or `null` works as a provider.
 
+A base URL with a user name or password in it, such as `https://user:token@llm-gw.example`, is refused when the provider is built: Node's `fetch` can't send one, and the error names only the scheme and host, so the credentials never reach stderr, the journal or a test's error. For a proxy that needs them, pass the provider an `http` client that sends them in a header. A provider's error text never shows the user info of a URL.
+
 The local selector model is installed with the Python package's command, `mendwright model install` (it downloads the model from the GitHub release, checks its SHA-256 and registers it with Ollama). It is never sent the page: mendwright lists at most 40 elements of the step's role, one short line each, and the model answers with the number of the one the step meant, or says that none fits. mendwright then builds the XPath for that element itself. A pick it is less than 80% sure of is declined (`MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes that).
 
-With a hosted provider, a cleaned, redacted copy of the page is sent whenever the fingerprint match isn't confident: scripts and styles are removed, and so are quoted `value` attributes, absolute URLs and runs of 12 to 19 digits, but visible text and other attributes stay. The key's fingerprint goes only to the local model. A model heal is limited to 3 attempts per key and 60 in all per hour (`ratePerKeyPerHour`, `rateGlobalPerHour`); a fingerprint heal doesn't count.
+With a hosted provider, a cleaned, redacted copy of the page is sent whenever the fingerprint match isn't confident: scripts and styles are removed, and so are quoted `value` attributes, absolute URLs and runs of 12 to 19 digits, but visible text and other attributes stay. A page that can't be cleaned isn't sent at all, and the heal says why. The key's fingerprint goes only to the local model.
+
+mendwright parses the captured page inside the browser. A page whose Content-Security-Policy enforces Trusted Types (`require-trusted-types-for 'script'`) refuses that, so there mendwright makes a Trusted Types policy of its own, named `mendwright`, once for each document. When the page's `trusted-types` directive lists the policies it allows and `mendwright` isn't one of them, nothing is sent to the model and no heal is made on that page, with that reason: add `mendwright` to the directive on your test site, or, in Chromium, set `bypassCSP: true` in the `use` section of your Playwright config. A model heal is limited to 3 attempts per key and 60 in all per hour (`ratePerKeyPerHour`, `rateGlobalPerHour`); a fingerprint heal doesn't count.
 
 ## What a heal must pass
 
@@ -143,7 +147,7 @@ A heal is quarantined when an action on it fails in the browser, when `expect` r
 
 ## Store and journal
 
-Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`mendwrightStore`, or `MENDWRIGHT_STORE`; for `open()`, `storePath`, else `./.mendwright/overrides.json`), and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it. It is the Python package's file format, schema 2: a team that uses both packages can share one store, and the Python package's `mendwright report` lists what this package saved. Writes take a lock file and merge with what other processes wrote, so Playwright Test workers can share one store. What only the Python package uses stays in the file as it wrote it: list heals, and where a key's element is inside an iframe or an open shadow root (`frameXPath`, `shadowHosts`).
+Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`mendwrightStore`, or `MENDWRIGHT_STORE`; for `open()`, `storePath`, else `./.mendwright/overrides.json`), and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it. A leading `~` in any of these is your home directory, as in the Python package, so a CI workflow can set `MENDWRIGHT_STORE: ~/.cache/mendwright/overrides.json` for both packages. It is the Python package's file format, schema 2: a team that uses both packages can share one store, and the Python package's `mendwright report` lists what this package saved. Writes take a lock file and merge with what other processes wrote, so Playwright Test workers can share one store. What only the Python package uses stays in the file as it wrote it: list heals, and where a key's element is inside an iframe or an open shadow root (`frameXPath`, `shadowHosts`).
 
 The journal has the Python package's events, with the same fields: each line has the id of the run that wrote it in `run` (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`), a heal that was not tried or did not apply is a `heal.declined` with the Python package's `code` and the `reason` (a key last found inside a shadow root or an iframe, where this package does not heal, is `shadow` or `frame`, and `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`, which `mendwright notify` counts as not repaired on purpose), and an interruption that kept coming back is a `flow.stop` with the code `interruption_loop`. So the Python package's `mendwright notify` posts the summary of a run of this package as it does its own. A `MENDWRIGHT_RUN_ID` that is not 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-` is ignored, with one warning from `open()`.
 
@@ -175,7 +179,7 @@ These are in the Python package and not in this one yet:
 
 And, compared with the Python package's `heal.locator()` and `heal.interrupt()`:
 
-- An iframe is not followed into: a selector that matches only inside an iframe is not looked up there, and no heal is made inside one. A heal the Python package saved inside an iframe is used, but a key last found inside an iframe is not healed when it breaks.
+- An iframe is not followed into: a selector that matches only inside an iframe is not looked up there, and no heal is made inside one. A heal the Python package saved inside an iframe is used, but a key last found inside an iframe is not healed when it breaks (after the checks for a key marked destructive and the page guard, which decline it first).
 - No heal is made inside an open shadow root. Each time a key's selector matches, where its element is gets saved as the key's `shadowHosts`, as the Python package saves it, and a key last found inside a shadow root is not healed when it breaks, so an element that looks the same on the page around its host is never picked. A heal the Python package saved inside a shadow root runs as the Python package runs it: its CSS through its hosts, and only a match inside that shadow root counts, never one in the host's light DOM, a shadow root inside it or another host. That is checked when the key is looked up and again right before each action and read of the `HealLocator`; what you run on its `native` Locator yourself isn't checked.
 - `expect_value` (checking what a read returns), and `run` functions for interruptions that need a form.
 - Interruptions are not registered with `page.addLocatorHandler()`, so they are handled before the steps mendwright routes only, not before a `getBy*` or chained locator's actions.

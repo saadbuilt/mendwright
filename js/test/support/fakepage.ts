@@ -12,12 +12,46 @@
 // visibility:hidden, or data-fake-hidden. A page made with { blocker } has an element that
 // covers the others: a click on any element outside it fails with Playwright's
 // "intercepts pointer events" while it is on the page.
+//
+// A page made with { trustedTypes } enforces Trusted Types as a browser does under
+// require-trusted-types-for 'script': DOMParser refuses a plain string. 'require' lets any
+// policy be made, as when the CSP has no trusted-types directive; 'refuse' lets none be
+// made, as when its trusted-types directive does not name mendwright. A handle belongs to
+// the document it was made in, and goto() makes a new one.
 
 import { JSDOM } from 'jsdom';
 
 export interface FakePageOptions {
   url?: string;
   blocker?: string;
+  trustedTypes?: 'require' | 'refuse';
+}
+
+/** Make window enforce Trusted Types; the names of the policies made go to policies. */
+function enforceTrustedTypes(window: any, mode: 'require' | 'refuse', policies: string[]): void {
+  const trusted = new WeakSet<object>();
+  const parse = window.DOMParser.prototype.parseFromString;
+  window.DOMParser.prototype.parseFromString = function (input: unknown, type: string) {
+    if (input && typeof input === 'object' && trusted.has(input)) return parse.call(this, String(input), type);
+    throw new window.TypeError("Failed to execute 'parseFromString' on 'DOMParser': This document requires "
+      + "'TrustedHTML' assignment.");
+  };
+  window.trustedTypes = {
+    createPolicy(name: string, rules: { createHTML(text: string): string }) {
+      if (mode === 'refuse') {
+        throw new window.TypeError("Failed to execute 'createPolicy' on 'TrustedTypePolicyFactory': Policy \""
+          + name + '\" disallowed.');
+      }
+      policies.push(name);
+      return {
+        createHTML(text: string) {
+          const html = { text: rules.createHTML(text), toString() { return this.text; } };
+          trusted.add(html);
+          return html;
+        },
+      };
+    },
+  };
 }
 
 export class FakeLocator {
@@ -144,13 +178,34 @@ class FakeFrameLocator {
 }
 
 class FakeHandle {
-  constructor(private readonly page: FakePage, private readonly value: unknown) {}
+  readonly document: number;
+
+  constructor(private readonly page: FakePage, readonly value: unknown) {
+    this.document = page.documents;
+  }
+
+  /** The value, while the page still shows the document it was made in. */
+  live(): unknown {
+    if (this.document !== this.page.documents) throw new Error('Execution context was destroyed, most likely because of a navigation');
+    return this.value;
+  }
 
   async evaluate(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
-    return this.page.run(fn, [this.value, arg]);
+    return this.page.run(fn, [this.live(), arg]);
   }
 
   async dispose(): Promise<void> {}
+}
+
+/** arg with each handle in it, or in an object or array at its top, replaced by its value,
+ * as Playwright passes handles to the page. */
+function unwrapHandles(arg: unknown): unknown {
+  if (arg instanceof FakeHandle) return arg.live();
+  if (Array.isArray(arg)) return arg.map((v) => (v instanceof FakeHandle ? v.live() : v));
+  if (arg && typeof arg === 'object' && Object.getPrototypeOf(arg) === Object.prototype) {
+    return Object.fromEntries(Object.entries(arg).map(([k, v]) => [k, v instanceof FakeHandle ? v.live() : v]));
+  }
+  return arg;
 }
 
 /** Every element under node, in document order, and inside each open shadow root on the way,
@@ -193,12 +248,25 @@ export class FakePage {
   readonly filled = new Map<Element, string>();
   /** selector -> the error message the next action on it throws (a failed action). */
   readonly failNext = new Map<string, string>();
+  readonly trustedTypes: 'require' | 'refuse' | null;
+  /** The names of the Trusted Types policies the page's documents made. */
+  readonly policies: string[] = [];
+  /** How many documents the page has shown. */
+  documents = 0;
 
   constructor(html: string, options: FakePageOptions = {}) {
     this.currentUrl = options.url ?? 'https://shop.test/signup';
     this.blocker = options.blocker ?? null;
-    this.dom = new JSDOM(html, { url: this.currentUrl, runScripts: 'outside-only' });
-    declareShadowRoots(this.dom.window.document);
+    this.trustedTypes = options.trustedTypes ?? null;
+    this.dom = this.load(html);
+  }
+
+  private load(html: string): JSDOM {
+    const dom = new JSDOM(html, { url: this.currentUrl, runScripts: 'outside-only' });
+    declareShadowRoots(dom.window.document);
+    if (this.trustedTypes) enforceTrustedTypes(dom.window, this.trustedTypes, this.policies);
+    this.documents += 1;
+    return dom;
   }
 
   get document(): Document {
@@ -208,8 +276,7 @@ export class FakePage {
   /** Load another page (a redesign, or the next step of a flow). */
   goto(html: string, url?: string): void {
     if (url) this.currentUrl = url;
-    this.dom = new JSDOM(html, { url: this.currentUrl, runScripts: 'outside-only' });
-    declareShadowRoots(this.dom.window.document);
+    this.dom = this.load(html);
   }
 
   /** What selector matches in the document, or inside scope (an element, not itself). */
@@ -296,11 +363,11 @@ export class FakePage {
   }
 
   async evaluate(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
-    const result = this.run(fn, [arg]);
+    const result = this.run(fn, [unwrapHandles(arg)]);
     return result === undefined ? undefined : JSON.parse(JSON.stringify(result));
   }
 
   async evaluateHandle(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<FakeHandle> {
-    return new FakeHandle(this, this.run(fn, [arg]));
+    return new FakeHandle(this, this.run(fn, [unwrapHandles(arg)]));
   }
 }

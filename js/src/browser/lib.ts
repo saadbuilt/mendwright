@@ -9,9 +9,14 @@
 // driver's describe() and inventory(), and the candidate list and XPaths of the local
 // selector model (candidates.py). Text rules follow the Python ones: lengths and cuts count
 // code points, and str.strip() strips what Python's strips.
+//
+// policy, when given, is mendwright's own Trusted Types policy in this document (see the
+// driver): the helpers that parse an HTML string pass the string through it, because a page
+// whose Content-Security-Policy has require-trusted-types-for 'script' refuses a plain
+// string there. Without it, such a page makes them throw 'mendwright:trusted-types'.
 
 /* eslint-disable */
-export function mendwrightLib() {
+export function mendwrightLib(policy?: { createHTML(text: string): unknown } | null) {
   // --- Python text rules -----------------------------------------------------------------
   const PY_SPACE = '\t\n\x0b\x0c\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000';
   const PY_STRIP = new RegExp('^[' + PY_SPACE + ']+|[' + PY_SPACE + ']+$', 'g');
@@ -94,7 +99,16 @@ export function mendwrightLib() {
   };
   const parse = (html: string) => {
     const text = typeof html === 'string' && html.trim() ? html : '<html><body></body></html>';
-    return new DOMParser().parseFromString(text, 'text/html');
+    const parser = new DOMParser();
+    if (policy) return parser.parseFromString(policy.createHTML(text) as string, 'text/html');
+    try {
+      return parser.parseFromString(text, 'text/html');
+    } catch (e: any) {
+      if (e && e.name === 'TypeError' && typeof (window as any).trustedTypes === 'object') {
+        throw new Error('mendwright:trusted-types');
+      }
+      throw e;
+    }
   };
 
   // --- fingerprints (fingerprint.py) ------------------------------------------------------

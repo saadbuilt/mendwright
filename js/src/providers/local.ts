@@ -13,7 +13,8 @@
 // than minConfidence sure of (from the token probabilities Ollama returns) is declined.
 //
 // This is the only provider that gets the key's fingerprint, and nothing leaves the machine
-// unless baseUrl points elsewhere.
+// unless baseUrl points elsewhere. A baseUrl (or OLLAMA_HOST) with a user name or password
+// in it is refused, naming only its scheme and host.
 
 import { NOT_LIVE } from '../gate';
 import type { Bundle, Proposal } from '../prompt';
@@ -22,7 +23,7 @@ import {
   MAX_CANDIDATES, WHY, answerConfidence, chooseCandidates, formatTask, parseAnswer,
   type Candidates, type PageCandidate,
 } from './candidates';
-import { Describer, NOT_HERE_HINT, clip, sentence } from './errors';
+import { Describer, NOT_HERE_HINT, clip, refuseCredentials, sentence } from './errors';
 import { fetchHttp, parseJson, type Http } from './http';
 
 export const LOCAL_MODEL = 'mendwright-selector';
@@ -96,6 +97,7 @@ export class LocalModelProvider implements HealProvider {
   constructor(options: LocalOptions = {}) {
     this.model = options.model || process.env.MENDWRIGHT_LOCAL_MODEL || LOCAL_MODEL;
     this.baseUrl = ollamaHost(options.baseUrl || process.env.OLLAMA_HOST);
+    refuseCredentials('LocalModelProvider', this.baseUrl, 'from baseUrl or OLLAMA_HOST');
     this.minConfidence = options.minConfidence ?? envConfidence();
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.numCtx = options.numCtx ?? 4096;

@@ -1,7 +1,8 @@
 // Short, readable reasons for a failed propose() (Python's providers/_errors.py). The text
 // never holds an API key, an auth header or a request body: known secrets become
-// [redacted], key-shaped tokens are masked, and a URL is shown without its query string or
-// user info. It says what happened, then one next step when there is a useful one.
+// [redacted], key-shaped tokens and the user info of any URL are masked, and a URL is shown
+// without its query string or user info. It says what happened, then one next step when
+// there is a useful one.
 
 import { notHereReason } from '../prompt';
 
@@ -34,6 +35,10 @@ const KEYLIKE = new RegExp(
 const AUTH_VALUE = /\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-*]{16,}/gi;
 const HEADER_SECRET = /\b((?:x-)?(?:api[_-]?key|goog-api-key|auth[_-]?token|access[_-]?token|secret|authorization|heal-key)\s*[:=]\s*)(?:"|')?(?!\[redacted\])[^\s"',;&<>]{8,}/gi;
 const QUERY_SECRET = /([?&](?:key|api[_-]?key|access[_-]?token|token|sig|signature|x-amz-[a-z-]+)=)[^&\s"'<>]+/gi;
+// The user info of a URL in text, up to the last @ before its host: scheme://user:pass@.
+const USER_INFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#"'<>]*@/gi;
+// The same at the start of a URL that may not parse.
+const LEADING_USER_INFO = /^(\s*[a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i;
 const HTML_PAGE = /<\s*(!doctype|html|head|body|title)\b/i;
 
 /** Remove known secrets and anything that looks like a key or token from text. */
@@ -42,6 +47,7 @@ export function scrub(text: unknown, secrets: (string | null | undefined)[] = []
   for (const secret of secrets) {
     if (typeof secret === 'string' && secret.length >= 4) out = out.split(secret).join('[redacted]');
   }
+  out = out.replace(USER_INFO, '$1[redacted]@');
   out = out.replace(QUERY_SECRET, '$1[redacted]');
   out = out.replace(AUTH_VALUE, '$1 [redacted]');
   out = out.replace(HEADER_SECRET, '$1[redacted]');
@@ -61,8 +67,26 @@ export function safeUrl(url: unknown): string {
     const u = new URL(String(url));
     return u.protocol + '//' + u.host + u.pathname.replace(/\/+$/, '');
   } catch {
-    return String(url).split('?')[0].split('#')[0];
+    return String(url).replace(LEADING_USER_INFO, '$1').split('?')[0].split('#')[0];
   }
+}
+
+/** Throw a TypeError when url has a user name or password in it. fetch() refuses such a
+ * URL with the whole URL in its message; this names only scheme://host. where says what
+ * the URL comes from. */
+export function refuseCredentials(who: string, url: string, where: string): void {
+  let shown: string;
+  try {
+    const u = new URL(url);
+    if (!u.username && !u.password) return;
+    shown = u.protocol + '//' + u.host;
+  } catch {
+    if (!LEADING_USER_INFO.test(url)) return;
+    shown = safeUrl(url).replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/[^/]*).*$/i, '$1');
+  }
+  throw new TypeError(who + ': the base URL ' + shown + ' (' + where + ') has a user name or password in it, which '
+    + 'mendwright does not send. Remove them from the URL; if your proxy needs them, pass the provider an http '
+    + 'client that sends them in a header.');
 }
 
 /** text and an optional hint as one or two sentences. */

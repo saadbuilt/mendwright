@@ -1,12 +1,13 @@
 // AnthropicProvider: calls the Anthropic Messages API over HTTPS, as the Python package's
 // AnthropicProvider does without the SDK. The model comes from model or ANTHROPIC_MODEL
 // (there is no default), the key from apiKey or ANTHROPIC_API_KEY, and the endpoint from
-// baseUrl, ANTHROPIC_BASE_URL, else https://api.anthropic.com. It only proposes; it
-// never applies anything.
+// baseUrl, ANTHROPIC_BASE_URL, else https://api.anthropic.com; one with a user name or
+// password in it is refused, naming only its scheme and host. It only proposes; it never
+// applies anything.
 
 import { buildPrompt, parseProposal, type Bundle, type Proposal } from '../prompt';
 import type { HealProvider } from './base';
-import { Describer } from './errors';
+import { Describer, refuseCredentials } from './errors';
 import { fetchHttp, parseJson, type Http } from './http';
 
 export const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
@@ -43,6 +44,7 @@ export class AnthropicProvider implements HealProvider {
     this.model = model;
     this.apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY || undefined;
     this.baseUrl = (options.baseUrl || process.env.ANTHROPIC_BASE_URL || ANTHROPIC_BASE_URL).replace(/\/+$/, '');
+    refuseCredentials('AnthropicProvider', this.baseUrl, 'from baseUrl or ANTHROPIC_BASE_URL');
     this.maxTokens = options.maxTokens ?? 1024;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.http = options.http ?? fetchHttp;

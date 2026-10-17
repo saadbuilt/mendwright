@@ -10,7 +10,7 @@
 // the model with the reason, once. A heal is confirmed or quarantined later by its canary.
 
 import { buildBundle, redact } from './capture';
-import type { PlaywrightDriver } from './driver';
+import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
 import { AttentionRequired } from './errors';
 import { fmt, valid as validFingerprint } from './fingerprint';
 import { flowChangeMessage } from './flow';
@@ -47,6 +47,12 @@ export interface HealRecord {
   source: string;
 }
 
+/** Why a key is not healed where it was last found, and the code of that decline. */
+export interface Refusal {
+  reason: string;
+  code: 'frame' | 'shadow';
+}
+
 export interface FlowContext {
   url: string;
   page: string | null;
@@ -63,6 +69,17 @@ function roleNeeded(key: string): string {
   return "does not know what kind of element '" + key + "' is (its expected role is unknown), so it cannot "
     + "check a repaired selector. Pass role to heal.locator(), for example role: 'textbox' for a text field, "
     + "'button', 'checkbox', 'link' or 'combobox'.";
+}
+
+/** Why the page was not sent to the model: it could not be cleaned. failure is what the
+ * page answered or threw. */
+function notCleaned(key: string, failure: unknown): string {
+  const why = failure instanceof TrustedTypesRefused
+    ? failure.message + ". Add 'mendwright' to that directive on your test site, or, in Chromium, set "
+      + 'bypassCSP: true in the use section of your Playwright config'
+    : 'the page navigated or closed while mendwright read it, or the browser could not parse it';
+  return "mendwright could not remove the scripts and styles from the page, so it sent the model nothing for '" + key
+    + "': " + why + '.';
 }
 
 function noFingerprint(key: string): string {
@@ -148,10 +165,10 @@ export class HealCoordinator {
     return this.disabled ? 'disabled' : 'no_provider';
   }
 
-  /** The code of a heal refused in a place this package does not heal in (code): 'disabled'
-   * under MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run, declines on purpose, as the Python
-   * package gives them. */
-  placeCode(code: DeclineCode): DeclineCode {
+  /** The code of a heal refused in a place this package does not heal in (code), an iframe
+   * or a shadow root: 'disabled' under MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run,
+   * declines on purpose, as the Python package gives them. */
+  private placeCode(code: DeclineCode): DeclineCode {
     return this.disabled ? 'disabled' : this.dryRun ? 'dry_run' : code;
   }
 
@@ -177,14 +194,14 @@ export class HealCoordinator {
 
   /** Heal key and save a checked selector. Returns the saved XPath, or false with the
    * reason in healReasons. refusal, when given, declines every heal after the checks for a
-   * key marked destructive and the page guard: the key was last found inside an open shadow
-   * root, where this package does not heal. */
+   * key marked destructive and the page guard: the key was last found inside an iframe or
+   * an open shadow root, where this package does not heal. */
   async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
-                refusal: string | null = null): Promise<string | false> {
+                refusal: Refusal | null = null): Promise<string | false> {
     if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
     const moved = this.flowChange(key, context);
     if (moved) return this.decline(key, moved, 'warning', null, 'page_guard');
-    if (refusal) return this.decline(key, refusal, 'warning', null, this.placeCode('shadow'));
+    if (refusal) return this.decline(key, refusal.reason, 'warning', null, this.placeCode(refusal.code));
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
@@ -227,13 +244,19 @@ export class HealCoordinator {
     if (html === null) html = await this.driver.content();
     const wants = (this.provider as HealProvider).wantsFingerprint === true;
     // The model reads a cleaned, redacted copy of the page; the gate checks the page as captured.
-    let cleaned = '';
+    // A page that cannot be cleaned is not sent at all: as captured, it has its scripts and
+    // styles, and the state a script keeps inline (fail closed).
+    let read: unknown;
     try {
-      cleaned = await this.driver.lib<string>('cleanHtml', redact(html));
-    } catch {
-      cleaned = redact(html);
+      read = await this.driver.lib<string>('cleanHtml', redact(html));
+    } catch (error) {
+      read = error;
     }
-    cleaned = redact(cleaned);
+    if (typeof read !== 'string') {
+      this.journal.event('heal.rejected', { key, reason: 'page not cleaned' });
+      return this.decline(key, notCleaned(key, read), 'warning', null, 'other');
+    }
+    const cleaned = redact(read);
     // A model that reads a prompt sees at most MAX_PROMPT_PART characters of the page. When
     // the end was cut off, positions there no longer match the live page.
     const cut = !wants && [...cleaned].length > MAX_PROMPT_PART;
@@ -385,7 +408,7 @@ export class HealCoordinator {
  * Re-raises the miss with the reason when nothing was healed. */
 export async function resolveWithHeal<T>(resolveFn: () => Promise<T>, coordinator: HealCoordinator, key: string,
                                          context: FlowContext, missed: AttentionRequired,
-                                         refusal: string | null = null): Promise<T> {
+                                         refusal: Refusal | null = null): Promise<T> {
   const store = coordinator.store;
   const broken = store.candidates(key).map((c) => c.xpath);
   const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context, refusal);

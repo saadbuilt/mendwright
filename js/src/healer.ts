@@ -16,7 +16,9 @@ import * as path from 'node:path';
 
 import type { Frame, Locator, Page } from '@playwright/test';
 
-import { DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord } from './coordinator';
+import {
+  DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord, type Refusal,
+} from './coordinator';
 import { PlaywrightDriver, type PageLike } from './driver';
 import { AttentionRequired, InterruptionLoop, InvalidSelector } from './errors';
 import {
@@ -468,24 +470,25 @@ export class Healer {
     const found = this.store.candidates(key).filter((c) => c.lastSucceededAt);
     const latest = found.length
       ? found.reduce((a, b) => (String(b.lastSucceededAt) > String(a.lastSucceededAt) ? b : a)) : null;
-    if (latest && latest.frameXPath) {
-      const reason = "'" + key + "' was last found inside the iframe " + latest.frameXPath + ', and mendwright for '
-        + 'TypeScript does not heal inside an iframe yet, so it did not look for the element on the page around it. '
-        + 'Fix the selector by hand, or let the Python package heal it.';
-      this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('frame'));
-      throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
-    }
     // The same for a key last found inside an open shadow root: where the heal that matched
     // last runs, else the key's shadowHosts. Neither the page's HTML nor its elements hold
     // what a shadow root contains, so a heal here could only find something outside it.
-    // Refused after the checks for a key marked destructive and the page guard.
-    let hosts = hostsOf(latest);
-    if (!hosts.length) hosts = this.store.shadowHosts(key);
-    const refusal = hosts.length
-      ? "'" + key + "' was last found inside " + placeText(hosts) + ', and mendwright for TypeScript does not heal '
-        + 'inside a shadow root yet, so it did not look for the element on the page around it, where an element that '
-        + 'looks the same could be. Fix the selector by hand, or let the Python package heal it.'
-      : null;
+    // Both are refused after the checks for a key marked destructive and the page guard.
+    let refusal: Refusal | null = null;
+    if (latest && latest.frameXPath) {
+      refusal = { code: 'frame', reason: "'" + key + "' was last found inside the iframe " + latest.frameXPath
+        + ', and mendwright for TypeScript does not heal inside an iframe yet, so it did not look for the element on '
+        + 'the page around it. Fix the selector by hand, or let the Python package heal it.' };
+    } else {
+      let hosts = hostsOf(latest);
+      if (!hosts.length) hosts = this.store.shadowHosts(key);
+      if (hosts.length) {
+        refusal = { code: 'shadow', reason: "'" + key + "' was last found inside " + placeText(hosts) + ', and '
+          + 'mendwright for TypeScript does not heal inside a shadow root yet, so it did not look for the element on the '
+          + 'page around it, where an element that looks the same could be. Fix the selector by hand, or let the Python '
+          + 'package heal it.' };
+      }
+    }
     return resolveWithHeal(() => attempt(), this.coordinator, key, this.flowContext(key), missed, refusal);
   }
 
