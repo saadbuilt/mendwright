@@ -19,7 +19,7 @@ import mendwright
 import mendwright.aio
 from mendwright import AttentionRequired, facade
 from mendwright.drivers.base import PLACE_JS, SHADOW_HTML_JS
-from mendwright.journal import NullJournal
+from mendwright.journal import Journal, NullJournal
 from mendwright.store import load_store
 
 
@@ -410,6 +410,50 @@ def test_only_a_heal_mendwright_saved_inside_a_shadow_root_names_its_hosts(row):
     assert chain_hosts({'xpath': CHAIN, 'source': 'heal'}) == (HOST,)
     assert chain_hosts({'xpath': HOST + ' >> settings-panel >> .panel > button',
                         'source': 'heal'}) == (HOST, 'settings-panel')
+
+
+# --- HealCoordinator used on its own ------------------------------------------------------------
+
+def test_a_coordinator_used_on_its_own_never_heals_a_shadow_key_on_the_page(
+        make_shadow_page, tmp_path, stub_provider):
+    # The guide's low-level API: resolve_with_heal() over resolve(), with no facade to scope it.
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    store = load_store(None, str(tmp_path / 'o.json'))
+    driver = mendwright.wrap(page_)
+    provider = stub_provider("//button[@data-testid='save']")     # would find the look-alike
+    journal = Journal(str(tmp_path / 'journal.jsonl'))
+    coordinator = mendwright.HealCoordinator(
+        store, provider=provider, driver=driver, html_provider=driver.outer_html,
+        inventory_provider=driver.inventory, guard=lambda: True, fingerprint=True,
+        journal=journal)
+    with pytest.raises(AttentionRequired) as info:
+        mendwright.resolve_with_heal(
+            lambda: mendwright.resolve(store, page_, 'save', timeout_ms=0, poll_ms=0),
+            coordinator, 'save', store.meta('save'), {'url': page_.url})
+    message = str(info.value)
+    assert "'save' was last found inside the shadow root of " + HOST in message
+    assert 'mendwright.open() heals it inside that shadow root' in message
+    assert coordinator.heals == [] and provider.bundles == [] and page_.actions == []
+    assert [c['source'] for c in _rows(tmp_path)] == ['code']
+    events = [json.loads(line) for line in
+              (tmp_path / 'journal.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [e['code'] for e in events if e['event'] == 'heal.declined'] == ['shadow']
+
+
+def test_a_coordinator_scoped_to_the_shadow_root_still_heals_there(make_shadow_page, tmp_path,
+                                                                  stub_provider):
+    from mendwright.shadow import driver_shadowed
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    store = load_store(None, str(tmp_path / 'o.json'))
+    driver = mendwright.wrap(page_)
+    coordinator = mendwright.HealCoordinator(
+        store, provider=stub_provider(), driver=driver, html_provider=driver.outer_html,
+        inventory_provider=driver.inventory, guard=lambda: True, fingerprint=True)
+    with coordinator.scoped(driver_shadowed(driver, [HOST]), None, shadow_hosts=[HOST]):
+        applied = coordinator.try_heal('save', store.meta('save'), ['#save'], {'url': page_.url})
+    assert applied == CHAIN
 
 
 # --- the follow: a key's own selector that matches only inside a shadow root -----------------

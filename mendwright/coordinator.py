@@ -410,6 +410,26 @@ class HealCoordinator:
         journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason)
         return False
 
+    def _outside_shadow(self, selector_key):
+        """Why a heal of the key may not run here, or '': this coordinator heals on the page
+        (it is not scoped() to a shadow root), and the key's element was last found inside
+        an open shadow root (facade.heal_place). mendwright.open() heals such a key inside
+        that shadow root, or refuses it; a coordinator used on its own, as in the guide's
+        resolve_with_heal(lambda: resolve(store, page, key), coordinator, ...), would look on
+        the page around it, where an element that looks the same can be."""
+        if self.shadow_hosts is not None:
+            return ''
+        from .facade import heal_place
+        from .shadow import place_text
+        _frame, hosts, _why = heal_place(self.store, selector_key)
+        if not hosts:
+            return ''
+        return ("'" + selector_key + "' was last found inside " + place_text(hosts) + ', and '
+                'this heal would look for it on the page outside that shadow root, where an '
+                'element that looks the same can be, so mendwright did not heal it. '
+                'mendwright.open() heals it inside that shadow root; or fix the selector in '
+                'your code.')
+
     def _unavailable_code(self):
         """The code of a decline because no model provider can be asked: 'disabled' under
         MENDWRIGHT_DISABLE=1, else 'no_provider'."""
@@ -417,8 +437,9 @@ class HealCoordinator:
 
     def try_heal(self, selector_key, meta, broken_candidates, context, row=None):
         """Heal + apply a validated selector. Returns the applied xpath (truthy) if a
-        candidate was applied, else None/False. Never heals a key marked destructive, and
-        never heals while the guard blocks. On every non-applied path it records a
+        candidate was applied, else None/False. Never heals a key marked destructive, never
+        heals while the guard blocks, and never heals a key last found inside a shadow root
+        unless scoped() to that shadow root. On every non-applied path it records a
         human-readable reason via ``self.heal_reasons`` (see ``explain``).
 
         With fingerprint=True the fingerprint tier runs first (after the destructive, page,
@@ -435,6 +456,9 @@ class HealCoordinator:
         if self.scope_refusal:
             # Last found inside a shadow root that cannot be entered now: never on the page.
             return self._decline(selector_key, self.scope_refusal, code='shadow')
+        outside = self._outside_shadow(selector_key)
+        if outside:
+            return self._decline(selector_key, outside, code='shadow')
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider

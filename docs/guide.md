@@ -2606,7 +2606,7 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve(store, page, key)` returns the native locator or element, or raises `AttentionRequired`.
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
-- These paths skip what the facade adds: the code-first selector order and role learning. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
+- These paths skip what the facade adds: the code-first selector order and role learning, and iframes and shadow roots: `HealCoordinator` heals in the page it was given, never inside an iframe or a shadow root. A key last found inside an iframe is looked for on that page. A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`), because only the page around its host could be searched. Use `mendwright.open()` for those. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
 
 ## Troubleshooting
