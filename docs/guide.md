@@ -17,6 +17,7 @@ Contents:
 - [Async Playwright](#async-playwright)
 - [Selenium](#selenium)
 - [Iframes](#iframes)
+- [Shadow DOM](#shadow-dom)
 - [Layout changes](#layout-changes)
 - [Flow changes](#flow-changes)
 - [Selectors](#selectors)
@@ -91,7 +92,7 @@ Other `Healer` members:
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)`: the elements of a list, such as the cards of a product grid. It gives only what your own selectors match. With `nonempty=True`, a list whose selectors match nothing is looked for and proposed to you. See [Lists](#lists).
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
-- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
+- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)), or `"shadow"` for one whose own selector matched only inside a shadow root (see [Shadow DOM](#shadow-dom)).
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
 - `heal.confirm_all(True)` or `heal.confirm_all(False)`: confirm or quarantine every pending heal.
 
@@ -160,6 +161,7 @@ Each time a key's selector matches, it saves a fingerprint of the element in `ov
 
 It never reads an input's value.
 It is read in one round trip after the selector matches, once per key and selector per Healer, and the store file is written only when the fingerprint changed.
+The same read says where the element is: the shadow hosts around it, when it is inside an open shadow root (see [Shadow DOM](#shadow-dom)).
 It isn't recorded for a key marked destructive, a skipped step, or a heal made in this run that isn't confirmed yet. A match inside an iframe is read inside the iframe.
 In a later run it is refreshed through whichever selector matches, so after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
 
@@ -419,7 +421,7 @@ On a page of 2,000 elements, `heal.page.get_by_role("button", name="Continue").c
 
 ### Limits
 
-- A call whose element is inside a shadow root isn't healed once renamed: the fingerprint tier scores the captured HTML, and `page.content()` leaves shadow trees out.
+- A call whose element is inside an open shadow root heals only inside that shadow root, by the rules of [Shadow DOM](#shadow-dom).
 - A call with no fingerprint in the store isn't healed (see above).
 - `page.set_default_timeout()` isn't read: a missing call waits `timeout_ms`.
 - `get_by_test_id()` uses the test id attribute set with `playwright.selectors.set_test_id_attribute()`, and the key doesn't say which one.
@@ -983,6 +985,89 @@ On Selenium, switch into the frame each time before you use that Healer.
 
 The real-browser tests `test_a_selector_that_matches_only_inside_an_iframe_is_followed_there`, `test_a_key_last_found_in_an_iframe_heals_inside_it` and `test_the_iframe_workaround` cover these on every engine, including that the captured HTML is the iframe's.
 
+## Shadow DOM
+
+mendwright works with elements inside open shadow roots, at any depth, on Playwright (sync and async) and Selenium.
+XPath doesn't reach into a shadow root on either library, and neither `page.content()` nor Selenium's `page_source` holds what one contains.
+So mendwright handles an element inside a shadow root by its place, as it handles one inside an iframe.
+
+Closed shadow roots are out of reach: the browser gives a script no handle on one, so mendwright never enters one to follow or heal a key. patchright's CSS finds elements inside closed shadow roots too; mendwright records where such an element is, and refuses to heal it.
+
+### Where the element is
+
+Each time a key's selector matches, the fingerprint read also reads the shadow hosts around the element, outermost first, and saves them as the key's `shadowHosts` in `overrides.json`.
+Each host is saved as a CSS selector that matches it and nothing else in the document or shadow root it sits in:
+
+- its tag with a test id, an id or a name that no other element of its tag there has, in that order, such as `my-app[id="root"]`. A value that looks generated is skipped.
+- else its tag alone, for a custom element (a tag with a `-`) that is the only one of its tag there, such as `settings-panel`.
+- else `null`: nothing tells the host apart, and the key is never healed.
+
+On Playwright, a CSS selector in your code finds an element inside an open shadow root by itself, because Playwright's CSS pierces them. When the element is found on the page itself, `shadowHosts` is removed.
+With the fingerprint tier off, nothing is read after a match, so mendwright doesn't know an element was inside a shadow root, and a model heal looks for it on the page, as for any key it has no record of.
+
+### When the selector breaks
+
+A key whose element was last found inside a shadow root heals only inside that shadow root:
+
+- mendwright enters it through the saved hosts. Each must match exactly one element in the document or shadow root before it, and that element must have an open shadow root. When one doesn't (the host is gone, there are two, or its shadow root is closed now), the heal is refused. It never falls back to the page.
+- The fingerprint tier and the model get that shadow root's HTML and the interactive elements in it, and nothing from the page around it. The HTML is what the shadow root holds: not the host, not the light DOM slotted into it, not the shadow roots inside it.
+- The XPath they find is checked in that HTML as any heal is: one match of the key's role, not quarantined there.
+- XPath can't run inside a shadow root, so mendwright then builds a CSS selector for the same element, from a test id, an id, other attributes or class names (see [Selectors](#selectors)). An element that only its text tells apart has none, and the heal is refused.
+- The CSS goes through the live check inside the shadow root: one element there, with the key's role, visible.
+
+The heal is saved as the Playwright selector chain of the hosts and the CSS, with the hosts as its `shadowHosts`:
+
+```text
+mendwright: healed 'save' inside the shadow root of my-app[id="root"]: #save -> my-app[id="root"] >> [data-testid="save"] (fingerprint, 0.0s)
+```
+
+A refusal says why, for example:
+
+```text
+No matching element for: save (tried 1 candidate(s)).
+  -> 'save' was last found inside the shadow root of my-app[id="root"], and mendwright cannot enter that shadow root now: one of its hosts (my-app[id="root"]) is not on the page, matches more than one element, or has a closed shadow root. mendwright heals the key only inside that shadow root, never on the page outside it, so it did not heal it. Fix the selector in your code.
+```
+
+### How a heal inside a shadow root runs
+
+mendwright looks it up strictly, through the hosts as above, and its CSS counts only what matches inside that shadow root: never in the host's light DOM, a shadow root inside it, or another host with the same tag.
+
+- On Selenium, one `execute_script()` finds the hosts and runs `querySelectorAll()` in the shadow root. The `WebElement` it returns works as any other, also after the call.
+- On Playwright, `proxy.native` is the chain's `Locator`, whose CSS pierces. Before mendwright uses one, it checks that every element the `Locator` matches is in that shadow root; when one isn't, the selector matches nothing.
+
+A driver of your own runs none of these unless it has `shadow_html()` and takes the `ShadowHost` steps of a frame chain (see [CONTRIBUTING.md](../CONTRIBUTING.md)). On any other driver such a heal can't run, as a Playwright engine selector can't on Selenium, and no key last found inside a shadow root is healed.
+
+The text of the heal is the chain so that a mendwright that knows nothing of `shadowHosts` (0.9.0 and before) runs it as Playwright does, inside the host, and refuses it on Selenium, instead of running the bare CSS on the whole page.
+
+### A selector that matches only inside a shadow root
+
+When none of a key's selectors matches on the page or in an iframe, and one of them matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call.
+A CSS selector is looked up there as it is. An XPath is evaluated in each shadow root's HTML, and its element is looked up through a CSS form of it.
+It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
+
+Playwright's CSS reaches into open shadow roots by itself, so there this matters for an XPath. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
+
+mendwright does not follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the selector matches in more than one shadow root or more than one element there, when a host on the way can't be told apart, when the same lookup was quarantined before, for an XPath whose element no CSS selector tells apart, on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)), and when the element fails the live check.
+A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not looked for in shadow roots: Playwright's engines reach into open ones by themselves.
+
+### Limits
+
+- A key found inside a shadow root inside an iframe isn't healed from the page. Open mendwright on that frame (a `Frame` on Playwright, or the driver after `switch_to.frame()` on Selenium), where its shadow roots work as described here.
+- A heal stays in the shadow root the element was last found in. When a redesign moves the element into another shadow root, or onto the page, the heal is refused; fix the selector in your code.
+- A quarantine counts in its own place: a selector quarantined inside a shadow root blocks its element there, under any CSS form, and says nothing about the page, and the other way round.
+- `heal.locator_all()` gives what your selectors match, also inside a shadow root, but with `nonempty=True` a list that was inside a shadow root is never looked for: mendwright looks for lists only in the page's own HTML, where it could only find another list.
+- The selectors of `heal.interrupt()` and `heal.step(when=)`, and `get_by_*` calls, run as written; Playwright's CSS and `get_by_*` reach into open shadow roots by themselves.
+
+### mendwright fix, check and report
+
+`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a Playwright page or locator method (`page.locator()`, `page.click()` and the other methods that take a selector) in a Python file.
+Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call is listed (`shadow_driver`); the heal stays in the store and keeps working.
+
+`mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
+`mendwright report` shows the shadow root each selector runs in.
+
+The real-browser tests in `tests/browser/test_browser_shadow.py` cover these on every engine, with a look-alike outside the host and nested shadow roots.
+
 ## Layout changes
 
 A heal happens when a stored selector stops matching on the page mendwright was opened on. That makes it a fit for layout changes inside one page: renamed or generated ids and classes, reworded or translated labels, new wrapper elements, elements moved to another region, and form fields in a new order. The benchmark has cases for each of these ([docs/benchmark.md](benchmark.md)).
@@ -1365,6 +1450,7 @@ mendwright: the selector for 'x' is not usable: '//input[' is not valid XPath (l
 Passing a Playwright `Locator` instead of a string raises `TypeError`, because a Locator can't be stored.
 
 Heals are XPath, because the gate checks them with lxml. When a key's selector in your code is CSS, mendwright also looks for a CSS selector for the healed element and saves it with the heal as `css`: `#id`, a test id, `tag[attr="value"]`, `tag.class`, two of these together, or one inside a container with an id, test id, name, aria-label or class. It must match that element and nothing else on the captured page, and on the live page it must match one element with the same outer HTML. `mendwright report` shows it, and `mendwright fix` writes it wherever your code has CSS. CSS can't match text, so an element that only its text tells apart has no CSS form, and a Playwright engine selector (`text=`, `role=`) gets the XPath.
+A heal inside a shadow root, where no XPath runs, is saved as CSS (see [Shadow DOM](#shadow-dom)).
 
 ## Roles
 
@@ -1461,7 +1547,7 @@ The real file is a single line; it is wrapped here.
 - `status` is `active`, `quarantined` or `superseded`, or for a list heal that `heal.locator_all(..., nonempty=True)` found, `proposed` or `accepted` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)). Only active candidates are tried.
 - A list heal has `"list": true`, a `proposal` with what `mendwright lists` shows of it (when it was found, on which page, the selectors that matched nothing, where the list was and where the group is, two of their headings, containers and items, and an `id`), and once accepted an `acceptedAt`. A key keeps at most 3 of those that wait, apart from its other inactive candidates: the one you accepted, then the newest proposals, so newer proposals never drop an acceptance.
 - Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `lastUrl`, the address of the last of them, which [`mendwright check`](#checking-for-drift-before-a-run) loads again (scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)), with a `label` (its heading) and a `place` (short hashes of where it sat) once a call with `nonempty=True` recorded it.
-- A candidate inside an iframe has a `frameXPath` with the frame's selector.
+- A candidate inside an iframe has a `frameXPath` with the frame's selector, and one inside an open shadow root a `shadowHosts` with the selectors of its shadow hosts, outermost first. Its text is the Playwright chain of those hosts and its CSS, such as `my-app[id="root"] >> [data-testid="save"]`. The key's own `shadowHosts` says where its element was the last time it matched (see [Shadow DOM](#shadow-dom)); 0.9.0 drops it when it writes the store.
 - Up to 5 active candidates per key are kept, most recently successful first.
 - The key of a `heal.page.get_by_*()` call is written as the call, and so is its `code` candidate: `"get_by_role(\"button\", name=\"Sign in\")"`, with the inner quotes escaped by JSON (see [get_by locators](#get_by-locators)). A seed file may hold such keys, to mark one destructive, say, and such candidates, which run as calls on Playwright and are dropped with an `InvalidSelector` on Selenium.
 
@@ -1501,7 +1587,7 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 ```
 
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, `heal.held` for a list that `heal.locator_all(..., nonempty=True)` found and saved for you to check (with its `xpath`, `css`, `id`, `items`, `label`, `differs`, `old` and `page`), and `heal.accepted` when you accepted one with `mendwright lists accept`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
-`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
+`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes), a `source` and `provider` of `shadow` for one followed into a [shadow root](#shadow-dom), and a `shadow` with the shadow hosts for every heal inside a shadow root. A model heal of a key that had a selector has no `source`.
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
 The events of a list looked for with `nonempty=True` have `"list": true`. A list heal you rejected, or one quarantined because the selector it replaced matched again, writes a `heal.quarantine` with a `reason` that says which.
 A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
@@ -1888,7 +1974,7 @@ Some sites change state on a GET. `mendwright check` doesn't load a page whose p
 | `ok` | A saved selector matches one visible element of the key's role (a hidden checkbox counts, as in a run). | Nothing. |
 | `ok (heal)` | The selectors from your code miss, and a heal saved earlier matches. A run uses it, with no model call. | Run [`mendwright fix`](#mendwright-fix) to put it in your code (for a `get_by_*` call, it shows the healed selector and where the call is, and leaves the call to you). It says when no passing test confirmed the heal. |
 | `wrong role` | A selector matches one visible element, but it is another control (a button that became a `div`). A run acts on it all the same: mendwright compares roles only for heals. A changed tag on a key you only read from, such as a `span` that became a `div`, is noted on an `ok`. | Check the selector in your code. |
-| `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or [follow it into an iframe](#iframes). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
+| `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or follow it into an [iframe](#iframes) or a [shadow root](#shadow-dom). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
 | `needs model` | The selectors miss, the fingerprint doesn't find the element with confidence, and a run would ask the model provider it names. | Check that the run has a provider, or fix the selector. |
 | `refused` | A run would stop with `AttentionRequired`: a key marked destructive, a page the key was never found on, an unknown role, a `guard=` that blocks, `MENDWRIGHT_DISABLE=1`, or no provider and no confident fingerprint. The reason is the run's own, the one [Troubleshooting](#attentionrequired) lists. A `get_by_*` call that matches several elements or one hidden element is `refused` too: a run hands it to Playwright, whose action fails. | Fix the selector by hand, or what the reason names. |
 | `list empty?` | A [list](#lists) that had items matches nothing. mendwright can't tell an empty list from a broken one, and never heals a list. | Check the selector, or the page's state. |
@@ -1937,6 +2023,7 @@ A banner that hides the whole page until it is answered needs `--cookies reject`
 ### Iframes, lists, steps and optional keys
 
 - **Iframes.** A selector saved inside an iframe is looked at there. A key whose selector now matches only inside one iframe is `would heal`, by the rules of [Iframes](#iframes), and one a run wouldn't follow is `refused` with the run's reason. A key last found in an iframe is healed there in the preview, as in a run.
+- **Shadow roots.** The same holds for an open shadow root, by the rules of [Shadow DOM](#shadow-dom): a selector saved inside one is looked at there, a key last found inside one is healed there in the preview, or `refused` when that shadow root can't be entered, and a selector a run would follow into one is `would heal` with detail `shadow`.
 - **Lists.** A key used with `heal.locator_all()` whose list had two or more items is looked at as a list: any match is `ok`, with the count then and now, and no match is `list empty?`. It is never `would heal`. A list that never had two items, or one recorded with the fingerprint tier off, is looked at as one element. A `list empty?` key with a [list heal](#lists-that-always-have-items-nonemptytrue) that waits says so: one to check with `mendwright lists`, or one you accepted that waits for `mendwright fix --apply`.
 - **`get_by_*` calls.** The key of a [`heal.page.get_by_*()` call](#get_by-locators) is looked at as a run looks the call up: the call itself first, and its saved heals only while it matches nothing. A call that matches several elements, or one hidden element, is `refused`: a run hands it to Playwright as written, without its heals, and Playwright's action fails on it. A call found only inside an iframe is `refused` too, since a run never follows one there. A heal of a call comes from its fingerprint only, so a call is never `needs model`.
 - **Steps.** `mendwright check` runs no step. A key found during `run_steps()` that misses is `needs steps`.
@@ -2195,6 +2282,7 @@ Which keys it changes:
 - The key's most recently successful active selector is a heal, and that heal matched at least once.
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
 - Never a key marked destructive (in the store, or with `--destructive-key`), a heal inside an iframe, or a key whose selectors came only from a seed file.
+- A heal inside a shadow root only as its Playwright chain, and only where the old selector is passed to a Playwright page or locator method in a Python file (see [Shadow DOM](#shadow-dom)). Everywhere else it is listed with the chain, and never for the key of a `heal.driver.find_element()` call.
 - Never a heal mendwright could not have saved: one whose selector is not an XPath lxml can compile, or whose CSS form is not one mendwright builds (a tag name, `#id`, `.class` and `[attribute="value"]`, with at most one ancestor before it). Something else wrote it into the store, so it is listed with the reason.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - A list heal you accepted with `mendwright lists accept` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)), under the same rules as a heal, and only in place of the selectors it replaced. Its header line says `list heal, accepted DATE`, and it shows where the group is and what is not the same. Never when your last run passed other selectors for the key, such as another page's or one you fixed by hand, or when one of the key's selectors matched after the list heal was found: the reason says to change the selector by hand, or to drop the list heal with `mendwright lists reject KEY`. Never a list heal that waits for you to check it, with any option: it is left alone with the command that accepts it. Never an accepted one next to a newer proposal for the same key, until you accept or reject that one.
@@ -2252,7 +2340,7 @@ A file is written through a temporary file next to it and then replaced, and a f
 ```
 
 - `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where.
-- `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent` or `frame`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
+- `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent`, `frame` or `shadow`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
 - `confirmed_by` describes the `heal.canary` that confirmed the heal: what confirmed it (`by`, see [journal.jsonl](#journaljsonl)) and, for a passing test, its node id (`test`). Both are `null` for a canary written before 0.9.0, and `confirmed_by` is `null` for a heal that is not confirmed, which only `--include-unconfirmed` writes.
 - A list heal you accepted with [`mendwright lists accept`](#mendwright-lists) has `"list": true` and `accepted`, when you accepted it. Its `found_by` is the list fingerprint (`tier` `fingerprint`), at the time of its `heal.held`, else of its proposal, and its `confirmed_by` has `by` `accepted`, at the time of its `heal.accepted`, else `accepted`.
 - `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`.
@@ -2274,12 +2362,14 @@ A file is written through a temporary file next to it and then replaced, and a f
 | `list_key` | a list key whose heal is of one element |
 | `bare_word` | a key whose old selector is a bare word |
 | `driver_by` | a key from a `By` that can't run the healed XPath |
+| `shadow_driver` | a key from `driver.find_element()` whose heal sits inside a shadow root |
 | `unconfirmed` | a key whose heal was never confirmed |
 | `quarantined` | a key whose newest heal was quarantined, or a list heal you rejected |
 | `get_by_call` | the key of a `heal.page.get_by_*()` call, which `mendwright fix` never rewrites |
 | `ambiguous` | a file with a string that belongs to more than one key |
 | `not_python` | a file that couldn't be read as Python |
 | `css_only` | a place that passes the selector where only CSS runs |
+| `shadow_call` | a place that isn't a Playwright page or locator method, for a heal inside a shadow root |
 | `no_escape` | a place that needs escapes mendwright doesn't know |
 | `flow_selector` | a place that passes the old selector to `heal.interrupt()` or `heal.step(when=)` |
 | `already_in_code` | a key whose healed selector your code already has |
