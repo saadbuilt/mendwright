@@ -101,6 +101,18 @@ def _origin(url):
         return '(set, not a URL)'
 
 
+def _webhook_shown(url):
+    """MENDWRIGHT_WEBHOOK_URL as doctor shows it: as mendwright notify names the webhook
+    (scheme and host, see notify.origin) when notify takes the URL, else why it does not. A
+    value notify refuses is never shown, not even its host: a token pasted on its own would
+    be read as one."""
+    from .notify import origin, url_problem
+    problem = url_problem(url.strip())
+    if problem:
+        return '(set, not a URL mendwright notify takes: ' + problem + ')'
+    return origin(url.strip())
+
+
 def _endpoint(url):
     """scheme://host[:port]/path of a provider's base URL, without user info or query.
     None when there is no URL. The host is not a secret, and shows where the page goes."""
@@ -249,7 +261,9 @@ def _env_info():
         if not name.upper().startswith('MENDWRIGHT_'):
             continue
         value = os.environ[name]
-        if name.upper() in _ORIGIN_ONLY:
+        if name.upper() == 'MENDWRIGHT_WEBHOOK_URL':
+            out[name] = _webhook_shown(value)
+        elif name.upper() in _ORIGIN_ONLY:
             out[name] = _origin(value)
         elif name.upper() == 'MENDWRIGHT_RUN_ID':
             from .journal import valid_run_id
