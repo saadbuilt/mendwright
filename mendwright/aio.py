@@ -1399,8 +1399,10 @@ class AsyncHealer:
             await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending, key,
                                                False, None, xpath, by='destructive'))
         else:
+            # A heal saved before the key was marked: by says why, so mendwright notify
+            # does not call the repair wrong.
             self.store.quarantine(key, xpath)
-            coordinator.journal.quarantine(key, xpath=xpath)
+            coordinator.journal.quarantine(key, xpath=xpath, by='destructive')
         raise _healed_target_error(key, xpath, core._locked(key))
 
     async def _resolve(self, key, timeout_ms, poll_ms):

@@ -198,6 +198,14 @@ def test_a_heal_quarantined_because_its_key_is_destructive_says_so():
         ('pay', 'destructive'), ('email', 'quarantined')]
 
 
+def test_a_heal_saved_before_its_key_was_marked_destructive_says_so():
+    # Its heal.quarantine says by: destructive; no canary of this run names it.
+    events = [ev('heal.quarantine', 'pay', xpath='//p', by='destructive'),
+              ev('heal.quarantine', 'email', xpath='//e')]
+    assert [(e['key'], e['code']) for e in summarize(events)['needs_human']] == [
+        ('pay', 'destructive'), ('email', 'quarantined')]
+
+
 def test_a_list_heal_quarantined_is_not_a_thing_for_a_human():
     s = summarize([ev('heal.quarantine', 'cart', xpath='//li', list=True)])
     assert s['needs_human'] == []

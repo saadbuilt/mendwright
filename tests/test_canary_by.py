@@ -13,7 +13,7 @@ import pytest
 
 import mendwright
 import mendwright.aio
-from mendwright import AttentionRequired, HealCoordinator
+from mendwright import AttentionRequired, HealCoordinator, runsummary
 from mendwright.journal import Journal
 
 from test_aio import AsyncFakePage
@@ -114,6 +114,30 @@ def test_a_heal_of_a_key_marked_destructive_after_it(tmp_path, make_page, stub_p
     assert page.actions == []
 
 
+def _quarantines(tmp_path, run):
+    """The heal.quarantine lines of run, and what mendwright notify says needs a human."""
+    lines = [json.loads(line) for line in
+             (tmp_path / 'journal.jsonl').read_text(encoding='utf-8').splitlines()]
+    events, _ = runsummary.select(lines, run=run)
+    found = [(e['key'], e['xpath'], e.get('by')) for e in events if e['event'] == 'heal.quarantine']
+    return found, runsummary.summarize(events)['needs_human']
+
+
+def test_a_heal_saved_before_its_key_was_marked_destructive(tmp_path, make_page, stub_provider):
+    # Run 1 healed 'terms' and confirmed it; run 2, another process, marks it destructive.
+    heal, page, _ = _healed(tmp_path, make_page, stub_provider)
+    heal.confirm_all(True)
+    again = mendwright.open(page, provider=stub_provider(HEALED), timeout_ms=0,
+                            store_path=str(tmp_path / 'o.json'), fingerprint=False,
+                            journal=Journal(tmp_path / 'journal.jsonl', run='run-2'))
+    with pytest.raises(AttentionRequired, match="'terms' is marked as a destructive control"):
+        again.locator('terms', STALE, role='checkbox', destructive=True).check()
+    assert page.actions == []
+    assert _quarantines(tmp_path, 'run-2') == (
+        [('terms', HEALED, 'destructive')],
+        [{'key': 'terms', 'code': 'destructive', 'about': 'selector'}])
+
+
 def test_a_failed_click_on_an_element_heal_driver_found(tmp_path, stub_provider):
     page = ("<form><input type='email' id='email' name='email'>"
             "<input type='checkbox' id='terms'><button id='go'>Go</button></form>")
@@ -208,6 +232,24 @@ def test_async_heal_of_a_key_marked_destructive_after_it(tmp_path, make_page, st
             await heal.locator('terms', STALE, role='checkbox', destructive=True).check()
     asyncio.run(main())
     assert canaries(tmp_path) == [line(False, 'destructive')]
+
+
+def test_async_heal_saved_before_its_key_was_marked_destructive(tmp_path, make_page,
+                                                               stub_provider):
+    async def main():
+        page = AsyncFakePage(make_page(V2))
+        heal, _ = await _ahealed(page, tmp_path, stub_provider)
+        heal.confirm_all(True)
+        again = await mendwright.aio.open(page, provider=stub_provider(HEALED), timeout_ms=0,
+                                          store_path=str(tmp_path / 'o.json'), fingerprint=False,
+                                          journal=Journal(tmp_path / 'journal.jsonl',
+                                                          run='run-2'))
+        with pytest.raises(AttentionRequired, match="'terms' is marked as a destructive control"):
+            await again.locator('terms', STALE, role='checkbox', destructive=True).check()
+    asyncio.run(main())
+    assert _quarantines(tmp_path, 'run-2') == (
+        [('terms', HEALED, 'destructive')],
+        [{'key': 'terms', 'code': 'destructive', 'about': 'selector'}])
 
 
 # --- the 0.8.0 line, and code written for 0.8.0 ----------------------------------------------

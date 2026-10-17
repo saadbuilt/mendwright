@@ -1939,8 +1939,10 @@ class Healer:
             # A heal from earlier in this process.
             _canary_call(coordinator.confirm_pending, key, False, xpath=xpath, by='destructive')
         else:
+            # A heal saved before the key was marked: by says why, so mendwright notify
+            # does not call the repair wrong.
             self.store.quarantine(key, xpath)
-            coordinator.journal.quarantine(key, xpath=xpath)
+            coordinator.journal.quarantine(key, xpath=xpath, by='destructive')
         raise _healed_target_error(key, xpath, self._locked(key))
 
     def _learn(self, key, roles):

@@ -201,8 +201,11 @@ def summarize(events):
                 bad.add((key, xpath))
             if not event.get('list'):
                 # A heal of a key marked destructive after it was made is quarantined
-                # however right it was: say that, not that the repair was wrong.
-                code = ('destructive' if refused_by.get((key, xpath)) == 'destructive'
+                # however right it was: say that, not that the repair was wrong. The canary
+                # says so for a heal made in this process, the heal.quarantine (by) for one
+                # saved before.
+                code = ('destructive' if 'destructive' in (refused_by.get((key, xpath)),
+                                                           event.get('by'))
                         else 'quarantined')
                 need('selector', key, code, at)
         elif name == 'heal.declined' and key:
