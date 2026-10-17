@@ -372,3 +372,22 @@ def test_declined_and_stopped_have_helpers(tmp_path):
         {'ts': FIXED, 'event': FLOW_STOP, 'key': '<next step>', 'code': 'step_cap', 'ran': 40}]
     assert NullJournal().declined('pay') is None
     assert NullJournal().stopped('pay') is None
+
+
+def test_a_subclass_written_for_0_9_0_that_sets_its_own_fields_still_writes(tmp_path):
+    from pathlib import Path
+
+    class Journal090(Journal):
+        """Sets the fields 0.9.0's __init__ set, and does not call it."""
+
+        def __init__(self, path):
+            self._path = Path(path)
+            self._clock = lambda: FIXED
+
+    journal = Journal090(tmp_path / '.mendwright' / 'journal.jsonl')
+    journal.applied('k', xpath='//a')
+    journal.canary('k', xpath='//a', success=True)
+    assert journal.run is None
+    assert _read(tmp_path) == [
+        {'ts': FIXED, 'event': APPLIED, 'key': 'k', 'xpath': '//a'},
+        {'ts': FIXED, 'event': CANARY, 'key': 'k', 'xpath': '//a', 'success': True}]
