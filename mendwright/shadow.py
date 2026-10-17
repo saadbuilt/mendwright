@@ -98,8 +98,8 @@ def chain_hosts(candidate):
     store, a candidate's as well as the key's. () unless the candidate is a heal (source
     'heal') with no frameXPath and no shadowHosts field, whose text is the chain (shadow_text)
     of hosts of the form host_selector() builds and a CSS selector. mendwright saves no other
-    heal with ' >> ' in it: a heal on the page or in an iframe is an XPath, or the key's own
-    selector, and a heal your code passes again is a 'code' candidate."""
+    heal with ' >> ' in it: a heal on the page is an XPath, a key's own selector followed into
+    an iframe has a frameXPath, and a heal your code passes again is a 'code' candidate."""
     if not isinstance(candidate, dict) or candidate.get('source') != 'heal':
         return ()
     if candidate.get('frameXPath') or HOSTS in candidate:
