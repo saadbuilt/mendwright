@@ -71,6 +71,25 @@ test('a heal the Python package saved inside a shadow root runs there', async ({
   expect(readStore(store).selectors.save.candidates.find((c: any) => c.xpath === CHAIN).shadowHosts).toEqual([HOST]);
 });
 
+test('a heal saved inside a shadow root never acts outside it after a re-render', async ({ page }) => {
+  await serve(page, { '/shop': shop(inside('save-2')) });
+  const store = tempStore('shadow-rerender');
+  pythonHealed(store);
+  const box = await open(page, { provider: null, storePath: store, timeoutMs: 300 })
+    .locator('save', '#save', { role: 'button' }).resolve();
+  // The component re-renders: its button leaves the shadow root, and the page slots one with the
+  // same test id into the host's light DOM, which Playwright's CSS reaches through the chain.
+  await page.evaluate(() => {
+    const host = document.querySelector('my-app') as Element;
+    (host.shadowRoot as ShadowRoot).innerHTML = '<p>loading</p><slot></slot>';
+    host.innerHTML = '<button data-testid="save" type="button" onclick="window.clicked = \'light\'">Save</button>';
+  });
+  const error = await box.click().catch((e) => e);
+  expect(error).toBeInstanceOf(AttentionRequired);
+  expect(String(error.message)).toContain('when it came to click()');
+  expect(await page.evaluate(() => (window as any).clicked)).toBeUndefined();
+});
+
 for (const [name, html] of [
   ['only the light DOM of the host has it', shop('<p>Nothing to save</p>', {
     light: '<button data-testid="save" type="button" onclick="window.clicked = \'light\'">Save</button>' })],
