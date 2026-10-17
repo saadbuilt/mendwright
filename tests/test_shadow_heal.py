@@ -296,6 +296,56 @@ def test_a_saved_shadow_heal_matches_nothing_outside_its_shadow_root(make_shadow
     assert len(page_.actions) == 0
 
 
+# The component re-renders after the lookup: its button leaves the shadow root, and the page
+# slots one with the same test id into the host's light DOM.
+RERENDERED = page(shadow('<p>loading</p><slot></slot>', light=LOOKALIKE))
+
+
+def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(make_shadow_page,
+                                                                          tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    heal = _open(page_, tmp_path)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=0)    # healed inside it
+    assert heal.heals[-1].new == CHAIN
+    page_.set_html(RERENDERED)
+    with pytest.raises(AttentionRequired, match=r"'save' was found inside the shadow root of "
+                       r'my-app\[id="root"\], but when it came to click\(\)'):
+        proxy.click()
+    with pytest.raises(AttentionRequired, match=r'when it came to is_visible\(\)'):
+        proxy.is_visible()
+    assert page_.actions == []
+    # Nothing says the heal was wrong: it stays active.
+    assert [c['status'] for c in _rows(tmp_path) if c['xpath'] == CHAIN] == ['active']
+    # While the button is inside the shadow root, the action runs.
+    page_.set_html(V2)
+    proxy.click()
+    assert _clicked(page_).get('id') == 'save-2'
+
+
+def test_the_async_healer_never_acts_outside_the_shadow_root_after_a_re_render(
+        make_shadow_page, tmp_path):
+    sync = make_shadow_page(V1)
+
+    async def lookup():
+        heal = await mendwright.aio.open(AsyncShadowPage(sync), provider=None, timeout_ms=0,
+                                         store_path=str(tmp_path / 'o.json'),
+                                         journal=NullJournal())
+        return await heal.locator('save', '#save', role='button', poll_ms=0)
+
+    asyncio.run(lookup())
+    sync.set_html(V2)
+
+    async def main():
+        proxy = await lookup()
+        sync.set_html(RERENDERED)
+        await proxy.click()
+
+    with pytest.raises(AttentionRequired, match=r'when it came to click\(\)'):
+        asyncio.run(main())
+    assert sync.actions == []
+
+
 def test_two_matches_in_the_shadow_root_match_nothing(make_shadow_page, tmp_path):
     page_ = _recorded(make_shadow_page, tmp_path)
     page_.set_html(V2)

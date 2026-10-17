@@ -126,6 +126,21 @@ describe('a heal the Python package saved inside a shadow root', () => {
     });
   }
 
+  test('never acts outside its shadow root after a re-render that came after the lookup', async () => {
+    const w = world(V2);
+    pythonHealed(w.storePath);
+    const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();
+    // The component re-renders: its button leaves the shadow root, and the page slots one with
+    // the same test id into the host's light DOM, where Playwright's CSS reaches it.
+    w.page.goto(page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE)));
+    await assert.rejects(box.click(), /'save' was found inside the shadow root of my-app\[id="root"\], but when it came to click\(\)/);
+    await assert.rejects(box.innerText(), /when it came to innerText\(\)/);
+    assert.equal(w.page.clicked.length, 0);
+    w.page.goto(V2);
+    await box.click();
+    assert.equal(w.page.clicked[0].id, 'save-2');
+  });
+
   test('keeps to its shadow root after the Python package 0.9.0 wrote the store without its shadowHosts', async () => {
     // 0.9.0 drops every shadowHosts, the key's and the heal's. The button is renamed again,
     // and the look-alike outside the host keeps the old test id.

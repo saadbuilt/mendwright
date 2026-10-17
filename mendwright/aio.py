@@ -78,7 +78,8 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
                      _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
-                     HealScope, follow_allowed, heal_place, shadow_found, shadow_unreachable)
+                     HealScope, follow_allowed, heal_place, moved_message, shadow_found,
+                     shadow_unreachable)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
@@ -730,7 +731,8 @@ class AsyncHealer:
         async with self._turn():
             natives = await self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
-        return [_guarded(self, key, native, timeout, due) for native in natives]
+        hosts = self._core._shadow_place(key, self._driver) if natives else None
+        return [_guarded(self, key, native, timeout, due, hosts) for native in natives]
 
     async def _list_look(self, key, runnable):
         """Healer._list_look(), awaited."""
@@ -959,6 +961,7 @@ class AsyncHealer:
                     native = None
                 else:
                     proxy._healed = self._core._healed(proxy._key)
+                    proxy._hosts = self._core._shadow_place(proxy._key, self._driver)
                 proxy._native = native
         return proxy._native
 
@@ -1057,6 +1060,7 @@ class AsyncHealer:
         proxy._native = native
         proxy._healed = core._healed(key)
         proxy._canary = proxy._healed is not None
+        proxy._hosts = core._shadow_place(key, self._driver)
 
     def _get_by_through(self, proxy, target, why):
         """Leave proxy on the real Locator of a call that goes to Playwright as written:
@@ -1712,6 +1716,9 @@ class AsyncActionProxy:
     # (GetByCall, real Locator) for a heal.page.get_by_*() call (see
     # AsyncHealer._get_by_locator), else None.
     _get_by = None
+    # The CSS of the shadow hosts of the shadow root the element was found in, as on
+    # ActionProxy (see Healer._shadow_place), else None.
+    _hosts = None
 
     def __init__(self, healer: AsyncHealer, key: str, plan: tuple) -> None:
         self._healer = healer
@@ -1783,6 +1790,7 @@ class AsyncActionProxy:
         self._reads_due[0] = False      # its reads need not look again (see _before_read)
         await healer._dismiss_before(self._key, native, verb, budget, timeout, poll_ms)
         with healer._core._running(self._key, budget, timeout, poll_ms):
+            await self._wait_placed(verb)
             try:
                 result = await _act_on(healer._driver, native, verb, *args, **kwargs)
             except _USAGE_ERRORS:
@@ -1798,6 +1806,7 @@ class AsyncActionProxy:
                         healer._core._report_nothing_matched(self._key)
                     await self._failed(exc)  # the browser action failed
                     raise
+                await self._wait_placed(verb)
                 try:
                     result = await _act_on(healer._driver, native, verb, *args, **kwargs)
                 except _USAGE_ERRORS:
@@ -1814,6 +1823,27 @@ class AsyncActionProxy:
                 ok = False
             await self._confirm(ok, 'expect')
         return result
+
+    async def _wait_placed(self, verb):
+        """ActionProxy._wait_placed(), awaited: for an element found inside a shadow root,
+        wait up to the proxy's timeout until its Locator matches one element and that one
+        inside the shadow root, right before an action or a read; else AttentionRequired."""
+        __tracebackhide__ = True  # pytest shows the caller
+        hosts = self._hosts
+        if not hosts:
+            return
+        driver = self._healer._driver
+        timeout, poll_ms = self._plan[4], self._plan[5]
+        deadline = time.monotonic() + timeout / 1000.0
+        while True:
+            try:
+                if await _awaited(driver.placed(self._native, hosts)):
+                    return
+            except Exception:
+                pass
+            if time.monotonic() >= deadline:
+                raise AttentionRequired(moved_message(self._key, hosts, verb))
+            await asyncio.sleep(max(poll_ms, 20) / 1000.0)
 
     async def _failed(self, error):
         """ActionProxy._failed(), awaited: report a failed action to the heal canary, unless
@@ -1907,12 +1937,15 @@ class AsyncActionProxy:
             checked = (name in VALUE_READS and self.__dict__.get('_expect') is not None
                        and self.__dict__.get('_healed') is not None)
             handles = name in LOCATOR_READS and self._healer._handles_reads()
-            if not callable(attr) or not (checked or handles):
+            placed = name in LOCATOR_READS and bool(self.__dict__.get('_hosts'))
+            if not callable(attr) or not (checked or handles or placed):
                 return attr
 
             async def read(*args, **kwargs):
                 if handles:
                     await self._before_read()
+                if placed:
+                    await self._wait_placed(name)
                 value = await _awaited(attr(*args, **kwargs))
                 return await self._checked(name, args, value) if checked else value
             read.__name__ = name
@@ -1932,6 +1965,8 @@ class AsyncActionProxy:
                     + name)
             if name in LOCATOR_READS and self._healer._handles_reads():
                 await self._before_read()
+            if name in LOCATOR_READS:
+                await self._wait_placed(name)
             value = await _awaited(attr(*args, **kwargs))
             return await self._checked(name, args, value) if name in VALUE_READS else value
 
@@ -1962,16 +1997,18 @@ class AsyncActionProxy:
         return '<AsyncActionProxy key=' + repr(self._key) + ' native=' + native + '>'
 
 
-def _guarded(healer, key, native, timeout_ms=None, due=None):
+def _guarded(healer, key, native, timeout_ms=None, due=None, hosts=None):
     """An AsyncActionProxy on a Locator mendwright did not resolve, for heal.page's
     guard-only locators with open(dismiss=True) (see mendwright.proxies.GuardedLocator), and
     for the elements of a list (AsyncHealer.locator_all): its actions get the checks of
     AsyncActionProxy._act, and nothing is healed, confirmed or saved. due, when given, is
-    shared by the elements of one lookup (see AsyncActionProxy._before_read)."""
+    shared by the elements of one lookup (see AsyncActionProxy._before_read), and hosts are
+    those of the shadow root a list was found in (see Healer._shadow_place)."""
     timeout = healer.timeout_ms if timeout_ms is None else timeout_ms
     proxy = AsyncActionProxy(healer, key, ((), None, None, None, timeout, 200, False, None))
     proxy._native = native
     proxy._canary = False
+    proxy._hosts = hosts
     if due is not None:
         proxy._reads_due = due
     return proxy

@@ -136,6 +136,16 @@ class AsyncPlaywrightDriver:
         reaches the browser."""
         return await _awaited(getattr(native, verb)(*args, **kwargs))
 
+    async def placed(self, native, hosts):
+        """PlaywrightSyncDriver.placed(), awaited: whether the Locator of a selector inside
+        the shadow root that hosts lead to matches one element now, and that one inside it.
+        False on any error."""
+        try:
+            found = await native.evaluate_all(PLACE_JS, [host_css(h) for h in hosts])
+        except Exception:
+            return False
+        return all_placed(found) and found['n'] == 1
+
     async def url(self):
         try:
             return self._page.url

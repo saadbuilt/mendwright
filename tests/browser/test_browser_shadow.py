@@ -215,6 +215,23 @@ def test_a_key_last_found_on_the_page_is_not_followed_into_a_shadow_root(tab, st
     assert [h.source for h in heal.heals] == ['fingerprint']
 
 
+def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(tab, store_file):
+    _first_run(tab, store_file, app_page(button('save', 'inside')))
+    tab.load(app_page(button('save-2', 'inside') + '<slot></slot>'))
+    heal = _open(tab, store_file)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=POLL_MS)    # healed inside
+    # The component re-renders: its button leaves the shadow root, and the page slots one
+    # with the same test id into the host's light DOM. Playwright's CSS would reach it
+    # through the heal's chain.
+    tab.js('(() => { const host = document.querySelector("my-app");'
+           ' host.shadowRoot.innerHTML = "<p>loading</p><slot></slot>";'
+           ' host.innerHTML = ' + json.dumps(button('light', 'light')) + '; return null; })()')
+    assert heal.present('save') is False
+    with pytest.raises(AttentionRequired if tab.family == PLAYWRIGHT else Exception):
+        proxy.click()       # on Selenium the element it found is stale
+    assert clicked(tab) is None
+
+
 def test_an_element_in_a_closed_shadow_root_is_never_healed(tab, store_file, stub_provider):
     tab.load(app_page(button('save', 'inside'), mode='closed'))
     provider = stub_provider("//button[@data-testid='save']")
