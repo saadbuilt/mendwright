@@ -47,6 +47,12 @@ export interface HealRecord {
   source: string;
 }
 
+/** Why a key is not healed where it was last found, and the code of that decline. */
+export interface Refusal {
+  reason: string;
+  code: 'frame' | 'shadow';
+}
+
 export interface FlowContext {
   url: string;
   page: string | null;
@@ -154,6 +160,14 @@ export class HealCoordinator {
     return false;
   }
 
+  /** The code of a refusal. For an iframe it is the mode in dry run and under
+   * MENDWRIGHT_DISABLE=1, which are declines on purpose, as the Python package names a stop
+   * there. */
+  private refusalCode(refusal: Refusal): DeclineCode {
+    if (refusal.code !== 'frame') return refusal.code;
+    return this.disabled ? 'disabled' : this.dryRun ? 'dry_run' : 'frame';
+  }
+
   /** The code of a decline because no model provider can be asked. */
   private unavailableCode(): DeclineCode {
     return this.disabled ? 'disabled' : 'no_provider';
@@ -181,14 +195,14 @@ export class HealCoordinator {
 
   /** Heal key and save a checked selector. Returns the saved XPath, or false with the
    * reason in healReasons. refusal, when given, declines every heal after the checks for a
-   * key marked destructive and the page guard: the key was last found inside an open shadow
-   * root, where this package does not heal. */
+   * key marked destructive and the page guard: the key was last found inside an iframe or
+   * an open shadow root, where this package does not heal. */
   async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
-                refusal: string | null = null): Promise<string | false> {
+                refusal: Refusal | null = null): Promise<string | false> {
     if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
     const moved = this.flowChange(key, context);
     if (moved) return this.decline(key, moved, 'warning', null, 'page_guard');
-    if (refusal) return this.decline(key, refusal, 'warning', null, 'shadow');
+    if (refusal) return this.decline(key, refusal.reason, 'warning', null, this.refusalCode(refusal));
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
@@ -395,7 +409,7 @@ export class HealCoordinator {
  * Re-raises the miss with the reason when nothing was healed. */
 export async function resolveWithHeal<T>(resolveFn: () => Promise<T>, coordinator: HealCoordinator, key: string,
                                          context: FlowContext, missed: AttentionRequired,
-                                         refusal: string | null = null): Promise<T> {
+                                         refusal: Refusal | null = null): Promise<T> {
   const store = coordinator.store;
   const broken = store.candidates(key).map((c) => c.xpath);
   const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context, refusal);

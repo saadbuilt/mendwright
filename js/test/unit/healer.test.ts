@@ -389,17 +389,51 @@ describe('what is never healed', () => {
     assert.equal(heal.heals[0].source, 'fingerprint');
   });
 
-  test('a key last found inside an iframe, which this package does not heal in', async () => {
-    const w = world(V2);
-    const store = loadStore(w.storePath);
-    store.setCodeCandidates('card', ['#card']);
-    store.setMeta('card', { role: 'input' });
-    store.addCandidate('card', "xpath=//input[@id='card-number']", { frameXPath: "iframe[name='pay']" });
-    store.recordSuccess('card', "xpath=//input[@id='card-number']");
-    const model = new FakeModel(["//input[@name='email']"]);
-    await assert.rejects(w.open({ provider: model }).locator('card', '#card').fill('4242'),
-      /'card' was last found inside the iframe iframe\[name='pay'\], and mendwright for TypeScript does not heal inside an iframe/);
-    assert.equal(model.bundles.length, 0);
+  describe('a key last found inside an iframe, which this package does not heal in', () => {
+    const FRAMED = /'card' was last found inside the iframe iframe\[name='pay'\], and mendwright for TypeScript does not heal inside an iframe/;
+
+    function framed(options: { destructive?: boolean; page?: string } = {}) {
+      const w = world(V2);
+      const store = loadStore(w.storePath);
+      store.setCodeCandidates('card', ['#card']);
+      store.setMeta('card', { role: 'input', destructive: options.destructive });
+      store.addCandidate('card', "xpath=//input[@id='card-number']", { frameXPath: "iframe[name='pay']" });
+      store.recordSuccess('card', "xpath=//input[@id='card-number']");
+      if (options.page) store.setLastPage('card', options.page);
+      return w;
+    }
+    const codes = (w: ReturnType<typeof world>) => journalOf(w.dir).filter((e) => e.event === 'heal.declined').map((e) => e.code);
+
+    test('is refused, and no model is asked', async () => {
+      const w = framed();
+      const model = new FakeModel(["//input[@name='email']"]);
+      await assert.rejects(w.open({ provider: model }).locator('card', '#card').fill('4242'), FRAMED);
+      assert.equal(model.bundles.length, 0);
+      assert.deepEqual(codes(w), ['frame']);
+    });
+
+    test('marked destructive, it is declined as destructive first', async () => {
+      const w = framed({ destructive: true });
+      await assert.rejects(w.open().locator('card', '#card').fill('4242'), /'card' is marked as a destructive control/);
+      assert.deepEqual(codes(w), ['destructive']);
+    });
+
+    test('on a page it was never found on, the page guard declines it first', async () => {
+      const w = framed({ page: '/checkout/pay' });
+      await assert.rejects(w.open().locator('card', '#card').fill('4242'), /'card' was last found on \/checkout\/pay, and this page is \/signup/);
+      assert.deepEqual(codes(w), ['page_guard']);
+      assert.ok(journalOf(w.dir).some((e) => e.event === 'flow.page_guard' && e.key === 'card'));
+    });
+
+    test('in dry run and under MENDWRIGHT_DISABLE=1, the decline is on purpose', async () => {
+      const dry = framed();
+      await assert.rejects(dry.open({ dryRun: true }).locator('card', '#card').fill('4242'), FRAMED);
+      assert.deepEqual(codes(dry), ['dry_run']);
+      const off = framed();
+      process.env.MENDWRIGHT_DISABLE = '1';
+      await assert.rejects(off.open().locator('card', '#card').fill('4242'), FRAMED);
+      assert.deepEqual(codes(off), ['disabled']);
+    });
   });
 
   test('a key whose role is unknown', async () => {
