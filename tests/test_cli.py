@@ -94,7 +94,7 @@ def test_help_lists_the_commands(capsys):
     assert cli.main(["--help"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("usage: mendwright ")
-    for command in ("demo", "doctor", "report", "fix"):
+    for command in ("demo", "doctor", "report", "fix", "notify"):
         assert command in out
 
 
@@ -108,7 +108,7 @@ def test_unknown_command_is_a_usage_error(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix"])
+@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix", "notify"])
 def test_each_command_has_help(capsys, command):
     assert cli.main([command, "--help"]) == 0
     assert capsys.readouterr().out.startswith("usage: mendwright " + command)
@@ -637,6 +637,18 @@ def test_doctor_never_prints_secrets(capsys, monkeypatch):
     assert "MENDWRIGHT_KEY=(set, value hidden)" in out
     assert ("provider variables set: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MENDWRIGHT_GATEWAY, "
             "MENDWRIGHT_KEY (values not shown)") in out
+
+
+def test_doctor_never_shows_the_webhook_url_past_its_host(capsys, monkeypatch):
+    monkeypatch.setenv("MENDWRIGHT_WEBHOOK_URL",
+                       "https://hooks.slack.com/services/T0/B0/SECRET-path?token=SECRET-q")
+    monkeypatch.setenv("MENDWRIGHT_TIMEOUT_MS", "x https://hooks.slack.com/services/T0/B0/"
+                       "SECRET-path?token=SECRET-q")
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert "SECRET" not in out
+    assert "MENDWRIGHT_WEBHOOK_URL=https://hooks.slack.com" in out
 
 
 def test_doctor_scrubs_secrets_from_a_provider_error(capsys, monkeypatch):

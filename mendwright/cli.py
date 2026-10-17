@@ -8,12 +8,14 @@
                          accept or reject one
     mendwright model     download and set up mendwright's local selector model
     mendwright check     load each key's last page and say which saved selectors broke
+    mendwright notify    post a summary of one run to a webhook (Slack or JSON)
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
 Nothing here imports a browser library or calls a model, except `mendwright demo --live`,
 which asks the provider from the environment. `mendwright check` launches a headless
-Playwright browser (see mendwright.drift_session), and calls no model either.
+Playwright browser (see mendwright.drift_session), and calls no model either. `mendwright
+notify` makes one POST, to the URL in MENDWRIGHT_WEBHOOK_URL, and never prints that URL.
 """
 
 from __future__ import annotations
@@ -47,10 +49,10 @@ PROVIDER_VARS = (
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
                  'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID')
-# MENDWRIGHT_* variables that hold a URL whose path or query can be a secret: doctor shows
-# scheme and host only.
-_ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY',)
-_SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
+# MENDWRIGHT_* variables that hold a URL whose path or query can be a secret (a webhook's
+# path is its key): doctor shows scheme and host only.
+_ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY', 'MENDWRIGHT_WEBHOOK_URL')
+_SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL', 'WEBHOOK')
 
 REPORT_FORMATS = ('text', 'md', 'json', 'html')
 FIX_FORMATS = ('text', 'json', 'md')
@@ -253,7 +255,7 @@ def _env_info():
             from .journal import valid_run_id
             out[name] = value if valid_run_id(value) else repr(value)   # no escape reaches a terminal
         elif name.upper() in _SHOWN_VALUES:
-            out[name] = value
+            out[name] = _scrub(value)   # a secret pasted into the wrong variable stays hidden
         else:
             out[name] = '(set, value hidden)'
     return out
@@ -905,6 +907,203 @@ def cmd_fix(args):
     for error in result.errors:
         _err('mendwright fix: ' + error)
     return 1 if result.errors or failed else 0
+
+
+# --- notify ----------------------------------------------------------------------------
+
+NOTIFY_FORMATS = ('slack', 'json')
+NOTIFY_WHEN = ('changes', 'attention', 'always')
+NOTIFY_DETAIL = ('keys', 'counts')
+# GitHub's job results and run conclusions, which --tests takes.
+TEST_RESULTS = ('success', 'failure', 'cancelled', 'skipped', 'neutral', 'timed_out',
+                'action_required', 'stale', 'startup_failure')
+MAX_NOTIFY_URL = 2048
+
+
+def _run_option(value):
+    from .journal import valid_run_id
+    if not valid_run_id(value):
+        raise argparse.ArgumentTypeError(
+            "a run id is 1 to 100 letters, digits, '.', '_', ':', '/' or '-', starting with a "
+            'letter or digit, got ' + repr(value))
+    return value
+
+
+def _since_option(value):
+    from .runsummary import parse_time
+    try:
+        return parse_time(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            'takes an ISO 8601 time with a time zone, such as 2026-10-16T05:00:00Z, got '
+            + repr(value)) from None
+
+
+def _timeout_option(value):
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = None
+    if seconds is None or not 1 <= seconds <= 30:
+        raise argparse.ArgumentTypeError('takes 1 to 30 seconds, got ' + repr(value))
+    return seconds
+
+
+def _link_option(value):
+    from .notify import url_problem
+    if len(value) > MAX_NOTIFY_URL or url_problem(value):
+        raise argparse.ArgumentTypeError('takes an https:// URL (http:// only for localhost), '
+                                         'got ' + repr(value[:200]))
+    return value
+
+
+def _escape_command(text):
+    return str(text).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+
+
+def _default_run_url(env):
+    """This run's page on GitHub Actions, or None."""
+    from .notify import url_problem
+    server, repo, run = (env.get('GITHUB_SERVER_URL'), env.get('GITHUB_REPOSITORY'),
+                         env.get('GITHUB_RUN_ID'))
+    if env.get('GITHUB_ACTIONS') != 'true' or not (server and repo and run and run.isdigit()):
+        return None
+    url = server.rstrip('/') + '/' + repo + '/actions/runs/' + run
+    return url if not url_problem(url) and len(url) <= MAX_NOTIFY_URL else None
+
+
+def _journal_lines(path, seen):
+    """The events of the journal at path, one line at a time, oldest first: what
+    _read_journal() gives, without holding them all. seen['run'] becomes True once an event
+    has a run id."""
+    try:
+        handle = open(path, encoding='utf-8', errors='replace')
+    except OSError:
+        return
+    with handle:
+        try:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and isinstance(event.get('event'), str):
+                    seen['events'] += 1
+                    if isinstance(event.get('run'), str):
+                        seen['run'] = True
+                    yield event
+        except OSError:
+            pass
+
+
+def cmd_notify(args, *, http=None, sleep=None, clock=None):
+    """mendwright notify: summarize one run of journal.jsonl and POST it to the webhook in
+    MENDWRIGHT_WEBHOOK_URL. A failure to send exits 0 unless --fail-on-error: an alert must
+    never fail the tests. http, sleep and clock are for the tests."""
+    import time
+
+    from . import notify, runsummary
+    from .journal import run_id, run_id_problem
+    env = os.environ
+    url = (env.get('MENDWRIGHT_WEBHOOK_URL') or '').strip() if not args.dry_run else ''
+
+    def say(text):
+        return notify.mask(text, url)
+
+    def refuse(text):
+        text = say(text)
+        _err(text)
+        if env.get('GITHUB_ACTIONS') == 'true':
+            _out('::warning title=mendwright notify::' + _escape_command(text))
+        return 1 if args.fail_on_error else 0
+
+    store = (os.path.abspath(os.path.expanduser(args.store)) if args.store
+             else default_store_path())
+    journal = os.path.join(os.path.dirname(store), 'journal.jsonl')
+    if not os.path.isfile(journal):
+        return refuse('mendwright notify: no journal at ' + journal + ', so there is nothing to '
+                      'summarize. Run your tests with mendwright first, or pass --store.')
+    run = args.run
+    if run is None and args.since is None and not args.all:
+        value, source, bad = run_id()
+        if value is None:
+            return refuse('mendwright notify: no run to summarize. Pass --run, --since or --all, '
+                          'or set MENDWRIGHT_RUN_ID where the tests and this command run.'
+                          + (' ' + run_id_problem(bad) if bad is not None else ''))
+        # On GitHub Actions, the run without its attempt: the highest attempt in the journal.
+        run = value.rsplit('.', 1)[0] if source == 'github' else value
+    seen = {'run': False, 'events': 0}
+    events, label = runsummary.select(_journal_lines(journal, seen), run=run, since=args.since,
+                                      all=args.all)
+    if run is not None and not events and seen['events'] and not seen['run']:
+        bad = run_id()[2]
+        return refuse('mendwright notify: no event in ' + journal + ' has a run id, so mendwright '
+                      'cannot tell which of them are ' + label + '. Run the tests with mendwright '
+                      '0.10.0 or later, which gives each event the run id of GitHub Actions or '
+                      'MENDWRIGHT_RUN_ID, or pass --since or --all.'
+                      + (' ' + run_id_problem(bad) if bad is not None else ''))
+    summary = runsummary.summarize(events)
+    title = args.title
+    if title is None:
+        title = env.get('GITHUB_REPOSITORY') or os.path.basename(
+            os.path.dirname(os.path.dirname(store)))
+    run_url = args.run_url if args.run_url is not None else _default_run_url(env)
+    from .journal import _now_iso
+    now = (clock or _now_iso)()
+    body = notify.payload(summary, fmt=args.format, detail=args.detail, title=title,
+                          run_url=run_url, pr_url=args.pr_url, tests=args.tests, now=now,
+                          run=label[len('run '):] if label.startswith('run ') else None)
+    tests = args.tests
+    if args.when == 'changes':
+        wanted = summary['changed']
+        nothing = 'nothing was repaired and nothing needs a human'
+    elif args.when == 'attention':
+        wanted = bool(summary['needs_human']) or (tests is not None and tests != 'success')
+        nothing = 'nothing needs a human' + (', and the tests passed' if tests == 'success'
+                                             else '')
+    else:
+        wanted, nothing = True, ''
+    when_no = ('mendwright notify: nothing to send for ' + label + ': ' + nothing
+               + ' (--when ' + args.when + ').')
+    if args.dry_run:
+        _out(json.dumps(json.loads(body.decode('utf-8')), indent=2, ensure_ascii=True))
+        if not wanted:
+            _err(when_no)
+        return 0
+    if not url:
+        return refuse('mendwright notify: MENDWRIGHT_WEBHOOK_URL is not set, so nothing was sent.')
+    if notify.url_problem(url):
+        return refuse('mendwright notify: the webhook URL in MENDWRIGHT_WEBHOOK_URL must start '
+                      'with https:// (http:// only for localhost), so nothing was sent.')
+    if not wanted:
+        _out(when_no)
+        return 0
+    where = notify.origin(url)
+    result = notify.send(url, body, http=http, timeout=args.timeout,
+                         sleep=sleep or time.sleep)
+    if result.ok:
+        _out(say('mendwright notify: sent the summary of ' + label + ' to ' + where + ' (HTTP '
+                 + str(result.status) + ').'))
+        return 0
+    tries = ', tried ' + str(result.attempts) + ' times' if result.attempts > 1 else ''
+    if result.error == 'redirect':
+        return refuse('mendwright notify: the webhook at ' + where + ' answered HTTP '
+                      + str(result.status) + ', a redirect, which mendwright does not follow. '
+                      'Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.')
+    if result.error == 'http':
+        detail = ' (' + result.detail + ')' if result.detail else ''
+        check = (' Check the URL in MENDWRIGHT_WEBHOOK_URL.'
+                 if result.status in (400, 401, 403, 404, 410) else '')
+        return refuse('mendwright notify: the webhook at ' + where + ' answered HTTP '
+                      + str(result.status) + detail + (tries and ' (' + tries[2:] + ')')
+                      + '. Nothing was sent.' + check)
+    why = ('timed out after ' + format(args.timeout, 'g') + ' s' if result.error == 'timeout'
+           else result.detail or 'the connection failed')
+    return refuse('mendwright notify: could not reach the webhook at ' + where + ' (' + why
+                  + tries + '). Nothing was sent.')
 
 
 # --- check -----------------------------------------------------------------------------
@@ -1659,6 +1858,54 @@ def build_parser():
     check.add_argument('--quiet', action='store_true',
                        help='list only the keys that are not ok, and the summary')
     check.set_defaults(handler=cmd_check)
+
+    notify_ = sub.add_parser(
+        'notify', help='post a summary of one run to a webhook (Slack or JSON)',
+        description='Summarize the events of one run in journal.jsonl: how many selectors '
+                    'were repaired and how, the interruptions and popups handled, and what '
+                    'needs a human. Then POST it to the webhook in MENDWRIGHT_WEBHOOK_URL, '
+                    'which is never printed. The summary holds counts, codes, mendwright\'s '
+                    'own phrases and key names (none with --detail counts): never page HTML, '
+                    'input values, selectors or the model\'s reasons. A webhook that fails '
+                    'does not fail the command: it exits 0 unless --fail-on-error.')
+    notify_.add_argument('--store', metavar='PATH',
+                         help='the override store file (default: MENDWRIGHT_STORE, else '
+                              './.mendwright/overrides.json); only journal.jsonl next to it is '
+                              'read')
+    which = notify_.add_mutually_exclusive_group()
+    which.add_argument('--run', metavar='ID', type=_run_option,
+                       help='the run id of the events (default: MENDWRIGHT_RUN_ID, or on '
+                            'GitHub Actions this run); gh-<digits> takes its highest attempt')
+    which.add_argument('--since', metavar='TIME', type=_since_option,
+                       help='the events at or after an ISO 8601 time with a time zone')
+    which.add_argument('--all', action='store_true', help='every event of the journal')
+    notify_.add_argument('--format', choices=NOTIFY_FORMATS, default='slack',
+                         help='slack (default): {"text": ...} for Slack and the services that '
+                              'take its format; json: a JSON document for any receiver')
+    notify_.add_argument('--when', choices=NOTIFY_WHEN, default='changes',
+                         help='changes (default): send when something was repaired or needs a '
+                              'human; attention: when something needs a human or the tests '
+                              'did not pass; always')
+    notify_.add_argument('--detail', choices=NOTIFY_DETAIL, default='keys',
+                         help='keys (default) names the keys; counts names none')
+    notify_.add_argument('--title', metavar='TEXT',
+                         help='the name the message starts with (default: GITHUB_REPOSITORY, '
+                              "else the name of the folder that holds the store's folder)")
+    notify_.add_argument('--run-url', metavar='URL', type=_link_option,
+                         help="the run's page (default on GitHub Actions: this run's)")
+    notify_.add_argument('--pr-url', metavar='URL', type=_link_option,
+                         help='a pull request to link, such as the one the GitHub Action opened')
+    notify_.add_argument('--tests', choices=TEST_RESULTS, metavar='RESULT',
+                         help='how the tests ended, such as success or failure '
+                              '(pass needs.test.result)')
+    notify_.add_argument('--timeout', type=_timeout_option, default=10.0, metavar='SECONDS',
+                         help='seconds per attempt, 1 to 30 (default: 10)')
+    notify_.add_argument('--dry-run', action='store_true',
+                         help='print the payload and send nothing (MENDWRIGHT_WEBHOOK_URL is '
+                              'not read)')
+    notify_.add_argument('--fail-on-error', action='store_true',
+                         help='exit 1 when nothing could be sent, for any reason but --when')
+    notify_.set_defaults(handler=cmd_notify)
 
     lists = sub.add_parser(
         'lists', help='check the list heals heal.locator_all(nonempty=True) proposed',
