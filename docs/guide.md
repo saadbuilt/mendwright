@@ -2574,7 +2574,7 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 | No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
 | Bad arguments | argparse's message | 2 |
 
-Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host; the URL, its path and its query are written as `***` wherever they would show, an error body included (of which the first 100 characters are shown, without control characters). HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
+Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host. Of an error body it shows only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL, and leaves any other body out, since a receiver can quote its key in it. The URL, its path, its query, its user info, and each path segment and query value of 8 characters or more are written as `***` wherever they would show, in any case, as they are and percent-decoded, percent-encoded and JSON-escaped. HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
 
 ## Low-level API
 

@@ -399,13 +399,14 @@ def test_an_unset_url_sends_nothing(store, capsys):
 
 
 @pytest.mark.parametrize('answers, err, tries, slept', [
+    ([(404, b'no_service\n')], 'answered HTTP 404 (no_service). Nothing was sent. Check the URL '
+     'in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(404, b'no_service ' + URL.encode() + b' \x1b[31m')],
-     'answered HTTP 404 (no_service *** [31m). Nothing was sent. Check the URL in '
-     'MENDWRIGHT_WEBHOOK_URL.', 1, []),
+     'answered HTTP 404. Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(400, b'invalid_payload')], 'answered HTTP 400 (invalid_payload). Nothing was sent. Check '
      'the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
     ([(500, PATH.encode()), (500, b'still down')],
-     'answered HTTP 500 (still down) (tried 2 times). Nothing was sent.', 2, [2.0]),
+     'answered HTTP 500 (tried 2 times). Nothing was sent.', 2, [2.0]),
     ([(503, b''), (503, b'')], 'answered HTTP 503 (tried 2 times). Nothing was sent.', 2, [2.0]),
     ([(302, b'')], 'answered HTTP 302, a redirect, which mendwright does not follow. Nothing was '
      'sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.', 1, []),
@@ -466,18 +467,18 @@ def test_bad_arguments_are_a_usage_error(store, value, capsys):
     assert cli.main(['notify', '--format', 'teams']) == 2
 
 
-def test_on_github_actions_each_error_is_also_a_warning(store, monkeypatch, capsys):
+def test_on_github_actions_each_error_is_also_a_warning(tmp_path, monkeypatch, capsys):
+    store = tmp_path / '100% gone' / '.mendwright' / 'overrides.json'     # and no journal
     monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', URL)
-    hook = Hook((404, b'100% gone\nnext line'))
-    run_notify(['--store', str(store), '--run', RUN], hook)
+    run_notify(['--store', str(store), '--run', RUN])
     out = capsys.readouterr()
-    assert out.out == '' and out.err.startswith('mendwright notify: the webhook at ')
+    assert out.out == '' and out.err.startswith('mendwright notify: no journal at ')
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
-    run_notify(['--store', str(store), '--run', RUN], Hook((404, b'100% gone\nnext line')))
+    run_notify(['--store', str(store), '--run', RUN])
     out = capsys.readouterr()
     line = out.err.rstrip('\n')
     assert out.out == ('::warning title=mendwright notify::' + line.replace('%', '%25') + '\n')
-    assert '100%25 gone next line' in out.out
+    assert '100%25 gone' in out.out
 
 
 def test_the_default_title_and_run_url_on_github_actions(store, monkeypatch):
@@ -509,6 +510,47 @@ def test_mask_takes_the_url_its_path_and_query_out():
     text = notify.mask('x ' + url + ' /p/a/t/h token=abc user:pw', url)
     assert text == 'x *** *** *** ***'
     assert notify.mask('a / b', 'https://h.example/') == 'a / b'   # a path of one character stays
+
+
+# An n8n production webhook: its id is its key, and n8n names it in a 404 when its workflow
+# is not active.
+HOOK_ID = '0d4f7e5c-1a2b-4c3d-8e9f-0123456789ab'
+N8N = 'https://n8n.example.com/webhook/' + HOOK_ID + '?key=QuErYsEcReT&v=1'
+N8N_404 = json.dumps({'code': 404, 'message': 'The requested webhook "POST ' + HOOK_ID + '" is '
+                      'not registered.', 'hint': 'The workflow must be active.'})
+
+
+@pytest.mark.parametrize('text', [
+    N8N_404,
+    'no hook ' + HOOK_ID.upper(),
+    'key QuErYsEcReT is wrong',
+    'key querysecret is wrong',
+    json.dumps({'url': N8N}).replace('/', '\\/'),        # PHP's json_encode() escapes /
+    'https%3A%2F%2Fn8n.example.com%2Fwebhook%2F' + HOOK_ID,
+])
+def test_mask_takes_each_long_part_of_the_url_out_in_every_form(text):
+    masked = notify.mask(text, N8N).lower()
+    assert '0d4f7e5c' not in masked and 'querysecret' not in masked
+
+
+@pytest.mark.parametrize('body', [
+    N8N_404.encode(),
+    b'invalid_token: ' + HOOK_ID.encode(),
+    b'bad key QuErYsEcReT',
+    json.dumps({'u': N8N}).replace('/', '\\/').encode(),
+    b'Forbidden',
+    b'webhook',             # one word, but a part of the URL
+    b'querysecret',
+])
+def test_an_error_body_is_shown_only_as_one_word_that_is_no_part_of_the_url(store, monkeypatch,
+                                                                           capsys, body):
+    monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', N8N)
+    assert run_notify(['--store', str(store), '--run', RUN], Hook((404, body))) == 0
+    assert capsys.readouterr().err == ('mendwright notify: the webhook at '
+                                       'https://n8n.example.com answered HTTP 404. Nothing was '
+                                       'sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.\n')
+    result = notify.send(N8N, b'{}', http=Hook((404, b' no_service\n')), sleep=lambda s: None)
+    assert result.detail == 'no_service'
 
 
 class _Server(http.server.BaseHTTPRequestHandler):

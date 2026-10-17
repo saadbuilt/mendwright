@@ -1911,6 +1911,50 @@ def _summary_section(world):
     return text[text.index('### This run'):]
 
 
+def _unmasked(out):
+    """What a step printed, but its ::add-mask:: lines."""
+    return '\n'.join(line for line in out.splitlines() if not line.startswith('::add-mask::'))
+
+
+@pytest.mark.parametrize('url', [
+    'https://hooks.slack.com/services/T0AB12CD3/B0EF45GH6/WeBhOoKsEcReT0123456789',
+    'https://n8n.example.com/webhook/0d4f7e5c-1a2b-4c3d-8e9f-0123456789ab',
+    'https://user:pa%40ss@hooks.example/a/b%2Fc/LongEnoughSegment?token=QuErYsEcReT&v=1;x=Ab12Cd34Ef',
+    'https://hooks.example/x?OnlyAKeyNoValue',
+    ' https://hooks.example/été-été-hook "quoted" \n',
+    'https://h.example/',
+    'not a url at all, with spaces',
+    'https://[::1/x',
+    '',
+])
+def test_the_runner_masks_what_mendwright_notify_masks(url):
+    from mendwright import notify
+    assert set(ma.webhook_secrets(url)) == set(notify.secret_texts(url))
+    secrets = ma.webhook_secrets(url)
+    assert len(secrets) == len(set(secrets)) and (not url or secrets[0] == url)
+
+
+def test_a_webhook_that_names_its_key_in_an_error_never_puts_it_in_the_log(world):
+    # n8n answers so for a production webhook whose workflow is not active.
+    hook_id = '0d4f7e5c-1a2b-4c3d-8e9f-0123456789ab'
+    body = json.dumps({'code': 404, 'message': 'The requested webhook "POST ' + hook_id + '" is '
+                       'not registered.', 'hint': 'The workflow must be active.'}).encode()
+
+    class _N8n:
+        def post(self, url, data, headers, timeout):
+            return 404, body
+    _with_run_ids(world)
+    world.inputs['webhook-url'] = 'https://n8n.example.com/webhook/' + hook_id
+    world.webhook_http = _N8n()
+    steps = world.run()
+    code, out, outputs = steps['notify']
+    assert code == 0 and outputs['notified'] == 'false'
+    assert '::add-mask::' + hook_id in out.splitlines()
+    assert ('::warning::mendwright notify: the webhook at https://n8n.example.com answered HTTP '
+            '404. Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.') in out
+    assert '0d4f7e5c' not in _unmasked(out) and '0d4f7e5c' not in world.summary()
+
+
 def test_the_alert_goes_out_after_the_pull_request_and_the_url_is_never_printed(world, webhook):
     _with_run_ids(world, extra=[{'ts': T1, 'event': 'heal.declined', 'run': 'gh-100.1',
                                  'key': 'pay', 'code': 'destructive',
@@ -1922,9 +1966,11 @@ def test_the_alert_goes_out_after_the_pull_request_and_the_url_is_never_printed(
     assert code == 0 and outputs['notified'] == 'true'
     # The URL is masked before anything else is printed, and printed nowhere.
     lines = out.splitlines()
-    assert lines[:2] == ['::add-mask::' + webhook, '::add-mask::' + WEBHOOK_PATH]
+    masks = ['::add-mask::' + ma.escape_data(v) for v in ma.webhook_secrets(webhook)]
+    assert lines[:len(masks)] == masks and masks[0] == '::add-mask::' + webhook
+    assert '::add-mask::' + WEBHOOK_PATH in masks and '::add-mask::WeBhOoKsEcReT' in masks
     for name, (_, text, values) in steps.items():
-        rest = text.splitlines()[2:] if name == 'notify' else text.splitlines()
+        rest = text.splitlines()[len(masks):] if name == 'notify' else text.splitlines()
         assert not any('WeBhOoKsEcReT' in line for line in rest), name
         assert not any('WeBhOoKsEcReT' in str(v) for v in values.values()), name
     assert 'WeBhOoKsEcReT' not in world.summary()
@@ -1962,10 +2008,10 @@ def test_a_failed_webhook_never_fails_the_job(world, webhook):
     assert world.sleeps == [2.0]              # one retry, after the action's own sleep
     assert len(_Webhook.seen) == 2
     assert ('::warning::mendwright notify: the webhook at http://127.0.0.1:' in out)
-    assert 'WeBhOoKsEcReT' not in '\n'.join(out.splitlines()[2:]) + world.summary()
+    assert 'WeBhOoKsEcReT' not in _unmasked(out) + world.summary()
     section = _summary_section(world)
     assert 'No alert was sent: `the webhook at http://127.0.0.1:' in section
-    assert 'answered HTTP 500 (bad ***) (tried 2 times). Nothing was sent.`' in section
+    assert 'answered HTTP 500 (tried 2 times). Nothing was sent.`' in section
 
 
 def test_an_unreachable_webhook_or_a_refused_url_never_fails_the_job(world):
@@ -1979,7 +2025,7 @@ def test_an_unreachable_webhook_or_a_refused_url_never_fails_the_job(world):
         steps = world.run()
         code, out, outputs = steps['notify']
         assert code == 0 and outputs['notified'] == 'false', url
-        assert said in out and 'SeCrEtHoOk' not in '\n'.join(out.splitlines()[2:])
+        assert said in out and 'SeCrEtHoOk' not in _unmasked(out)
         assert 'SeCrEtHoOk' not in world.summary()
 
 
