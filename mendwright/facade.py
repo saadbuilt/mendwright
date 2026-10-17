@@ -58,7 +58,7 @@ from .gate import live_reason
 from .interruptions import (COOKIE_BANNER_KEY, COOKIE_CHOICES, Budget, InterruptionEvent,
                             cookie_choice_error, cookie_preset, function_name,
                             make_interruption, nth_targets, precise_selectors)
-from .journal import Journal
+from .journal import Journal, run_id, run_id_problem
 from .limits import Guardrails, RateLimiter
 from .lists import item_role, placed as placed_list, valid as valid_list
 from .providers import GatewayProvider
@@ -448,6 +448,11 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
     off_by = _fingerprint_off_by(fingerprint)
     fingerprint = fingerprint_setting(fingerprint)
+    # A run id only groups journal lines, so a MENDWRIGHT_RUN_ID that is not one must not
+    # fail the tests: it is ignored, and said once per open().
+    bad_run_id = run_id()[2]
+    if bad_run_id is not None:
+        logger.warning('mendwright: ' + run_id_problem(bad_run_id))
 
     if _env_flag('MENDWRIGHT_DISABLE'):
         provider = _NullProvider(DISABLED_REASON)

@@ -46,7 +46,10 @@ PROVIDER_VARS = (
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
-                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY')
+                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID')
+# MENDWRIGHT_* variables that hold a URL whose path or query can be a secret: doctor shows
+# scheme and host only.
+_ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY',)
 _SECRET_WORDS = ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'AUTH', 'CREDENTIAL')
 
 REPORT_FORMATS = ('text', 'md', 'json', 'html')
@@ -244,8 +247,11 @@ def _env_info():
         if not name.upper().startswith('MENDWRIGHT_'):
             continue
         value = os.environ[name]
-        if name.upper() == 'MENDWRIGHT_GATEWAY':
+        if name.upper() in _ORIGIN_ONLY:
             out[name] = _origin(value)
+        elif name.upper() == 'MENDWRIGHT_RUN_ID':
+            from .journal import valid_run_id
+            out[name] = value if valid_run_id(value) else repr(value)   # no escape reaches a terminal
         elif name.upper() in _SHOWN_VALUES:
             out[name] = value
         else:
@@ -265,7 +271,18 @@ def _settings_problems():
         _env_timeout()
     except ValueError as exc:
         problems.append(str(exc))
+    from .journal import run_id, run_id_problem
+    bad = run_id()[2]
+    if bad is not None:
+        problems.append(run_id_problem(bad))
     return problems
+
+
+def _run_info():
+    """The run id journal events get in this environment, and where it comes from."""
+    from .journal import run_id
+    value, source, _bad = run_id()
+    return {'id': value, 'source': source}
 
 
 def collect_doctor():
@@ -283,6 +300,7 @@ def collect_doctor():
         'fingerprint': _fingerprint_info(),
         'get_by': _get_by_info(),
         'store': _store_info(),
+        'run': _run_info(),
         'env': _env_info(),
         'problems': [_scrub(p) for p in _settings_problems()],
     }
@@ -388,6 +406,14 @@ def _doctor_text(d):
     else:
         lines.append('  ' + str(s['checked'] or s['folder']) + ' is NOT writable, so heals '
                      'stay in memory. Set MENDWRIGHT_STORE to a writable path.')
+    run = d.get('run') or {}
+    if run.get('id'):
+        lines.append('  run id for the journal: ' + run['id'] + (
+            ' (from GitHub Actions)' if run.get('source') == 'github'
+            else ' (from MENDWRIGHT_RUN_ID)'))
+    else:
+        lines.append("  run id for the journal: none (set MENDWRIGHT_RUN_ID to group a run's "
+                     'events)')
     lines.append('')
 
     lines.append('Environment')

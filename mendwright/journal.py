@@ -1,10 +1,14 @@
 """Append-only JSONL event journal for heal activity: one line per event
-(heal.requested / proposed / rejected / applied / canary / quarantine, heal.held for a list
-found for heal.locator_all(..., nonempty=True) and saved for a person to check, not used,
-heal.accepted when a person accepted one with mendwright lists accept, and for flow
-changes flow.interrupt / dismiss / skip / page_guard / step), recording the provider,
-model, latency and token counts when they are known. Writing is best-effort and
-never raises, so a bad path or a full disk cannot break a heal in progress.
+(heal.requested / proposed / rejected / applied / canary / quarantine, heal.declined when a
+heal was not tried or did not apply, heal.held for a list found for heal.locator_all(...,
+nonempty=True) and saved for a person to check, not used, heal.accepted when a person
+accepted one with mendwright lists accept, and for flow changes flow.interrupt / dismiss /
+skip / page_guard / step / stop), recording the provider, model, latency and token counts
+when they are known. Writing is best-effort and never raises, so a bad path or a full disk
+cannot break a heal in progress.
+
+Every line carries a run id in ``run`` when one is known (see run_id): MENDWRIGHT_RUN_ID,
+or on GitHub Actions gh-<run id>.<attempt>. mendwright notify picks a run's events by it.
 
 The journal writes only the fields the caller passes: keys, selectors, provider and model
 names, latency, reasons, and the model's reasoning text (which can quote the page). It
@@ -19,6 +23,7 @@ mendwright never has to special-case "no journal".
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,16 +42,62 @@ FLOW_DISMISS = 'flow.dismiss'         # a popup nobody registered was dismissed 
 FLOW_SKIP = 'flow.skip'               # a step was skipped instead of healed
 FLOW_PAGE_GUARD = 'flow.page_guard'   # a heal was declined: the page is not one the key was found on
 FLOW_STEP = 'flow.step'               # run_steps() ran a step, or one failed or never showed
+DECLINED = 'heal.declined'            # a heal was not tried or did not apply, with a code
+FLOW_STOP = 'flow.stop'               # mendwright raised because a flow cannot go on
 
 # Default journal location, relative to the process cwd (like the override store's path).
 DEFAULT_PATH = '.mendwright/journal.jsonl'
 
-# ts/event frame the line; a stray field of the same name must never overwrite them.
-_FRAME = ('ts', 'event')
+# ts/event/run frame the line; a stray field of the same name must never overwrite them.
+_FRAME = ('ts', 'event', 'run')
+
+# A run id: 1 to 100 letters, digits, '.', '_', ':', '/' or '-', starting with a letter or
+# digit. fullmatch, so a trailing newline is not taken for the end of the text.
+RUN_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}')
+_DIGITS = re.compile(r'[0-9]+')
+# Journal(run=...)'s default: read the id from the environment (see run_id).
+_FROM_ENV = object()
 
 
 def _now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def valid_run_id(value):
+    """True when value is a run id mendwright takes (see RUN_ID)."""
+    return isinstance(value, str) and RUN_ID.fullmatch(value) is not None
+
+
+def run_id(environ=None):
+    """(id, source, bad): the run id journal events get, where it came from
+    ('MENDWRIGHT_RUN_ID', 'github' or None), and MENDWRIGHT_RUN_ID's value when it is set
+    but not a run id (else None), which is then ignored as if unset.
+
+    MENDWRIGHT_RUN_ID comes first. On GitHub Actions (GITHUB_ACTIONS is 'true' and
+    GITHUB_RUN_ID is all digits) the id is gh-<GITHUB_RUN_ID>.<GITHUB_RUN_ATTEMPT>, attempt 1
+    when GITHUB_RUN_ATTEMPT is missing or not digits. Otherwise there is none."""
+    env = os.environ if environ is None else environ
+    bad = None
+    value = env.get('MENDWRIGHT_RUN_ID') or ''
+    if value:
+        if valid_run_id(value):
+            return value, 'MENDWRIGHT_RUN_ID', None
+        bad = value
+    number = env.get('GITHUB_RUN_ID') or ''
+    if env.get('GITHUB_ACTIONS') == 'true' and _DIGITS.fullmatch(number):
+        attempt = env.get('GITHUB_RUN_ATTEMPT') or ''
+        attempt = str(int(attempt)) if _DIGITS.fullmatch(attempt) else '1'
+        return 'gh-' + str(int(number)) + '.' + attempt, 'github', bad
+    return None, None, bad
+
+
+def run_id_problem(value):
+    """What is wrong with ``value``, a MENDWRIGHT_RUN_ID that is not a run id. open() logs it
+    as a WARNING, and doctor and notify say it too."""
+    shown = value if len(value) <= 120 else value[:120] + '...'
+    return ("MENDWRIGHT_RUN_ID must be 1 to 100 letters, digits, '.', '_', ':', '/' or '-', "
+            'starting with a letter or digit, got ' + repr(shown) + '. It is ignored, so '
+            'journal events get no run id from it.')
 
 
 # Windows CreateFileW arguments for an append-only handle.
@@ -143,6 +194,12 @@ class _BaseJournal:
     def stepped(self, key=None, **f):
         return self.event(FLOW_STEP, key=key, **f)
 
+    def declined(self, key=None, **f):
+        return self.event(DECLINED, key=key, **f)
+
+    def stopped(self, key=None, **f):
+        return self.event(FLOW_STOP, key=key, **f)
+
 
 class NullJournal(_BaseJournal):
     """The default journal: every event is a no-op. No disk, no cost, no failure surface."""
@@ -158,11 +215,26 @@ class Journal(_BaseJournal):
     never raises into the caller, so observability failures stay silent.
 
     ``clock`` is injectable for deterministic tests; the default is a UTC ISO timestamp.
+    ``run`` is the run id every line gets, right after ``event``: by default the one the
+    environment gives when the journal is made (see run_id), None for none, or a run id.
+    A MENDWRIGHT_RUN_ID that is not a run id is ignored here; open() logs why.
     """
 
-    def __init__(self, path=DEFAULT_PATH, *, clock=_now_iso):
+    def __init__(self, path=DEFAULT_PATH, *, clock=_now_iso, run=_FROM_ENV):
         self._path = Path(path)
         self._clock = clock
+        if run is _FROM_ENV:
+            run = run_id()[0]
+        elif run is not None and not valid_run_id(run):
+            raise ValueError('Journal(run=...) takes None or a run id: 1 to 100 letters, '
+                             "digits, '.', '_', ':', '/' or '-', starting with a letter or "
+                             'digit, got ' + repr(run) + '.')
+        self._run = run
+
+    @property
+    def run(self):
+        """The run id every line gets, or None."""
+        return self._run
 
     # ``name`` is positional-only so a caller/helper field literally called "name" lands
     # in **extra as data instead of colliding with this parameter.
@@ -174,6 +246,8 @@ class Journal(_BaseJournal):
         and ``0`` are kept (a canary ``success=False`` or ``latency_ms=0`` is real data)."""
         try:
             record = {'ts': now or self._clock(), 'event': name}
+            if self._run is not None:
+                record['run'] = self._run
             for field, value in (('key', key), ('provider', provider), ('model', model),
                                  ('latency_ms', latency_ms), ('tokens', tokens)):
                 if value is not None:
