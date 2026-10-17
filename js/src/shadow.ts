@@ -37,6 +37,32 @@ export function hostsOf(candidate: Candidate | null | undefined): Hosts {
   return candidate && typeof candidate === 'object' ? savedHosts(candidate[HOSTS]) : [];
 }
 
+// A shadow host's selector as the Python package's shadow.host_selector builds it: its tag
+// with one of fingerprint.HOST_ATTRS and a value in css.css_string's quoting, or a custom
+// element's tag alone.
+const HOST_ATTRS = 'data-testid|data-test-id|data-test|data-qa|data-cy|data-e2e|data-automation-id|id|name';
+const BUILT_HOST = new RegExp(String.raw`^(?:[a-z][a-z0-9_-]*\[(?:${HOST_ATTRS})=`
+  + String.raw`"(?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*"\]|[a-z][a-z0-9_]*-[a-z0-9_-]*)$`);
+
+/** The shadow hosts that a heal the Python package saved inside a shadow root names in its
+ * text, for one that has lost its shadowHosts: the Python package 0.9.0 drops every
+ * shadowHosts when it writes the store, a candidate's as well as the key's (Python's
+ * shadow.chain_hosts). [] unless the candidate is a heal with no frameXPath and no
+ * shadowHosts field, whose text is the chain of hosts of the form the Python package builds
+ * and a CSS selector. No other heal has ' >> ' in it. */
+export function chainHosts(candidate: Candidate | null | undefined): string[] {
+  if (!candidate || typeof candidate !== 'object' || candidate.source !== 'heal') return [];
+  if (candidate.frameXPath || HOSTS in candidate) return [];
+  const parts = typeof candidate.xpath === 'string' ? splitText(candidate.xpath) : [];
+  if (parts.length < 2 || !parts.slice(0, -1).every((part) => BUILT_HOST.test(part))) return [];
+  try {
+    if (checkSyntax(parts[parts.length - 1]) !== CSS) return [];
+  } catch {
+    return [];
+  }
+  return parts.slice(0, -1);
+}
+
 /** The shadow root the hosts lead to, in words. */
 export function placeText(hosts: Hosts): string {
   const names = hosts.map((h) => h || 'an element nothing tells apart');

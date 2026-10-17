@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import { beforeEach, describe, test } from 'node:test';
 
 import { AttentionRequired, InvalidSelector } from '../../src/errors';
-import { runTarget, savedHosts, splitText } from '../../src/shadow';
+import { chainHosts, runTarget, savedHosts, splitText } from '../../src/shadow';
 import { loadStore } from '../../src/store';
 import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
 
@@ -151,6 +151,38 @@ describe('a key last found inside a shadow root', () => {
     assert.equal(model.bundles.length, 0);
     assert.deepEqual(heal.heals, []);
     assert.ok(!journalOf(w.dir).some((e) => e.event === 'heal.applied' || e.event === 'heal.requested'));
+  });
+
+  test('is not healed on the page when a 0.9.0 process dropped every shadowHosts', async () => {
+    // 0.9.0 writes back only the fields it knows. The heal's chain still names its host.
+    const w = world(page(LOOKALIKE + shadow(SAVE_V2.replace('"save"', '"save-3"'))));
+    pythonHealed(w.storePath);
+    const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+    delete data.selectors.save.shadowHosts;
+    for (const c of data.selectors.save.candidates) delete c.shadowHosts;
+    fs.writeFileSync(w.storePath, JSON.stringify(data));
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+      /'save' was last found inside the shadow root of my-app\[id="root"\], and mendwright for TypeScript does not heal inside a shadow root yet/);
+    assert.deepEqual(w.page.clicked, []);
+    assert.equal(model.bundles.length, 0);
+    assert.deepEqual(heal.heals, []);
+  });
+
+  test('a chain names its hosts only in a heal the Python package saved inside a shadow root', () => {
+    assert.deepEqual(chainHosts({ xpath: CHAIN, source: 'heal' }), [HOST]);
+    assert.deepEqual(chainHosts({ xpath: HOST + ' >> settings-panel >> .panel > button', source: 'heal' }),
+      [HOST, 'settings-panel']);
+    for (const c of [
+      { xpath: HOST + ' >> #save', source: 'code' },                      // your code passes it
+      { xpath: HOST + ' >> #save', source: 'heal', shadowHosts: [] },     // on the page now
+      { xpath: HOST + ' >> #save', source: 'heal', frameXPath: 'iframe[id="f"]' },
+      { xpath: 'div >> #save', source: 'heal' },                          // not a host it builds
+      { xpath: HOST + ' >> //button', source: 'heal' },
+      { xpath: HOST + ' >> text=Save', source: 'heal' },
+      { xpath: "//button[@id='save']", source: 'heal' },
+    ]) assert.deepEqual(chainHosts(c), [], JSON.stringify(c));
   });
 
   test('a key marked destructive is declined as destructive first', async () => {
