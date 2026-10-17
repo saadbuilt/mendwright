@@ -15,6 +15,13 @@ What it will and will not touch:
   it with mendwright lists accept, and never one that waits for a person to check it.
 - A CSS selector in your code gets the heal's CSS form (mendwright.css) when it has one;
   otherwise the healed XPath.
+- A heal inside an open shadow root (see mendwright.shadow) is written as the Playwright
+  selector chain it is saved as, 'my-app[id="root"] >> #save', and only where the old
+  selector is passed to a Playwright page or locator method in a Python file
+  (page.locator(), page.click() and the other methods of PLAYWRIGHT_CALLS). Anywhere else
+  (heal.locator(), which may run on Selenium, find_element(), another kind of file) it is
+  listed with the chain to write by hand: Selenium's find_element() cannot reach into a
+  shadow root, and a key of heal.driver is never written.
 - Never a key marked destructive (in the store, or with --destructive-key, which reads a
   get_by_* call written in another spelling as the call's key), never a heal that sits
   inside an iframe, never a heal mendwright could not have saved (an XPath lxml cannot
@@ -61,6 +68,7 @@ from dataclasses import dataclass, field
 
 from . import _md, getby
 from .selectors import CSS, XPATH, check_syntax, classify, normalize
+from .shadow import hosts_of, place_text, run_target
 
 # Folders that never hold your code. A folder is skipped by name, at any depth. .github holds
 # workflows and local actions, which a heal must never change.
@@ -106,6 +114,13 @@ _CSS_STRING = r'"(?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*"'
 _CSS_PART = r'(?:\#' + _CSS_IDENT + r'|\.' + _CSS_IDENT + r'|\[' + _CSS_NAME + '=' + _CSS_STRING + r'\])'
 _CSS_COMPOUND = r'(?:' + _CSS_IDENT + _CSS_PART + '*|' + _CSS_PART + '+)'
 _CSS_TWIN = re.compile(_CSS_COMPOUND + '(?: ' + _CSS_COMPOUND + ')?')
+# The selector of a shadow host as mendwright.shadow.host_selector builds it: a tag with one
+# [attribute="value"], or a custom element's tag alone.
+_HOST = re.compile(r'[a-z][a-z0-9_-]*\[' + _CSS_NAME + '=' + _CSS_STRING + r'\]'
+                   r'|[a-z][a-z0-9_]*-[a-z0-9_-]*')
+# The keys heal.driver makes for driver.find_element(by, value): Selenium, whose
+# find_element() cannot reach into a shadow root.
+_SELENIUM_KEYS = ('css selector=', 'id=', 'name=', 'xpath=')
 
 
 # --- the plan: which keys to fix ---------------------------------------------------------
@@ -122,10 +137,13 @@ class Fix:
     list: bool = False          # an accepted list heal (see heal.locator_all(nonempty=True))
     accepted: str | None = None  # when a person accepted it (acceptedAt), for a list heal
     proposal: dict | None = None  # the evidence it was accepted on, for a list heal
+    shadow: tuple = ()          # the shadow hosts of a heal inside a shadow root (new: a chain)
 
     def for_old(self, selector):
         """What replaces one old selector: the CSS form for a CSS selector when there is
-        one, else the healed XPath."""
+        one, else the healed XPath; for a heal inside a shadow root, its Playwright chain."""
+        if self.shadow:
+            return self.new
         if self.css and classify(selector) == CSS:
             return self.css
         return self.new
@@ -154,6 +172,8 @@ class Plan:
     keys_for: dict = field(default_factory=dict)      # old selector -> keys that use it
     ambiguous: dict = field(default_factory=dict)     # old selector -> keys, when ambiguous
     skip_codes: dict = field(default_factory=dict)    # key -> the code of its skip (CODES)
+    shadow_for: dict = field(default_factory=dict)    # old selector -> the shadow hosts of
+    #                                                   its heal, for a heal inside a shadow root
 
     def skip(self, key, code, reason):
         self.skipped.append((key, reason))
@@ -266,6 +286,20 @@ def _could_be_saved(new):
         return False
 
 
+def _shadow_problem(candidate):
+    """Why a heal inside a shadow root is not one mendwright could have saved, or '': its text
+    must be the chain of its hosts and a CSS selector (shadow.run_target), and each host of
+    the form shadow.host_selector builds. The CSS is one mendwright.css builds, or, for a
+    selector followed into the shadow root, the key's own."""
+    try:
+        run_target(candidate)
+    except ValueError as exc:
+        return getattr(exc, 'reason', None) or str(exc)
+    if not all(isinstance(h, str) and _HOST.fullmatch(h) for h in hosts_of(candidate)):
+        return 'its shadow hosts are not selectors mendwright builds'
+    return ''
+
+
 def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
                store_path=None):
     """The Plan for a store (schema-2 dict) and its journal events (oldest first, or an
@@ -329,7 +363,16 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
             continue
         # client.apply() saves only an XPath that lxml compiles, and css.css_selectors() only
         # the forms of _CSS_TWIN: anything else in the store was written by something else.
-        if not _could_be_saved(new):
+        # A heal inside a shadow root is the chain of its hosts and such a CSS selector.
+        shadow = hosts_of(best)
+        problem = _shadow_problem(best) if shadow else ''
+        if problem:
+            plan.skip(key, 'not_a_selector', 'its heal inside a shadow root, ' + repr(new) + ', is '
+                      'not one mendwright saves (' + problem.rstrip('.') + '), so something else '
+                      'wrote it into overrides.json. Check the store; nothing is written for this '
+                      'key.')
+            continue
+        if not shadow and not _could_be_saved(new):
             plan.skip(key, 'not_a_selector', 'its healed selector ' + repr(new) + ' is not an '
                       'XPath that lxml can compile, and mendwright saves only heals that are, so '
                       'something else wrote it into overrides.json. Check the store; nothing is '
@@ -392,6 +435,12 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
                       'entry), so mendwright cannot tell which ones are the selector. Change it by '
                       'hand to: ' + new)
             continue
+        if shadow and key.startswith(_SELENIUM_KEYS):
+            plan.skip(key, 'shadow_driver', 'it comes from driver.find_element() through '
+                      'heal.driver, and its heal sits inside ' + place_text(shadow) + ', which '
+                      "Selenium's find_element() cannot reach. The heal stays in the store, and "
+                      'heal.driver keeps finding the element through it.')
+            continue
         by = next((b for prefix, b in _DRIVER_KEYS if key.startswith(prefix)), None)
         if (by and classify(new) == XPATH and all(classify(s) == CSS for s in old)
                 and not (css and by == 'By.CSS_SELECTOR')):
@@ -409,7 +458,7 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
             continue
         role = entry.get('expectedRole')
         plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None,
-                              css))
+                              None if shadow else css, shadow=tuple(shadow)))
 
     _claim(plan, claims)
     return plan
@@ -552,6 +601,8 @@ def _claim(plan, claims):
                 plan.new_for.pop(selector, None)
             elif selector not in plan.ambiguous:
                 plan.new_for[selector] = fix.for_old(selector)
+                if fix.shadow:
+                    plan.shadow_for[selector] = fix.shadow
 
 
 # --- finding files -----------------------------------------------------------------------
@@ -784,6 +835,17 @@ _BY_VALUES = {v: k for k, v in _BY_NAMES.items()}
 SKIP = 'skip'           # not a selector at all
 CSS_ONLY = 'css'        # a selector, but in a place that cannot run an XPath
 FLOW = 'flow'           # an interruption's selector or a step's landmark: never rewritten
+PLAYWRIGHT = 'playwright'   # the selector of a Playwright page or locator method
+
+# The Playwright Page, Frame and Locator methods that take a selector first. A string passed
+# there runs on Playwright, which a heal inside a shadow root needs (see Fix.shadow).
+PLAYWRIGHT_CALLS = frozenset({
+    'locator', 'click', 'dblclick', 'fill', 'check', 'uncheck', 'set_checked',
+    'select_option', 'press', 'type', 'hover', 'tap', 'focus', 'is_checked', 'is_visible',
+    'is_hidden', 'is_enabled', 'is_disabled', 'is_editable', 'text_content', 'inner_text',
+    'inner_html', 'get_attribute', 'input_value', 'wait_for_selector', 'query_selector',
+    'query_selector_all', 'set_input_files', 'dispatch_event', 'eval_on_selector',
+    'eval_on_selector_all'})
 # Calls whose second argument (or this keyword) is a selector mendwright fix never rewrites:
 # another key's heal written there would make the interruption act on that key's element,
 # or the step wait for it.
@@ -1076,8 +1138,10 @@ def python_contexts(text):
         col = len(line.encode('utf-8')[:node.col_offset].decode('utf-8', 'replace'))
         old = out.get((node.lineno, col))
         # FLOW beats CSS_ONLY: a helper with css in its name can hand the string on to
-        # heal.interrupt(), and the CSS form would be rewritten there just the same.
-        if old is None or (isinstance(old, tuple) and old[0] == CSS_ONLY and context[0] == FLOW):
+        # heal.interrupt(), and the CSS form would be rewritten there just the same. Every
+        # other context beats PLAYWRIGHT, which only says where a shadow chain can go.
+        if old is None or (isinstance(old, tuple) and (
+                old[0] == PLAYWRIGHT or (old[0] == CSS_ONLY and context[0] == FLOW))):
             out[(node.lineno, col)] = context
 
     def by_pair(by_node, value_node):
@@ -1116,6 +1180,10 @@ def python_contexts(text):
             if 'css' in name.lower():
                 for arg in list(args) + [keywords[k] for k in ('value', 'selector') if k in keywords]:
                     mark(arg, (CSS_ONLY, name + '()'))
+            if name in PLAYWRIGHT_CALLS and not keyed and isinstance(node.func, ast.Attribute):
+                target = args[0] if args else keywords.get('selector')
+                if target is not None:
+                    mark(target, (PLAYWRIGHT, name + '()'))
         elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
             by_pair(node.elts[0], node.elts[1])
     if through:
@@ -1457,6 +1525,18 @@ def scan_file(path, plan, result, needles):
         new = plan.new_for[selector]
         if lit.value == new:
             continue
+        hosts = plan.shadow_for.get(selector)
+        if hosts and not (python and context and context[0] == PLAYWRIGHT):
+            result.note('shadow_call', shown, lit.line, shown + ':' + str(lit.line) + ' was not '
+                        'changed: ' + lit.source + ' is the old selector of '
+                        + ', '.join(plan.keys_for[selector]) + ', whose heal sits inside '
+                        + place_text(hosts) + '. Only a Playwright selector chain reaches it, '
+                        'and this string is not passed to a Playwright page or locator method '
+                        '(page.locator(), page.click() and the like). Where it runs on '
+                        'Playwright, change it by hand to: ' + new + ". Selenium's "
+                        'find_element() cannot reach into a shadow root; the heal stays in the '
+                        'store and keeps working.')
+            continue
         if context and context[0] == CSS_ONLY and classify(new) == XPATH:
             result.note('css_only', shown, lit.line, shown + ':' + str(lit.line) + ' was not '
                         'changed: ' + lit.source + ' is passed to ' + context[1] + ', which cannot '
@@ -1772,6 +1852,8 @@ CODES = {
     'list_key': 'is looked up as a list, and its heal is of one element',
     'bare_word': 'has a bare word as its old selector',
     'driver_by': 'comes from a `By` that cannot run the healed XPath',
+    'shadow_driver': 'comes from `driver.find_element()`, and its heal sits inside a shadow '
+                     'root, which `find_element()` cannot reach',
     'unconfirmed': 'its heal was never confirmed',
     'quarantined': 'its newest heal was quarantined',
     'list_proposed': 'has a list heal that waits for you to check it',
@@ -1782,6 +1864,8 @@ CODES = {
     'ambiguous': 'holds a string that belongs to more than one key',
     'not_python': 'could not be read as Python',
     'css_only': 'passes the selector where only CSS runs',
+    'shadow_call': 'passes the selector somewhere other than a Playwright page or locator '
+                   'method, and its heal sits inside a shadow root',
     'no_escape': 'needs escapes mendwright does not know for this kind of file',
     'flow_selector': 'passes the old selector to `heal.interrupt()` or `heal.step(when=)`, which '
                      'mendwright never rewrites',
@@ -1818,7 +1902,7 @@ def _found_by(events, fix):
     source, provider = event.get('source'), event.get('provider')
     if 'fingerprint' in (source, provider):
         tier = 'fingerprint'
-    elif source in ('intent', 'frame'):
+    elif source in ('intent', 'frame', 'shadow'):
         tier = source
     else:
         tier = 'model'
@@ -1888,6 +1972,8 @@ def to_json(result, *, apply, store_path, journal_path, events):
                        if fix.key in r['keys']]}
         if fix.list:
             entry.update(list=True, accepted=fix.accepted)
+        if fix.shadow:
+            entry['shadow'] = list(fix.shadow)
         written_back.append(entry)
     left = [dict(item, path=_slashes(item['path'])) for item in left_alone(result)]
     return {
@@ -1917,6 +2003,8 @@ def _md_found(found, code):
         return 'model, from intent='
     if tier == 'frame':
         return 'inside an iframe'
+    if tier == 'shadow':
+        return 'inside a shadow root'
     named = [code(v) for v in (found.get('provider'), found.get('model'))
              if isinstance(v, str) and v]
     return 'model: ' + ', '.join(named) if named else 'model'
