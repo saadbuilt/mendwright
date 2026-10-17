@@ -1431,9 +1431,11 @@ def cmd_notify(action):
     return 0
 
 
-def _no_alert(action, why):
+def _no_alert(action, why, why_md=None):
+    """Say that no alert was sent: why, and why_md, the same with the text from the artifact
+    in code spans, for the job summary."""
     action.annotate('notice', 'mendwright: no alert was sent: ' + why)
-    action.summary('### This run\n\nNo alert was sent: ' + why + '\n')
+    action.summary('### This run\n\nNo alert was sent: ' + (why_md or why) + '\n')
 
 
 def notify_step(action, url):
@@ -1443,8 +1445,11 @@ def notify_step(action, url):
         return _no_alert(action, 'the run that tested the code uploaded no store, so there is no '
                                  'journal to summarize.')
     except Stop as stop:
-        return _no_alert(action, 'the store was not read (' + str(stop).replace('mendwright: ', '', 1)
-                         + ')')
+        # The refusal of the fix step, which said it too. Its summary form has the names
+        # from the artifact in code spans.
+        def why(text):
+            return 'the store was not read (' + text.replace('mendwright: ', '', 1) + ')'
+        return _no_alert(action, why(str(stop)), why(stop.summary or str(stop)))
     if journal is None:
         return _no_alert(action, 'there is no journal.jsonl next to the store.')
     env = action.env

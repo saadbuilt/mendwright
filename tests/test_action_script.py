@@ -2072,3 +2072,49 @@ def test_the_alert_inputs_are_checked_first(world, name, value, said):
     world.run()
     code, out, _ = world.steps['guard']
     assert code == 1 and 'mendwright: ' + said in out
+
+
+def test_the_alert_step_shows_the_artifact_s_entries_in_code_spans_too(world):
+    shutil.rmtree(str(world.uploaded))
+    world.uploaded.mkdir()
+    (world.uploaded / '[x](https%3A__evil.example) @octocat.txt').write_text('x', encoding='utf-8')
+    world.inputs['webhook-url'] = 'https://hooks.example/x'
+    world.webhook_http = taken = _Taken()
+    world.run()
+    assert world.steps['fix'][0] == 1 and world.steps['notify'][0] == 0 and taken.calls == []
+    section = _summary_section(world)
+    assert section == ('### This run\n\nNo alert was sent: the store was not read (the artifact '
+                       'mendwright-store has no overrides.json at its top or in .mendwright/ (it '
+                       'has: `[x](https%3A__evil.example) @octocat.txt`). Upload the folder that '
+                       'holds the store, such as .mendwright/.)\n')
+
+
+def test_a_key_in_the_alert_cannot_run_a_workflow_command_or_end_the_summary_s_block(world):
+    key = '::set-output name=x::y ```` `$(touch pwned)`'
+    events = [{'ts': T1, 'event': 'heal.declined', 'run': 'gh-100.1', 'key': key,
+               'code': 'gate', 'reason': 'r'}]
+    _with_run_ids(world, extra=events)
+    world.inputs['webhook-url'] = 'https://hooks.example/x'
+    world.webhook_http = taken = _Taken()
+    world.run()
+    _, out, _ = world.steps['notify']
+    assert not any(line.startswith('::set-output') for line in out.splitlines())
+    assert not (world.ws / 'pwned').exists()
+    section = _summary_section(world)
+    # The message writes a backtick in a key as ', so no run of them can end the block.
+    assert section.split('\n')[2] == '````text' and section.count('````') == 2
+    assert "`::set-output name=x::y '''' '$(touch pwned)'`" in taken.calls[0]['text']
+
+
+def test_a_url_with_a_line_break_is_masked_whole_and_refused(world):
+    _with_run_ids(world)
+    world.inputs['webhook-url'] = 'https://hooks.example/a\nLeAkEdPaRt?token=SeCrEt'
+    world.webhook_http = taken = _Taken()
+    world.run()
+    code, out, outputs = world.steps['notify']
+    assert code == 0 and outputs['notified'] == 'false' and taken.calls == []
+    masks = [line for line in out.splitlines() if line.startswith('::add-mask::')]
+    assert masks[0] == '::add-mask::https://hooks.example/a%0ALeAkEdPaRt?token=SeCrEt'
+    rest = [line for line in out.splitlines() if not line.startswith('::add-mask::')]
+    assert not any('LeAkEdPaRt' in line or 'SeCrEt' in line for line in rest)
+    assert 'must start with https://' in out
