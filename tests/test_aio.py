@@ -1008,6 +1008,7 @@ def test_an_async_call_with_no_fingerprint_raises_a_timeout_error(make_page, tmp
 
 def test_an_async_heal_without_the_calls_aria_role_is_refused(make_page, tmp_path,
                                                               stub_provider):
+    pytest.importorskip('playwright.async_api')     # GetByNotFound is Playwright's TimeoutError too
     sync, page = _call_page(make_page, "<html><body><button role='tab' id='settings'>Settings"
                                        '</button></body></html>')
     provider = stub_provider("//button[@id='settings']")
@@ -1083,6 +1084,7 @@ def test_an_async_call_that_starts_to_match_several_during_the_wait_passes_throu
 
 def test_an_async_call_that_matches_in_an_iframe_is_not_healed_or_followed(make_page, tmp_path,
                                                                            stub_provider):
+    pytest.importorskip('playwright.async_api')     # GetByNotFound is Playwright's TimeoutError too
     page = AsyncFakePage(make_page("<html><body><main><p>Pay below</p></main></body></html>",
                                    url='https://shop.test/checkout', fingerprints=True))
     child = AsyncFakePage(make_page("<html><body><button id='pay'>Pay</button></body></html>",

@@ -18,7 +18,6 @@ import pytest
 import mendwright
 import mendwright.aio
 from mendwright import getby
-from mendwright.getby import GetByNotFound
 from mw_engines import FAST_MS, journal_events, page, saved_entry
 
 pytestmark = [pytest.mark.browser, pytest.mark.engine_family('playwright')]
@@ -166,7 +165,7 @@ def test_a_heal_without_the_calls_aria_role_is_refused(tab, store_file, stub_pro
     tab.load(_page('<div role="tablist"><button role="tab" id="login" type="button">Sign in'
                    '</button></div><button id="cancel" type="button">Cancel</button>'))
     heal = _open(tab, provider, store_file)
-    with pytest.raises(GetByNotFound) as caught:
+    with pytest.raises(getby.GetByNotFound) as caught:
         heal.page.get_by_role('button', name='Sign in').click()
     mismatch = "live element role mismatch: Playwright does not give it the ARIA role 'button'"
     assert mismatch in str(caught.value) and _rejected(store_file) == [mismatch]
@@ -233,7 +232,7 @@ def test_a_renamed_element_in_a_shadow_root_is_refused(tab, store_file, stub_pro
     heal.page.get_by_role('button', name='Buy now').click()
     tab.load(_page(_SHADOW.replace('LABEL', 'Purchase')))
     heal = _open(tab, provider, store_file)
-    with pytest.raises(GetByNotFound, match='was not confident'):
+    with pytest.raises(getby.GetByNotFound, match='was not confident'):
         heal.page.get_by_role('button', name='Buy now').click()
     assert heal.heals == [] and provider.bundles == []
 
@@ -255,7 +254,7 @@ def test_a_call_inside_an_iframe_is_refused_and_heals_on_the_frame(tab, store_fi
             break
         time.sleep(0.1)
     heal = _open(tab, provider, store_file)
-    with pytest.raises(GetByNotFound) as caught:
+    with pytest.raises(getby.GetByNotFound) as caught:
         heal.page.get_by_role('button', name='Pay').click()
     assert ("mendwright did not look for it there, because mendwright does not follow a get_by_* "
             "call into an iframe" in str(caught.value))
@@ -340,8 +339,8 @@ def test_async_a_renamed_button_heals_and_two_matches_pass_through(engine, tmp_p
     heal, done, error, missed = engine.with_async_page(run)
     assert done == 'login '            # the healed click, on the page loaded again
     assert [(h.source, h.new) for h in heal.heals] == [('fingerprint', "//button[@id='login']")]
-    assert 'strict mode violation' in str(error) and not isinstance(error, GetByNotFound)
-    assert isinstance(missed, GetByNotFound)
+    assert 'strict mode violation' in str(error) and not isinstance(error, getby.GetByNotFound)
+    assert isinstance(missed, getby.GetByNotFound)
     assert provider.bundles == []
 
 
@@ -373,7 +372,7 @@ def test_async_a_call_inside_an_iframe_is_refused_and_heals_on_the_frame(engine,
         return heal, inner, refused, await frame.locator('#pay').text_content()
 
     heal, inner, refused, text = engine.with_async_page(run)
-    assert isinstance(refused, GetByNotFound)
+    assert isinstance(refused, getby.GetByNotFound)
     assert ("mendwright did not look for it there, because mendwright does not follow a get_by_* "
             "call into an iframe" in str(refused))
     assert ("heal = await mendwright.aio.open(page.frame(name='payment'), heal_get_by=True)."

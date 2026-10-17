@@ -214,9 +214,15 @@ def test_parse_never_runs_code(monkeypatch):
              'get_by_text(' + '(' * 300 + '"x"' + ')' * 300 + ')',
              'get_by_name("x")', 'get_by_role("a"); import os', 'get_by_role("a") or 1',
              'get_by_text(re.compile("("))']
-    monkeypatch.setattr(builtins, '__import__', refuse)
+    results = {}
+    # Put __import__ back before the asserts and teardown: pytest 7 imports a module of its
+    # own while it tears the fixture down.
+    with monkeypatch.context() as m:
+        m.setattr(builtins, '__import__', refuse)
+        for text in texts:
+            results[text] = parse(text)
     for text in texts:
-        assert parse(text) is None, text
+        assert results[text] is None, text
 
 
 def test_classify_reads_calls_and_nothing_else():

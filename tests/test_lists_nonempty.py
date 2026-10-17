@@ -192,6 +192,7 @@ def _gate_store(tmp_path, code=CARDS):
 
 
 def test_the_list_gate(tmp_path):
+    pytest.importorskip('cssselect')     # the live page counts the CSS form with it
     store = _gate_store(tmp_path)
     meta = store.meta('cards')
     live = LiveDriver(V2)
