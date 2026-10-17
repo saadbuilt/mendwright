@@ -24,12 +24,7 @@ const V2 = `<html><body><main><form id="signup">
   <button id="create-account" type="submit">Create account</button>
 </form></main></body></html>`;
 
-const RUN_VARIABLES = ['MENDWRIGHT_RUN_ID', 'GITHUB_ACTIONS', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'];
-
-beforeEach(() => {
-  cleanEnv();
-  for (const name of RUN_VARIABLES) delete process.env[name];
-});
+beforeEach(cleanEnv);
 
 const ENVS: Record<string, string>[] = [
   {},
