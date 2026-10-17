@@ -5,6 +5,7 @@ path. No real webhook, no network beyond the loopback, no real clock or sleep.""
 import http.server
 import json
 import threading
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -503,6 +504,37 @@ def test_send_never_raises_for_a_broken_http():
             raise RuntimeError('boom')
     result = notify.send(URL, b'{}', http=Broken(), sleep=lambda s: None)
     assert (result.ok, result.error, result.attempts) == (False, 'connection', 1)
+
+
+@pytest.mark.parametrize('url, named', [
+    # Hosts that are the key: an AWS Lambda function URL and a Pipedream endpoint.
+    ('https://AbCdEfGh1234567890xyzabcdefghij12.lambda-url.us-east-1.on.aws/',
+     'https://***.lambda-url.us-east-1.on.aws'),
+    ('https://eo1x2y3z4w5v6.m.pipedream.net/', 'https://***.m.pipedream.net'),
+    ('https://abcdefghijklmnopqrstuvwxyz.example.com/', 'https://***.example.com'),
+    # Hosts that are not.
+    ('https://hooks.slack.com/services/T0/B0/x', 'https://hooks.slack.com'),
+    ('https://prod-27.northcentralus.logic.azure.com:443/workflows/x',
+     'https://prod-27.northcentralus.logic.azure.com:443'),
+    ('https://contoso.webhook.office.com/webhookb2/x', 'https://contoso.webhook.office.com'),
+    ('https://chat.googleapis.com/v1/spaces/x', 'https://chat.googleapis.com'),
+    ('http://127.0.0.1:8080/hook', 'http://127.0.0.1:8080'),
+    ('http://[::1]:8080/hook', 'http://[::1]:8080'),
+])
+def test_a_host_label_that_looks_random_is_written_as_stars(store, monkeypatch, capsys, url,
+                                                            named):
+    assert notify.origin(url) == named
+    monkeypatch.setenv('MENDWRIGHT_WEBHOOK_URL', url)
+    run_notify(['--store', str(store), '--run', RUN], Hook((200, b'ok')))
+    run_notify(['--store', str(store), '--run', RUN], Hook((403, b'Forbidden')))
+    out = capsys.readouterr()
+    assert out.out == 'mendwright notify: sent the summary of run ' + RUN + ' to ' + named + \
+        ' (HTTP 200).\n'
+    assert out.err.startswith('mendwright notify: the webhook at ' + named + ' answered HTTP 403.')
+    label = urlsplit(url).netloc.split('.')[0]
+    if '***' in named:
+        assert notify.mask('id ' + label.upper() + ' ' + label.lower(), url) == 'id *** ***'
+        assert label.lower() not in (out.out + out.err).lower()
 
 
 def test_mask_takes_the_url_its_path_and_query_out():

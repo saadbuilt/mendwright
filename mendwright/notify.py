@@ -11,11 +11,13 @@
 - send() makes at most two attempts, one retry after 2 seconds on HTTP 429, a 5xx, a
   timeout or a connection error, follows no redirect, and verifies TLS. Of an error body it
   keeps only one machine word, such as Slack's no_service, that is no part of the URL.
+- origin() names the webhook in a message: scheme, host and port, with a label of the host
+  that looks random, such as the id of an AWS Lambda function URL, as ***.
 - mask() takes the URL, its path, its query and their parts (see secret_texts) out of a
   text that is printed.
 
-The webhook URL is a secret (its path is its key): it comes only from the environment, and
-nothing here prints it.
+The webhook URL is a secret (its path is its key, or for some receivers its host): it comes
+only from the environment, and nothing here prints it.
 """
 
 import json
@@ -137,14 +139,35 @@ def url_problem(url):
     return ''
 
 
+def random_label(label):
+    """Whether a label of the webhook's host looks random, as the id in an AWS Lambda
+    function URL or a Pipedream endpoint does: 12 characters or more with a letter and a
+    digit, or 20 or more. Such a host is the key, so a message writes the label as ***."""
+    if len(label) >= 20:
+        return True
+    return (len(label) >= 12 and any(c.isdigit() for c in label)
+            and any(c.isalpha() for c in label))
+
+
+def _host_labels(netloc):
+    """The labels of the host in netloc that look random (random_label), as written."""
+    host = netloc.rsplit('@', 1)[-1]
+    if host.startswith('['):            # an IPv6 address
+        return []
+    return [label for label in host.split(':', 1)[0].split('.') if random_label(label)]
+
+
 def origin(url):
-    """scheme://host[:port] of url: how a message names the webhook. Never the path, the
-    query or user info."""
+    """scheme://host[:port] of url: how a message names the webhook, with a label of the host
+    that looks random (random_label) as ***. Never the path, the query or user info."""
     try:
         parts = urlsplit(url)
         host = parts.hostname or ''
         if ':' in host:
             host = '[' + host + ']'
+        else:
+            host = '.'.join('***' if random_label(label) else label
+                            for label in host.split('.'))
         port = ':' + str(parts.port) if parts.port else ''
     except ValueError:
         return '(the webhook)'
@@ -158,10 +181,11 @@ def _json_forms(text):
 
 def secret_texts(url):
     """What mask() writes as ***, longest first: the URL as given and stripped, its path
-    (when longer than 1 character), its query, its user info, and each path segment and
-    query value of SECRET_PART characters or more, since a receiver can quote its key on its
-    own; each as it is, percent-decoded, percent-encoded and JSON-escaped. The GitHub Action
-    masks the same texts (webhook_secrets() in action/mendwright_action.py)."""
+    (when longer than 1 character), its query, its user info, each path segment and query
+    value of SECRET_PART characters or more, since a receiver can quote its key on its own,
+    and each label of the host that looks random (random_label); each as it is,
+    percent-decoded, percent-encoded and JSON-escaped. The GitHub Action masks the same texts
+    (webhook_secrets() in action/mendwright_action.py)."""
     if not isinstance(url, str) or not url:
         return []
     found = [url, url.strip()]
@@ -179,6 +203,8 @@ def secret_texts(url):
             part = value if equals else name
             if len(part) >= SECRET_PART:
                 found.append(part)
+        labels = _host_labels(parts.netloc)
+        found.extend(labels + [label.lower() for label in labels])
     except ValueError:
         pass
     texts = set()

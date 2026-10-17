@@ -1391,13 +1391,23 @@ SENT = 'mendwright notify: sent the summary of '
 SECRET_PART = 8     # a path segment or query value this long is masked on its own
 
 
+def _random_label(label):
+    """mendwright.notify.random_label(): 12 characters or more with a letter and a digit,
+    or 20 or more, as the id in an AWS Lambda function URL is."""
+    if len(label) >= 20:
+        return True
+    return (len(label) >= 12 and any(c.isdigit() for c in label)
+            and any(c.isalpha() for c in label))
+
+
 def webhook_secrets(url):
     """The webhook URL as the runner should mask it: what mendwright.notify's mask() writes
     as *** (secret_texts() there; a test keeps the two in step), the URL as given first. That
     is the URL as given and stripped, its path (when longer than one character), its query,
-    its user info, and each path segment and query value of 8 characters or more, since a
-    receiver can quote its key on its own; each as it is, percent-decoded, percent-encoded and
-    JSON-escaped. Its path is its key."""
+    its user info, each path segment and query value of 8 characters or more, since a
+    receiver can quote its key on its own, and each label of its host that looks random; each
+    as it is, percent-decoded, percent-encoded and JSON-escaped. Its path is its key, or for
+    some receivers its host."""
     if not url:
         return []
     found = [url, url.strip()]
@@ -1415,6 +1425,11 @@ def webhook_secrets(url):
             part = value if equals else name
             if len(part) >= SECRET_PART:
                 found.append(part)
+        host = parts.netloc.rsplit('@', 1)[-1]
+        if not host.startswith('['):
+            labels = [label for label in host.split(':', 1)[0].split('.')
+                      if _random_label(label)]
+            found.extend(labels + [label.lower() for label in labels])
     except ValueError:
         pass
     texts = set()

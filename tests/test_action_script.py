@@ -1921,6 +1921,9 @@ def _unmasked(out):
     'https://n8n.example.com/webhook/0d4f7e5c-1a2b-4c3d-8e9f-0123456789ab',
     'https://user:pa%40ss@hooks.example/a/b%2Fc/LongEnoughSegment?token=QuErYsEcReT&v=1;x=Ab12Cd34Ef',
     'https://hooks.example/x?OnlyAKeyNoValue',
+    'https://AbCdEfGh1234567890xyzabcdefghij12.lambda-url.us-east-1.on.aws/',
+    'https://user@eo1x2y3z4w5v6.m.pipedream.net:8443/',
+    'https://[2001:db8::1234:5678:9abc]/hook',
     ' https://hooks.example/été-été-hook "quoted" \n',
     'https://h.example/',
     'not a url at all, with spaces',
@@ -1932,6 +1935,13 @@ def test_the_runner_masks_what_mendwright_notify_masks(url):
     assert set(ma.webhook_secrets(url)) == set(notify.secret_texts(url))
     secrets = ma.webhook_secrets(url)
     assert len(secrets) == len(set(secrets)) and (not url or secrets[0] == url)
+
+
+def test_the_runner_masks_a_host_label_that_is_the_key():
+    secrets = ma.webhook_secrets('https://AbCdEfGh1234567890xyzabcdefghij12.lambda-url.'
+                                 'us-east-1.on.aws/')
+    assert {'AbCdEfGh1234567890xyzabcdefghij12', 'abcdefgh1234567890xyzabcdefghij12'} <= set(secrets)
+    assert not {'lambda-url', 'us-east-1', 'on', 'aws'} & set(secrets)
 
 
 def test_a_webhook_that_names_its_key_in_an_error_never_puts_it_in_the_log(world):
