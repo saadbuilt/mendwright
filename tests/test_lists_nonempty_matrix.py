@@ -260,7 +260,11 @@ def test_a_store_with_list_heals_changes_nothing_without_nonempty(tmp_path, make
             assert str(info.value) == ('No matching element for: ' + key + ' (tried 1 '
                                        'candidate(s)).\n  -> ' + _list_missing_message(key, count))
     assert (tmp_path / 'o.json').read_bytes() == before_file
-    assert len(_journal(tmp_path)) == events and page.items_reads == reads
+    # Nothing was looked for: the only events are the two declines, one per lookup.
+    added = _journal(tmp_path)[events:]
+    assert [(e['event'], e['key'], e['code']) for e in added] == [
+        ('heal.declined', key, 'list_empty')] * 2
+    assert page.items_reads == reads
     logged = [r.getMessage() for r in caplog.records if r.name == 'mendwright'
               and not r.getMessage().startswith('mendwright.open()')]
     assert len(logged) == 2 and all(line.startswith(
@@ -341,7 +345,9 @@ def test_a_0_8_0_store_is_written_byte_for_byte_as_0_8_0_wrote_it(tmp_path, make
         'cards': 'https://shop.example/shop', 'menu': 'https://shop.example/shop'}
     assert _keys_in_order(json.dumps(data, separators=(',', ':'))) == _keys_in_order(
         (GOLDEN / 'overrides.json').read_bytes())
-    assert not (tmp_path / 'journal.jsonl').exists()             # 0.8.0 journaled nothing
+    # 0.8.0 journaled nothing; 0.10.0 writes one heal.declined per list it did not heal.
+    assert {(e['event'], e['key'], e['code']) for e in _journal(tmp_path)} == {
+        ('heal.declined', 'cards', 'list_empty')}
 
 
 def report_080(cli, write_store, root, fmt):

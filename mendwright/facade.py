@@ -2710,7 +2710,10 @@ class Healer:
         __tracebackhide__ = True
         selenium = type(self._driver).__name__ == 'SeleniumDriver'
         reason = _frame_message(key, selector, frames, opener, why, selenium)
-        self.coordinator._decline(key, reason)
+        coordinator = self.coordinator
+        code = ('disabled' if getattr(coordinator, 'disabled', False)
+                else 'dry_run' if coordinator.dry_run else 'frame')
+        coordinator._decline(key, reason, code=code)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
     def _frame_plan(self, key, selector, frames, coordinator=None):
@@ -2771,7 +2774,7 @@ class Healer:
         __tracebackhide__ = True
         moved = self.coordinator._flow_change(key, self._flow_context(key, url))
         if moved:
-            self.coordinator._decline(key, moved)
+            self.coordinator._decline(key, moved, code='page_guard')
             raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + moved) from exc
 
     def _frame_follow(self, key, selector, frame, alt, driver):
