@@ -116,6 +116,27 @@ def test_a_heal_inside_nested_shadow_roots_stays_in_the_inner_one(tab, store_fil
     assert heal.heals[-1].new == HOST + ' >> settings-panel >> [data-testid="save"]'
 
 
+def test_a_test_id_reused_in_a_nested_shadow_root_does_not_hide_the_element(tab, store_file):
+    # A component inside the shadow root reuses the test id in its own shadow root, and
+    # another Save button sits next to the key's. Playwright's CSS pierces into the nested
+    # root, so the test id says nothing there of whether the renamed button is visible.
+    def app(ident):
+        footer = button('footer-save', 'footer', testid='footer').replace(
+            'data-testid="footer" ', 'class="link" ')
+        return mounted([('my-app', button(ident, 'inside') + footer + '<save-bar></save-bar>',
+                         'open'),
+                        ('save-bar', button('bar-save', 'nested'), 'open')],
+                       body='<my-app id="root"></my-app>')
+    _first_run(tab, store_file, app('save'))
+    tab.load(app('save-2'))
+    heal = _open(tab, store_file)
+    heal.locator('save', '#save', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) == 'inside'
+    # Selenium runs the test id inside the shadow root only, where it is unique.
+    form = '#save-2' if tab.family == PLAYWRIGHT else '[data-testid="save"]'
+    assert heal.heals[-1].new == HOST + ' >> ' + form
+
+
 @pytest.mark.parametrize('v2', ['gone', 'two', 'closed'])
 def test_a_shadow_root_that_cannot_be_entered_is_refused(tab, store_file, stub_provider, v2):
     _first_run(tab, store_file, app_page(button('save', 'inside')))

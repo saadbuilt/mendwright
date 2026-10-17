@@ -153,6 +153,26 @@ def test_a_heal_inside_nested_shadow_roots_stays_in_the_inner_one(make_shadow_pa
     assert heal.heals[-1].new == HOST + ' >> settings-panel >> [data-testid="save"]'
 
 
+def test_a_test_id_reused_in_a_nested_shadow_root_does_not_hide_the_element(make_shadow_page,
+                                                                            tmp_path):
+    # A component inside the shadow root has a button with the same test id in its own
+    # shadow root. Playwright's CSS pierces into it, so [data-testid="save"] matches 2 there:
+    # it says nothing of whether the renamed button is visible, and #save-2 does. The other
+    # Save button in the shadow root must not take its place.
+    def app(ident):
+        return page(shadow(
+            '<button type="button" id="' + ident + '" data-testid="save">Save</button>'
+            '<button type="button" id="footer-save" class="link">Save</button>'
+            + shadow('<button type="button" id="bar-save" data-testid="save">Save</button>',
+                     host='<save-bar>')))
+    page_ = _recorded(make_shadow_page, tmp_path, v1=app('save'))
+    page_.set_html(app('save-2'))
+    heal = _open(page_, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert _clicked(page_).get('id') == 'save-2'
+    assert heal.heals[-1].new == HOST + ' >> #save-2'
+
+
 @pytest.mark.parametrize('v2, why', [
     (page(LOOKALIKE), 'is not on the page, matches more than one element'),
     (page(LOOKALIKE + shadow(SAVE_V2) + shadow(SAVE_V2)), 'matches more than one element'),
