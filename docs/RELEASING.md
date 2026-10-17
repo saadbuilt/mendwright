@@ -124,6 +124,7 @@ From 0.3.1 on, follow Each release.
 ## The npm package
 
 The TypeScript package in `js/` goes to npm from `.github/workflows/release-npm.yml`, through npm's trusted publishing, so no npm token is stored either. Nothing triggers that workflow yet: it runs only by hand (Actions, Release npm, Run workflow).
+The Python sdist and wheel never hold `js/`: the wheel has only the `mendwright` package, and `MANIFEST.in` prunes `js` last (`tests/test_package_files.py` checks both).
 
 - With publish off, it builds and tests `js/` and packs it, and uploads nothing. Use this as a rehearsal.
 - With publish on, it does the same, then publishes the packed file once you approve the `npm` environment. The package gets npm provenance: a signed statement, shown on its npm page, that this workflow built it from this commit.
