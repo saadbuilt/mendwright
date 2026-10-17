@@ -1027,7 +1027,7 @@ class _Preview:
         finder = getattr(self.driver, 'shadow_matches', None)
         if k.call or not callable(finder):
             return False
-        matches = core._shadow_matches(k.key, finder)
+        matches = core._shadow_matches(k.key, finder, self.driver)
         if not matches:
             return False
         plan, refused = None, None

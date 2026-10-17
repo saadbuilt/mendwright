@@ -43,9 +43,10 @@ from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, ex
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
-from .drivers.base import (UNSURE, driver_handles, driver_list_fingerprint, driver_popup_click,
-                           driver_popup_controls, driver_popup_probe, driver_popup_release,
-                           driver_popup_root, driver_press_escape, driver_visible_match)
+from .drivers.base import (UNSURE, css_pierces, driver_handles, driver_list_fingerprint,
+                           driver_popup_click, driver_popup_controls, driver_popup_probe,
+                           driver_popup_release, driver_popup_root, driver_press_escape,
+                           driver_visible_match)
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
@@ -676,6 +677,21 @@ def shadow_found(selector, roots):
             out.append({'hosts': root['hosts'], 'count': len(hits),
                         'forms': css_selectors(hits[0], doc) if len(hits) == 1 else []})
     return out
+
+
+def follow_allowed(store, key, found):
+    """Whether key may be followed into the shadow roots of ``found`` (see shadow_found) by
+    where its element was last found (heal_place): anywhere when mendwright has no record
+    of that (no selector of the key matched, and no shadowHosts are saved); else only into
+    the one shadow root it was last found in, when found is that one alone. A key last found
+    on the page or in an iframe is healed there instead, and one last found in another
+    shadow root, in that one, as any key is (see Healer._heal_scope)."""
+    frame, hosts, why = heal_place(store, key)
+    if frame or why:
+        return False
+    if hosts:
+        return len(found) == 1 and tuple(found[0]['hosts']) == tuple(hosts)
+    return latest_success(store, key) is None
 
 
 def _shadow_message(key, selector, found, why):
@@ -3103,34 +3119,52 @@ class Healer:
             return ''
         return why
 
-    def _shadow_matches(self, key, finder):
-        """[(selector, found, cut)] for the key's own selectors on the page that match inside
-        open shadow roots (see shadow_found), through finder (driver.shadow_matches)."""
+    def _shadow_matches(self, key, finder, driver=None):
+        """[(selector, found, cut)] for the key's own selectors on the page that a follow may
+        take into open shadow roots (see _follow_into_shadow): each matches inside them (see
+        shadow_found), through finder (driver.shadow_matches), where the key may be followed
+        (follow_allowed), and nothing on the page (driver.count; one that raises keeps the
+        selector out). On a driver whose CSS pierces shadow roots (base.css_pierces), a CSS
+        selector is never one: what it matches there, it matches on the page. driver is this
+        healer's unless given (heal.drift()'s preview passes its own)."""
+        driver = self._driver if driver is None else driver
+        pierces = css_pierces(driver)
         matches = []
         for selector in self._frame_candidates(key):
+            if pierces and classify(selector) == CSS:
+                continue
             try:
                 roots, cut = finder(selector)
             except Exception:
                 continue
             found = shadow_found(selector, roots)
-            if found:
+            if not found or not follow_allowed(self.store, key, found):
+                continue
+            try:
+                on_page = driver.count(selector)
+            except Exception:
+                continue
+            if on_page == 0:
                 matches.append((selector, found, cut))
         return matches
 
     def _follow_into_shadow(self, key, exc, attempt):
         """After key missed on the page, and in no iframe: if one of its own selectors
-        matches one element inside one open shadow root of the page (a driver with
-        shadow_matches(), as the built-in ones have), look for it there from now on and
-        return the retried step. A CSS selector is looked up there as it is; an XPath, which
-        runs inside no shadow root, is evaluated in the root's HTML and its element looked up
-        through a CSS form of it. No model is asked: the selector is the key's own, and only
-        the place changed. It counts as a heal with source 'shadow'.
+        matches nothing on the page and one element inside one open shadow root of the page
+        (a driver with shadow_matches(), as the built-in ones have), look for it there from
+        now on and return the retried step. A CSS selector is looked up there as it is; an
+        XPath, which runs inside no shadow root, is evaluated in the root's HTML and its
+        element looked up through a CSS form of it. No model is asked: the selector is the
+        key's own, and only the place changed. It counts as a heal with source 'shadow'.
 
         Playwright's CSS pierces open shadow roots by itself, so there only an XPath is
-        followed. Not followed, with AttentionRequired saying why: the refusals of
+        followed. A selector that matches on the page (several elements, or a hidden one) is
+        not followed, and neither is a key last found on the page, in an iframe or in
+        another shadow root (follow_allowed): it heals where it was last found, as any key
+        does. Not followed, with AttentionRequired saying why: the refusals of
         _shadow_plan, a page the key was never found on (the page guard), a guard that
         blocks heals, or an element that fails the live check. Returns _NOT_FOLLOWED when no
-        selector of the key matches inside a shadow root."""
+        selector of the key may be followed into a shadow root (see _shadow_matches)."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'shadow_matches', None)
         if not callable(finder):

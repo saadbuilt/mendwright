@@ -642,6 +642,14 @@ def reaches_shadow(driver):
     return callable(_member(driver, 'shadow_html'))
 
 
+def css_pierces(driver):
+    """True when the driver's CSS finds elements inside open shadow roots by itself, as
+    Playwright's does: its class says so with pierces_shadow = True. A CSS selector of a
+    key is then never followed into a shadow root (see Healer._follow_into_shadow): what it
+    matches there, it matches on the page. Looked up without running a property."""
+    return _member(driver, 'pierces_shadow') is True
+
+
 # --- popups, for open(dismiss=True) (see mendwright.dismiss) -------------------------------
 #
 # The scripts below only report what the page shows; mendwright.dismiss decides. Each is a

@@ -191,6 +191,9 @@ class PlaywrightSyncDriver:
     visible_match, role_match, for lists handles, list_fingerprint and list_items, and for
     open shadow roots shadow_html, shadow_inventory and shadow_matches."""
 
+    # Playwright's CSS pierces every open shadow root (see base.css_pierces).
+    pierces_shadow = True
+
     def __init__(self, page):
         self._page = page
 

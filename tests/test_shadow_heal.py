@@ -420,6 +420,70 @@ def test_the_follow_checks_the_live_element(make_shadow_driver, tmp_path):
         heal.locator('save', '#save', role='button', poll_ms=0)
 
 
+# The page's own submit button, and a newsletter component whose shadow root holds another
+# one. 'send' is the page's button.
+SEND = '<form><input name="email"><button type="submit" id="send">Send</button></form>'
+NEWSLETTER = shadow('<button type="submit" id="subscribe">Subscribe</button>',
+                    host='<news-letter>')
+SUBMIT = 'button[type="submit"]'
+
+
+def _sent(target):
+    return target.actions[-1][0].get('id') if target.actions else None
+
+
+def test_playwright_never_follows_a_css_selector_that_matches_on_the_page(make_shadow_page,
+                                                                         tmp_path):
+    # Playwright's CSS pierces: with the component added, the selector matches 2 elements,
+    # one on the page. It is healed on the page, where 'send' was found, as 0.9.0 heals it.
+    page_ = make_shadow_page(page(SEND))
+    _open(page_, tmp_path).locator('send', SUBMIT, role='button', poll_ms=0)
+    page_.set_html(page(SEND + NEWSLETTER))
+    heal = _open(page_, tmp_path)
+    heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+    assert _sent(page_) == 'send'
+    assert [(h.new, h.source) for h in heal.heals] == [("//button[@id='send']", 'fingerprint')]
+
+
+def test_selenium_never_follows_a_selector_that_matches_several_elements_on_the_page(
+        make_shadow_driver, tmp_path, stub_provider):
+    driver = make_shadow_driver(page(SEND + '<button type="submit" id="reset">Reset</button>'
+                                     + NEWSLETTER))
+    provider = stub_provider(None)
+    heal = _open(driver, tmp_path, provider=provider)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('send', SUBMIT, role='button', poll_ms=0)
+    assert 'inside a shadow root' not in str(info.value)
+    assert driver.actions == [] and heal.heals == []
+
+
+def test_a_key_last_found_on_the_page_is_not_followed_into_a_shadow_root(make_shadow_driver,
+                                                                        tmp_path):
+    # The page's button is no longer a submit button, and the component's is the only one:
+    # the selector matches nothing on the page and one element in the shadow root. 'send'
+    # heals on the page, where it was last found.
+    driver = make_shadow_driver(page(SEND))
+    _open(driver, tmp_path).locator('send', SUBMIT, role='button', poll_ms=0)
+    driver.set_html(page(SEND.replace('type="submit"', 'type="button"') + NEWSLETTER))
+    heal = _open(driver, tmp_path)
+    heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+    assert _sent(driver) == 'send'
+    assert [h.source for h in heal.heals] == ['fingerprint']
+
+
+def test_a_key_last_found_in_one_shadow_root_is_not_followed_into_another(make_shadow_driver,
+                                                                         tmp_path):
+    driver = make_shadow_driver(V1)
+    heal = _open(driver, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0)     # followed into my-app's root
+    assert [c['shadowHosts'] for c in _rows(tmp_path) if c['source'] == 'heal'] == [[HOST]]
+    driver.set_html(page(shadow(SAVE_V1, host='<other-app>')))
+    heal = _open(driver, tmp_path)
+    with pytest.raises(AttentionRequired, match='cannot enter that shadow root'):
+        heal.locator('save', '#save', role='button', poll_ms=0)
+    assert driver.actions == [] and heal.heals == []
+
+
 # --- async Playwright -----------------------------------------------------------------------------
 
 class AsyncShadowLocator:
@@ -508,3 +572,20 @@ def test_the_async_healer_follows_into_a_shadow_root(make_shadow_page, tmp_path)
 
     heal = asyncio.run(main())
     assert heal.heals[-1].source == 'shadow' and _clicked(sync).get('id') == 'save'
+
+
+def test_the_async_healer_never_follows_a_css_selector_that_matches_on_the_page(
+        make_shadow_page, tmp_path):
+    sync = make_shadow_page(page(SEND))
+
+    async def main():
+        heal = await mendwright.aio.open(AsyncShadowPage(sync), provider=None, timeout_ms=0,
+                                         store_path=str(tmp_path / 'o.json'),
+                                         journal=NullJournal())
+        await heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+        return heal
+
+    asyncio.run(main())
+    sync.set_html(page(SEND + NEWSLETTER))
+    heal = asyncio.run(main())
+    assert [h.source for h in heal.heals] == ['fingerprint'] and _sent(sync) == 'send'

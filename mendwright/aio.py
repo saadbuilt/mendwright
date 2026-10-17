@@ -63,8 +63,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
-from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
-                           takes_keyword, unsupported_message)
+from .drivers.base import (_member, _takes_place, css_pierces, is_async_api, is_driver,
+                           looks_like_locator, takes_keyword, unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -78,14 +78,14 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
                      _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
-                     HealScope, heal_place, shadow_found, shadow_unreachable)
+                     HealScope, follow_allowed, heal_place, shadow_found, shadow_unreachable)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
 from .limits import Guardrails
 from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runnable,
                        _target)
-from .selectors import XPATH, InvalidSelector, classify
+from .selectors import CSS, XPATH, InvalidSelector, classify
 from .shadow import driver_shadowed
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
@@ -200,7 +200,8 @@ class SyncBridge:
     (popup_probe and the others), run() for any other callable, and wait() for a run=
     function of heal.interrupt(). describe, fingerprint, role_match, visible_match,
     list_items, list_fingerprint and the popup methods are None when the async driver has
-    none, and list_fingerprint takes no place= when the async driver's does not."""
+    none, and list_fingerprint takes no place= when the async driver's does not.
+    pierces_shadow is the async driver's (see drivers.base.css_pierces)."""
 
     timeout = 30.0
 
@@ -234,6 +235,8 @@ class SyncBridge:
         for name in _SHADOW_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # no heal runs inside a shadow root
+        # Whether the async driver's CSS pierces open shadow roots (base.css_pierces).
+        self.pierces_shadow = css_pierces(driver)
 
     def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """fn(*args, **kwargs) called on the event loop thread, awaited when it returns an
@@ -1471,14 +1474,23 @@ class AsyncHealer:
         core = self._core
         if not callable(_member(self._driver, 'shadow_matches')):
             return _NOT_FOLLOWED
+        pierces = css_pierces(self._driver)
         matches = []
         for selector in core._frame_candidates(key):
+            if pierces and classify(selector) == CSS:
+                continue        # what Playwright's CSS matches there, it matches on the page
             try:
                 roots, cut = await _awaited(self._driver.shadow_matches(selector))
             except Exception:
                 continue
             found = shadow_found(selector, roots)
-            if found:
+            if not found or not follow_allowed(core.store, key, found):
+                continue
+            try:
+                on_page = await _awaited(self._driver.count(selector))
+            except Exception:
+                continue
+            if on_page == 0:
                 matches.append((selector, found, cut))
         if not matches:
             return _NOT_FOLLOWED

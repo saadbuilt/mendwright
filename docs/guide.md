@@ -1043,11 +1043,14 @@ The text of the heal is the chain so that a mendwright that knows nothing of `sh
 
 ### A selector that matches only inside a shadow root
 
-When none of a key's selectors matches on the page or in an iframe, and one of them matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call.
+When none of a key's selectors matches anything on the page or in an iframe, and one of them matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call.
 A CSS selector is looked up there as it is. An XPath is evaluated in each shadow root's HTML, and its element is looked up through a CSS form of it.
 It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
 
-Playwright's CSS reaches into open shadow roots by itself, so there this matters for an XPath. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
+It does this only for a key that mendwright has no record of, or one last found in that same shadow root.
+A key last found on the page, in an iframe or in another shadow root heals where it was last found, as any key does (see [When the selector breaks](#when-the-selector-breaks)), and so does a selector that still matches on the page, such as one that matches two elements there or a hidden one.
+
+Playwright's CSS reaches into open shadow roots by itself, so there only an XPath is followed: what a CSS selector matches inside a shadow root, it matches on the page too. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
 
 mendwright does not follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the selector matches in more than one shadow root or more than one element there, when a host on the way can't be told apart, when the same lookup was quarantined before, for an XPath whose element no CSS selector tells apart, on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)), and when the element fails the live check.
 A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not looked for in shadow roots: Playwright's engines reach into open ones by themselves.
@@ -1055,7 +1058,7 @@ A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not lo
 ### Limits
 
 - A key found inside a shadow root inside an iframe isn't healed from the page. Open mendwright on that frame (a `Frame` on Playwright, or the driver after `switch_to.frame()` on Selenium), where its shadow roots work as described here.
-- A heal stays in the shadow root the element was last found in. When a redesign moves the element into another shadow root, or onto the page, the heal is refused; fix the selector in your code.
+- A heal stays in the shadow root the element was last found in. When a redesign moves the element into another shadow root, or onto the page, the heal is refused; fix the selector in your code. A key last found on the page is not followed into a shadow root either: it heals on the page.
 - A quarantine counts in its own place: a selector quarantined inside a shadow root blocks its element there, under any CSS form, and says nothing about the page, and the other way round.
 - `heal.locator_all()` gives what your selectors match, also inside a shadow root, but with `nonempty=True` a list that was inside a shadow root is never looked for: mendwright looks for lists only in the page's own HTML, where it could only find another list.
 - The selectors of `heal.interrupt()` and `heal.step(when=)`, and `get_by_*` calls, run as written; Playwright's CSS and `get_by_*` reach into open shadow roots by themselves.

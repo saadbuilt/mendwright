@@ -47,6 +47,9 @@ class AsyncPlaywrightDriver:
     list_fingerprint and list_items, with the same arguments and results as
     PlaywrightSyncDriver. handle() returns the native async Locator."""
 
+    # Playwright's CSS pierces every open shadow root (see base.css_pierces).
+    pierces_shadow = True
+
     def __init__(self, page):
         self._page = page
 

@@ -87,3 +87,15 @@ def test_drift_looks_up_a_saved_shadow_heal_inside_its_shadow_root(make_shadow_p
     _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0)
     key = _open(page_, tmp_path).drift(timeout_ms=0).keys[0]
     assert key.verdict == 'ok-heal' and key.used == CHAIN and key.live_role == 'button'
+
+
+def test_drift_never_follows_a_css_selector_that_matches_on_the_page(make_shadow_page,
+                                                                    tmp_path):
+    # Playwright's CSS pierces: the selector matches the page's button and the component's.
+    send = '<button type="submit" id="send">Send</button>'
+    page_ = make_shadow_page(page(send))
+    _open(page_, tmp_path).locator('send', 'button[type="submit"]', role='button', poll_ms=0)
+    page_.set_html(page(send + shadow('<button type="submit">Join</button>', host='<news-letter>')))
+    key = _open(page_, tmp_path).drift(['send'], timeout_ms=0).keys[0]
+    assert key.verdict == 'would-heal' and key.detail == 'fingerprint'
+    assert key.heal['selector'] == "//button[@id='send']" and not key.heal.get('shadow')
