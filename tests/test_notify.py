@@ -374,9 +374,21 @@ def test_the_url_must_be_https_or_a_local_http(tmp_path, monkeypatch, capsys, ur
     assert (code, bool(hook.calls)) == ((0, True) if ok else (1, False))
     out = capsys.readouterr()
     if not ok:
+        why = notify.url_problem(url.strip())
         assert out.err == ('mendwright notify: the webhook URL in MENDWRIGHT_WEBHOOK_URL must '
-                           'start with https:// (http:// only for localhost), so nothing was '
-                           'sent.\n')
+                           'start with https:// (http:// only for localhost)'
+                           + ('' if why == notify.NOT_HTTPS else ' (' + why + ')')
+                           + ', so nothing was sent.\n')
+        assert 'h.example' not in out.err and 'hooks' not in out.err
+
+
+def test_why_a_url_is_refused():
+    assert [notify.url_problem(u) for u in (
+        'http://hooks.slack.com/x', 'hooks.slack.com/x', 'ftp://h/x', 'https:///x',
+        'https://h.example/a b', 'https://h.example:0/x', 'https://h.example:99999/x', '')] == [
+        notify.NOT_HTTPS, notify.NOT_HTTPS, notify.NOT_HTTPS, 'it has no host',
+        'it holds a space or a control character', 'its port is not a number from 1 to 65535',
+        'it is not a URL', 'it is empty']
 
 
 def test_an_unset_url_sends_nothing(store, capsys):

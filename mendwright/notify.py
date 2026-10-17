@@ -104,27 +104,30 @@ def _json_payload(summary, text, *, detail, title, run_url, pr_url, tests, now, 
 
 # --- the URL ---------------------------------------------------------------------------------
 
+NOT_HTTPS = 'it does not start with https://'
+
+
 def url_problem(url):
-    """'' when url can take the summary, else why not (for the refusal message)."""
+    """'' when url can take the summary, else why not (for the refusal message, which never
+    shows the URL): NOT_HTTPS, or what else is wrong with it."""
     if not isinstance(url, str) or not url:
         return 'it is empty'
     if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
         return 'it holds a space or a control character'
     try:
         parts = urlsplit(url)
-        host = parts.hostname
+        scheme, host = parts.scheme.lower(), parts.hostname
         if parts.port is not None and not 0 < parts.port < 65536:   # a bad port raises
-            return 'its port is not one'
+            return 'its port is not a number from 1 to 65535'
     except ValueError:
         return 'it is not a URL'
+    if scheme not in ('https', 'http'):
+        return NOT_HTTPS
     if not host:
         return 'it has no host'
-    scheme = parts.scheme.lower()
-    if scheme == 'https':
-        return ''
-    if scheme == 'http' and host in _LOCAL_HOSTS:
-        return ''
-    return 'it does not start with https://'
+    if scheme == 'http' and host not in _LOCAL_HOSTS:
+        return NOT_HTTPS
+    return ''
 
 
 def origin(url):

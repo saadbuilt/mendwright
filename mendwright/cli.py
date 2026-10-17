@@ -1075,9 +1075,13 @@ def cmd_notify(args, *, http=None, sleep=None, clock=None):
         return 0
     if not url:
         return refuse('mendwright notify: MENDWRIGHT_WEBHOOK_URL is not set, so nothing was sent.')
-    if notify.url_problem(url):
+    problem = notify.url_problem(url)
+    if problem:
+        # Why, when it is not the scheme: the URL itself is never shown.
+        why = '' if problem == notify.NOT_HTTPS else ' (' + problem + ')'
         return refuse('mendwright notify: the webhook URL in MENDWRIGHT_WEBHOOK_URL must start '
-                      'with https:// (http:// only for localhost), so nothing was sent.')
+                      'with https:// (http:// only for localhost)' + why + ', so nothing was '
+                      'sent.')
     if not wanted:
         _out(when_no)
         return 0
