@@ -6,6 +6,11 @@
 //
 // It also handles registered interruptions (heal.interrupt(), and the cookies preset),
 // optional steps, and the page guard: a key is not healed on a page it was never found on.
+//
+// Open shadow roots (see shadow.ts): each fingerprint read also reads where the element is,
+// and saves it as the key's shadowHosts, as the Python package does. A key last found inside
+// a shadow root is never healed by this package, so a look-alike on the page around its host
+// is never picked; a heal the Python package saved inside one runs strictly there.
 
 import * as path from 'node:path';
 
@@ -31,7 +36,8 @@ import { pyRepr } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
-import { expandPath, loadStore, type SelectorStore } from './store';
+import { hostsOf, placeText, runTarget, type Target } from './shadow';
+import { expandPath, loadStore, type Candidate, type SelectorStore } from './store';
 
 export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -445,7 +451,30 @@ export class Healer {
       this.coordinator.decline(key, reason);
       throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
     }
-    return resolveWithHeal(() => attempt(), this.coordinator, key, this.flowContext(key), missed);
+    // The same for a key last found inside an open shadow root: where the heal that matched
+    // last runs, else the key's shadowHosts. Neither the page's HTML nor its elements hold
+    // what a shadow root contains, so a heal here could only find something outside it.
+    // Refused after the checks for a key marked destructive and the page guard.
+    let hosts = hostsOf(latest);
+    if (!hosts.length) hosts = this.store.shadowHosts(key);
+    const refusal = hosts.length
+      ? "'" + key + "' was last found inside " + placeText(hosts) + ', and mendwright for TypeScript does not heal '
+        + 'inside a shadow root yet, so it did not look for the element on the page around it, where an element that '
+        + 'looks the same could be. Fix the selector by hand, or let the Python package heal it.'
+      : null;
+    return resolveWithHeal(() => attempt(), this.coordinator, key, this.flowContext(key), missed, refusal);
+  }
+
+  /** Where the candidate that just matched runs (see shadow.runTarget), or null when it
+   * cannot run here. */
+  private winnerTarget(key: string): Target | null {
+    const winner: Candidate | null = this.store.lastSuccess(key);
+    if (!winner || typeof winner.xpath !== 'string') return null;
+    try {
+      return runTarget(winner);
+    } catch {
+      return null;
+    }
   }
 
   /** Refuse a match that came from a heal when the key is marked destructive: the heal is
@@ -474,8 +503,8 @@ export class Healer {
     const needRole = userRole === null && this.store.roleIsGuess(key);
     const checkRole = userRole !== null && !this.roleChecked.has(key);
     if (!needRole && !checkRole) return;
-    const winner = this.store.lastSuccess(key);
-    const described = winner ? await this.driver.describe(winner.xpath, winner.frameXPath || null).catch(() => null) : null;
+    const target = this.winnerTarget(key);
+    const described = target ? await this.driver.describe(target.selector, target.frame, target.hosts).catch(() => null) : null;
     if (needRole) {
       if (described) {
         let live = described.role || '';
@@ -516,7 +545,8 @@ export class Healer {
 
   /** Read and save the fingerprint of the element that just matched, once per key and
    * selector per healer: not for a key marked destructive, nor for a heal made in this
-   * process that is not confirmed yet. */
+   * process that is not confirmed yet. The same read gives where the element is, saved as
+   * the key's shadowHosts: the shadow hosts around it, or none for an element on the page. */
   private async recordFingerprint(key: string): Promise<void> {
     if (!this.coordinator.fingerprint) return;
     const winner = this.store.lastSuccess(key);
@@ -525,10 +555,14 @@ export class Healer {
     if (this.fingerprinted.has(id) || this.coordinator.pending.get(key) === winner.xpath) return;
     if (this.store.metaOf(key).destructive) return;
     this.fingerprinted.add(id);
-    const fp = await this.driver.fingerprint(winner.xpath, winner.frameXPath || null).catch(() => null);
-    if (fp) {
+    const target = this.winnerTarget(key);
+    if (!target) return;
+    const read = await this.driver.fingerprintRead(target.selector, target.frame, target.hosts)
+      .catch(() => ({ fp: null, hosts: undefined }));
+    if (read.fp) {
       try {
-        this.store.setMeta(key, { fingerprint: fp });
+        this.store.setMeta(key, read.hosts === undefined ? { fingerprint: read.fp }
+          : { fingerprint: read.fp, shadowHosts: read.hosts });
       } catch {
         // a fingerprint that cannot be saved is not recorded
       }

@@ -156,8 +156,72 @@ export function mendwrightLib() {
     }
     return { tag: tag, attrs: read(el, ATTRS), field: field, text: field ? null : el.textContent || '', label: label, ancestors: chain };
   };
+  // Open shadow roots (Python's mendwright/shadow.py and fingerprint.HOST_FACTS_JS). hostsOf(el)
+  // gives a CSS selector for each shadow host around el, outermost first, that matches the
+  // host and nothing else where it sits: its tag with a test id, an id or a name that no other
+  // element of its tag there has, best first, else a custom element's tag alone when it is the
+  // only one of its tag there, else null (shadow.host_selector). [] for an element on the page.
+  const HOST_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy', 'data-e2e',
+    'data-automation-id', 'id', 'name'];
+  const HOST_TAG = /^[a-z][a-z0-9_-]*$/;
+  const isRoot = (r: any) => !!r && r.nodeType === 11 && !!r.host && r.host.nodeType === 1;
+  // css.css_string: a double-quoted CSS string.
+  const cssString = (value: string) => {
+    let out = '"';
+    for (const ch of Array.from(value)) {
+      if (ch === '"' || ch === '\\') out += '\\' + ch;
+      else if (ch === '\n' || ch === '\r' || ch === '\f') out += '\\' + ch.charCodeAt(0).toString(16) + ' ';
+      else out += ch;
+    }
+    return out + '"';
+  };
+  const hostSelector = (host: Element): string | null => {
+    const scope = host.getRootNode() as any;
+    const tag = host.localName;
+    if (typeof tag !== 'string' || !HOST_TAG.test(tag)) return null;
+    const same = Array.from(scope.querySelectorAll('*') as ArrayLike<Element>).filter((e) => e.localName === tag);
+    for (const name of HOST_ATTRS) {
+      const value = host.getAttribute(name);
+      if (value === null || !pyStrip(value) || pyLen(value) > 200 || value.indexOf('\n') >= 0 || generated(value)) continue;
+      if (same.filter((e) => e.getAttribute(name) === value).length === 1) return tag + '[' + name + '=' + cssString(value) + ']';
+    }
+    if (tag.indexOf('-') >= 0 && same.length === 1) return tag;
+    return null;
+  };
+  const hostsOf = (el: Element) => {
+    const out: (string | null)[] = [];
+    for (let r: any = el.getRootNode(); isRoot(r); r = r.host.getRootNode()) out.unshift(hostSelector(r.host));
+    return out;
+  };
+  // drivers.base.ENTER_JS: the shadow root the host selectors lead to from doc, each one
+  // matching exactly one element in the document or shadow root before it, with an open
+  // shadow root; null when they lead to none.
+  const enter = (doc: any, hosts: string[]) => {
+    let scope = doc;
+    for (const sel of hosts) {
+      let found: ArrayLike<Element>;
+      try {
+        found = scope.querySelectorAll(sel);
+      } catch (e) {
+        return null;
+      }
+      if (found.length !== 1 || !(found[0] as Element).shadowRoot) return null;
+      scope = (found[0] as Element).shadowRoot;
+    }
+    return scope;
+  };
+  // drivers.base.PLACE_JS, for a Locator whose CSS pierces every open shadow root: how many
+  // elements it matches (n), and how many of them are in the shadow root the hosts lead to
+  // (inside). A selector inside a shadow root counts only when they agree.
+  const placed = (els: Element[], hosts: string[]) => {
+    if (!els || !els.length) return { n: 0, inside: 0 };
+    const root = enter(els[0].ownerDocument, hosts);
+    return { n: els.length, inside: root ? els.filter((e) => e.getRootNode() === root).length : 0 };
+  };
+
   // FINGERPRINT_JS, the read the Python drivers make in the browser when a selector
-  // matched: null unless exactly one element matched.
+  // matched: null unless exactly one element matched. hosts is where the element is (see
+  // hostsOf), which fromRaw() leaves out of the fingerprint.
   const recordRaw = (els: Element[]) => {
     if (!els || els.length !== 1) return null;
     const el = els[0] as HTMLElement;
@@ -173,7 +237,11 @@ export function mendwrightLib() {
       } else {
         const id = el.getAttribute('id');
         if (id) {
-          for (const l of Array.from(el.ownerDocument.getElementsByTagName('label'))) {
+          // In the element's own shadow root when it is inside one, as the Python package reads it.
+          const root = el.getRootNode() as any;
+          const labels = isRoot(root) ? Array.from(root.querySelectorAll('label') as ArrayLike<Element>)
+            : Array.from(el.ownerDocument.getElementsByTagName('label'));
+          for (const l of labels) {
             if (l.getAttribute('for') === id) { label = l.textContent; break; }
           }
         }
@@ -187,7 +255,8 @@ export function mendwrightLib() {
       chain.push({ tag: t, attrs: read(p, ['id', 'class', 'role']) });
       p = p.parentElement;
     }
-    return { tag: tag, attrs: read(el, ATTRS), field: field, text: field ? null : el.textContent, label: label, ancestors: chain };
+    return { tag: tag, attrs: read(el, ATTRS), field: field, text: field ? null : el.textContent, label: label, ancestors: chain,
+             hosts: hostsOf(el) };
   };
 
   // fingerprint.statically_hidden: the captured HTML itself hides el.
@@ -1035,7 +1104,8 @@ export function mendwrightLib() {
   };
 
   return {
-    roleOf: roleOf, rawOf: rawOf, recordRaw: recordRaw, staticallyHidden: staticallyHidden,
+    roleOf: roleOf, rawOf: rawOf, recordRaw: recordRaw, staticallyHidden: staticallyHidden, hostsOf: hostsOf,
+    placed: placed,
     stableClasses: stableClasses, generatedId: generatedId, generated: generated, xpathFor: xpathFor,
     collect: collect, outside: outside, validate: validate, describe: describe, inventory: inventory,
     cleanHtml: cleanHtml, featuresOf: featuresOf, featureLine: featureLine, fingerprintLine: fingerprintLine,

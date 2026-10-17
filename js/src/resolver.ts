@@ -4,12 +4,18 @@
 // input). Poll until timeoutMs, then raise AttentionRequired; only then does the caller try
 // a heal. A candidate the browser rejects is dropped from the poll, and when none can run,
 // InvalidSelector is raised at once instead of waiting, so no model call is spent on a typo.
+//
+// A candidate the Python package saved inside an open shadow root (its shadowHosts) runs as
+// the Python package runs it: its CSS, through its hosts, and it counts only what matches in
+// that shadow root (see shadow.ts). One that cannot run that way, such as one behind a host
+// nothing tells apart, is not runnable, like a selector the browser rejects.
 
 import type { Locator } from '@playwright/test';
 
 import type { PlaywrightDriver } from './driver';
 import { AttentionRequired, InvalidSelector } from './errors';
 import { checkSyntax } from './selectors';
+import { runTarget } from './shadow';
 import type { Candidate, SelectorStore } from './store';
 
 function requireVisible(store: SelectorStore, key: string): boolean {
@@ -27,6 +33,7 @@ function splitRunnable(key: string, candidates: Candidate[]): [Candidate[], Erro
     try {
       checkSyntax(candidate.xpath);
       if (candidate.frameXPath) checkSyntax(candidate.frameXPath);
+      runTarget(candidate);
       runnable.push(candidate);
     } catch (error) {
       errors.push(error instanceof InvalidSelector ? error.forKey(key) : (error as Error));
@@ -38,10 +45,10 @@ function splitRunnable(key: string, candidates: Candidate[]): [Candidate[], Erro
 /** The Locator when candidate matches exactly one (visible) element now, else null.
  * InvalidSelector propagates; any other error counts as no match. */
 async function matchHandle(driver: PlaywrightDriver, candidate: Candidate, visible: boolean): Promise<Locator | null> {
-  const frame = candidate.frameXPath || null;
+  const { selector, frame, hosts } = runTarget(candidate);
   try {
-    if ((await driver.count(candidate.xpath, frame)) === 1 && (!visible || (await driver.isVisible(candidate.xpath, frame)))) {
-      return driver.locator(candidate.xpath, frame);
+    if ((await driver.count(selector, frame, hosts)) === 1 && (!visible || (await driver.isVisible(selector, frame, hosts)))) {
+      return driver.locator(selector, frame, hosts);
     }
   } catch (error) {
     if (error instanceof InvalidSelector) throw error;
@@ -82,7 +89,8 @@ export async function resolve(store: SelectorStore, driver: PlaywrightDriver, ke
         continue;
       }
       if (handle !== null) {
-        await driver.scrollIntoView(candidate.xpath, candidate.frameXPath || null);
+        const { selector, frame, hosts } = runTarget(candidate);
+        await driver.scrollIntoView(selector, frame, hosts);
         store.recordSuccess(key, candidate.xpath);
         return handle;
       }

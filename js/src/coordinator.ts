@@ -152,11 +152,15 @@ export class HealCoordinator {
   }
 
   /** Heal key and save a checked selector. Returns the saved XPath, or false with the
-   * reason in healReasons. */
-  async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext): Promise<string | false> {
+   * reason in healReasons. refusal, when given, declines every heal after the checks for a
+   * key marked destructive and the page guard: the key was last found inside an open shadow
+   * root, where this package does not heal. */
+  async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
+                refusal: string | null = null): Promise<string | false> {
     if (meta.destructive) return this.decline(key, destructiveMessage(key));
     const moved = this.flowChange(key, context);
     if (moved) return this.decline(key, moved);
+    if (refusal) return this.decline(key, refusal);
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
@@ -351,10 +355,11 @@ export class HealCoordinator {
 /** Resolve; when every candidate missed, heal once and resolve again in the same call.
  * Re-raises the miss with the reason when nothing was healed. */
 export async function resolveWithHeal<T>(resolveFn: () => Promise<T>, coordinator: HealCoordinator, key: string,
-                                         context: FlowContext, missed: AttentionRequired): Promise<T> {
+                                         context: FlowContext, missed: AttentionRequired,
+                                         refusal: string | null = null): Promise<T> {
   const store = coordinator.store;
   const broken = store.candidates(key).map((c) => c.xpath);
-  const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context);
+  const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context, refusal);
   if (!applied) {
     const reason = coordinator.explain(key);
     if (reason) throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);

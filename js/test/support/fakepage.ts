@@ -3,7 +3,11 @@
 // count(), isVisible(), evaluate(), evaluateAll(), evaluateHandle(), content(), url()) and runs
 // the browser-side code (browser/lib.ts) inside the jsdom window, as a page would.
 //
-// Selectors: 'xpath=...' and 'css=...' (what the driver passes). Visibility: an element is
+// Selectors: 'xpath=...' and 'css=...' (what the driver passes). CSS pierces open shadow
+// roots, as Playwright's does, and locator().locator() looks inside the elements before it;
+// XPath does not reach into a shadow root. A page's HTML can declare shadow roots with
+// <template shadowrootmode="open|closed">, which become attached shadow roots, so
+// content() holds none of what they contain, as in a browser. Visibility: an element is
 // hidden when it or an ancestor has the hidden attribute, an inline display:none or
 // visibility:hidden, or data-fake-hidden. A page made with { blocker } has an element that
 // covers the others: a click on any element outside it fails with Playwright's
@@ -17,10 +21,21 @@ export interface FakePageOptions {
 }
 
 export class FakeLocator {
-  constructor(readonly page: FakePage, readonly selector: string, readonly frame: string | null = null) {}
+  constructor(readonly page: FakePage, readonly selector: string, readonly frame: string | null = null,
+              readonly parent: FakeLocator | null = null) {}
 
   elements(): Element[] {
-    return this.page.query(this.selector);
+    if (!this.parent) return this.page.query(this.selector);
+    const out: Element[] = [];
+    for (const scope of this.parent.elements()) {
+      for (const el of this.page.query(this.selector, scope)) if (!out.includes(el)) out.push(el);
+    }
+    return out;
+  }
+
+  /** A locator for what selector matches inside the elements this one matches. */
+  locator(selector: string): FakeLocator {
+    return new FakeLocator(this.page, selector, this.frame, this);
   }
 
   async count(): Promise<number> {
@@ -138,6 +153,36 @@ class FakeHandle {
   async dispose(): Promise<void> {}
 }
 
+/** Every element under node, in document order, and inside each open shadow root on the way,
+ * as Playwright's CSS sees them. */
+function pierced(node: ParentNode): Element[] {
+  const out: Element[] = [];
+  const walk = (parent: ParentNode) => {
+    for (const el of Array.from(parent.children)) {
+      out.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+      walk(el);
+    }
+  };
+  const own = (node as Element).shadowRoot;
+  if (own) walk(own);
+  walk(node);
+  return out;
+}
+
+/** Attach the shadow roots a page declares with <template shadowrootmode>, at any depth. */
+function declareShadowRoots(root: ParentNode): void {
+  for (const template of Array.from(root.querySelectorAll('template[shadowrootmode]')) as HTMLTemplateElement[]) {
+    const host = template.parentElement;
+    if (!host) continue;
+    const mode = template.getAttribute('shadowrootmode') === 'closed' ? 'closed' : 'open';
+    const shadow = host.attachShadow({ mode });
+    shadow.appendChild(template.content.cloneNode(true));
+    template.remove();
+    declareShadowRoots(shadow);
+  }
+}
+
 export class FakePage {
   dom: JSDOM;
   currentUrl: string;
@@ -153,6 +198,7 @@ export class FakePage {
     this.currentUrl = options.url ?? 'https://shop.test/signup';
     this.blocker = options.blocker ?? null;
     this.dom = new JSDOM(html, { url: this.currentUrl, runScripts: 'outside-only' });
+    declareShadowRoots(this.dom.window.document);
   }
 
   get document(): Document {
@@ -163,15 +209,17 @@ export class FakePage {
   goto(html: string, url?: string): void {
     if (url) this.currentUrl = url;
     this.dom = new JSDOM(html, { url: this.currentUrl, runScripts: 'outside-only' });
+    declareShadowRoots(this.dom.window.document);
   }
 
-  query(selector: string): Element[] {
+  /** What selector matches in the document, or inside scope (an element, not itself). */
+  query(selector: string, scope: Element | null = null): Element[] {
     const doc = this.document;
     if (selector.startsWith('xpath=')) {
       const expression = selector.slice('xpath='.length);
       let result: XPathResult;
       try {
-        result = doc.evaluate(expression, doc, null, 7, null);
+        result = doc.evaluate(expression, scope ?? doc, null, 7, null);
       } catch (error) {
         throw new Error("locator.count: SyntaxError: Failed to execute 'evaluate' on 'Document': The string '"
           + expression + "' is not a valid XPath expression.");
@@ -185,10 +233,11 @@ export class FakePage {
     }
     const css = selector.startsWith('css=') ? selector.slice(4) : selector;
     try {
-      return Array.from(doc.querySelectorAll(css));
+      doc.querySelector(css);
     } catch {
       throw new Error('locator.count: Error: Unexpected token while parsing css selector "' + css + '"');
     }
+    return pierced(scope ?? doc).filter((el) => el.matches(css));
   }
 
   visible(el: Element): boolean {

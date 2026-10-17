@@ -1,7 +1,8 @@
 // The Playwright driver: the only code here that talks to the browser. It wraps a
 // Playwright Page or Frame and answers the selector queries the resolver, the gate and the
 // fingerprint tier make, each against an optional iframe selector (a candidate saved inside
-// an iframe has one). A selector the browser cannot parse raises InvalidSelector at once.
+// an iframe has one) or the shadow hosts of a CSS selector saved inside an open shadow root
+// (see shadow.ts). A selector the browser cannot parse raises InvalidSelector at once.
 //
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
 
@@ -13,6 +14,7 @@ import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
+import { savedHosts, type Hosts } from './shadow';
 
 export type PageLike = Page | Frame;
 
@@ -20,9 +22,9 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // The helpers of mendwrightLib() the driver calls by name. Only these names are ever put
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
-  'candidates', 'indexOfMatch', 'robustXpaths']);
+  'candidates', 'indexOfMatch', 'robustXpaths', 'placed']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
-  | 'candidates' | 'indexOfMatch' | 'robustXpaths';
+  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed';
 
 function checked(name: string): string {
   if (!LIB_NAMES.has(name)) throw new TypeError('mendwright: no page helper named ' + JSON.stringify(name));
@@ -84,6 +86,34 @@ function invalid(error: unknown, selector: string): InvalidSelector {
     "Fix the selector, or use an XPath such as \"//button[@id='save']\".");
 }
 
+interface Placed {
+  n: number;
+  inside: number;
+}
+
+/** count() from placed(): how many elements the Locator matches when one of them is in the
+ * shadow root, else 0. Two matches with one outside count 2, so the selector is not unique;
+ * one match outside counts 0. */
+function placedCount(placed: unknown): number {
+  const p = placed as Placed | null;
+  if (!p || typeof p.n !== 'number' || typeof p.inside !== 'number') return 0;
+  return p.inside > 0 ? p.n : 0;
+}
+
+/** True when placed() says the Locator matches something, and all of it is in the shadow
+ * root: only then does a read go on. */
+function allPlaced(placed: unknown): boolean {
+  const p = placed as Placed | null;
+  return !!p && typeof p.n === 'number' && p.n > 0 && p.inside === p.n;
+}
+
+/** What a fingerprint read gives: the fingerprint, and the shadow hosts around the element
+ * ([] for one on the page), or undefined when the read said nothing about them. */
+export interface FingerprintRead {
+  fp: Fingerprint | null;
+  hosts: Hosts | undefined;
+}
+
 export interface Description {
   tag: string;
   role: string;
@@ -115,17 +145,32 @@ export class PlaywrightDriver {
     this.page = page;
   }
 
-  /** The Locator for a stored selector, inside the iframe frameXPath when it has one. */
-  locator(selector: string, frameXPath?: string | null): Locator {
+  /** The Locator for a stored selector, inside the iframe frameXPath when it has one. For a
+   * CSS selector inside an open shadow root, hosts are the CSS of its shadow hosts, outermost
+   * first, and the Locator is their chain: Playwright's CSS pierces open shadow roots, so
+   * every read through it checks first that each match is in that shadow root (placed). */
+  locator(selector: string, frameXPath?: string | null, hosts?: string[] | null): Locator {
     const target = playwrightSelector(selector);
+    if (hosts && hosts.length) {
+      let loc = this.page.locator('css=' + hosts[0]);
+      for (const host of hosts.slice(1)) loc = loc.locator('css=' + host);
+      return loc.locator(target);
+    }
     if (frameXPath) return this.page.frameLocator(playwrightSelector(frameXPath)).locator(target);
     return this.page.locator(target);
   }
 
+  /** What placed() says of the Locator of a selector inside a shadow root. */
+  private place(loc: Locator, hosts: string[]): Promise<unknown> {
+    return loc.evaluateAll(elementsFunction('placed') as (els: Element[], arg: unknown) => unknown, hosts);
+  }
+
   private async probe<T>(selector: string, frameXPath: string | null | undefined,
-                         op: (loc: Locator) => Promise<T>, fallback: T): Promise<T> {
-    const loc = this.locator(selector, frameXPath);
+                         op: (loc: Locator) => Promise<T>, fallback: T, hosts?: string[] | null): Promise<T> {
+    const loc = this.locator(selector, frameXPath, hosts);
     try {
+      // Inside a shadow root, a match anywhere else makes the read find nothing.
+      if (hosts && hosts.length && !allPlaced(await this.place(loc, hosts))) return fallback;
       return await op(loc);
     } catch (error) {
       if (browserRejected(error)) throw invalid(error, selector);
@@ -133,16 +178,25 @@ export class PlaywrightDriver {
     }
   }
 
-  count(selector: string, frameXPath?: string | null): Promise<number> {
+  async count(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<number> {
+    if (hosts && hosts.length) {
+      const loc = this.locator(selector, frameXPath, hosts);
+      try {
+        return placedCount(await this.place(loc, hosts));
+      } catch (error) {
+        if (browserRejected(error)) throw invalid(error, selector);
+        return 0;
+      }
+    }
     return this.probe(selector, frameXPath, (loc) => loc.count(), 0);
   }
 
-  isVisible(selector: string, frameXPath?: string | null): Promise<boolean> {
-    return this.probe(selector, frameXPath, (loc) => loc.isVisible(), false);
+  isVisible(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<boolean> {
+    return this.probe(selector, frameXPath, (loc) => loc.isVisible(), false, hosts);
   }
 
-  async scrollIntoView(selector: string, frameXPath?: string | null): Promise<void> {
-    await this.probe(selector, frameXPath, (loc) => loc.scrollIntoViewIfNeeded({ timeout: 2000 }), undefined);
+  async scrollIntoView(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<void> {
+    await this.probe(selector, frameXPath, (loc) => loc.scrollIntoViewIfNeeded({ timeout: 2000 }), undefined, hosts);
   }
 
   url(): string {
@@ -173,16 +227,27 @@ export class PlaywrightDriver {
 
   /** describe() of the one element selector matches: its tag, gate role, text and outer
    * HTML without value attributes, or null when it matches none or several. */
-  describe(selector: string, frameXPath?: string | null): Promise<Description | null> {
+  describe(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<Description | null> {
     return this.probe(selector, frameXPath,
-      (loc) => loc.evaluateAll(elementsFunction('describe') as (els: Element[]) => Description | null), null);
+      (loc) => loc.evaluateAll(elementsFunction('describe') as (els: Element[]) => Description | null), null, hosts);
   }
 
   /** The fingerprint of the one element selector matches, or null. One round trip, which
    * reads no input value. */
-  fingerprint(selector: string, frameXPath?: string | null): Promise<Fingerprint | null> {
-    return this.probe(selector, frameXPath,
-      async (loc) => fromRaw(await loc.evaluateAll(elementsFunction('recordRaw') as (els: Element[]) => unknown)), null);
+  async fingerprint(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<Fingerprint | null> {
+    return (await this.fingerprintRead(selector, frameXPath, hosts)).fp;
+  }
+
+  /** fingerprint(), and where the element is: the selectors of the shadow hosts around it,
+   * outermost first, as the Python package saves them as the key's shadowHosts (null for a
+   * host nothing tells apart), [] for an element on the page itself. Same round trip. */
+  fingerprintRead(selector: string, frameXPath?: string | null, hosts?: string[] | null): Promise<FingerprintRead> {
+    return this.probe(selector, frameXPath, async (loc) => {
+      const raw = await loc.evaluateAll(elementsFunction('recordRaw') as (els: Element[]) => unknown);
+      const fp = fromRaw(raw);
+      const read = raw && typeof raw === 'object' ? (raw as { hosts?: unknown }).hosts : undefined;
+      return { fp, hosts: fp && Array.isArray(read) ? savedHosts(read) : undefined };
+    }, { fp: null, hosts: undefined } as FingerprintRead, hosts);
   }
 
   /** Up to limit interactive elements of the page, as the model's inventory. Never input
