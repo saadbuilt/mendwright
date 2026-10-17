@@ -77,6 +77,32 @@ def test_a_malformed_saved_place_keeps_a_host_nothing_tells_apart(tmp_path):
     assert load_store(None, str(path)).shadow_hosts('k') == [None]
 
 
+def test_a_heal_gets_back_the_shadow_hosts_a_0_9_0_process_dropped(tmp_path):
+    # 0.9.0 writes the store without any shadowHosts. A heal whose text is the chain of
+    # host selectors and a CSS selector is one only 0.10.0 saves: its hosts are read back.
+    path = tmp_path / 'o.json'
+    rows = [{'xpath': HOST + ' >> [data-testid="save"]', 'source': 'heal', 'status': 'active'},
+            {'xpath': HOST + ' >> settings-panel >> #save', 'source': 'heal'},
+            {'xpath': 'my-app >> #save', 'source': 'code'},                   # the code's
+            {'xpath': HOST + ' >> #save', 'source': 'heal', 'frameXPath': '#f'},
+            {'xpath': 'div >> #save', 'source': 'heal'},                      # no host form
+            {'xpath': 'my-app[class="x"] >> #save', 'source': 'heal'},
+            {'xpath': HOST + " >> //button", 'source': 'heal'},              # not CSS
+            {'xpath': 'text=Save >> nth=0', 'source': 'heal'},
+            {'xpath': "//button[@id='save']", 'source': 'heal'}]
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {'candidates': rows}}}))
+    store = load_store(None, str(path))
+    found = {c['xpath']: shadow.hosts_of(c) for c in store._data['selectors']['k']['candidates']}
+    assert found == {HOST + ' >> [data-testid="save"]': (HOST,),
+                     HOST + ' >> settings-panel >> #save': (HOST, 'settings-panel'),
+                     'my-app >> #save': (), HOST + ' >> #save': (), 'div >> #save': (),
+                     'my-app[class="x"] >> #save': (), HOST + ' >> //button': (),
+                     'text=Save >> nth=0': (), "//button[@id='save']": ()}
+    store.set_meta('k', role='button')                  # the next write keeps them
+    saved = json.loads(path.read_text())['selectors']['k']['candidates']
+    assert [c['shadowHosts'] for c in saved if c['xpath'] == HOST + ' >> [data-testid="save"]']         == [[HOST]]
+
+
 def test_quarantines_are_listed_per_place(tmp_path):
     store = load_store(None, str(tmp_path / 'o.json'))
     store.add_candidate('k', '//page', source='heal')

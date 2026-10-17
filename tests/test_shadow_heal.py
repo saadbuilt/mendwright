@@ -173,6 +173,30 @@ def test_a_test_id_reused_in_a_nested_shadow_root_does_not_hide_the_element(make
     assert heal.heals[-1].new == HOST + ' >> #save-2'
 
 
+def test_a_heal_inside_a_shadow_root_stays_there_after_a_0_9_0_process_wrote_the_store(
+        make_shadow_page, tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0).click()
+    # A 0.9.0 process runs the heal's chain, as Playwright does, and writes the store: it
+    # drops every shadowHosts, the key's and the heal's.
+    data = _store(tmp_path)
+    entry = data['selectors']['save']
+    entry.pop('shadowHosts', None)
+    for row in entry['candidates']:
+        row.pop('shadowHosts', None)
+        row['lastSucceededAt'] = ('2026-01-02T00:00:00+00:00' if row['xpath'] == CHAIN
+                                  else '2026-01-01T00:00:00+00:00')
+    (tmp_path / 'o.json').write_text(json.dumps(data), encoding='utf-8')
+    # The button is renamed again; outside the host the look-alike keeps the old test id.
+    page_.set_html(page(LOOKALIKE + shadow(
+        '<button id="save-3" data-testid="save-btn" type="button">Save</button>')))
+    heal = _open(page_, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert page_.dom.owner[_clicked(page_)] is not page_.dom.document
+    assert heal.heals[-1].new == HOST + ' >> [data-testid="save-btn"]'
+
+
 @pytest.mark.parametrize('v2, why', [
     (page(LOOKALIKE), 'is not on the page, matches more than one element'),
     (page(LOOKALIKE + shadow(SAVE_V2) + shadow(SAVE_V2)), 'matches more than one element'),

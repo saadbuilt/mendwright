@@ -53,7 +53,7 @@ from .flow import page_url
 from .lists import valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
-from .shadow import saved_hosts
+from .shadow import saved_hosts, text_hosts
 
 logger = logging.getLogger('mendwright')
 
@@ -213,6 +213,27 @@ def _respell_frame_heals(data):
     return data
 
 
+def _restore_shadow_hosts(data):
+    """Give a heal saved inside a shadow root back the shadowHosts a mendwright that knows
+    nothing of them (0.9.0 and before) dropped when it wrote the file: without them its
+    chain would run as Playwright runs it, and a heal of the key on the page around the
+    host. They are read back from the heal's text (shadow.text_hosts), the chain of its
+    hosts and a CSS selector, which 0.9.0 never saves as a heal itself. Only rows with
+    source 'heal' and no frameXPath or shadowHosts change. Returns data."""
+    for entry in (data.get('selectors') or {}).values():
+        rows = entry.get('candidates') if isinstance(entry, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for c in rows:
+            if not (isinstance(c, dict) and c.get('source') == 'heal'
+                    and not c.get('frameXPath') and not c.get('shadowHosts')):
+                continue
+            hosts = text_hosts(c.get('xpath'))
+            if hosts:
+                c['shadowHosts'] = list(hosts)
+    return data
+
+
 @contextlib.contextmanager
 def _locked(path, *, timeout, stale_after, clock=time.monotonic, sleep=time.sleep,
             wallclock=time.time):
@@ -323,7 +344,7 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
     if data == {}:
         return _empty(), False
     if isinstance(data, dict) and data.get('schema') == 2 and isinstance(selectors, dict):
-        return _respell_frame_heals(data), True
+        return _restore_shadow_hosts(_respell_frame_heals(data)), True
     if isinstance(data, dict) and data.get('schema') in (None, 1) and isinstance(selectors, list):
         return migrate_schema1(data, destructive_keys), False
     raise StoreReadError(
