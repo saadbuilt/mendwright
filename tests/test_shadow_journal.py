@@ -72,6 +72,27 @@ def test_a_host_nothing_tells_apart_is_declined_as_shadow(make_shadow_page, tmp_
     assert [code for _, code, _ in _declines(tmp_path)] == ['shadow']
 
 
+@pytest.mark.parametrize('mode', ['dry_run', 'disabled'])
+def test_a_shadow_root_that_cannot_be_entered_is_declined_as_shadow_in_every_mode(
+        make_shadow_page, tmp_path, monkeypatch, stub_provider, mode):
+    # It would be refused with healing on as well, so it needs a human, as a key marked
+    # destructive does; only a follow, which these modes stop, is declined with their code.
+    page_ = make_shadow_page(V1)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0)
+    page_.set_html(page(LOOKALIKE))         # the host is gone
+    kwargs = {'dry_run': True} if mode == 'dry_run' else {}
+    if mode == 'disabled':
+        monkeypatch.setenv('MENDWRIGHT_DISABLE', '1')
+    heal = _open(page_, tmp_path, provider=stub_provider("//button[@data-testid='save']"),
+                 **kwargs)
+    with pytest.raises(AttentionRequired, match='cannot enter that shadow root now'):
+        heal.locator('save', '#save', role='button', poll_ms=0)
+    assert [code for _, code, _ in _declines(tmp_path)] == ['shadow']
+    summary = runsummary.summarize(_events(tmp_path))
+    assert [(e['key'], e['code']) for e in summary['needs_human']] == [('save', 'shadow')]
+    assert summary['not_repaired_on_purpose'] == {'dry_run': 0, 'disabled': 0}
+
+
 @pytest.mark.parametrize('how, code', [
     ({'html': page(shadow(SAVE_V1) + shadow(SAVE_V1, host='<other-app>'))}, 'shadow'),
     ({'html': page(shadow(SAVE_V1 + SAVE_V1))}, 'shadow'),

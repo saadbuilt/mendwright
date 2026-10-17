@@ -1068,7 +1068,9 @@ Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_elem
 
 `mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
 `mendwright report` shows the shadow root each selector runs in.
-In the [journal](#journaljsonl), a heal or a follow refused for a key in a shadow root is a `heal.declined` with the code `shadow` (`dry_run` and `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), which [`mendwright notify`](#mendwright-notify) words as `` `save` is inside a shadow root, where mendwright could not repair it ``.
+In the [journal](#journaljsonl), a heal or a follow refused for a key in a shadow root is a `heal.declined` with the code `shadow`, which [`mendwright notify`](#mendwright-notify) words as `` `save` is inside a shadow root, where mendwright could not repair it ``.
+A follow is not tried in dry run or under `MENDWRIGHT_DISABLE=1`, and its `heal.declined` then has the code `dry_run` or `disabled`.
+A heal refused because mendwright can't heal inside the key's shadow root (it can't be entered, a host can't be told apart, it is inside an iframe, or the driver doesn't reach into shadow roots) keeps the code `shadow` in those modes too, as a key marked destructive keeps `destructive`: it would be refused with healing on as well, so it needs a human.
 
 The real-browser tests in `tests/browser/test_browser_shadow.py` cover these on every engine, with a look-alike outside the host and nested shadow roots.
 
@@ -2543,7 +2545,7 @@ What it counts, from the events of the run only:
 - Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included), or found inside an iframe or a [shadow root](#shadow-dom) (source `frame` or `shadow`, with no model call). It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
 - Handled: cookie banners closed by the `cookies=` preset, popups `dismiss=True` closed, and the other interruptions.
 - Needs a human: one line per key, the latest reason winning, in the words below. A key healed later in the run is left out, unless that heal was quarantined too.
-- Not repaired on purpose: keys declined in dry run or under `MENDWRIGHT_DISABLE=1`. They never need a human.
+- Not repaired on purpose: keys declined with the code `dry_run` or `disabled`, because of dry run or `MENDWRIGHT_DISABLE=1`. They never need a human. A key declined in those modes for a reason that holds with healing on, such as being marked destructive or inside a shadow root mendwright can't enter, needs a human.
 
 | Code | From | The alert says |
 |---|---|---|
