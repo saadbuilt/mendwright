@@ -620,8 +620,9 @@ class HealCoordinator:
         selectors in your code give a list. Returns a ListOutcome; every refusal is recorded
         and logged as a heal that did not apply (see ``explain``).
 
-        In order, it refuses a key marked destructive, a key with no list fingerprint, no live
-        driver or one without list_items(), a list fingerprint without where the list sat
+        In order, it refuses a key marked destructive, a key with no list fingerprint, a list
+        whose items were inside a shadow root (lists.in_shadow), no live driver or one without
+        list_items(), a list fingerprint without where the list sat
         (recorded by 0.8.0, or before a call with nonempty=True matched), a page the key was
         never found on, an unknown role, the guard and a store that can't save a proposal.
         Then it captures the page and looks (lists.find), refuses a group picked by a word
@@ -637,6 +638,11 @@ class HealCoordinator:
                 selector_key, 'mendwright has never seen this list match 2 or more elements, '
                 "so it has nothing to look for. It records a list each time the list's "
                 'selector matches 2 or more.'))
+        if _lists.in_shadow(lfp):
+            return self._list_refused(selector_key, nonempty_unsearched(
+                selector_key, 'The list was inside a shadow root when its list fingerprint was '
+                "recorded, and mendwright looks for a list only in the page's own HTML, where "
+                "it would find another list's items, so it did not look."))
         driver = self.driver
         what = None
         if driver is None:
