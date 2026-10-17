@@ -5,6 +5,7 @@
 import { strict as assert } from 'node:assert';
 import { beforeEach, describe, test } from 'node:test';
 
+import { PlaywrightDriver } from '../../src/driver';
 import { AttentionRequired, InvalidSelector } from '../../src/errors';
 import { loadStore } from '../../src/store';
 import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
@@ -277,6 +278,72 @@ describe('the model tier and the gate', () => {
     assert.deepEqual(heal.heals, []);
     assert.deepEqual(w.page.actions, [['click', 'css=#create-account']]);
   });
+
+describe('a page that enforces Trusted Types', () => {
+  const STATE = '<head><script>window.__STATE__ = {"session": "s3cr3t-session-abc"}</script><style>.x { color: red }</style></head>';
+
+  test('heals from the fingerprint and from a model, through one policy of its own per document', async () => {
+    const w = world(V1, { trustedTypes: 'require' });
+    await w.open().locator('email', '#email').fill('x');
+    w.page.goto(V2.replace('<html>', '<html>' + STATE));
+    const heal = w.open();
+    await heal.locator('email', '#email').fill('ada@example.com');
+    assert.deepEqual(heal.heals.map((h) => [h.new, h.source]), [["//input[@id='user-email']", 'fingerprint']]);
+    // A second healer of the page uses the same policy: a trusted-types directive that names
+    // mendwright without 'allow-duplicates' allows it once per document.
+    const model = new FakeModel(["//button[@id='create-account']"]);
+    await w.open({ provider: model }).locator('create', '#create', { role: 'button' }).click();
+    assert.equal(model.bundles.length, 1);
+    assert.ok(!/<script|<style|s3cr3t/.test(model.bundles[0].html), 'the page went to the model with its scripts');
+    assert.ok(model.bundles[0].html.includes('create-account'));
+    assert.deepEqual(w.page.policies, ['mendwright']);
+    // A new document needs a new policy.
+    w.page.goto(V2);
+    await w.open({ provider: new FakeModel(["//a[@id='help-link']"]) }).locator('help', '#help', { role: 'link' }).click();
+    assert.deepEqual(w.page.policies, ['mendwright', 'mendwright']);
+  });
+
+  test('when it refuses that policy, nothing is sent to the model, and the heal says why', async () => {
+    const w = world(V1, { trustedTypes: 'refuse' });
+    await w.open().locator('email', '#email').fill('x');
+    w.page.goto(V2.replace('<html>', '<html>' + STATE));
+    const model = new FakeModel(["//input[@id='user-email']"]);
+    const error = await w.open({ provider: model }).locator('email', '#email').fill('x').catch((e) => e);
+    assert.ok(error instanceof AttentionRequired);
+    assert.match(error.message, /could not remove the scripts and styles from the page, so it sent the model nothing for 'email': the page enforces/);
+    assert.match(error.message, /does not allow the policy 'mendwright'\. Add 'mendwright' to that directive/);
+    assert.equal(model.bundles.length, 0);
+    assert.deepEqual(w.page.actions, [['fill', 'css=#email']]);
+    const events = journalOf(w.dir);
+    // The fingerprint tier found the element, and the gate could not check it.
+    assert.ok(events.some((e) => e.event === 'heal.rejected' && e.source === 'fingerprint'
+      && /^the captured page could not be read: the page enforces Trusted Types/.test(String(e.reason))));
+    assert.deepEqual(events.filter((e) => e.event === 'heal.declined').map((e) => e.code), ['other']);
+  });
+
+  test('two heals at once share the policy', async () => {
+    const w = world(V2, { trustedTypes: 'require' });
+    const driver = new PlaywrightDriver(w.page as never);
+    const html = await w.page.content();
+    const [one, two] = await Promise.all([driver.lib<string>('cleanHtml', html), driver.lib<string>('cleanHtml', html)]);
+    assert.equal(one, two);
+    assert.ok(one.includes('user-email'));
+    assert.deepEqual(w.page.policies, ['mendwright']);
+  });
+
+  test('a page that cannot be cleaned for any other reason is not sent either', async () => {
+    const w = world(V2.replace('<html>', '<html>' + STATE));
+    const evaluate = w.page.evaluate.bind(w.page);
+    w.page.evaluate = async (fn: (...args: unknown[]) => unknown, arg?: unknown) => {
+      if (String(fn).includes('.cleanHtml(call.arg)')) throw new Error('page.evaluate: Execution context was destroyed');
+      return evaluate(fn, arg);
+    };
+    const model = new FakeModel(["//input[@id='user-email']"]);
+    await assert.rejects(w.open({ provider: model }).locator('email', '#email', { role: 'input' }).fill('x'),
+      /so it sent the model nothing for 'email': the page navigated or closed while mendwright read it/);
+    assert.equal(model.bundles.length, 0);
+  });
+});
 
 describe('what is never healed', () => {
   test('a key marked destructive, before any fingerprint or model', async () => {

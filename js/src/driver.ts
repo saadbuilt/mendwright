@@ -26,12 +26,36 @@ const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'val
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
   | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed';
 
+// The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
+// nothing of the live page. A page that enforces Trusted Types refuses a plain string to
+// DOMParser, so these get mendwright's own policy there (see PlaywrightDriver.lib).
+const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths']);
+const TRUSTED_TYPES = 'mendwright:trusted-types';
+
+/** What lib() throws when the page enforces Trusted Types and its trusted-types directive
+ * does not allow mendwright's policy, so no HTML string can be parsed in it. */
+export class TrustedTypesRefused extends Error {
+  constructor() {
+    super("the page enforces Trusted Types, and its trusted-types directive does not allow the policy 'mendwright'");
+    this.name = 'TrustedTypesRefused';
+  }
+}
+
+// mendwright's policy: it passes the string through as it is. The page produced that HTML
+// itself, and DOMParser runs none of its scripts. The policy is made once per document and
+// shared by every healer of the page, and only Playwright's handle holds it, so the page's
+// own scripts cannot reach it.
+const MAKE_POLICY = () => (window as any).trustedTypes.createPolicy('mendwright', { createHTML: (text: string) => text });
+// page -> its policy, being made or made. Two heals at once share one.
+const policies = new WeakMap<object, Promise<JSHandle>>();
+
 function checked(name: string): string {
   if (!LIB_NAMES.has(name)) throw new TypeError('mendwright: no page helper named ' + JSON.stringify(name));
   return name;
 }
 
 const pageFunctions = new Map<string, (arg: unknown) => unknown>();
+const parserFunctions = new Map<string, (call: { arg: unknown; policy: unknown }) => unknown>();
 const elementFunctions = new Map<string, (els: Element[], arg: unknown) => unknown>();
 const handleFunctions = new Map<string, (h: unknown, arg: unknown) => unknown>();
 
@@ -42,6 +66,17 @@ function pageFunction(name: LibName): (arg: unknown) => unknown {
   if (!fn) {
     fn = new Function('arg', 'return ' + LIB + '.' + checked(name) + '(arg);') as (arg: unknown) => unknown;
     pageFunctions.set(name, fn);
+  }
+  return fn;
+}
+
+// A parsing helper, run with the document's policy or none: call is { arg, policy }.
+function parserFunction(name: LibName): (call: { arg: unknown; policy: unknown }) => unknown {
+  let fn = parserFunctions.get(name);
+  if (!fn) {
+    fn = new Function('call', 'return (' + mendwrightLib.toString() + ')(call.policy).' + checked(name) + '(call.arg);') as
+      (call: { arg: unknown; policy: unknown }) => unknown;
+    parserFunctions.set(name, fn);
   }
   return fn;
 }
@@ -138,6 +173,16 @@ export interface Snapshot {
   dispose(): Promise<void>;
 }
 
+/** True while handle's document is still the page's. */
+async function alive(handle: JSHandle): Promise<boolean> {
+  try {
+    await handle.evaluate(() => true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class PlaywrightDriver {
   readonly page: PageLike;
 
@@ -220,9 +265,51 @@ export class PlaywrightDriver {
     }
   }
 
-  /** Run one helper of mendwrightLib() in the page. */
-  lib<T>(name: LibName, arg?: unknown): Promise<T> {
-    return this.page.evaluate(pageFunction(name) as (arg: unknown) => T, arg);
+  /** Run one helper of mendwrightLib() in the page. A helper that parses an HTML string
+   * gets mendwright's Trusted Types policy on a page that requires one; when the page does
+   * not allow that policy, it throws TrustedTypesRefused. */
+  async lib<T>(name: LibName, arg?: unknown): Promise<T> {
+    if (!PARSERS.has(name)) return this.page.evaluate(pageFunction(name) as (arg: unknown) => T, arg);
+    const run = parserFunction(name) as (call: { arg: unknown; policy: unknown }) => T;
+    const cached = policies.get(this.page);
+    const known = cached ? await cached.catch(() => null) : null;
+    if (cached && known) {
+      try {
+        return await this.page.evaluate(run, { arg, policy: known });
+      } catch (error) {
+        if (await alive(known)) throw error;
+        // The page went to another document since, and the policy went with the old one.
+        if (policies.get(this.page) === cached) policies.delete(this.page);
+      }
+    }
+    try {
+      return await this.page.evaluate(run, { arg, policy: null });
+    } catch (error) {
+      if (!String((error as Error)?.message ?? error).includes(TRUSTED_TYPES)) throw error;
+    }
+    let policy: JSHandle;
+    try {
+      policy = await this.makePolicy();
+    } catch {
+      throw new TrustedTypesRefused();
+    }
+    return this.page.evaluate(run, { arg, policy });
+  }
+
+  /** The page's policy: the one being made, or a new one. One the page refused is not kept,
+   * so the next document is asked again. */
+  private makePolicy(): Promise<JSHandle> {
+    const page = this.page;
+    let made = policies.get(page);
+    if (!made) {
+      const making = page.evaluateHandle(MAKE_POLICY);
+      made = making;
+      policies.set(page, making);
+      making.catch(() => {
+        if (policies.get(page) === making) policies.delete(page);
+      });
+    }
+    return made;
   }
 
   /** describe() of the one element selector matches: its tag, gate role, text and outer

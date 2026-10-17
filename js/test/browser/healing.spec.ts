@@ -3,32 +3,11 @@
 // answer as those APIs do.
 
 import * as fs from 'node:fs';
-import * as http from 'node:http';
-import type { AddressInfo } from 'node:net';
 
 import { AnthropicProvider, AttentionRequired, LocalModelProvider, open } from 'mendwright';
 import { expect, test } from 'mendwright/test';
 
-import { FakeModel, SIGNUP_V1, SIGNUP_V2, journal, readStore, serve, tempStore } from './helpers';
-
-async function server(answer: (body: any) => unknown): Promise<{ url: string; bodies: any[]; close: () => Promise<void> }> {
-  const bodies: any[] = [];
-  const srv = http.createServer((req, res) => {
-    let data = '';
-    req.on('data', (c) => (data += c));
-    req.on('end', () => {
-      const body = JSON.parse(data);
-      bodies.push(body);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(answer(body)));
-    });
-  });
-  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  return {
-    url: 'http://127.0.0.1:' + (srv.address() as AddressInfo).port, bodies,
-    close: () => new Promise<void>((resolve) => srv.close(() => resolve())),
-  };
-}
+import { FakeModel, SIGNUP_V1, SIGNUP_V2, journal, readStore, serve, server, tempStore } from './helpers';
 
 test('a model heals a selector that never matched, and the gate checks it on the live page', async ({ page }) => {
   await serve(page, { '/signup': SIGNUP_V2 });

@@ -14,7 +14,7 @@
 // between; the live check is what makes the element that is saved and acted on the one
 // that was checked. Any error on the way refuses the proposal (fail closed).
 
-import type { PlaywrightDriver } from './driver';
+import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
 import type { Proposal } from './prompt';
 import { XPATH, classify, hasPosition, isBrittle, normalize } from './selectors';
 import type { KeyMeta, SelectorStore } from './store';
@@ -24,6 +24,7 @@ export const UNREADABLE = 'could not read the live element, so its role could no
 export const POSITIONAL = 'it uses a position ([2], last() or position()), but parts of the page were left '
   + 'out of the snapshot to fit the prompt, so positions there do not match the live page. Anchor on '
   + 'attributes or text instead';
+export const UNPARSED = 'the captured page could not be read';
 const SAME_ELEMENT = 'previously quarantined (the same element as a quarantined heal; choose a different element)';
 const RETIRED: Record<string, string> = {
   quarantined: 'previously quarantined',
@@ -55,16 +56,18 @@ interface StaticResult {
 }
 
 /** The static half of the gate, on the captured page html (parsed in the browser, where no
- * script of it runs). */
+ * script of it runs). A page that cannot be parsed refuses the proposal, with why when its
+ * Trusted Types policy is the reason. */
 export async function validateStatic(driver: PlaywrightDriver, xpath: string, html: string, role: string,
                                      quarantined: string[] = []): Promise<StaticResult> {
   if (isBrittle(xpath)) return { ok: false, reason: 'brittle absolute-index path', count: 0 };
   try {
     const result = await driver.lib<StaticResult>('validate', { xpath, html, role, quarantined });
-    if (!result || typeof result.ok !== 'boolean') return { ok: false, reason: 'the captured page could not be read', count: 0 };
+    if (!result || typeof result.ok !== 'boolean') return { ok: false, reason: UNPARSED, count: 0 };
     return result;
-  } catch {
-    return { ok: false, reason: 'the captured page could not be read', count: 0 };
+  } catch (error) {
+    const reason = error instanceof TrustedTypesRefused ? UNPARSED + ': ' + error.message : UNPARSED;
+    return { ok: false, reason, count: 0 };
   }
 }
 
