@@ -535,6 +535,30 @@ def test_a_coordinator_used_on_its_own_never_heals_a_shadow_key_on_the_page(
     assert [e['code'] for e in events if e['event'] == 'heal.declined'] == ['shadow']
 
 
+@pytest.mark.parametrize('mode', ['dry_run', 'disabled'])
+def test_a_coordinator_used_on_its_own_declines_a_shadow_key_on_purpose_in_dry_run_and_disabled(
+        make_shadow_page, tmp_path, stub_provider, mode):
+    # The same code as a heal refused for its shadow root under mendwright.open() gets there.
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    store = load_store(None, str(tmp_path / 'o.json'))
+    driver = mendwright.wrap(page_)
+    provider = stub_provider("//button[@data-testid='save']")     # would find the look-alike
+    coordinator = mendwright.HealCoordinator(
+        store, provider=provider, driver=driver, html_provider=driver.outer_html,
+        inventory_provider=driver.inventory, guard=lambda: True, fingerprint=True,
+        dry_run=mode == 'dry_run', journal=Journal(str(tmp_path / 'journal.jsonl')))
+    coordinator.disabled = mode == 'disabled'
+    with pytest.raises(AttentionRequired, match="'save' was last found inside the shadow root"):
+        mendwright.resolve_with_heal(
+            lambda: mendwright.resolve(store, page_, 'save', timeout_ms=0, poll_ms=0),
+            coordinator, 'save', store.meta('save'), {'url': page_.url})
+    assert coordinator.heals == [] and provider.bundles == [] and page_.actions == []
+    events = [json.loads(line) for line in
+              (tmp_path / 'journal.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [e['code'] for e in events if e['event'] == 'heal.declined'] == [mode]
+
+
 def test_a_coordinator_scoped_to_the_shadow_root_still_heals_there(make_shadow_page, tmp_path,
                                                                   stub_provider):
     from mendwright.shadow import driver_shadowed
