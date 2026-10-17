@@ -101,6 +101,19 @@ If you change `mendwright/prompt.py`, make the same change in `examples/heal_gat
 python -m pytest tests/test_prompt.py tests/test_gateway_worker.py
 ```
 
+### The TypeScript package
+
+`js/` is the npm package, a port of `heal.locator()` and `heal.page` that reads and writes the same store and journal. Its unit suite runs the Python package from this checkout (Python 3.12 or later, with lxml) to check that both give the same scores, prompt and task text, run ids and decline codes, and share one store file, `shadowHosts` and list heals included:
+
+```bash
+cd js
+npm ci
+npm test
+npm run test:browser
+```
+
+When the store, the journal, the fingerprint or the prompt changes in the Python package, change `js/` to match, or make it refuse what it does not support, as it refuses to heal a key last found inside a shadow root.
+
 ## Lint
 
 ```bash
@@ -237,6 +250,7 @@ Before you open one, check:
 - [ ] If `mendwright/prompt.py` changed, `examples/heal_gateway.mjs` changed to match, and `tests/test_gateway_worker.py` passes with node installed.
 - [ ] If the change is user-visible, `CHANGELOG.md` has an entry under the next version.
 - [ ] If a driver changed, `python -m pytest -m browser` passes for the engines you have.
+- [ ] If `js/` changed, or the store, journal or fingerprint did, `npm test` and `npm run test:browser` pass in `js/`, and `js/CHANGELOG.md` has an entry when the change is user-visible.
 
 Keep pull requests small and about one thing.
 
@@ -268,6 +282,7 @@ python -m pytest tests/test_success_heal.py
 | lowest-deps | The offline suite on Python 3.10 with lxml 5.0.0 and pytest 7. |
 | browsers | `python -m pytest -m browser -q -rs` on Ubuntu with Python 3.12. It installs Playwright's three browsers, uses the runner image's Chrome and Firefox for Selenium, and sets `MENDWRIGHT_REQUIRE_ENGINES`. patchright and camoufox aren't installed there, so their tests skip. |
 | package | Builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a fresh venv, runs `mendwright --version`, `python -m mendwright doctor` and `mendwright demo`, then runs the sdist's tests against the installed wheel. |
+| js | In `js/` on Node 22: `npm ci`, the typecheck, the build, `npm test` with Python 3.12 and this checkout installed, the browser suite on Chromium, and `npm pack --dry-run`. |
 
 ### Charts
 
