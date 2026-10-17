@@ -45,9 +45,8 @@ from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver
                       driver_inventory, wrap)
 from .drivers.base import (UNSURE, _member, css_pierces, driver_handles,
                            driver_list_fingerprint, driver_popup_click, driver_popup_controls,
-                           driver_popup_probe,
-                           driver_popup_release, driver_popup_root, driver_press_escape,
-                           driver_visible_match)
+                           driver_popup_probe, driver_popup_release, driver_popup_root,
+                           driver_press_escape, driver_visible_match)
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
@@ -3189,22 +3188,24 @@ class Healer:
         return matches
 
     def _follow_into_shadow(self, key, exc, attempt):
-        """After key missed on the page, and in no iframe: if one of its own selectors
-        matches nothing on the page and one element inside one open shadow root of the page
-        (a driver with shadow_matches(), as the built-in ones have), look for it there from
-        now on and return the retried step. A CSS selector is looked up there as it is; an
-        XPath, which runs inside no shadow root, is evaluated in the root's HTML and its
-        element looked up through a CSS form of it. No model is asked: the selector is the
-        key's own, and only the place changed. It counts as a heal with source 'shadow'.
+        """After key missed on the page, and in no iframe: if none of its own selectors
+        matches anything on the page, and one of them matches one element inside one open
+        shadow root of the page (a driver with shadow_matches(), as the built-in ones have),
+        look for it there from now on and return the retried step. A CSS selector is looked
+        up there as it is; an XPath, which runs inside no shadow root, is evaluated in the
+        root's HTML and its element looked up through a CSS form of it. No model is asked:
+        the selector is the key's own, and only the place changed. It counts as a heal with
+        source 'shadow'.
 
         Playwright's CSS pierces open shadow roots by itself, so there only an XPath is
         followed. A key one of whose selectors matches something on the page (several
         elements, or a hidden one) is not followed, and neither is a key last found on the
         page, in an iframe or in another shadow root (follow_allowed): it heals where it was
-        last found, as any key does. Not followed, with AttentionRequired saying why: the refusals of
-        _shadow_plan, a page the key was never found on (the page guard), a guard that
-        blocks heals, or an element that fails the live check. Returns _NOT_FOLLOWED when no
-        selector of the key may be followed into a shadow root (see _shadow_matches)."""
+        last found, as any key does. Not followed, with AttentionRequired saying why: the
+        refusals of _shadow_plan, a page the key was never found on (the page guard), a
+        guard that blocks heals, or an element that fails the live check. Returns
+        _NOT_FOLLOWED when no selector of the key may be followed into a shadow root (see
+        _shadow_matches)."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'shadow_matches', None)
         if not callable(finder):
@@ -3382,6 +3383,11 @@ class ActionProxy:
 
     .present is False for a step that was skipped (an optional step, or an interruption,
     whose element was not there). Its actions then do nothing and return None.
+
+    For an element found inside a shadow root on Playwright, each action and each read of
+    LOCATOR_READS first waits until the Locator matches one element inside that shadow
+    root and nothing outside it, and raises AttentionRequired when it never does (see
+    _wait_placed).
 
     With expect_value= (see Healer.locator), the value a read returns for an element found
     through a heal is checked, and one that fails raises AttentionRequired instead.
