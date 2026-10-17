@@ -440,3 +440,38 @@ describe('shadowHosts in this package', () => {
     assert.deepEqual(store.shadowHosts('c'), []);
   });
 });
+
+describe('list rows the Python package 0.10.0 wrote', { skip: needsPython() }, () => {
+  test('stay as they are when this package writes, a list fingerprint taken inside a shadow root included', () => {
+    runPython(`
+import json, sys
+import lxml.html
+from mendwright.store import load_store
+from mendwright.fingerprint import of_element
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+root = lxml.html.fromstring('<ul><li class="line">A</li><li class="line">B</li></ul>')
+fp = of_element(root.xpath('//li')[0])
+store.set_code_candidates('cart', ['.cart-item'])
+store.set_meta('cart', role='li', list_fingerprint={'v': 1, 'count': 2, 'items': [fp, fp], 'shadow': True})
+store.propose_list_heal('cart', "//li[@class='line']", css='li.line',
+                        proposal={'id': 'p1', 'at': '2026-10-01T00:00:00+00:00', 'count': 2, 'was': {'selectors': ['.cart-item']}})
+print('null')`, { file });
+    const store = loadStore(file);
+    store.setMeta('cart', { text: 'Cart' });
+    store.recordSuccess('cart', '.cart-item');
+    const py = runPython<Record<string, any>>(`
+import json, sys
+from mendwright.store import load_store
+from mendwright.lists import in_shadow
+store = load_store(None, json.load(sys.stdin))
+meta = store.meta('cart')
+print(json.dumps({'shadow': in_shadow(meta['listFingerprint']),
+                  'lists': [[r['xpath'], r['status'], r.get('css'), r.get('proposal', {}).get('id')]
+                            for r in store.list_heals('cart')]}))`, file);
+    assert.equal(py.shadow, true);
+    assert.deepEqual(py.lists, [["//li[@class='line']", 'proposed', 'li.line', 'p1']]);
+    // A list heal waits for a person: never a candidate here.
+    assert.deepEqual(store.candidates('cart').map((c) => c.xpath), ['.cart-item']);
+  });
+});
