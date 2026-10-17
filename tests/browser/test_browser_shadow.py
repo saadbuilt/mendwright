@@ -116,6 +116,27 @@ def test_a_heal_inside_nested_shadow_roots_stays_in_the_inner_one(tab, store_fil
     assert heal.heals[-1].new == HOST + ' >> settings-panel >> [data-testid="save"]'
 
 
+def test_a_test_id_reused_in_a_nested_shadow_root_does_not_hide_the_element(tab, store_file):
+    # A component inside the shadow root reuses the test id in its own shadow root, and
+    # another Save button sits next to the key's. Playwright's CSS pierces into the nested
+    # root, so the test id says nothing there of whether the renamed button is visible.
+    def app(ident):
+        footer = button('footer-save', 'footer', testid='footer').replace(
+            'data-testid="footer" ', 'class="link" ')
+        return mounted([('my-app', button(ident, 'inside') + footer + '<save-bar></save-bar>',
+                         'open'),
+                        ('save-bar', button('bar-save', 'nested'), 'open')],
+                       body='<my-app id="root"></my-app>')
+    _first_run(tab, store_file, app('save'))
+    tab.load(app('save-2'))
+    heal = _open(tab, store_file)
+    heal.locator('save', '#save', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) == 'inside'
+    # Selenium runs the test id inside the shadow root only, where it is unique.
+    form = '#save-2' if tab.family == PLAYWRIGHT else '[data-testid="save"]'
+    assert heal.heals[-1].new == HOST + ' >> ' + form
+
+
 @pytest.mark.parametrize('v2', ['gone', 'two', 'closed'])
 def test_a_shadow_root_that_cannot_be_entered_is_refused(tab, store_file, stub_provider, v2):
     _first_run(tab, store_file, app_page(button('save', 'inside')))
@@ -149,6 +170,65 @@ def test_a_saved_shadow_heal_matches_nothing_outside_its_shadow_root(tab, store_
     assert heal.present('save') is False
     with pytest.raises(AttentionRequired):
         heal.locator('save', '#save', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) is None
+
+
+# The page's own submit button, and a newsletter component whose shadow root holds another.
+SEND = ('<form onsubmit="return false"><input name="email"><button type="submit" id="send" '
+        'onclick="document.body.dataset.clicked = \'page\'">Send</button></form>')
+SUBSCRIBE = ('<button type="submit" onclick="document.body.dataset.clicked = \'widget\'">'
+             'Subscribe</button>')
+
+
+def newsletter(send=SEND):
+    return mounted([('news-letter', SUBSCRIBE, 'open')], body=send + '<news-letter></news-letter>')
+
+
+def test_a_selector_that_matches_on_the_page_is_never_followed_into_a_shadow_root(tab,
+                                                                                  store_file):
+    # On Playwright, whose CSS pierces, the selector matches 2 elements once the component
+    # is there, one of them on the page: 'send' heals on the page, where it was found.
+    tab.load(page(SEND))
+    _open(tab, store_file).locator('send', 'button[type="submit"]', role='button',
+                                   poll_ms=POLL_MS).click(expect=lambda: True)
+    tab.load(newsletter())
+    heal = _open(tab, store_file)
+    heal.locator('send', 'button[type="submit"]', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) == 'page'
+    assert 'shadow' not in [h.source for h in heal.heals]
+
+
+@pytest.mark.engine_family('selenium')
+def test_a_key_last_found_on_the_page_is_not_followed_into_a_shadow_root(tab, store_file):
+    # The page's button is no submit button now: on Selenium the selector matches nothing
+    # on the page and the component's button inside its shadow root. 'send' heals on the
+    # page, where it was last found.
+    tab.load(page(SEND))
+    heal = _open(tab, store_file)
+    heal.locator('send', 'button[type="submit"]', role='button',
+                 poll_ms=POLL_MS).click(expect=lambda: True)
+    heal.locator('send', 'button[type="submit"]', role='button', poll_ms=POLL_MS)
+    tab.load(newsletter(SEND.replace('type="submit"', 'type="button"')))
+    heal = _open(tab, store_file)
+    heal.locator('send', 'button[type="submit"]', role='button', poll_ms=POLL_MS).click()
+    assert clicked(tab) == 'page'
+    assert [h.source for h in heal.heals] == ['fingerprint']
+
+
+def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(tab, store_file):
+    _first_run(tab, store_file, app_page(button('save', 'inside')))
+    tab.load(app_page(button('save-2', 'inside') + '<slot></slot>'))
+    heal = _open(tab, store_file)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=POLL_MS)    # healed inside
+    # The component re-renders: its button leaves the shadow root, and the page slots one
+    # with the same test id into the host's light DOM. Playwright's CSS would reach it
+    # through the heal's chain.
+    tab.js('(() => { const host = document.querySelector("my-app");'
+           ' host.shadowRoot.innerHTML = "<p>loading</p><slot></slot>";'
+           ' host.innerHTML = ' + json.dumps(button('light', 'light')) + '; return null; })()')
+    assert heal.present('save') is False
+    with pytest.raises(AttentionRequired if tab.family == PLAYWRIGHT else Exception):
+        proxy.click()       # on Selenium the element it found is stale
     assert clicked(tab) is None
 
 

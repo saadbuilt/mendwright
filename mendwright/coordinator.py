@@ -1023,8 +1023,11 @@ class HealCoordinator:
     def _visible_check(self, html):
         """The fingerprint tier's visible(xpath): _live_visible() on the page or in an iframe,
         None without a live driver. Inside a shadow root, where no XPath runs, the element
-        the XPath matches in the captured ``html`` is checked through its first CSS form
-        (mendwright.css), and one with none reads as unknown (None)."""
+        the XPath matches in the captured ``html`` is checked through the first of its CSS
+        forms (mendwright.css) that matches one element in the shadow root on the live page:
+        on Playwright, whose CSS pierces, a form can also match in a shadow root inside it,
+        and says nothing then of the element. With no such form it reads as unknown (None),
+        so it still counts as a rival."""
         if self.driver is None:
             return None
         if not self.shadow_hosts:
@@ -1041,8 +1044,13 @@ class HealCoordinator:
                 hits = [h for h in doc.xpath(xpath) if isinstance(getattr(h, 'tag', None), str)]
             except Exception:
                 return None
-            forms = css_selectors(hits[0], doc, limit=1) if len(hits) == 1 else []
-            return self._live_visible(forms[0]) if forms else None
+            for form in css_selectors(hits[0], doc) if len(hits) == 1 else []:
+                try:
+                    if self.driver.count(form) == 1:
+                        return bool(self.driver.is_visible(form))
+                except Exception:
+                    return None
+            return None
         return visible
 
     def _record_applied(self, selector_key, broken_candidates, applied, started, provider,

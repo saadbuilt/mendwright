@@ -88,6 +88,42 @@ def test_anywhere_else_the_shadow_heal_is_listed_with_the_chain(root, capsys, li
     assert "Selenium's find_element() cannot reach into a shadow root" in note
 
 
+@pytest.mark.parametrize("line", [
+    'heal.page.locator("#save").click()\n',
+    'self.page.click("#save")\n',
+    'frame.fill("#save", "x")\n',
+    'page.main_frame.click("#save")\n',
+], ids=["heal-page", "self-page", "frame", "main-frame"])
+def test_a_shadow_heal_is_written_into_a_call_on_a_playwright_page_or_frame(root, capsys, line):
+    write_store(root, store(), [canary("#save", CHAIN)])
+    source = write(root, "test_a.py", line)
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == line.replace('"#save"', "'" + CHAIN + "'")
+
+
+@pytest.mark.parametrize("text, line", [
+    # A page object's own click(), which runs heal.locator() on Selenium here.
+    ('class Ui:\n    def click(self, selector):\n        self.heal.locator(selector, selector)'
+     '.click()\n\n\ndef test_save(heal):\n    Ui(heal).click("#save")\n', 7),
+    ('class Base:\n    def save(self):\n        self.click("#save")\n', 3),     # SeleniumBase
+    # A Locator: the chain starts with the host, which is not inside my-app.
+    ('app = page.locator("my-app")\napp.locator("#save").click()\n', 2),
+    ('page.locator("my-app").locator("#save").click()\n', 1),
+    ('page.frame_locator("#f").locator("#save").click()\n', 1),
+    # A file that drives Selenium, whatever its page is.
+    ('from selenium.webdriver.common.by import By\n\npage.click("#save")\n', 3),
+], ids=["page-object", "seleniumbase", "scoped-locator", "chained-locator", "frame-locator",
+        "selenium-file"])
+def test_a_shadow_heal_is_listed_for_any_other_receiver(root, capsys, text, line):
+    write_store(root, store(), [canary("#save", CHAIN)])
+    source = write(root, "test_a.py", text)
+    before = source.read_bytes()
+    code, out = run(capsys, "--apply")
+    assert code == 0 and source.read_bytes() == before
+    note = [lin for lin in out.splitlines() if "test_a.py:" + str(line) + " was not changed" in lin]
+    assert note and "change it by hand to: " + CHAIN in note[0]
+
+
 def test_a_shadow_heal_is_never_written_into_another_kind_of_file(root, capsys):
     write_store(root, store(), [canary("#save", CHAIN)])
     source = write(root, "a.spec.ts", "await page.locator('#save').click();\n")

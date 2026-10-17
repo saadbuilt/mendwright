@@ -43,9 +43,10 @@ from .dismiss import (NOT_LOOKED_AT, asks_answer, asks_consent, control_text, ex
                       expect_of, is_consent, parse_probe, pick, popup_of)
 from .drivers import (driver_act_on, driver_describe, driver_fingerprint, driver_framed,
                       driver_inventory, wrap)
-from .drivers.base import (UNSURE, driver_handles, driver_list_fingerprint, driver_popup_click,
-                           driver_popup_controls, driver_popup_probe, driver_popup_release,
-                           driver_popup_root, driver_press_escape, driver_visible_match)
+from .drivers.base import (UNSURE, _member, css_pierces, driver_handles,
+                           driver_list_fingerprint, driver_popup_click, driver_popup_controls,
+                           driver_popup_probe, driver_popup_release, driver_popup_root,
+                           driver_press_escape, driver_visible_match)
 from .exceptions import AttentionRequired
 from .flow import (MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, UNROUTED_STEP, InterruptionLoop,
                    absent_message, handled_message, is_interception_error, is_stale_error,
@@ -67,8 +68,8 @@ from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runn
 from .roles import infer_role, role_choices
 from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, frame_spelling,
                         normalize, strip_prefix)
-from .shadow import (MISSING, as_document, driver_shadowed, hosts_of, place_text, saved_hosts,
-                     shadow_text, take_hosts)
+from .shadow import (MISSING, ShadowHost, as_document, driver_shadowed, hosts_of, place_text,
+                     saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
@@ -678,6 +679,30 @@ def shadow_found(selector, roots):
     return out
 
 
+def follow_allowed(store, key, found):
+    """Whether key may be followed into the shadow roots of ``found`` (see shadow_found) by
+    where its element was last found (heal_place): anywhere when mendwright has no record
+    of that (no selector of the key matched, and no shadowHosts are saved); else only into
+    the one shadow root it was last found in, when found is that one alone. A key last found
+    on the page or in an iframe is healed there instead, and one last found in another
+    shadow root, in that one, as any key is (see Healer._heal_scope)."""
+    frame, hosts, why = heal_place(store, key)
+    if frame or why:
+        return False
+    if hosts:
+        return len(found) == 1 and tuple(found[0]['hosts']) == tuple(hosts)
+    return latest_success(store, key) is None
+
+
+def _matches_nothing(count, selector):
+    """True when count(selector), a driver's count on the page, is 0; False for any other
+    count and when it raises."""
+    try:
+        return count(selector) == 0
+    except Exception:
+        return False
+
+
 def _shadow_message(key, selector, found, why):
     """Why a key whose selector matches only inside an open shadow root was not followed
     there."""
@@ -691,6 +716,18 @@ def _shadow_message(key, selector, found, why):
 
 
 _NOT_FOLLOWED = object()
+
+
+def moved_message(key, hosts, verb):
+    """Why an action or read of a proxy for an element found inside the shadow root that
+    hosts lead to did not run: its Locator matches nothing there now, or something outside
+    it too (see ActionProxy._wait_placed)."""
+    return ("mendwright: '" + key + "' was found inside " + place_text(hosts) + ', but '
+            'when it came to ' + verb + '() its selector no longer matched one element there '
+            "and nothing outside it: the page changed after the lookup. Playwright's CSS "
+            'reaches into every open shadow root, so mendwright did not run ' + verb + '(), '
+            'which could have reached an element outside that shadow root. Look the element '
+            'up again with heal.locator().')
 
 
 def _locator_args(key, selector, role, inline_xpath, intent=None, entry='heal.locator()'):
@@ -1261,8 +1298,10 @@ class Healer:
         if target is not None:
             self._keep_fingerprint(key, target, driver_fingerprint(
                 self._driver, *self._winner_target(key), hosts=True))
-        return ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
-                           healed=self._healed(key), expect=expect)
+        proxy = ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
+                            healed=self._healed(key), expect=expect)
+        proxy._hosts = self._shadow_place(key)
+        return proxy
 
     def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
@@ -1352,6 +1391,7 @@ class Healer:
         proxy = ActionProxy(self, key, native, timeout_ms=timeout, poll_ms=poll_ms,
                             healed=self._healed(key), expect=self._expect_values.get(key))
         proxy._canary = proxy._healed is not None
+        proxy._hosts = self._shadow_place(key)
         return proxy
 
     def _get_by_state(self, key):
@@ -1496,14 +1536,17 @@ class Healer:
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
         natives = self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
-        return [self._item(key, native, timeout, poll_ms, due) for native in natives]
+        hosts = self._shadow_place(key) if natives else None
+        return [self._item(key, native, timeout, poll_ms, due, hosts) for native in natives]
 
-    def _item(self, key, native, timeout_ms, poll_ms, due=None):
+    def _item(self, key, native, timeout_ms, poll_ms, due=None, hosts=None):
         """An ActionProxy for one element of list key, with the heal canary off: its actions
         and its confirm() report nothing, since no list is found through a heal. due, when
-        given, is shared by the elements of one lookup (see ActionProxy._before_read)."""
+        given, is shared by the elements of one lookup (see ActionProxy._before_read), and
+        hosts are those of the shadow root the list was found in (see _shadow_place)."""
         proxy = ActionProxy(self, key, native, timeout_ms=timeout_ms, poll_ms=poll_ms)
         proxy._canary = False
+        proxy._hosts = hosts
         if due is not None:
             proxy._reads_due = due
         return proxy
@@ -1865,6 +1908,20 @@ class Healer:
             return run_target(winner)
         except InvalidSelector:
             return winner['xpath'], chain_of(winner)    # no driver runs it: reads give None
+
+    def _shadow_place(self, key, driver=None):
+        """The CSS of the shadow hosts of the candidate key just matched through, when it
+        runs inside a shadow root on a driver whose CSS pierces shadow roots and that can
+        tell where a Locator's matches are (placed()), else None. Playwright resolves the
+        Locator again for each action and read, so the proxy checks it is still there right
+        before each one (see ActionProxy._wait_placed). driver is this healer's unless
+        given (the async healer passes its own)."""
+        driver = self._driver if driver is None else driver
+        if not (css_pierces(driver) and callable(_member(driver, 'placed'))):
+            return None
+        target = self._winner_target(key)
+        hosts = tuple(str(s) for s in (target[1] if target else ()) if isinstance(s, ShadowHost))
+        return hosts or None
 
     def _describe_winner(self, key):
         """driver.describe() for the candidate that just matched, or None."""
@@ -3105,34 +3162,52 @@ class Healer:
             return ''
         return why
 
-    def _shadow_matches(self, key, finder):
-        """[(selector, found, cut)] for the key's own selectors on the page that match inside
-        open shadow roots (see shadow_found), through finder (driver.shadow_matches)."""
+    def _shadow_matches(self, key, finder, driver=None):
+        """[(selector, found, cut)] for the key's own selectors on the page that a follow may
+        take into open shadow roots (see _follow_into_shadow): each matches inside them (see
+        shadow_found), through finder (driver.shadow_matches), where the key may be followed
+        (follow_allowed). On a driver whose CSS pierces shadow roots (base.css_pierces), a
+        CSS selector is never one: what it matches there, it matches on the page. [] when
+        any of the key's selectors on the page matches something there (driver.count; one
+        that raises counts as a match): the key's element may be that one. driver is this
+        healer's unless given (heal.drift()'s preview passes its own)."""
+        driver = self._driver if driver is None else driver
+        pierces = css_pierces(driver)
+        selectors = self._frame_candidates(key)
         matches = []
-        for selector in self._frame_candidates(key):
+        for selector in selectors:
+            if pierces and classify(selector) == CSS:
+                continue
             try:
                 roots, cut = finder(selector)
             except Exception:
                 continue
             found = shadow_found(selector, roots)
-            if found:
+            if found and follow_allowed(self.store, key, found):
                 matches.append((selector, found, cut))
+        if matches and not all(_matches_nothing(driver.count, s) for s in selectors):
+            return []
         return matches
 
     def _follow_into_shadow(self, key, exc, attempt):
-        """After key missed on the page, and in no iframe: if one of its own selectors
-        matches one element inside one open shadow root of the page (a driver with
-        shadow_matches(), as the built-in ones have), look for it there from now on and
-        return the retried step. A CSS selector is looked up there as it is; an XPath, which
-        runs inside no shadow root, is evaluated in the root's HTML and its element looked up
-        through a CSS form of it. No model is asked: the selector is the key's own, and only
-        the place changed. It counts as a heal with source 'shadow'.
+        """After key missed on the page, and in no iframe: if none of its own selectors
+        matches anything on the page, and one of them matches one element inside one open
+        shadow root of the page (a driver with shadow_matches(), as the built-in ones have),
+        look for it there from now on and return the retried step. A CSS selector is looked
+        up there as it is; an XPath, which runs inside no shadow root, is evaluated in the
+        root's HTML and its element looked up through a CSS form of it. No model is asked:
+        the selector is the key's own, and only the place changed. It counts as a heal with
+        source 'shadow'.
 
         Playwright's CSS pierces open shadow roots by itself, so there only an XPath is
-        followed. Not followed, with AttentionRequired saying why: the refusals of
-        _shadow_plan, a page the key was never found on (the page guard), a guard that
-        blocks heals, or an element that fails the live check. Returns _NOT_FOLLOWED when no
-        selector of the key matches inside a shadow root."""
+        followed. A key one of whose selectors matches something on the page (several
+        elements, or a hidden one) is not followed, and neither is a key last found on the
+        page, in an iframe or in another shadow root (follow_allowed): it heals where it was
+        last found, as any key does. Not followed, with AttentionRequired saying why: the
+        refusals of _shadow_plan, a page the key was never found on (the page guard), a
+        guard that blocks heals, or an element that fails the live check. Returns
+        _NOT_FOLLOWED when no selector of the key may be followed into a shadow root (see
+        _shadow_matches)."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'shadow_matches', None)
         if not callable(finder):
@@ -3311,6 +3386,11 @@ class ActionProxy:
     .present is False for a step that was skipped (an optional step, or an interruption,
     whose element was not there). Its actions then do nothing and return None.
 
+    For an element found inside a shadow root on Playwright, each action and each read of
+    LOCATOR_READS first waits until the Locator matches one element inside that shadow
+    root and nothing outside it, and raises AttentionRequired when it never does (see
+    _wait_placed).
+
     With expect_value= (see Healer.locator), the value a read returns for an element found
     through a heal is checked, and one that fails raises AttentionRequired instead.
     """
@@ -3319,6 +3399,9 @@ class ActionProxy:
     # element mendwright did not resolve itself (see mendwright.proxies.HealingElement):
     # no heal found that element, so its failure says nothing about one.
     _canary = True
+    # The CSS of the shadow hosts of the shadow root the element was found in, on a driver
+    # whose CSS pierces shadow roots (see Healer._shadow_place), else None.
+    _hosts = None
 
     def __init__(self, healer: Healer, key: str, native: Any, *, present: bool = True,
                  timeout_ms: int | None = None, poll_ms: int = 200, healed: str | None = None,
@@ -3382,6 +3465,7 @@ class ActionProxy:
         healer._dismiss_before(self._key, self._native, verb, budget, self._timeout_ms,
                                self._poll_ms)
         with healer._running(self._key, budget, self._timeout_ms, self._poll_ms):
+            self._wait_placed(verb)
             try:
                 result = run(*args, **kwargs)
             except _USAGE_ERRORS:
@@ -3397,6 +3481,7 @@ class ActionProxy:
                         healer._report_nothing_matched(self._key)
                     self._failed(exc)  # the browser action failed
                     raise
+                self._wait_placed(verb)
                 try:
                     result = run(*args, **kwargs)   # once, after an interruption was handled
                 except _USAGE_ERRORS:
@@ -3413,6 +3498,31 @@ class ActionProxy:
                 ok = False
             self._confirm(ok, 'expect')
         return result
+
+    def _wait_placed(self, verb):
+        """For an element found inside a shadow root on Playwright (_hosts), right before an
+        action or a read: wait, up to the proxy's timeout, until its Locator matches one
+        element and that one inside the shadow root (driver.placed()). Playwright resolves
+        the Locator again for each action and read, and its CSS pierces every open shadow
+        root, so a re-render after the lookup could otherwise send it to an element outside
+        that shadow root. Raises AttentionRequired when it never does, and reports nothing
+        to the heal canary: the page changed after the lookup, which says nothing about the
+        heal."""
+        __tracebackhide__ = True  # pytest shows the caller
+        hosts = self._hosts
+        if not hosts:
+            return
+        driver = self._healer._driver
+        deadline = time.monotonic() + self._timeout_ms / 1000.0
+        while True:
+            try:
+                if driver.placed(self._native, hosts):
+                    return
+            except Exception:
+                pass
+            if time.monotonic() >= deadline:
+                raise AttentionRequired(moved_message(self._key, hosts, verb))
+            time.sleep(max(self._poll_ms, 20) / 1000.0)
 
     def _uncovered(self):
         """For the check before an action: a callable that says True when nothing covers
@@ -3516,7 +3626,8 @@ class ActionProxy:
         checked = (name in VALUE_READS and self.__dict__.get('_expect') is not None
                    and self.__dict__.get('_healed') is not None)
         handles = name in LOCATOR_READS and callable(value) and self._healer._handles_reads()
-        if not (checked or handles):
+        placed = name in LOCATOR_READS and callable(value) and bool(self.__dict__.get('_hosts'))
+        if not (checked or handles or placed):
             return value
         healer, key, healed, expect = self._healer, self._key, self._healed, self._expect
         if not callable(value):
@@ -3526,6 +3637,8 @@ class ActionProxy:
             __tracebackhide__ = True  # pytest shows the caller
             if handles:
                 self._before_read()
+            if placed:
+                self._wait_placed(name)
             result = value(*args, **kwargs)
             if not checked:
                 return result

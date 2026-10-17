@@ -175,6 +175,32 @@ def split_text(text):
     return parts
 
 
+# A shadow host's selector as host_selector() builds it: its tag and one of HOST_ATTRS with a
+# value in css.css_string's quoting, or a custom element's tag alone.
+_HOST_FORM = re.compile(r'[a-z][a-z0-9_-]*\[(?:' + '|'.join(re.escape(a) for a in HOST_ATTRS)
+                        + r')="(?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*"\]'
+                        r'|[a-z][a-z0-9_]*-[a-z0-9_-]*')
+
+
+def text_hosts(text):
+    """The shadow hosts of a heal saved inside a shadow root, read back from its text
+    (shadow_text): the parts of the chain before its last, when each is a host selector of
+    the form host_selector() builds and the last is CSS; () for any other text. A mendwright
+    that knows nothing of shadowHosts (0.9.0 and before) drops them when it writes the
+    store, and saves no heal of this form itself, so the store reads them back from here
+    (see store._restore_shadow_hosts)."""
+    if not isinstance(text, str) or ' >> ' not in text:
+        return ()
+    parts = split_text(text)
+    if len(parts) < 2 or not all(_HOST_FORM.fullmatch(p) for p in parts[:-1]):
+        return ()
+    try:
+        inner_css(parts[-1])
+    except (TypeError, ValueError):
+        return ()
+    return tuple(parts[:-1])
+
+
 def run_target(candidate):
     """(selector, frame_chain) a candidate runs with: its text and its iframe for one on the
     page or in an iframe; for one inside a shadow root, the CSS its text ends in, and its

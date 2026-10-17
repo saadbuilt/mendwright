@@ -516,7 +516,8 @@ def _read_store(path):
         data = {}
     selectors = data.get('selectors')
     if data.get('schema') == 2 and isinstance(selectors, dict):
-        return data
+        from .store import _restore_shadow_hosts
+        return _restore_shadow_hosts(data)
     if isinstance(selectors, list):
         from .store import migrate_schema1
         return migrate_schema1(data)

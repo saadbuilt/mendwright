@@ -165,6 +165,23 @@ class Mutex {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** What a healer's locate() gives a HealLocator: the real Locator (null for a skipped step),
+ * the heal it was found through, and the CSS of the shadow hosts it runs inside, if any. */
+interface Located {
+  native: Locator | null;
+  healed: string | null;
+  hosts: string[] | null;
+}
+
+/** Why an action or read of an element found inside the shadow root that hosts lead to did
+ * not run (the Python package's facade.moved_message). */
+function movedMessage(key: string, hosts: string[], verb: string): string {
+  return "mendwright: '" + key + "' was found inside " + placeText(hosts) + ', but when it came to ' + verb
+    + "() its selector no longer matched one element there and nothing outside it: the page changed after the "
+    + "lookup. Playwright's CSS reaches into every open shadow root, so mendwright did not run " + verb + '(), '
+    + 'which could have reached an element outside that shadow root. Look the element up again with heal.locator().';
+}
+
 interface Budget {
   used: number;
 }
@@ -337,7 +354,7 @@ export class Healer {
   // --- resolution --------------------------------------------------------------------------
 
   /** @internal */
-  locate(key: string, plan: Plan): Promise<{ native: Locator | null; healed: string | null }> {
+  locate(key: string, plan: Plan): Promise<Located> {
     return this.mutex.run(async () => {
       this.prime(key, plan);
       const firstWait = this.interruptions.has(key) && this.handled.has(key) ? 0 : plan.timeoutMs;
@@ -353,7 +370,7 @@ export class Healer {
         if (skip) {
           this.coordinator.emit('info', skipMessage(key, skip, this.handled.get(key)));
           this.coordinator.journal.event('flow.skip', { key, reason: skip });
-          return { native: null, healed: null };
+          return { native: null, healed: null, hosts: null };
         }
         native = await this.heal(key, error, attempt);
       }
@@ -363,8 +380,15 @@ export class Healer {
       await this.recordFingerprint(key);
       const winner = this.store.lastSuccess(key);
       const healed = winner && winner.source === 'heal' && typeof winner.xpath === 'string' ? winner.xpath : null;
-      return { native, healed };
+      const target = this.winnerTarget(key);
+      return { native, healed, hosts: target && target.hosts.length ? target.hosts : null };
     });
+  }
+
+  /** @internal Whether the Locator of an element found inside the shadow root that hosts lead
+   * to still matches one element, and that one inside it (see HealLocator.waitPlaced). */
+  placedOne(native: Locator, hosts: string[]): Promise<boolean> {
+    return this.driver.placedOne(native, hosts);
   }
 
   private prime(key: string, plan: Plan): void {
@@ -730,8 +754,10 @@ export class HealLocator {
   readonly key: string;
   private readonly healer: Healer;
   private readonly plan: Plan;
-  private resolved: Promise<{ native: Locator | null; healed: string | null }> | null = null;
+  private resolved: Promise<Located> | null = null;
   private nativeLocator: Locator | null = null;
+  // The CSS of the shadow hosts of the shadow root the element was found in, else null.
+  private hosts: string[] | null = null;
   private isPresent = true;
   private readsDue = true;
 
@@ -757,8 +783,26 @@ export class HealLocator {
       throw error;
     }
     this.nativeLocator = result.native;
+    this.hosts = result.hosts;
     this.isPresent = result.native !== null;
     return result.native;
+  }
+
+  /** For an element found inside a shadow root (a heal the Python package saved there), right
+   * before an action or a read: wait, up to the step's timeout, until its Locator matches one
+   * element and that one inside the shadow root. Playwright resolves the Locator again for each
+   * action and read, and its CSS pierces every open shadow root, so a re-render after the
+   * lookup could otherwise send it to an element outside that shadow root. Throws
+   * AttentionRequired when it never does, and reports nothing to the heal canary. */
+  private async waitPlaced(native: Locator, verb: string): Promise<void> {
+    const hosts = this.hosts;
+    if (!hosts) return;
+    const deadline = Date.now() + this.plan.timeoutMs;
+    for (;;) {
+      if (await this.healer.placedOne(native, hosts)) return;
+      if (Date.now() >= deadline) throw new AttentionRequired(movedMessage(this.key, hosts, verb));
+      await sleep(Math.max(this.plan.pollMs, 20));
+    }
   }
 
   /** The real Playwright Locator, once resolved. null for a skipped step. */
@@ -806,6 +850,7 @@ export class HealLocator {
     const budget = await healer.beforeAction(this.key, timeoutMs, pollMs);
     this.readsDue = false;
     let result: unknown;
+    await this.waitPlaced(native, verb);
     try {
       result = await run();
     } catch (error) {
@@ -817,6 +862,7 @@ export class HealLocator {
         this.healer.coordinator.confirmPending(this.key, false, { by: 'action' });
         throw error;
       }
+      await this.waitPlaced(native, verb);
       try {
         result = await run();   // once, after an interruption was handled
       } catch (again) {
@@ -845,6 +891,7 @@ export class HealLocator {
       await this.healer.beforeAction(this.key, this.plan.timeoutMs, this.plan.pollMs);
       this.readsDue = false;
     }
+    await this.waitPlaced(native, name);
     return (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name](...args);
   }
 

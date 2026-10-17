@@ -34,7 +34,7 @@ import { log } from './log';
 import { compactJson, nowIso } from './py';
 import { inferRole } from './roles';
 import { frameSpelling } from './selectors';
-import { savedHosts, type Hosts } from './shadow';
+import { savedHosts, textHosts, type Hosts } from './shadow';
 
 export interface Candidate {
   xpath: string;
@@ -182,6 +182,24 @@ function respellFrameHeals(data: StoreData): StoreData {
   return data;
 }
 
+/** Give a heal saved inside a shadow root back the shadowHosts the Python package 0.9.0
+ * dropped when it wrote the file, read from its text (shadow.textHosts), as the Python
+ * package 0.10.0 does: without them its chain would run as Playwright runs it, and the key
+ * would be healed on the page around the host. Only rows with source 'heal' and no
+ * frameXPath or shadowHosts change. */
+function restoreShadowHosts(data: StoreData): StoreData {
+  for (const entry of Object.values(data.selectors ?? {})) {
+    const rows = isRecord(entry) ? entry.candidates : null;
+    if (!Array.isArray(rows)) continue;
+    for (const c of rows) {
+      if (!(isRecord(c) && c.source === 'heal' && !c.frameXPath && !savedHosts(c.shadowHosts).length)) continue;
+      const hosts = textHosts(c.xpath);
+      if (hosts.length) c.shadowHosts = hosts;
+    }
+  }
+  return data;
+}
+
 /** Convert a schema-1 file ({"selectors": [{key, xpath}, ...]}) into schema 2. */
 function migrateSchema1(data: Record<string, unknown>, destructiveKeys: Set<string>): StoreData {
   const out: Record<string, Entry> = {};
@@ -217,7 +235,7 @@ export function readStoreFile(file: string, destructiveKeys: Set<string> = new S
   if (isRecord(data) && Object.keys(data).length === 0) return [empty(), false];
   const selectors = isRecord(data) ? data.selectors : undefined;
   if (isRecord(data) && data.schema === 2 && isRecord(selectors)) {
-    return [respellFrameHeals(data as unknown as StoreData), true];
+    return [restoreShadowHosts(respellFrameHeals(data as unknown as StoreData)), true];
   }
   if (isRecord(data) && (data.schema === undefined || data.schema === null || data.schema === 1)
       && Array.isArray(selectors)) {

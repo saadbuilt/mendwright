@@ -191,6 +191,9 @@ class PlaywrightSyncDriver:
     visible_match, role_match, for lists handles, list_fingerprint and list_items, and for
     open shadow roots shadow_html, shadow_inventory and shadow_matches."""
 
+    # Playwright's CSS pierces every open shadow root (see base.css_pierces).
+    pierces_shadow = True
+
     def __init__(self, page):
         self._page = page
 
@@ -266,6 +269,19 @@ class PlaywrightSyncDriver:
         Keyword options such as timeout= or force= pass straight through. A verb the
         Locator does not have raises AttributeError before anything reaches the browser."""
         return getattr(native, verb)(*args, **kwargs)
+
+    def placed(self, native, hosts):
+        """Whether a handle() result for a selector inside the shadow root that hosts (CSS
+        selectors, outermost first) lead to matches one element now, and that one inside
+        the shadow root (PLACE_JS). Playwright resolves a Locator again for each action and
+        read, and its CSS pierces every open shadow root, so the facade checks this right
+        before each one (see ActionProxy._wait_placed). One round trip that does not wait;
+        False on any error."""
+        try:
+            found = native.evaluate_all(PLACE_JS, [host_css(h) for h in hosts])
+        except Exception:
+            return False
+        return all_placed(found) and found['n'] == 1
 
     def url(self):
         try:

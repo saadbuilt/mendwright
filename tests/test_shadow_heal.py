@@ -153,6 +153,50 @@ def test_a_heal_inside_nested_shadow_roots_stays_in_the_inner_one(make_shadow_pa
     assert heal.heals[-1].new == HOST + ' >> settings-panel >> [data-testid="save"]'
 
 
+def test_a_test_id_reused_in_a_nested_shadow_root_does_not_hide_the_element(make_shadow_page,
+                                                                            tmp_path):
+    # A component inside the shadow root has a button with the same test id in its own
+    # shadow root. Playwright's CSS pierces into it, so [data-testid="save"] matches 2 there:
+    # it says nothing of whether the renamed button is visible, and #save-2 does. The other
+    # Save button in the shadow root must not take its place.
+    def app(ident):
+        return page(shadow(
+            '<button type="button" id="' + ident + '" data-testid="save">Save</button>'
+            '<button type="button" id="footer-save" class="link">Save</button>'
+            + shadow('<button type="button" id="bar-save" data-testid="save">Save</button>',
+                     host='<save-bar>')))
+    page_ = _recorded(make_shadow_page, tmp_path, v1=app('save'))
+    page_.set_html(app('save-2'))
+    heal = _open(page_, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert _clicked(page_).get('id') == 'save-2'
+    assert heal.heals[-1].new == HOST + ' >> #save-2'
+
+
+def test_a_heal_inside_a_shadow_root_stays_there_after_a_0_9_0_process_wrote_the_store(
+        make_shadow_page, tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0).click()
+    # A 0.9.0 process runs the heal's chain, as Playwright does, and writes the store: it
+    # drops every shadowHosts, the key's and the heal's.
+    data = _store(tmp_path)
+    entry = data['selectors']['save']
+    entry.pop('shadowHosts', None)
+    for row in entry['candidates']:
+        row.pop('shadowHosts', None)
+        row['lastSucceededAt'] = ('2026-01-02T00:00:00+00:00' if row['xpath'] == CHAIN
+                                  else '2026-01-01T00:00:00+00:00')
+    (tmp_path / 'o.json').write_text(json.dumps(data), encoding='utf-8')
+    # The button is renamed again; outside the host the look-alike keeps the old test id.
+    page_.set_html(page(LOOKALIKE + shadow(
+        '<button id="save-3" data-testid="save-btn" type="button">Save</button>')))
+    heal = _open(page_, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert page_.dom.owner[_clicked(page_)] is not page_.dom.document
+    assert heal.heals[-1].new == HOST + ' >> [data-testid="save-btn"]'
+
+
 @pytest.mark.parametrize('v2, why', [
     (page(LOOKALIKE), 'is not on the page, matches more than one element'),
     (page(LOOKALIKE + shadow(SAVE_V2) + shadow(SAVE_V2)), 'matches more than one element'),
@@ -250,6 +294,56 @@ def test_a_saved_shadow_heal_matches_nothing_outside_its_shadow_root(make_shadow
     with pytest.raises(AttentionRequired):
         heal.locator('save', '#save', role='button', poll_ms=0)
     assert len(page_.actions) == 0
+
+
+# The component re-renders after the lookup: its button leaves the shadow root, and the page
+# slots one with the same test id into the host's light DOM.
+RERENDERED = page(shadow('<p>loading</p><slot></slot>', light=LOOKALIKE))
+
+
+def test_an_action_after_a_re_render_never_reaches_outside_the_shadow_root(make_shadow_page,
+                                                                          tmp_path):
+    page_ = _recorded(make_shadow_page, tmp_path)
+    page_.set_html(V2)
+    heal = _open(page_, tmp_path)
+    proxy = heal.locator('save', '#save', role='button', poll_ms=0)    # healed inside it
+    assert heal.heals[-1].new == CHAIN
+    page_.set_html(RERENDERED)
+    with pytest.raises(AttentionRequired, match=r"'save' was found inside the shadow root of "
+                       r'my-app\[id="root"\], but when it came to click\(\)'):
+        proxy.click()
+    with pytest.raises(AttentionRequired, match=r'when it came to is_visible\(\)'):
+        proxy.is_visible()
+    assert page_.actions == []
+    # Nothing says the heal was wrong: it stays active.
+    assert [c['status'] for c in _rows(tmp_path) if c['xpath'] == CHAIN] == ['active']
+    # While the button is inside the shadow root, the action runs.
+    page_.set_html(V2)
+    proxy.click()
+    assert _clicked(page_).get('id') == 'save-2'
+
+
+def test_the_async_healer_never_acts_outside_the_shadow_root_after_a_re_render(
+        make_shadow_page, tmp_path):
+    sync = make_shadow_page(V1)
+
+    async def lookup():
+        heal = await mendwright.aio.open(AsyncShadowPage(sync), provider=None, timeout_ms=0,
+                                         store_path=str(tmp_path / 'o.json'),
+                                         journal=NullJournal())
+        return await heal.locator('save', '#save', role='button', poll_ms=0)
+
+    asyncio.run(lookup())
+    sync.set_html(V2)
+
+    async def main():
+        proxy = await lookup()
+        sync.set_html(RERENDERED)
+        await proxy.click()
+
+    with pytest.raises(AttentionRequired, match=r'when it came to click\(\)'):
+        asyncio.run(main())
+    assert sync.actions == []
 
 
 def test_two_matches_in_the_shadow_root_match_nothing(make_shadow_page, tmp_path):
@@ -420,6 +514,85 @@ def test_the_follow_checks_the_live_element(make_shadow_driver, tmp_path):
         heal.locator('save', '#save', role='button', poll_ms=0)
 
 
+# The page's own submit button, and a newsletter component whose shadow root holds another
+# one. 'send' is the page's button.
+SEND = '<form><input name="email"><button type="submit" id="send">Send</button></form>'
+NEWSLETTER = shadow('<button type="submit" id="subscribe">Subscribe</button>',
+                    host='<news-letter>')
+SUBMIT = 'button[type="submit"]'
+
+
+def _sent(target):
+    return target.actions[-1][0].get('id') if target.actions else None
+
+
+def test_playwright_never_follows_a_css_selector_that_matches_on_the_page(make_shadow_page,
+                                                                         tmp_path):
+    # Playwright's CSS pierces: with the component added, the selector matches 2 elements,
+    # one on the page. It is healed on the page, where 'send' was found, as 0.9.0 heals it.
+    page_ = make_shadow_page(page(SEND))
+    _open(page_, tmp_path).locator('send', SUBMIT, role='button', poll_ms=0)
+    page_.set_html(page(SEND + NEWSLETTER))
+    heal = _open(page_, tmp_path)
+    heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+    assert _sent(page_) == 'send'
+    assert [(h.new, h.source) for h in heal.heals] == [("//button[@id='send']", 'fingerprint')]
+
+
+def test_selenium_never_follows_a_selector_that_matches_several_elements_on_the_page(
+        make_shadow_driver, tmp_path, stub_provider):
+    driver = make_shadow_driver(page(SEND + '<button type="submit" id="reset">Reset</button>'
+                                     + NEWSLETTER))
+    provider = stub_provider(None)
+    heal = _open(driver, tmp_path, provider=provider)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('send', SUBMIT, role='button', poll_ms=0)
+    assert 'inside a shadow root' not in str(info.value)
+    assert driver.actions == [] and heal.heals == []
+
+
+def test_selenium_never_follows_a_key_another_of_whose_selectors_matches_on_the_page(
+        make_shadow_driver, tmp_path):
+    # .send matches two buttons on the page, and #send nothing there but one element in the
+    # component's shadow root: the key's element may be one of the two on the page.
+    driver = make_shadow_driver(page(
+        '<button type="submit" id="send-1" class="send">Send</button>'
+        '<button type="submit" id="send-2" class="send">Send</button>'
+        + shadow('<button type="submit" id="send">Join</button>', host='<news-letter>')))
+    heal = _open(driver, tmp_path)
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('send', ['.send', '#send'], role='button', poll_ms=0)
+    assert 'inside a shadow root' not in str(info.value)
+    assert driver.actions == [] and heal.heals == []
+
+
+def test_a_key_last_found_on_the_page_is_not_followed_into_a_shadow_root(make_shadow_driver,
+                                                                        tmp_path):
+    # The page's button is no longer a submit button, and the component's is the only one:
+    # the selector matches nothing on the page and one element in the shadow root. 'send'
+    # heals on the page, where it was last found.
+    driver = make_shadow_driver(page(SEND))
+    _open(driver, tmp_path).locator('send', SUBMIT, role='button', poll_ms=0)
+    driver.set_html(page(SEND.replace('type="submit"', 'type="button"') + NEWSLETTER))
+    heal = _open(driver, tmp_path)
+    heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+    assert _sent(driver) == 'send'
+    assert [h.source for h in heal.heals] == ['fingerprint']
+
+
+def test_a_key_last_found_in_one_shadow_root_is_not_followed_into_another(make_shadow_driver,
+                                                                         tmp_path):
+    driver = make_shadow_driver(V1)
+    heal = _open(driver, tmp_path)
+    heal.locator('save', '#save', role='button', poll_ms=0)     # followed into my-app's root
+    assert [c['shadowHosts'] for c in _rows(tmp_path) if c['source'] == 'heal'] == [[HOST]]
+    driver.set_html(page(shadow(SAVE_V1, host='<other-app>')))
+    heal = _open(driver, tmp_path)
+    with pytest.raises(AttentionRequired, match='cannot enter that shadow root'):
+        heal.locator('save', '#save', role='button', poll_ms=0)
+    assert driver.actions == [] and heal.heals == []
+
+
 # --- async Playwright -----------------------------------------------------------------------------
 
 class AsyncShadowLocator:
@@ -508,3 +681,20 @@ def test_the_async_healer_follows_into_a_shadow_root(make_shadow_page, tmp_path)
 
     heal = asyncio.run(main())
     assert heal.heals[-1].source == 'shadow' and _clicked(sync).get('id') == 'save'
+
+
+def test_the_async_healer_never_follows_a_css_selector_that_matches_on_the_page(
+        make_shadow_page, tmp_path):
+    sync = make_shadow_page(page(SEND))
+
+    async def main():
+        heal = await mendwright.aio.open(AsyncShadowPage(sync), provider=None, timeout_ms=0,
+                                         store_path=str(tmp_path / 'o.json'),
+                                         journal=NullJournal())
+        await heal.locator('send', SUBMIT, role='button', poll_ms=0).click()
+        return heal
+
+    asyncio.run(main())
+    sync.set_html(page(SEND + NEWSLETTER))
+    heal = asyncio.run(main())
+    assert [h.source for h in heal.heals] == ['fingerprint'] and _sent(sync) == 'send'

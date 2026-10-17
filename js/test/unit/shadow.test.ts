@@ -9,9 +9,10 @@ import * as fs from 'node:fs';
 import { beforeEach, describe, test } from 'node:test';
 
 import { AttentionRequired, InvalidSelector } from '../../src/errors';
-import { runTarget, savedHosts, splitText } from '../../src/shadow';
+import { runTarget, savedHosts, splitText, textHosts } from '../../src/shadow';
 import { loadStore } from '../../src/store';
 import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
+import { needsPython, runPython } from '../support/python';
 
 const HOST = 'my-app[id="root"]';
 const CHAIN = HOST + ' >> [data-testid="save"]';
@@ -124,6 +125,49 @@ describe('a heal the Python package saved inside a shadow root', () => {
       assert.deepEqual(heal.heals, []);
     });
   }
+
+  test('never acts outside its shadow root after a re-render that came after the lookup', async () => {
+    const w = world(V2);
+    pythonHealed(w.storePath);
+    const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();
+    // The component re-renders: its button leaves the shadow root, and the page slots one with
+    // the same test id into the host's light DOM, where Playwright's CSS reaches it.
+    w.page.goto(page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE)));
+    await assert.rejects(box.click(), /'save' was found inside the shadow root of my-app\[id="root"\], but when it came to click\(\)/);
+    await assert.rejects(box.innerText(), /when it came to innerText\(\)/);
+    assert.equal(w.page.clicked.length, 0);
+    w.page.goto(V2);
+    await box.click();
+    assert.equal(w.page.clicked[0].id, 'save-2');
+  });
+
+  test('keeps to its shadow root after the Python package 0.9.0 wrote the store without its shadowHosts', async () => {
+    // 0.9.0 drops every shadowHosts, the key's and the heal's. The button is renamed again,
+    // and the look-alike outside the host keeps the old test id.
+    const w = world(page(LOOKALIKE + shadow('<button id="save-3" data-testid="save-btn" type="button">Save</button>')));
+    pythonHealed(w.storePath);
+    const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+    delete data.selectors.save.shadowHosts;
+    for (const row of data.selectors.save.candidates) delete row.shadowHosts;
+    fs.writeFileSync(w.storePath, JSON.stringify(data));
+    assert.deepEqual(loadStore(w.storePath).candidates('save').map((c) => c.shadowHosts), [[HOST], undefined]);
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+      /'save' was last found inside the shadow root of my-app\[id="root"\]/);
+    assert.deepEqual(w.page.clicked, []);
+    assert.equal(model.bundles.length, 0);
+  });
+
+  test('reads the hosts back from a heal\'s text as the Python package does', { skip: needsPython() }, () => {
+    const texts = [CHAIN, HOST + ' >> settings-panel >> #save', 'div[data-testid="a\\"b"] >> button.primary',
+      'div >> #save', 'my-app[class="x"] >> #save', HOST + ' >> //button', HOST + ' >> xpath=//button',
+      'text=Save >> nth=0', 'css=my-app >> #save', '#save', "//button[@id='save']", 'Foo-bar >> #x'];
+    const python = runPython<string[][]>('import json, sys\nfrom mendwright.shadow import text_hosts\n'
+      + 'print(json.dumps([list(text_hosts(t)) for t in json.load(sys.stdin)]))', texts);
+    assert.deepEqual(texts.map(textHosts), python);
+    assert.deepEqual(python.slice(0, 3), [[HOST], [HOST, 'settings-panel'], ['div[data-testid="a\\"b"]']]);
+  });
 
   test('one behind a host nothing tells apart, or inside an iframe, cannot run', () => {
     const base = { xpath: CHAIN, source: 'heal', status: 'active' };

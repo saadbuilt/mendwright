@@ -47,6 +47,9 @@ class AsyncPlaywrightDriver:
     list_fingerprint and list_items, with the same arguments and results as
     PlaywrightSyncDriver. handle() returns the native async Locator."""
 
+    # Playwright's CSS pierces every open shadow root (see base.css_pierces).
+    pierces_shadow = True
+
     def __init__(self, page):
         self._page = page
 
@@ -132,6 +135,16 @@ class AsyncPlaywrightDriver:
         AttributeError, and arguments it does not take raise TypeError, before anything
         reaches the browser."""
         return await _awaited(getattr(native, verb)(*args, **kwargs))
+
+    async def placed(self, native, hosts):
+        """PlaywrightSyncDriver.placed(), awaited: whether the Locator of a selector inside
+        the shadow root that hosts lead to matches one element now, and that one inside it.
+        False on any error."""
+        try:
+            found = await native.evaluate_all(PLACE_JS, [host_css(h) for h in hosts])
+        except Exception:
+            return False
+        return all_placed(found) and found['n'] == 1
 
     async def url(self):
         try:

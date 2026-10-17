@@ -85,6 +85,31 @@ export function shadowText(hosts: string[], css: string): string {
   return [...hosts.map((h) => stripPrefix(h)), stripPrefix(css)].join(' >> ');
 }
 
+// A shadow host's selector as the Python package builds it (shadow.host_selector): its tag
+// and one of these attributes with a value in CSS string quoting, or a custom element's tag
+// alone.
+const HOST_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy', 'data-e2e',
+  'data-automation-id', 'id', 'name'];
+const HOST_FORM = new RegExp('^(?:[a-z][a-z0-9_-]*\\[(?:' + HOST_ATTRS.map((a) => a.replace(/-/g, '\\-')).join('|')
+  + ')="(?:[^"\\\\\\r\\n\\f]|\\\\["\\\\]|\\\\[0-9a-f]{1,6} )*"\\]|[a-z][a-z0-9_]*-[a-z0-9_-]*)$');
+
+/** The shadow hosts of a heal saved inside a shadow root, read back from its text
+ * (Python's shadow.text_hosts): the parts of the chain before its last, when each is a host
+ * selector of the form the Python package builds and the last is CSS; [] for any other
+ * text. The Python package 0.9.0 drops shadowHosts when it writes the store, and saves no
+ * heal of this form itself, so the store reads them back from here. */
+export function textHosts(text: unknown): string[] {
+  if (typeof text !== 'string' || !text.includes(' >> ')) return [];
+  const parts = splitText(text);
+  if (parts.length < 2 || !parts.slice(0, -1).every((p) => HOST_FORM.test(p))) return [];
+  try {
+    if (checkSyntax(parts[parts.length - 1]) !== CSS) return [];
+  } catch {
+    return [];
+  }
+  return parts.slice(0, -1);
+}
+
 function cssOnly(selector: string, what: string): string {
   let kind: string;
   try {

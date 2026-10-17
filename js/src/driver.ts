@@ -165,6 +165,19 @@ export class PlaywrightDriver {
     return loc.evaluateAll(elementsFunction('placed') as (els: Element[], arg: unknown) => unknown, hosts);
   }
 
+  /** Whether the Locator of a selector inside the shadow root that hosts lead to matches one
+   * element now, and that one inside the shadow root. Playwright resolves a Locator again for
+   * each action and read, and its CSS pierces, so HealLocator checks this right before each
+   * one. One round trip that does not wait; false on any error. */
+  async placedOne(loc: Locator, hosts: string[]): Promise<boolean> {
+    try {
+      const placed = await this.place(loc, hosts);
+      return allPlaced(placed) && (placed as Placed).n === 1;
+    } catch {
+      return false;
+    }
+  }
+
   private async probe<T>(selector: string, frameXPath: string | null | undefined,
                          op: (loc: Locator) => Promise<T>, fallback: T, hosts?: string[] | null): Promise<T> {
     const loc = this.locator(selector, frameXPath, hosts);

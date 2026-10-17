@@ -28,3 +28,13 @@ def test_the_report_says_which_shadow_root_a_heal_runs_in(tmp_path, capsys):
     assert cli.main(['report', '--store', str(path), '--format', 'html']) == 0
     assert 'inside the shadow root of inner-box inside my-app[id=&quot;root&quot;]' in (
         capsys.readouterr().out)
+
+
+def test_the_report_reads_back_the_shadow_root_a_0_9_0_process_dropped(tmp_path, capsys):
+    from mendwright import cli
+    path = tmp_path / 'o.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'save': {'candidates': [
+        {'xpath': HOST + ' >> #b', 'source': 'heal', 'status': 'active'}]}}}))
+    assert cli.main(['report', '--store', str(path), '--format', 'json']) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data['keys'][0]['candidates'][0]['shadow'] == [HOST]
