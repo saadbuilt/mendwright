@@ -1067,6 +1067,7 @@ Everywhere else, such as `heal.locator()`, which can run on Selenium, `find_elem
 
 `mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
 `mendwright report` shows the shadow root each selector runs in.
+In the [journal](#journaljsonl), a heal or a follow refused for a key in a shadow root is a `heal.declined` with the code `shadow` (`dry_run` and `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), which [`mendwright notify`](#mendwright-notify) words as `` `save` is inside a shadow root, where mendwright could not repair it ``.
 
 The real-browser tests in `tests/browser/test_browser_shadow.py` cover these on every engine, with a look-alike outside the host and nested shadow roots.
 
@@ -1614,6 +1615,7 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 | `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
 | `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
 | `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
+| `shadow` | Its element is inside a [shadow root](#shadow-dom) mendwright could not heal it in or follow it into |
 | `other` | Anything else |
 
 `flow.stop` is in [Log lines and journal events](#log-lines-and-journal-events). `mendwright report` and `mendwright fix` don't read `run`, `heal.declined` or `flow.stop`, and a 0.9.0 `mendwright fix` reading a 0.10.0 journal ignores them.

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from mendwright import runsummary
-from mendwright.runsummary import PHRASES, message, select, summarize
+from mendwright.runsummary import ON_PURPOSE, PHRASES, message, select, summarize
 
 T = '2026-10-16T05:0{}:00+00:00'
 T1 = T.format(1)
@@ -270,6 +270,13 @@ def test_every_code_has_a_phrase_and_a_subject():
     for code, (about, text) in PHRASES.items():
         assert about in ('selector', 'interruption', 'popup', 'step', 'run_steps'), code
         assert text and not text.endswith('.'), code
+
+
+def test_every_decline_code_has_a_phrase_of_its_own_or_is_on_purpose():
+    # A code without one would read as the bare 'was not repaired' of 'other'.
+    from mendwright.coordinator import DECLINE_CODES
+    for code in DECLINE_CODES:
+        assert code in ON_PURPOSE or PHRASES[code][0] == 'selector', code
 
 
 def test_keys_are_capped_cut_and_shown_safely():

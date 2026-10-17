@@ -44,6 +44,7 @@ PHRASES = {
     'get_by': ('selector', 'could not be repaired from its fingerprint, and mendwright asks no '
                            'model for a get_by_* call'),
     'frame': ('selector', 'is inside an iframe mendwright did not look into'),
+    'shadow': ('selector', 'is inside a shadow root, where mendwright could not repair it'),
     'quarantined': ('selector', 'had a repair that was wrong, so it was quarantined'),
     'interruption_loop': ('interruption', 'came back each time it was handled'),
     'popup_loop': ('popup', 'came back each time it was dismissed'),

@@ -436,7 +436,7 @@ def test_each_decline_writes_one_heal_declined_with_its_code(code, made, call):
 def test_the_decline_codes_are_the_documented_ones():
     from mendwright.coordinator import DECLINE_CODES
     assert {code for code, _, _ in DECLINES} | {'not_here', 'list_empty', 'list_not_found',
-                                                'get_by', 'frame', 'other'} == set(DECLINE_CODES)
+                                                'get_by', 'frame', 'shadow', 'other'} == set(DECLINE_CODES)
 
 
 def test_a_heal_that_applies_writes_no_decline():

@@ -3069,7 +3069,10 @@ class Healer:
         that mendwright did not follow it into."""
         __tracebackhide__ = True
         reason = _shadow_message(key, selector, found, why)
-        self.coordinator._decline(key, reason)
+        coordinator = self.coordinator
+        code = ('disabled' if getattr(coordinator, 'disabled', False)
+                else 'dry_run' if coordinator.dry_run else 'shadow')
+        coordinator._decline(key, reason, code=code)
         raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
 
     def _shadow_follow(self, key, selector, root, driver):

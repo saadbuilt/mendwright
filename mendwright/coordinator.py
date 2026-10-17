@@ -216,6 +216,7 @@ DECLINE_CODES = (
     'list_not_found',   # a list looked up with nonempty=True: nothing found to propose
     'get_by',           # a get_by_* call its fingerprint could not heal (no model is asked)
     'frame',            # found only inside an iframe mendwright did not follow it into
+    'shadow',           # inside a shadow root mendwright could not heal it in or follow it into
     'other',
 )
 
@@ -433,7 +434,7 @@ class HealCoordinator:
             return self._decline(selector_key, moved, code='page_guard')
         if self.scope_refusal:
             # Last found inside a shadow root that cannot be entered now: never on the page.
-            return self._decline(selector_key, self.scope_refusal)
+            return self._decline(selector_key, self.scope_refusal, code='shadow')
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
