@@ -434,7 +434,11 @@ class HealCoordinator:
             return self._decline(selector_key, moved, code='page_guard')
         if self.scope_refusal:
             # Last found inside a shadow root that cannot be entered now: never on the page.
-            return self._decline(selector_key, self.scope_refusal, code='shadow')
+            # In dry run and under MENDWRIGHT_DISABLE=1 that is a decline on purpose, as a
+            # follow refused there is (Healer._shadow_stop).
+            return self._decline(selector_key, self.scope_refusal,
+                                 code='disabled' if self.disabled
+                                 else 'dry_run' if self.dry_run else 'shadow')
         if getby.is_key(selector_key):
             return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider

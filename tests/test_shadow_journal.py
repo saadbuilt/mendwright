@@ -62,6 +62,24 @@ def test_a_shadow_root_that_cannot_be_entered_is_declined_as_shadow(make_shadow_
     assert all(e.get('run') == RUN for e in _events(tmp_path))
 
 
+@pytest.mark.parametrize('mode', ['dry_run', 'disabled'])
+def test_in_dry_run_and_disabled_a_heal_refused_in_a_shadow_root_is_not_for_a_human(
+        make_shadow_page, tmp_path, monkeypatch, mode):
+    page_ = make_shadow_page(V1)
+    _open(page_, tmp_path).locator('save', '#save', role='button', poll_ms=0)
+    page_.set_html(page(LOOKALIKE))         # the host is gone
+    if mode == 'disabled':
+        monkeypatch.setenv('MENDWRIGHT_DISABLE', '1')
+    heal = _open(page_, tmp_path, dry_run=mode == 'dry_run')
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('save', '#save', role='button', poll_ms=0)
+    [(key, code, reason)] = _declines(tmp_path)
+    assert (key, code) == ('save', mode)
+    assert reason == heal.coordinator.explain('save') and reason in str(info.value)
+    summary = runsummary.summarize(runsummary.select(_events(tmp_path), run=RUN)[0])
+    assert summary['needs_human'] == [] and summary['not_repaired_on_purpose'][mode] == 1
+
+
 def test_a_host_nothing_tells_apart_is_declined_as_shadow(make_shadow_page, tmp_path):
     two = page(LOOKALIKE + shadow(SAVE_V1, host='<div>') + '<div></div>')
     page_ = make_shadow_page(two)
