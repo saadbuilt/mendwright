@@ -10,8 +10,8 @@
   http:// on localhost, 127.0.0.1 or [::1].
 - send() makes at most two attempts, each cut off after its timeout, one retry after 2
   seconds on HTTP 429, a 5xx, a timeout or a connection error, follows no redirect, and
-  verifies TLS. Of an error body it
-  keeps only one machine word, such as Slack's no_service, that is no part of the URL.
+  verifies TLS. Of an error body it keeps only one machine word, such as Slack's
+  no_service, that is no part of the URL.
 - origin() names the webhook in a message: scheme, host and port, with a label of the host
   that looks random, such as the id of an AWS Lambda function URL, as ***.
 - mask() takes the URL, its path, its query and their parts (see secret_texts) out of a
