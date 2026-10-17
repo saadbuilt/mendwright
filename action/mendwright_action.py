@@ -64,7 +64,8 @@ _GIT_UNSET = ('GIT_TRACE', 'GIT_TRACE_PACKET', 'GIT_TRACE_CURL', 'GIT_CURL_VERBO
               'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
               'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')
 
-INTRO = ('mendwright healed these selectors while your tests ran, and each heal was confirmed. '
+INTRO = ("mendwright healed these selectors while your tests ran, and each heal was confirmed; a list's "
+         'selector was found by mendwright and accepted with `mendwright lists accept`. '
          'This pull request writes them into your code, so the code says what the store says.',
          'Check each new selector before you merge. A passing test confirms a heal, but a test '
          'can pass for the wrong reason, and anything that can write your test job\'s files can '

@@ -1283,6 +1283,7 @@ class Healer:
             return
         self._get_by_noted.add(step)
         self.coordinator._emit(logging.INFO, getby.not_healed_message(step, why))
+
     def drift(self, keys: Iterable[str] | None = None, *, timeout_ms: int | None = None,
               poll_ms: int = 200) -> Any:
         """Check, on the page this healer is on, whether the selectors saved for keys still

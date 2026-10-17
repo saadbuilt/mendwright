@@ -1692,7 +1692,7 @@ With a browser matrix, upload the store from one job of it (`if: matrix.browser 
 The title is `mendwright fix: write back 2 healed selectors`. The description lists each selector written back, how it was found and what confirmed it, and what was left alone and why:
 
 ````markdown
-mendwright healed these selectors while your tests ran, and each heal was confirmed. This pull request writes them into your code, so the code says what the store says.
+mendwright healed these selectors while your tests ran, and each heal was confirmed; a list's selector was found by mendwright and accepted with `mendwright lists accept`. This pull request writes them into your code, so the code says what the store says.
 
 Check each new selector before you merge. A passing test confirms a heal, but a test can pass for the wrong reason, and anything that can write your test job's files can write the store.
 
