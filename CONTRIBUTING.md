@@ -60,6 +60,8 @@ The fixtures in `tests/conftest.py` cover most cases:
 
 Providers take an injected `http=` transport; `tests/test_providers.py` shows the pattern.
 
+`tests/test_lists_emptied.py` holds the acceptance matrix of list lookups whose selectors match nothing: emptied lists (`REFUSE`) and redesigns (`REDESIGN`). It must keep passing as it is, for calls without `nonempty=True`. `tests/test_lists_nonempty_matrix.py` runs the same matrix with `nonempty=True`: every case must raise and return no element, and its outcome table (`REFUSE_PROPOSED`, `REFUSE_STATE`, `REDESIGN_REFUSED`, with `L11`, `L15`, `L18c` and `L20` for the codes of the guide's refusals) says which cases are proposed and which are refused. What must hold whatever you change: no redesign is proposed onto the other list, at least 21 redesigns are proposed, and every emptied list that is proposed says its heading or container is not the same. If a change moves another case, update the table in the same commit and say why in its message. Its golden files in `tests/fixtures/lists_080` are what 0.8.0's code wrote and printed for the same lookups and reports: to make them again, run `scenario_080()` and `report_080()` of that file with 0.8.0's `mendwright` and `tests` first on `sys.path`.
+
 ### Browser suite
 
 ```bash
@@ -127,16 +129,18 @@ heal.locator(key, selector)               facade.py (sync), aio.py (async)
 
 The modules:
 
-- `selectors.py`: `classify()` (XPath, CSS or Playwright engine selector), `check_syntax()`, `normalize()` and `InvalidSelector`.
+- `selectors.py`: `classify()` (XPath, CSS, Playwright engine selector or `get_by_*` call), `check_syntax()`, `normalize()` and `InvalidSelector`.
+- `getby.py`: the keys of `heal.page.get_by_*()` calls (`mendwright.open(heal_get_by=True)`). `canonical()` writes a call as its key, `parse()` reads one back without running it, `call_of()` says which calls are never keys, `get_by_key()` is the public builder, and `not_found_error()` makes the miss that is also Playwright's `TimeoutError`.
 - `drivers/`: `base.py` holds the `Driver` protocol, the shared describe and inventory scripts, and the fallback helpers. `registry.py` has `wrap()` and `register_driver()`. The built-in drivers are `playwright_sync.py`, `playwright_async.py` (used by `mendwright.aio`) and `selenium.py`, which handles frames, implicit waits and the verb mapping.
 - `fingerprint.py`: the fingerprint tier. `FINGERPRINT_JS` reads an element in one round trip and `from_raw()` normalizes it; `find()` scores the elements of a captured page against a stored fingerprint and returns a unique XPath only for a confident match.
-- `lists.py`: list fingerprints. `LIST_JS` reads the items of a list in one round trip and `from_raw()` normalizes what it gives. A list is never healed: the list fingerprint only says that the list had items.
+- `lists.py`: list fingerprints. `LIST_JS` reads the items of a list in one round trip and `from_raw()` normalizes what it gives; `LIST_PLACE_JS` also reads its heading and where it sits, for `nonempty=True`. A list is never healed: `find()` looks for a list whose selectors match nothing, and what it finds is only proposed (`HealCoordinator.propose_list()`, `client.list_gate()`, `SelectorStore.propose_list_heal()`), for a person to accept with `mendwright lists`.
 - `values.py`: `expect_value=`. The named checks, `parse_number()` and `parse_money()`, and the text of a refused read.
 - `proxies.py`: `heal.page` and `heal.driver`, the page and driver stand-ins that send selector lookups through `heal.locator()` and everything else to the real object.
-- `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run.
+- `resolver.py`: `resolve()` and `present()`. Tries the candidates in order and polls until the timeout, then raises `AttentionRequired`, or `InvalidSelector` when no candidate can run. `resolve_get_by()` and `present_get_by()` do the same for a call key: the call first, its saved heals only while it matches nothing.
 - `facade.py`: `mendwright.open()`, `Healer` and `ActionProxy`. Puts the selectors from your code first, reads the role from the page, never acts through a saved heal on a key marked destructive, and runs actions, quarantining a heal whose action fails. It also handles interruptions, optional steps and the page guard.
 - `flow.py` and `interruptions.py`: page paths, interception errors and the texts for flow changes; `heal.interrupt()`'s checks and the selectors of the `cookies=` preset.
 - `aio.py`: `mendwright.aio.open()` and `AsyncHealer`. A heal runs the sync coordinator in a worker thread, which reaches the page through `SyncBridge`.
+- `drift.py` and `drift_session.py`: `heal.drift()` and `mendwright check`. `probe_page()` looks at each key's saved selectors as a run does, the call first for the key of a `get_by_*` call, with `count()`, `is_visible()` and `describe()` only, and previews a heal with the run's own `try_heal()` on a `SelectorStore.snapshot()`. `drift_session.py` holds the headless Playwright browser `mendwright check` loads pages in.
 - `coordinator.py`: `HealCoordinator` and `resolve_with_heal()`. Runs the checks before any heal, tries the fingerprint tier, builds the bundle, asks the provider (with one re-prompt on rejection), applies, journals, and keeps the reason for `explain()`.
 - `validation.py` and `gate.py`: `validate()` checks a proposal against the captured HTML with lxml; `live_match()` checks it against the page through the driver. `client.apply()` runs both.
 - `store.py` and `roles.py`: the seed and override layers, candidate status, per-key metadata, the lock file and the merge; and the role vocabulary.
@@ -144,7 +148,8 @@ The modules:
 - `providers/`: the `HealProvider` protocol (`base.py`), the built-in providers, `auto_provider()` (`detect.py`) and the error text (`_errors.py`). `prompt.py` holds the one prompt every provider uses.
 - `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal.
 - `publish.py`: writes a confirmed selector into a seed JSON file.
-- `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel. `fixback.py` is `mendwright fix`, and `report_html.py` is `mendwright report --format html`.
+- `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel. `fixback.py` is `mendwright fix`, its JSON and its Markdown, `report_html.py` is `mendwright report --format html`, and `_md.py` puts text from a store or a journal into Markdown, in code spans and code blocks.
+- `action.yml` and `action/` (not part of the package): the GitHub Action. `action/mendwright_action.py` holds its steps, standard library only, and `action/requirements.txt` the one hash-pinned lxml wheel it installs. `tests/test_action_script.py` runs the steps against a real git repository and a fake GitHub API.
 - `pytest_plugin.py`: the `heal` fixture, confirmation from test results, strict mode and the summary.
 
 ## Writing a driver
@@ -169,12 +174,14 @@ A driver wraps one live page or session.
 | `inventory(limit=200)` | optional | Up to `limit` rows of `{'tag', 'role', 'id', 'name', 'text', 'aria_label'}` for buttons, links, inputs, selects, textareas and `[role]` elements. Without it, `driver_inventory()` returns `[]`. |
 | `visible_match(selector, frame_chain=())` | optional | `describe()`'s result for the first visible element of those the selector matches, plus `'visible'`: how many of the matches are visible, counted up to 2. `None` when none is. The WARNING for an interruption or a landmark whose selector matches several elements builds the selectors it suggests from it when exactly one is visible. Without it, or without `'visible'`, the WARNING suggests none. |
 | `handles(selector, frame_chain=())` | optional | A native handle for each element the selector matches, for a list. Without it, `driver_handles()` gives `[handle(selector)]`. |
-| `list_fingerprint(selector, frame_chain=())` | optional | The list fingerprint (see `mendwright/lists.py`) of the elements the selector matches, else `None` for fewer than two. Run `LIST_JS` on the matches and pass the result through `lists.from_raw()`. Without it, no list is recorded, so a list lookup that matches nothing gives `[]` at once. |
+| `list_fingerprint(selector, frame_chain=(), *, place=False)` | optional | The list fingerprint (see `mendwright/lists.py`) of the elements the selector matches, else `None` for fewer than two. Run `LIST_JS` on the matches, or `LIST_PLACE_JS` with `place=True`, and pass the result through `lists.from_raw()`. Without it, no list is recorded, so a list lookup that matches nothing gives `[]` at once. One without `place=` is called as before, and `nonempty=True` can't look for its lists. |
+| `list_items(selector, frame_chain=())` | optional | `[{'tag', 'role', 'type', 'visible'}]` for the first 200 elements the selector matches: run `ITEMS_JS` on them and pass the result through `item_rows()` in `drivers/base.py`. Raise on any error. Without it, `nonempty=True` can't check a list it finds. |
+| `role_match(selector, role, level=None, frame_chain=())` | optional | `True` when the browser gives the one element the selector matches the ARIA role `role` (and heading level `level`), `False` when it doesn't, `None` when it can't tell. The built-in Playwright drivers ask `get_by_role(role, level=level).and_(the selector's locator).count() == 1`. The live check of a heal of a `get_by_role()` call key needs it: without it, `driver_role_match()` returns `None` and such a heal is refused. |
 
 Rules:
 
 - `frame_chain` is a tuple of frame selectors, outermost first.
-- A selector can be XPath, CSS or a Playwright engine selector (see `mendwright/selectors.py`). Raise `InvalidSelector` for a kind your library can't run, or one the browser rejects. For any other error, the read methods return `0`, `False` or `None`, so the resolver keeps polling.
+- A selector can be XPath, CSS, a Playwright engine selector or a `get_by_*` call, the kind `get_by` (see `mendwright/selectors.py` and `mendwright/getby.py`). Raise `InvalidSelector` for a kind your library can't run, or one the browser rejects; check it with `check_syntax(selector, calls=True)`, which returns the kind. For any other error, the read methods return `0`, `False` or `None`, so the resolver keeps polling.
 - `outer_html(scope)` must capture the same document or frame that resolution runs against. Otherwise a selector can be unique in the snapshot and not on the page.
 - `describe()` must compute `role` and `text` the way `validate()` does: `validation._role_of()` on the element, and its whitespace-normalised text, cut to 200 characters. The built-in drivers do this with `DESCRIBE_JS` and `summary_from_js()` in `drivers/base.py`.
 - `inventory()` must not read input values.

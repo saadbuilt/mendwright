@@ -1,0 +1,22 @@
+Store: <FOLDER>/overrides.json
+3 key(s), 5 selector(s)
+
+accept_terms  (checkbox)
+  active      code  #accept-terms  (last success: 2026-10-01 08:00:00 UTC)
+  active      heal  //label//input[@type='checkbox']  (last success: 2026-10-02 09:30:00 UTC)
+  quarantined heal  //input[@name='terms']  (last success: never)
+  heals: 2 requested, 2 applied, 1 rejected, 1 quarantined
+
+go  (button, destructive, never auto-healed)
+  active      seed  //button[@id='go'] | //a[@id='go']  (last success: never)
+  superseded  code  #old-go  in frame //iframe[@id='shop']  (last success: never)
+  heals: 1 requested, 0 applied, 0 rejected, 0 quarantined
+
+pay_button  (button)
+
+Heals (journal.jsonl): 3 requested, 2 applied, 1 rejected, 1 quarantined
+Last applied heals, newest first:
+  2026-10-03 10:00:03 UTC  accept_terms  (AnthropicProvider, claude-test)
+    #accept-terms (+2 more) -> //label//input[@type='checkbox']
+  2026-10-02 09:30:00 UTC  accept_terms  (AnthropicProvider, claude-test)
+    #accept-terms -> //input[@name='terms']

@@ -1,7 +1,7 @@
 """The `mendwright` command: demo, doctor, report, --version and --help.
 
-`mendwright fix` and `report --format html` have their own files: test_fix.py and
-test_report_html.py.
+`mendwright fix`, `report --format html` and `mendwright check` have their own files:
+test_fix.py, test_report_html.py and test_check.py.
 
 Every test calls mendwright.cli.main([...]) in-process (or runs `python -m mendwright` in a
 subprocess) and reads the output. Offline: no network, no model, no browser. The one
@@ -168,7 +168,7 @@ def test_demo_keep_leaves_a_store_that_report_reads(capsys, temp_root):
     pay = next(k for k in report["keys"] if k["key"] == "pay")
     assert pay["destructive"] is True                     # destructive=True was saved
     assert report["journal"]["counts"] == {"requested": 1, "applied": 1, "rejected": 0,
-                                           "quarantined": 0}
+                                           "quarantined": 0, "held": 0}
     assert report["journal"]["last_applied"][0]["old"] == ["#accept-terms"]
 
 
@@ -460,11 +460,16 @@ def test_demo_rejects_an_unknown_browser(capsys):
 
 
 @pytest.mark.browser
-def test_demo_in_real_chromium(capsys):
+def test_demo_in_real_chromium():
+    # In a child process: a browser test that ran before it in this process can leave a sync
+    # Playwright running here, and Playwright's sync API won't start inside its loop.
     pytest.importorskip("playwright.sync_api")
-    assert cli.main(["demo", "--browser", "chromium"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[2:] == DEMO_LINES[2:]
+    env = _child_env()
+    env["NO_COLOR"] = "1"
+    proc = subprocess.run([sys.executable, "-m", "mendwright", "demo", "--browser", "chromium"],
+                          env=env, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines()[2:] == DEMO_LINES[2:]
 
 
 def test_python_dash_m_demo_from_a_temp_folder(tmp_path):
@@ -552,6 +557,68 @@ def test_doctor_json(capsys, tmp_path, monkeypatch):
     assert data["store"]["writable"] is True
     assert data["fingerprint"] == {"enabled": True, "source": "default"}
     assert data["env"] == {} and data["problems"] == []
+
+
+def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    at = lines.index("get_by_* locators")
+    assert lines[at - 1] == "" and lines.index("Fingerprint healing (no model)") < at
+    assert " ".join(line.strip() for line in lines[at + 1:at + 4]) == (
+        "not healed (default): heal.page.get_by_role() and the other get_by_* calls go to "
+        "Playwright as written. Set MENDWRIGHT_HEAL_GET_BY=1, or pass heal_get_by=True to "
+        "mendwright.open(), to heal a call that matches nothing from its fingerprint.")
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": False, "source": "default", "heals": False}
+
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "1")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert ("  healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches "
+            "nothing is") in out
+    assert "  MENDWRIGHT_HEAL_GET_BY=1" in out.splitlines()
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "heals": True}
+
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert cli.main(["doctor"]) == 0
+    assert ("  routed (MENDWRIGHT_HEAL_GET_BY=1), but the fingerprint tier is off, so a get_by_*"
+            in capsys.readouterr().out)
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"]["heals"] is False
+
+    monkeypatch.delenv("MENDWRIGHT_FINGERPRINT")
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "0")
+    assert cli.main(["doctor"]) == 0
+    assert "  not healed (MENDWRIGHT_HEAL_GET_BY=0): heal.page.get_by_role()" in (
+        capsys.readouterr().out)
+
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "sometimes")
+    assert cli.main(["doctor"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    problems = lines[lines.index("Problems") + 1:]
+    assert any("MENDWRIGHT_HEAL_GET_BY must be 1 or 0" in line for line in problems)
+
+
+def test_report_shows_a_call_key_as_it_is(capsys, tmp_path):
+    folder = tmp_path / ".mendwright"
+    folder.mkdir()
+    key = 'get_by_role("button", name="Sign in")'
+    store = folder / "overrides.json"
+    store.write_text(json.dumps({"schema": 2, "selectors": {key: {
+        "expectedRole": "button", "candidates": [
+            {"xpath": key, "source": "code", "status": "active",
+             "lastSucceededAt": "2026-10-20T09:00:00+00:00"},
+            {"xpath": "//button[@id='login']", "source": "heal", "status": "active",
+             "lastSucceededAt": "2026-10-21T09:00:00+00:00"}]}}}), encoding="utf-8")
+    assert cli.main(["report", "--store", str(store)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert key + "  (button)" in lines
+    assert "  active      code  " + key + "  (last success: 2026-10-20 09:00:00 UTC)" in lines
 
 
 def test_doctor_never_prints_secrets(capsys, monkeypatch):
@@ -813,7 +880,8 @@ def test_report_json(capsys, tmp_path):
     assert data["keys"][2]["destructive"] is False        # a key is destructive only when marked
     journal = data["journal"]
     assert journal["exists"] is True
-    assert journal["counts"] == {"requested": 3, "applied": 2, "rejected": 1, "quarantined": 1}
+    assert journal["counts"] == {"requested": 3, "applied": 2, "rejected": 1, "quarantined": 1,
+                                 "held": 0}
     assert journal["per_key"]["go"]["requested"] == 1
     assert [h["new"] for h in journal["last_applied"]] == [
         "//label//input[@type='checkbox']", "//input[@name='terms']"]
@@ -883,3 +951,282 @@ def test_report_empty_store(capsys, tmp_path):
     assert cli.main(["report", "--store", str(store)]) == 0
     out = capsys.readouterr().out.splitlines()
     assert "The store has no keys yet." in out
+
+
+# --- mendwright lists ---------------------------------------------------------------------------
+
+ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]"
+HITS = "//li[contains(concat(' ', normalize-space(@class), ' '), ' hit ')]"
+
+
+def _evidence(pid="3f2a9c1d", at="2026-11-02T10:14:03+00:00", now_label="Shopping cart",
+              differs=(), container='<section class="cart">', alike=(1, 1)):
+    return {"id": pid, "at": at, "by": "fingerprint", "page": "/cart", "count": 3, "found": 3,
+            "recorded": 3, "score": 0.86, "next": 0.31,
+            "was": {"selectors": [".cart-item"], "count": 3, "label": "Shopping cart",
+                    "container": '<section class="cart">',
+                    "items": ["Blue mug$12.00Delete", "Red mug$13.00Delete"]},
+            "now": {"label": now_label, "container": container, "alike": list(alike),
+                    "items": ["Blue mug$12.00Delete", "Red mug$13.00Delete"]},
+            "differs": list(differs)}
+
+
+def _list_row(xpath, status, evidence=None, css="div.cart-row", accepted=None):
+    row = {"xpath": xpath, "source": "heal", "addedAt": "2026-11-02T10:14:03+00:00",
+           "lastSucceededAt": None, "status": status, "list": True}
+    if css:
+        row["css"] = css
+    if evidence is not None:
+        row["proposal"] = evidence
+    if accepted:
+        row["acceptedAt"] = accepted
+    return row
+
+
+def _lists_store(folder, *rows, key="cart", others=()):
+    folder.mkdir(parents=True, exist_ok=True)
+    store = folder / "overrides.json"
+    selectors = {key: {"expectedRole": "div", "candidates": [
+        {"xpath": ".cart-item", "source": "code", "status": "active",
+         "lastSucceededAt": "2026-11-01T10:00:00+00:00"}] + list(rows)}}
+    selectors.update(others)
+    store.write_text(json.dumps({"schema": 2, "selectors": selectors}), encoding="utf-8")
+    return store
+
+
+def _lists(capsys, *args):
+    code = cli.main(["lists", *args])
+    captured = capsys.readouterr()
+    return code, captured.out.splitlines(), captured.err.splitlines()
+
+
+def test_lists_shows_a_proposal_and_how_to_accept_it(capsys, tmp_path):
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", _evidence()))
+    flag = ' --store "' + str(store) + '"'
+    code, out, err = _lists(capsys, "--store", str(store))
+    assert (code, err) == (0, [])
+    assert out == [
+        "Store: " + str(store),
+        "1 list heal waits for you to check it.",
+        "",
+        "cart  (div elements)  id 3f2a9c1d",
+        "  found    2026-11-02 10:14:03 UTC on /cart, from the list fingerprint (score 0.86, "
+        "next best 0.31)",
+        "  was      .cart-item: 3 elements under 'Shopping cart', in <section class=\"cart\">",
+        "           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'",
+        "  now      " + ROWS,
+        "           as CSS: div.cart-row",
+        "           3 elements under 'Shopping cart', in <section class=\"cart\">",
+        "           they hold 3 of the 3 items recorded",
+        "           first items: 'Blue mug$12.00Delete', 'Red mug$13.00Delete'",
+        "  accept   mendwright lists accept cart 3f2a9c1d" + flag,
+        "  reject   mendwright lists reject cart 3f2a9c1d" + flag,
+    ]
+
+
+def test_lists_says_what_is_not_the_same_and_where_the_group_is(capsys, tmp_path):
+    evidence = _evidence(now_label="Order summary", container='<ul class="summary">',
+                         differs=("heading", "container"), alike=(2, 2))
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", evidence))
+    code, out, _err = _lists(capsys, "--store", str(store))
+    assert code == 0
+    assert ("           3 elements under 'Order summary', in <ul class=\"summary\">, the 2nd of 2 "
+            "alike") in out
+    i = out.index("  check    The heading is not the same: 'Shopping cart' then, 'Order summary' "
+                  "now.")
+    assert out[i + 1:i + 3] == [
+        '           The container is not the same: <section class="cart"> then, '
+        '<ul class="summary"> now.',
+        "           The items of an emptied list can show in another list. Look at the page "
+        "before you accept."]
+
+
+def test_lists_with_several_waiting_an_old_one_and_an_accepted_one(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    store = _lists_store(
+        tmp_path / ".mendwright",
+        _list_row(ROWS, "proposed", _evidence()),
+        _list_row("//li[@class='line']", "proposed", None, css=None),
+        others={"search": {"expectedRole": "li", "candidates": [
+            {"xpath": ".hit", "source": "code", "status": "active", "lastSucceededAt": None},
+            _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None,
+                      accepted="2026-10-30T08:00:00+00:00")]},
+            "my cart": {"expectedRole": "div", "candidates": [
+                _list_row(ROWS, "proposed", _evidence("1a2b3c4d"))]}})
+    code, out, _err = _lists(capsys)                  # the default store: no --store
+    assert code == 0 and out[1] == "3 list heals wait for you to check them."
+    assert "cart  (div elements)  no saved evidence" in out
+    assert ("  why      an older mendwright wrote the store after it was found. Run the test "
+            "again with mendwright 0.9.0 to find it anew.") in out
+    assert "  accept   mendwright lists accept cart 3f2a9c1d" in out
+    assert '  accept   mendwright lists accept "my cart" 1a2b3c4d' in out
+    assert out[-2:] == ["1 accepted list heal waits for mendwright fix --apply:",
+                        "  search  " + HITS + "  (accepted 2026-10-30 08:00:00 UTC)"]
+    assert store.is_file()
+    _lists_store(tmp_path / ".mendwright")
+    code, out, _err = _lists(capsys)
+    assert code == 0 and out[1:] == ["No list heal waits for you to check it."]
+
+
+def test_lists_json(capsys, tmp_path):
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", _evidence()),
+                         others={"search": {"candidates": [
+                             _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None,
+                                       accepted="2026-10-30T08:00:00+00:00")]}})
+    code, out, _err = _lists(capsys, "--store", str(store), "--json")
+    data = json.loads("\n".join(out))
+    flag = ' --store "' + str(store) + '"'
+    assert code == 0 and data == {
+        "store": str(store),
+        "proposed": [{"key": "cart", "id": "3f2a9c1d", "xpath": ROWS, "css": "div.cart-row",
+                      "proposal": _evidence(),
+                      "accept": "mendwright lists accept cart 3f2a9c1d" + flag,
+                      "reject": "mendwright lists reject cart 3f2a9c1d" + flag}],
+        "accepted": [{"key": "search", "xpath": HITS, "css": None,
+                      "acceptedAt": "2026-10-30T08:00:00+00:00"}]}
+
+
+def test_lists_says_an_accepted_list_heal_of_a_key_from_a_seed_file_goes_there(capsys, tmp_path):
+    when = "2026-10-30T08:00:00+00:00"
+    store = _lists_store(
+        tmp_path / "s", _list_row(ROWS, "accepted", _evidence(), accepted=when),
+        others={"search": {"candidates": [
+            {"xpath": ".cart-item", "source": "seed", "status": "active", "lastSucceededAt": None},
+            _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None, accepted=when)]},
+            "wish": {"candidates": [_list_row(HITS, "accepted", None, css=None, accepted=when)]}})
+    code, out, _err = _lists(capsys, "--store", str(store))
+    assert code == 0 and out[-7:] == [
+        "",
+        '1 accepted list heal waits for mendwright fix --apply --store "' + str(store) + '":',
+        "  cart  " + ROWS + "  (accepted 2026-10-30 08:00:00 UTC)",
+        "",
+        "2 accepted list heals wait for you to put them in the seed files their keys' selectors "
+        "come from, which mendwright fix doesn't change:",
+        "  search  " + HITS + " in place of .cart-item  (accepted 2026-10-30 08:00:00 UTC)",
+        "  wish  " + HITS + "  (accepted 2026-10-30 08:00:00 UTC)"]
+
+
+def _rows_of(store, key="cart"):
+    data = json.loads(store.read_text(encoding="utf-8"))
+    return {c["xpath"]: c for c in data["selectors"][key]["candidates"]}
+
+
+def _journal_of(folder):
+    return [json.loads(line) for line in
+            (folder / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_lists_accept_by_id(capsys, tmp_path):
+    other = "//li[@class='line']"
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", _evidence()),
+                         _list_row(other, "proposed", _evidence("9b8c7d6e")))
+    flag = ' --store "' + str(store) + '"'
+    code, out, err = _lists(capsys, "accept", "cart", "3f2a9c1d", "--store", str(store))
+    assert (code, err) == (0, [])
+    assert out == [
+        "Accepted the list heal of 'cart' (3f2a9c1d): " + ROWS + " (3 div elements under "
+        "'Shopping cart').",
+        "mendwright doesn't use it until it is in your code. Write it there with: mendwright fix "
+        "--apply" + flag,
+        "It replaces 1 other list heal found for 'cart'."]
+    rows = _rows_of(store)
+    assert rows[ROWS]["status"] == "accepted" and rows[ROWS]["acceptedAt"]
+    assert rows[other]["status"] == "superseded"
+    journal = _journal_of(tmp_path / "s")
+    assert journal[-1]["event"] == "heal.accepted" and journal[-1]["id"] == "3f2a9c1d"
+    # The action's --store wins over the one before it.
+    code, _out, err = _lists(capsys, "--store", str(tmp_path / "nope.json"), "accept", "cart",
+                             "3f2a9c1d", "--store", str(store))
+    assert code == 1 and err == ["mendwright lists: 'cart' has no list heal to check. Its list "
+                                 "heal was accepted on " + cli._when(rows[ROWS]["acceptedAt"])
+                                 + " and waits for mendwright fix --apply; to drop it, run: "
+                                 "mendwright lists reject cart" + flag]
+
+
+def test_lists_accept_refuses_an_id_that_changed_or_no_evidence(capsys, tmp_path):
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", _evidence()))
+    flag = ' --store "' + str(store) + '"'
+    code, out, err = _lists(capsys, "accept", "cart", "00000000", "--store", str(store))
+    assert (code, out) == (1, [])
+    assert err == ["mendwright lists: 'cart' has no list heal with id 00000000. It changed since "
+                   "you looked: run mendwright lists" + flag + " to see it again."]
+    store = _lists_store(tmp_path / "t", _list_row(ROWS, "proposed", None))
+    code, _out, err = _lists(capsys, "accept", "cart", "00000000", "--store", str(store))
+    assert code == 1 and err == [
+        "mendwright lists: the list heal of 'cart' has no saved evidence, because an older "
+        "mendwright wrote the store after it was found. Run the test again with mendwright 0.9.0 "
+        "to find it anew."]
+    code, _out, err = _lists(capsys, "accept", "nope", "x", "--store", str(store))
+    assert code == 1 and err[0].startswith("mendwright lists: no key 'nope' in ")
+    assert cli.main(["lists", "accept", "cart"]) == 2                     # no ID: a usage error
+    capsys.readouterr()
+    code, _out, err = _lists(capsys, "--store", str(tmp_path / "missing.json"))
+    assert code == 1 and err[0].startswith("mendwright lists: no store at ")
+
+
+def test_lists_reject(capsys, tmp_path):
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", _evidence()),
+                         _list_row(HITS, "proposed", _evidence("9b8c7d6e")))
+    code, _out, err = _lists(capsys, "reject", "cart", "--store", str(store))
+    assert code == 1 and err == ["mendwright lists: 'cart' has 2 list heals waiting: give the id "
+                                 "of the one to reject (3f2a9c1d, 9b8c7d6e)."]
+    code, out, _err = _lists(capsys, "reject", "cart", "9b8c7d6e", "--store", str(store))
+    assert code == 0 and out == [
+        "Rejected the list heal of 'cart' (9b8c7d6e): " + HITS + ". mendwright won't propose it, "
+        "or another selector for the same elements, again."]
+    assert _rows_of(store)[HITS]["status"] == "quarantined"
+    assert _lists(capsys, "reject", "cart", "--store", str(store))[0] == 0   # the one left
+    assert _rows_of(store)[ROWS]["status"] == "quarantined"
+    assert [e["reason"] for e in _journal_of(tmp_path / "s")] == [
+        "rejected with mendwright lists reject"] * 2
+    store = _lists_store(tmp_path / "t", _list_row(ROWS, "accepted", _evidence(),
+                                                   accepted="2026-10-30T08:00:00+00:00"))
+    assert _lists(capsys, "reject", "cart", "--store", str(store))[0] == 0   # an accepted one
+    assert _rows_of(store)[ROWS]["status"] == "quarantined"
+
+
+def test_lists_has_help(capsys):
+    assert cli.main(["lists", "--help"]) == 0
+    assert capsys.readouterr().out.startswith("usage: mendwright lists")
+    assert cli.main(["--help"]) == 0
+    assert "lists" in capsys.readouterr().out
+
+
+# --- the report of list heals ---------------------------------------------------------------
+
+def test_report_shows_list_heals(capsys, tmp_path):
+    evidence = _evidence(now_label="Cart | <b>\x1b[31m")
+    store = _lists_store(tmp_path / "s", _list_row(ROWS, "proposed", evidence),
+                         _list_row(HITS, "accepted", _evidence("9b8c7d6e"), css=None,
+                                   accepted="2026-10-30T08:00:00+00:00"))
+    (tmp_path / "s" / "journal.jsonl").write_text(json.dumps(
+        {"ts": "2026-11-02T10:14:03+00:00", "event": "heal.held", "key": "cart"}) + "\n",
+        encoding="utf-8")
+    assert cli.main(["report", "--store", str(store)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    i = out.index("  proposed    heal  " + ROWS + "  (last success: never)")
+    assert out[i + 1:i + 3] == ["                    as CSS: div.cart-row",
+                                "                    list of 3 under 'Cart | <b>?[31m'; check it "
+                                "with: mendwright lists"]
+    assert ("                    list, accepted 2026-10-30 08:00:00 UTC; write it with: "
+            "mendwright fix --apply") in out
+    assert "  heals: 0 requested, 0 applied, 0 rejected, 0 quarantined, 1 held" in out
+    assert out[-1] == ("Heals (journal.jsonl): 0 requested, 0 applied, 0 rejected, 0 quarantined, "
+                       "1 held")
+    assert cli.main(["report", "--store", str(store), "--format", "md"]) == 0
+    md = capsys.readouterr().out
+    assert "| **proposed** |" in md and "\\| <b>?[31m" in md and "\x1b" not in md
+    assert "1 list heal(s) wait for you to check them: run `mendwright lists`." in md
+    assert cli.main(["report", "--store", str(store), "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    rows = {c["selector"]: c for c in data["keys"][0]["candidates"]}
+    assert rows[ROWS]["list"] is True and rows[ROWS]["proposal"] == evidence
+    assert rows[ROWS]["accepted"] is None
+    assert rows[HITS]["accepted"] == "2026-10-30T08:00:00+00:00"
+    assert "list" not in rows[".cart-item"] and data["journal"]["counts"]["held"] == 1
+    assert cli.main(["report", "--store", str(store), "--format", "html"]) == 0
+    html = capsys.readouterr().out
+    assert '<span class="badge warn">proposed</span>' in html
+    assert '<span class="badge warn">accepted</span>' in html
+    assert "list of 3 under &#x27;Cart | &lt;b&gt;?[31m&#x27;" in html
+    assert "\x1b" not in html

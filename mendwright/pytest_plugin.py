@@ -15,10 +15,13 @@ What it adds:
 - ``--mendwright-strict``: a test that needed a heal fails, after the heal is saved, so CI
   catches selector drift.
 - A summary of the heals at the end of the run, and a header line when ``heal`` is used.
+  The summary also names the keys with a list heal that heal.locator_all(...,
+  nonempty=True) found and saved for you to check (run mendwright lists). A passing test
+  never accepts one.
 
 Options: --mendwright-page-fixture, --mendwright-store, --mendwright-dry-run,
---mendwright-disable, --mendwright-strict, and the ini keys mendwright_page_fixture and
-mendwright_store. ``-p no:mendwright`` turns the plugin off.
+--mendwright-disable, --mendwright-strict, --mendwright-heal-get-by, and the ini keys
+mendwright_page_fixture and mendwright_store. ``-p no:mendwright`` turns the plugin off.
 
 pytest loads this module in every session wherever mendwright is installed. Importing it
 has no side effects, and a run that uses none of it prints nothing extra and writes no
@@ -32,15 +35,23 @@ import os
 
 import pytest
 
+from .getby import is_key
+
 logger = logging.getLogger('mendwright')
 
 _SESSION_PLUGIN = 'mendwright-session'
 # Heal records ride on test reports under this attribute, so pytest-xdist carries them
 # from the workers to the controller with the report itself.
 _REPORT_ATTR = 'mendwright_heals'
+# The list heals found for heal.locator_all(..., nonempty=True) and saved for a person to
+# check ride on the reports the same way.
+_HELD_ATTR = 'mendwright_held'
 _DEFAULT_PAGE_FIXTURE = 'page'
-# Per-heal lines shown in the end-of-run summary without -v.
+# Per-heal lines shown in the end-of-run summary without -v, and keys named in its line
+# about list heals that wait for a person to check them.
 _SUMMARY_LIMIT = 10
+# The longest node id a heal.canary event names (a parametrized id can be very long).
+MAX_NODEID = 300
 
 
 def pytest_addoption(parser):
@@ -66,6 +77,11 @@ def pytest_addoption(parser):
         '--mendwright-strict', dest='mendwright_strict', action='store_true', default=False,
         help='fail every test that needed a heal (the heal is still saved), so CI catches '
              'selectors that have drifted.')
+    group.addoption(
+        '--mendwright-heal-get-by', dest='mendwright_heal_get_by', action='store_true',
+        default=False,
+        help='heal heal.page.get_by_*() calls too, from their fingerprints. Sets '
+             'MENDWRIGHT_HEAL_GET_BY=1 for the run.')
     parser.addini(
         'mendwright_page_fixture', default='',
         help="fixture that the 'heal' fixture passes to mendwright.open() (default: page).")
@@ -256,19 +272,23 @@ class _Session:
         self.config = config
         self.strict = bool(config.getoption('mendwright_strict'))
         self.records = []     # heal records from test reports (from xdist workers too)
+        self.held = []        # records of list heals saved for a person to check
         self.strict_failed = set()   # nodeids whose final report strict mode failed
         self._tracker = None
         self._env = None
-        # open() has no switch for these two, and Healers a test opens itself should
-        # follow them too, so they go through the documented environment variables.
+        # The heal fixture passes none of these to open(), and Healers a test opens itself
+        # should follow them too, so they go through the documented environment variables.
         dry_run = config.getoption('mendwright_dry_run')
         disable = config.getoption('mendwright_disable')
-        if dry_run or disable:
+        get_by = config.getoption('mendwright_heal_get_by')
+        if dry_run or disable or get_by:
             self._env = pytest.MonkeyPatch()
             if dry_run:
                 self._env.setenv('MENDWRIGHT_DRY_RUN', '1')
             if disable:
                 self._env.setenv('MENDWRIGHT_DISABLE', '1')
+            if get_by:
+                self._env.setenv('MENDWRIGHT_HEAL_GET_BY', '1')
 
     def pytest_unconfigure(self, config):
         if self._env is not None:
@@ -291,6 +311,8 @@ class _Session:
             mode = 'heal'
         if self.strict:
             mode += ', strict'
+        if mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
+            mode += ', get_by_* healed'
         if mode != 'disabled' and _no_provider(healing):
             if _fingerprint_on():
                 mode += ' (no provider: only fingerprint heals, no model; see mendwright doctor)'
@@ -327,7 +349,7 @@ class _Session:
         if report.when == 'setup' and report.passed:
             return   # heals made in setup are reported with the call phase
         if report.when == 'call' and report.passed:
-            tracker.confirm()   # the test passed with the healed selectors
+            tracker.confirm(report.nodeid)   # the test passed with the healed selectors
         heals = tracker.take()
         records = [{'nodeid': report.nodeid, 'key': str(h.get('key')),
                     'old': [str(x) for x in h.get('old') or ()], 'new': str(h.get('new')),
@@ -336,6 +358,11 @@ class _Session:
         if records:
             setattr(report, _REPORT_ATTR, records)
             tracker.healed.extend(records)
+        held = [{'nodeid': report.nodeid, 'key': str(r.get('key')), 'xpath': str(r.get('xpath')),
+                 'id': r.get('id') if isinstance(r.get('id'), str) else None}
+                for r in tracker.take_held()]
+        if held:
+            setattr(report, _HELD_ATTR, held)
         if report.when != 'call':
             return
         # tracker.healed spans every attempt of this item: the protocol hookwrapper wraps
@@ -366,6 +393,9 @@ class _Session:
         lines = ['mendwright --mendwright-strict: this test passed only because ' + head]
         lines += ['  ' + _heal_line(r) for r in records]
         lines.append(fix + ', or run without --mendwright-strict to let heals pass.')
+        if any(is_key(r['key']) for r in records):
+            lines.append('For a get_by_* call, run mendwright fix to see the healed selector and '
+                         'where the call is; it does not change the call itself.')
         return '\n'.join(lines)
 
     def _failed_note(self, records):
@@ -383,12 +413,41 @@ class _Session:
         records = getattr(report, _REPORT_ATTR, None)
         if records:
             self.records.extend(records)
+        held = getattr(report, _HELD_ATTR, None)
+        if held:
+            self.held.extend(held)
         if getattr(report, 'mendwright_strict', False) and report.outcome == 'failed':
             self.strict_failed.add(report.nodeid)
 
     def pytest_terminal_summary(self, terminalreporter, exitstatus, config):
-        if hasattr(config, 'workerinput') or not self.records:
+        if hasattr(config, 'workerinput') or not (self.records or self.held):
             return   # an xdist worker: the controller prints the summary once
+        tr = terminalreporter
+        verbose = config.getoption('verbose')
+        # -q: the count lines only. Default: the first heals. -v: every heal.
+        if verbose < 0:
+            tr.ensure_newline()
+        else:
+            tr.write_sep('=', 'mendwright')
+        if self.records:
+            self._heals_summary(tr, verbose)
+        if self.held:
+            held = list(dict.fromkeys((r['key'], r['xpath'], r['id']) for r in self.held))
+            keys = list(dict.fromkeys(key for key, _, _ in held))
+            named = ', '.join(keys[:_SUMMARY_LIMIT]) + (
+                ', and ' + str(len(keys) - _SUMMARY_LIMIT) + ' more'
+                if len(keys) > _SUMMARY_LIMIT else '')
+            tr.write_line('mendwright: ' + str(len(held))
+                          + (' list heal waits for you to check it' if len(held) == 1
+                             else ' list heals wait for you to check them')
+                          + ' (run mendwright lists): ' + named)
+        failed = len(self.strict_failed)
+        if failed:
+            tr.write_line('--mendwright-strict failed ' + _plural(failed, 'test') + ' because '
+                          + ('it' if failed == 1 else 'they') + ' needed a heal. Update those '
+                          'selectors in your code.')
+
+    def _heals_summary(self, tr, verbose):
         records = self.records
         confirmed = sum(1 for r in records if r['confirmed'] is True)
         quarantined = sum(1 for r in records if r['confirmed'] is False)
@@ -405,14 +464,9 @@ class _Session:
             parts.append(str(unconfirmed) + ' not confirmed')
         if quarantined:
             parts.append(str(quarantined) + ' quarantined')
-        tr = terminalreporter
-        verbose = config.getoption('verbose')
-        # -q: the count line only. Default: the first heals. -v: every heal.
         if verbose < 0:
-            tr.ensure_newline()
             shown = []
         else:
-            tr.write_sep('=', 'mendwright')
             shown = records if verbose > 0 else records[:_SUMMARY_LIMIT]
         tr.write_line('mendwright: ' + _plural(len(records), 'selector') + ' healed in '
                       + _plural(tests, 'test') + ' (' + ', '.join(parts) + ')')
@@ -421,11 +475,6 @@ class _Session:
         if shown and len(shown) < len(records):
             tr.write_line('  ... and ' + str(len(records) - len(shown)) + ' more. Run with '
                           '-v to list them all.')
-        failed = len(self.strict_failed)
-        if failed:
-            tr.write_line('--mendwright-strict failed ' + _plural(failed, 'test') + ' because '
-                          + ('it' if failed == 1 else 'they') + ' needed a heal. Update those '
-                          'selectors in your code.')
 
 
 class _Crash:
@@ -464,9 +513,11 @@ class _Tracker:
     def __init__(self):
         from . import facade
         self._facade = facade
-        self._watched = []    # [coordinator, number of its heals already collected]
+        # [coordinator, number of its heals already collected, and of its held list heals]
+        self._watched = []
         self._ids = set()
         self._found = []      # (coordinator, heal dict) not yet attached to a report
+        self._held = []       # the coordinators' held list heals not yet attached to a report
         self.healed = []      # records of every attempt of this item (reruns too)
         for healer in facade.live_healers():
             self._watch(healer)
@@ -478,20 +529,33 @@ class _Tracker:
         if not isinstance(heals, list) or id(coordinator) in self._ids:
             return
         self._ids.add(id(coordinator))
-        self._watched.append([coordinator, len(heals)])
+        held = getattr(coordinator, 'held', None)
+        self._watched.append([coordinator, len(heals),
+                              len(held) if isinstance(held, list) else 0])
 
     def collect(self):
-        """Pick up the heals applied since the last call."""
+        """Pick up the heals applied, and the list heals held, since the last call."""
         for entry in self._watched:
-            coordinator, seen = entry
+            coordinator, seen, seen_held = entry
             heals = coordinator.heals
             for heal in heals[seen:]:
                 if isinstance(heal, dict):
                     self._found.append((coordinator, heal))
             entry[1] = len(heals)
+            held = getattr(coordinator, 'held', None)
+            if isinstance(held, list):
+                self._held.extend(r for r in held[seen_held:] if isinstance(r, dict))
+                entry[2] = len(held)
 
-    def confirm(self):
-        """Confirm the heals of this test that are still waiting for an outcome."""
+    def take_held(self):
+        held, self._held = self._held, []
+        return held
+
+    def confirm(self, nodeid=None):
+        """Confirm the heals of this test that are still waiting for an outcome. The canary
+        names the test (by='test', and its node id, cut to MAX_NODEID characters)."""
+        from .coordinator import _canary_call
+        test = nodeid[:MAX_NODEID] if isinstance(nodeid, str) else None
         for coordinator, heal in self._found:
             key = heal.get('key')
             pending = getattr(coordinator, 'pending', None)
@@ -500,7 +564,7 @@ class _Tracker:
             if pending.get(key) != heal.get('new'):
                 continue   # already reported, or replaced by a later heal of the same key
             try:
-                coordinator.confirm_pending(key, True)
+                _canary_call(coordinator.confirm_pending, key, True, by='test', test=test)
             except Exception:
                 logger.warning('mendwright: could not confirm the heal for %r', key,
                                exc_info=True)
@@ -515,3 +579,4 @@ class _Tracker:
         self._watched = []
         self._ids = set()
         self._found = []
+        self._held = []

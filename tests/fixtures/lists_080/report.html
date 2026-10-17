@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>mendwright heal report</title>
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--text:#1a1d21;--muted:#5a6370;--border:#d8dce2;--code:#eef0f3;
+--ok:#0b6b38;--ok-bg:#dff3e7;--warn:#7a4f00;--warn-bg:#fcefd0;--bad:#a8231b;--bad-bg:#fbe3e0;
+--info:#1d4f98;--info-bg:#e2ecfa;--plain:#3a424d;--plain-bg:#e8ebef;--muted-bg:#eceff2}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1115;--surface:#161a20;--text:#e7eaee;
+--muted:#97a1ae;--border:#2a313a;--code:#1f252d;--ok:#6fd49a;--ok-bg:#133522;--warn:#f1c466;
+--warn-bg:#3b2d0c;--bad:#ff958d;--bad-bg:#40181a;--info:#92bcf2;--info-bg:#16293f;--plain:#c3cad3;
+--plain-bg:#262d36;--muted-bg:#242a32}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,
+"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+.page{max-width:1120px;margin:0 auto;padding:16px}
+header{margin:8px 0 20px}
+h1{font-size:1.6rem;line-height:1.2;margin:0 0 6px}
+h2{font-size:1.15rem;margin:0 0 10px}
+section{margin:0 0 28px;min-width:0}
+.meta{margin:0;color:var(--muted);font-size:.9rem}
+.meta code{font-size:.85em}
+.lead{margin:0 0 10px;color:var(--muted);font-size:.92rem}
+.empty{margin:0;padding:12px 14px;background:var(--surface);border:1px solid var(--border);
+border-radius:8px;color:var(--muted)}
+code{font:.86em/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere;word-break:break-word}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.num{font-size:1.7rem;font-weight:650;line-height:1.1}
+.label{font-size:.88rem}
+.note{font-size:.78rem;color:var(--muted);margin-top:2px}
+table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);
+border-radius:10px;overflow:hidden}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--border)}
+tbody tr:last-child td{border-bottom:0}
+th{font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+background:var(--muted-bg)}
+td{min-width:0;overflow-wrap:break-word}
+td.keycell,td.k{min-width:9.5rem}
+.nowrap{white-space:nowrap}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.sub{font-size:.8rem;color:var(--muted)}
+.muted{color:var(--muted)}
+.line{margin:4px 0 2px}
+.cands{list-style:none;margin:0;padding:0}
+.cands li{padding:6px 0;border-bottom:1px dashed var(--border)}
+.cands li:first-child{padding-top:0}
+.cands li:last-child{border-bottom:0;padding-bottom:0}
+.badge{display:inline-block;font-size:.74rem;font-weight:600;line-height:1.5;padding:0 8px;
+border-radius:999px;margin:0 2px 4px 0;white-space:nowrap}
+.badge.ok{color:var(--ok);background:var(--ok-bg)}
+.badge.warn{color:var(--warn);background:var(--warn-bg)}
+.badge.bad{color:var(--bad);background:var(--bad-bg)}
+.badge.info{color:var(--info);background:var(--info-bg)}
+.badge.plain{color:var(--plain);background:var(--plain-bg)}
+.badge.muted{color:var(--muted);background:var(--muted-bg)}
+.chg{margin:0 0 4px}
+.lbl{display:inline-block;min-width:2.4em;margin-right:6px;font-size:.74rem;font-weight:600;
+text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+footer{margin:8px 0 0;color:var(--muted);font-size:.82rem}
+@media (max-width:760px){
+.page{padding:16px}
+h1{font-size:1.35rem}
+thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+table,tbody,tr,td{display:block;width:100%}
+table{background:transparent;border:0;border-radius:0}
+tr{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin:0 0 10px;
+padding:4px 0}
+td,tbody tr:last-child td{border:0;padding:6px 14px}
+td::before{content:attr(data-label);display:block;font-size:.7rem;font-weight:600;
+text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+td.keycell::before{display:none}
+td.keycell,td.k{min-width:0}
+.nowrap{white-space:normal}
+}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+<h1>mendwright heal report</h1>
+<p class="meta">Store <code><FOLDER>/overrides.json</code></p>
+<p class="meta">Journal <code><FOLDER>/journal.jsonl</code> (8 events, the latest at 2026-10-04 10:00:00 UTC)</p></header>
+<main>
+<section aria-labelledby="summary"><h2 id="summary">Summary</h2>
+<div class="cards">
+<div class="card"><div class="num">3</div><div class="label">keys</div></div>
+<div class="card"><div class="num">5</div><div class="label">selectors</div><div class="note">3 active</div></div>
+<div class="card"><div class="num">1</div><div class="label">quarantined now</div><div class="note">selectors the store will not try</div></div>
+<div class="card"><div class="num">3</div><div class="label">heals asked for</div><div class="note">by fingerprint or model</div></div>
+<div class="card"><div class="num">2</div><div class="label">heals applied</div></div>
+<div class="card"><div class="num">0</div><div class="label">confirmed</div><div class="note">by a passing test or check</div></div>
+<div class="card"><div class="num">1</div><div class="label">proposals rejected</div><div class="note">by the local checks</div></div>
+<div class="card"><div class="num">0</div><div class="label">interruptions handled</div></div>
+<div class="card"><div class="num">0</div><div class="label">steps skipped</div></div>
+<div class="card"><div class="num">0</div><div class="label">page guard stops</div><div class="note">heals declined on another page</div></div>
+</div></section>
+<section aria-labelledby="keys"><h2 id="keys">Keys and selectors</h2>
+<table>
+<caption class="sr">Keys and their selectors</caption>
+<thead><tr>
+<th scope="col">Key</th>
+<th scope="col">Role</th>
+<th scope="col">Selectors</th>
+<th scope="col">Heals</th>
+</tr></thead>
+<tbody>
+<tr><td data-label="Key" class="keycell"><code>accept_terms</code></td><td data-label="Role">checkbox</td><td data-label="Selectors"><ul class="cands"><li><div class="line"><span class="badge plain">code</span> <span class="badge ok">active</span></div><code>#accept-terms</code><div class="sub">last success 2026-10-01 08:00:00 UTC</div></li><li><div class="line"><span class="badge info">heal</span> <span class="badge ok">active</span></div><code>//label//input[@type=&#x27;checkbox&#x27;]</code><div class="sub">last success 2026-10-02 09:30:00 UTC</div></li><li><div class="line"><span class="badge info">heal</span> <span class="badge bad">quarantined</span></div><code>//input[@name=&#x27;terms&#x27;]</code><div class="sub">last success never</div></li></ul></td><td data-label="Heals"><div>2 asked, 2 applied</div><div class="sub">1 rejected, 1 quarantined</div></td></tr>
+<tr><td data-label="Key" class="keycell"><code>go</code><div class="line"><span class="badge bad">destructive, never auto-healed</span></div></td><td data-label="Role">button</td><td data-label="Selectors"><ul class="cands"><li><div class="line"><span class="badge plain">seed</span> <span class="badge ok">active</span></div><code>//button[@id=&#x27;go&#x27;] | //a[@id=&#x27;go&#x27;]</code><div class="sub">last success never</div></li><li><div class="line"><span class="badge plain">code</span> <span class="badge muted">superseded</span></div><code>#old-go</code><div class="sub">inside frame <code>//iframe[@id=&#x27;shop&#x27;]</code></div><div class="sub">last success never</div></li></ul></td><td data-label="Heals"><div>1 asked, 0 applied</div><div class="sub">0 rejected, 0 quarantined</div></td></tr>
+<tr><td data-label="Key" class="keycell"><code>pay_button</code></td><td data-label="Role">button</td><td data-label="Selectors"><span class="muted">no selectors saved</span></td><td data-label="Heals"><span class="muted">none</span></td></tr>
+</tbody></table>
+</section>
+<section aria-labelledby="heals"><h2 id="heals">Recent heals</h2>
+<p class="lead">Newest first. A heal is confirmed when the test that made it passed (the pytest plugin reports that), or when an expect= check or confirm(True) said so.</p>
+<table>
+<caption class="sr">Recent applied heals</caption>
+<thead><tr>
+<th scope="col">When</th>
+<th scope="col">Key</th>
+<th scope="col">Selector change</th>
+<th scope="col">State</th>
+<th scope="col">Provider and model</th>
+<th scope="col">Latency</th>
+</tr></thead>
+<tbody>
+<tr><td data-label="When" class="nowrap">2026-10-03 10:00:03 UTC</td><td data-label="Key" class="k"><code>accept_terms</code></td><td data-label="Selector change"><div class="chg"><span class="lbl">old</span> <code>#accept-terms</code> <span class="sub">(+2 more)</span></div><div class="chg"><span class="lbl">new</span> <code>//label//input[@type=&#x27;checkbox&#x27;]</code></div></td><td data-label="State"><span class="badge warn">not confirmed yet</span></td><td data-label="Provider and model">AnthropicProvider<div class="sub">claude-test</div></td><td data-label="Latency" class="nowrap">900 ms</td></tr>
+<tr><td data-label="When" class="nowrap">2026-10-02 09:30:00 UTC</td><td data-label="Key" class="k"><code>accept_terms</code></td><td data-label="Selector change"><div class="chg"><span class="lbl">old</span> <code>#accept-terms</code></div><div class="chg"><span class="lbl">new</span> <code>//input[@name=&#x27;terms&#x27;]</code></div></td><td data-label="State"><span class="badge bad">failed, quarantined</span></td><td data-label="Provider and model">AnthropicProvider<div class="sub">claude-test</div></td><td data-label="Latency" class="nowrap">1.4 s</td></tr>
+</tbody></table>
+</section>
+<section aria-labelledby="flow"><h2 id="flow">Flow events</h2>
+<p class="empty">No interruptions, skipped steps or page guard stops are recorded.</p></section>
+<section aria-labelledby="quarantines"><h2 id="quarantines">Quarantines</h2>
+<p class="lead">mendwright does not try a quarantined selector again, and refuses a proposal that selects the same element.</p>
+<table>
+<caption class="sr">Quarantined selectors</caption>
+<thead><tr>
+<th scope="col">Key</th>
+<th scope="col">Selector</th>
+<th scope="col">Source</th>
+<th scope="col">Quarantined</th>
+<th scope="col">State</th>
+</tr></thead>
+<tbody>
+<tr><td data-label="Key" class="k"><code>accept_terms</code></td><td data-label="Selector"><code>//input[@name=&#x27;terms&#x27;]</code></td><td data-label="Source">heal</td><td data-label="Quarantined" class="nowrap">2026-10-02 09:30:01 UTC</td><td data-label="State"><span class="badge bad">in the store</span></td></tr>
+</tbody></table>
+</section>
+</main>
+<footer>Made by mendwright <VERSION></footer></div>
+</body>
+</html>

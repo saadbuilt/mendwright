@@ -6,14 +6,22 @@ submitted, keys marked destructive are never healed, a key is not healed on a pa
 it was never found (a change in the flow, see mendwright.flow), and a failed canary
 quarantines the healed candidate. When a heal does not happen, the coordinator records a readable reason
 (see ``explain``), and the AttentionRequired it raises tells the caller what to do next.
-A list whose selectors all match nothing is never healed (see decline_list).
+A list whose selectors all match nothing is never healed (see decline_list): with
+nonempty=True, it is looked for and what is found is saved as a proposed list heal for a
+person to check, never used (see propose_list). The key of a heal.page.get_by_*() call is
+healed from its fingerprint only, never by a model (see _heal_get_by).
 """
 
 import contextlib
+import inspect
 import logging
 import time
+from dataclasses import dataclass
+from typing import Any
 
 from . import fingerprint as _fingerprint
+from . import getby
+from . import lists as _lists
 from .capture import build_bundle
 from .client import DEFAULT_AUTH_HEADER, apply
 from .exceptions import AttentionRequired
@@ -36,14 +44,23 @@ def _old_selectors(broken_candidates):
     return out
 
 
-def _role_needed(selector_key):
-    """The sentence that asks for role= when a key's expected role is unknown."""
+def _role_needed(selector_key, call='heal.locator()'):
+    """The sentence that asks for role= when a key's expected role is unknown. call is the
+    function named in it."""
     return ("does not know what kind of element '" + selector_key + "' is (its expected "
             "role is unknown), so it cannot check a repaired selector. Pass role= to "
-            "heal.locator(), for example role='textbox' for a text field, role='button', "
+            + call + ", for example role='textbox' for a text field, role='button', "
             "role='checkbox', role='link' or role='combobox', or set expectedRole for the key "
             "in the seed file.")
 
+
+# Why nothing heals under MENDWRIGHT_DISABLE=1 (the provider open() swaps in says it too).
+DISABLED_REASON = ('healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not '
+                   'repaired. Unset MENDWRIGHT_DISABLE to let mendwright heal again.')
+# Why nothing heals while the guard blocks.
+GUARD_REASON = ('a transaction guard is currently blocking heals (a payment or registration '
+                'submission is pending), so mendwright did not try to heal. Run the step again '
+                'once the guard allows heals.')
 
 # The provider name heals from the fingerprint tier get in the journal and the log.
 FINGERPRINT_PROVIDER = 'fingerprint'
@@ -57,23 +74,139 @@ def _no_fingerprint(selector_key):
             'its selector matches)')
 
 
+_TAKES = {}
+
+
+def _takes(func, name):
+    """True when func can be called with the keyword argument name: it has a parameter of
+    that name, or **kwargs. Cached per function. A function whose signature cannot be read
+    counts as not taking it, so a journal or a subclass written for 0.8.0, whose canary()
+    or confirm() has no by= and test=, still gets every call, without them."""
+    target = getattr(func, '__func__', func)
+    try:
+        cache_key = (target, name)
+        if cache_key in _TAKES:
+            return _TAKES[cache_key]
+    except TypeError:          # not hashable
+        cache_key = None
+    try:
+        params = inspect.signature(func).parameters.values()
+        takes = any(p.kind == p.VAR_KEYWORD or (p.name == name and p.kind in (
+            p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)) for p in params)
+    except (TypeError, ValueError):
+        takes = False
+    if cache_key is not None:
+        _TAKES[cache_key] = takes
+    return takes
+
+
+def _accepted(func, **fields):
+    """The fields that are not None and that func takes as keyword arguments."""
+    return {name: value for name, value in fields.items()
+            if value is not None and _takes(func, name)}
+
+
+def _canary_call(method, *args, by=None, test=None, **kwargs):
+    """method(*args, **kwargs), with by= and test= added when they are given and method takes
+    them. Every canary report goes through here, so a confirm_pending(), confirm() or
+    journal canary() replaced by code written for 0.8.0 still gets each call, once."""
+    return method(*args, **kwargs, **_accepted(method, by=by, test=test))
+
+
 def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
             "could act on a live account. Fix the selector in your code or seed file by hand.")
 
 
+def _had(count):
+    """How many elements a list had when its list fingerprint was recorded, in words."""
+    return (str(count) + ' elements' if isinstance(count, int) and not isinstance(count, bool)
+            and count >= 2 else 'two or more elements')
+
+
 def _list_missing_message(selector_key, count):
     """Why a list whose selectors all match nothing is not healed (see decline_list). count
     is how many elements the list had when its list fingerprint was recorded."""
-    had = (str(count) + ' elements' if isinstance(count, int) and not isinstance(count, bool)
-           and count >= 2 else 'two or more elements')
+    had = _had(count)
     return ("'" + selector_key + "' matched " + had + ' when its list fingerprint was recorded, '
             'and none of its selectors matches now. Either the list is empty at this point, or '
             "its selector broke: mendwright can't tell the two apart, since the items of an "
             "emptied list can show in another list, such as a cart's in Saved for later, so it "
             'never heals a list that matches nothing. If the selector broke, change it in your '
             'code.')
+
+
+# --- heal.locator_all(..., nonempty=True) ---------------------------------------------------
+
+# The guard's sentence, which try_heal() and propose_list() give.
+_GUARD_BLOCKS = GUARD_REASON
+
+
+def nonempty_unsearched(selector_key, text):
+    """A refusal of a list looked up with nonempty=True when nothing was looked for."""
+    return ('nonempty=True says ' + repr_key(selector_key) + ' has items here, and none of its '
+            'selectors matches. ' + text + ' If the selector broke, change it in your code.')
+
+
+def nonempty_searched(selector_key, count, fragment):
+    """A refusal of a list looked up with nonempty=True after mendwright looked for it on the
+    page: fragment says what it found, or why it found nothing."""
+    return (repr_key(selector_key) + ' matched ' + _had(count) + ' when its list fingerprint '
+            'was recorded, and none of its selectors matches now. nonempty=True says the list '
+            'has items here, so mendwright looked for it on the page, but ' + fragment + '. If '
+            'the selector broke, change it in your code. If the list can be empty here, remove '
+            'nonempty=True.')
+
+
+def repr_key(selector_key):
+    """A key as the list messages quote it, with its control characters as ?."""
+    return "'" + _lists._printable(str(selector_key)) + "'"
+
+
+def _place(label, container):
+    """', under 'LABEL', in CONTAINER', for what of them there is."""
+    return ((', under ' + repr(label) if label else '')
+            + (', in ' + container if container else ''))
+
+
+def _store_flag(store):
+    """' --store "PATH"' for the commands a list message names, when the store's file is not
+    the default one."""
+    path = getattr(store, '_override_path', None)
+    if path is None:
+        return ''
+    from .cli import store_flag
+    return store_flag(path)
+
+
+def _elements(n):
+    return str(n) + (' element' if n == 1 else ' elements')
+
+
+def _in_seed(selectors, then=''):
+    """The sentence that says where a list heal goes for a key whose selectors all come from
+    a seed file, which mendwright fix doesn't change: in the seed file, in place of
+    selectors. A seed file that holds the list heal's XPath takes it over (see
+    store.merge)."""
+    return ("Its selectors come from a seed file, which mendwright fix doesn't change, so "
+            + then + 'put it there' + (' in place of ' + ' and '.join(map(str, selectors))
+                                       if selectors else '') + '.')
+
+
+@dataclass(frozen=True)
+class ListOutcome:
+    """What HealCoordinator.propose_list() did: kind is 'proposed' (saved for a person to
+    check: reason is the message, xpath the selector, row the store's row), 'came' (a selector
+    of the key's code or seed file matches now: reason is that selector, xpath the group
+    found), 'refused' (reason says why), 'accepted' (the group found is a list heal a person
+    accepted: row is it, count how many elements it matched on the captured page) or
+    'dry_run'."""
+    kind: str
+    reason: str = ''
+    xpath: Any = None
+    row: Any = None
+    count: int = 0
 
 
 class HealCoordinator:
@@ -146,6 +279,10 @@ class HealCoordinator:
         # 'confirmed', 'source'}. confirmed is None until the canary reports, then True or
         # False. source is 'fingerprint', 'model', or 'intent' for a key that had no selector.
         self.heals = []
+        # Every list this coordinator found for heal.locator_all(..., nonempty=True) and saved
+        # as a proposed list heal, oldest first: {'key', 'xpath', 'id', 'label', 'count'}. None
+        # was used; the pytest plugin lists them at the end of a run.
+        self.held = []
 
     @contextlib.contextmanager
     def scoped(self, driver, frame_xpath):
@@ -210,7 +347,8 @@ class HealCoordinator:
         human-readable reason via ``self.heal_reasons`` (see ``explain``).
 
         With fingerprint=True the fingerprint tier runs first (after the destructive, page,
-        role and guard checks), and the provider is asked only when it does not heal."""
+        role and guard checks), and the provider is asked only when it does not heal. The
+        key of a get_by_* call is healed from its fingerprint only (see _heal_get_by)."""
         if meta.get('destructive'):
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
@@ -218,6 +356,8 @@ class HealCoordinator:
         moved = self._flow_change(selector_key, context)
         if moved:
             return self._decline(selector_key, moved)
+        if getby.is_key(selector_key):
+            return self._heal_get_by(selector_key, meta, broken_candidates)
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
         # stand-in) carries its own actionable reason; surface it verbatim. The str check
         # matters: a bare Mock()/MagicMock() test double answers every attribute with a
@@ -238,10 +378,7 @@ class HealCoordinator:
             # for nothing.
             return self._decline(selector_key, 'mendwright ' + _role_needed(selector_key))
         if not self.guard():
-            return self._decline(selector_key,
-                "a transaction guard is currently blocking heals (a payment or registration "
-                "submission is pending), so mendwright did not try to heal. Run the step again "
-                "once the guard allows heals.")
+            return self._decline(selector_key, GUARD_REASON)
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -346,6 +483,37 @@ class HealCoordinator:
             "matches exactly one element of the expected role and is present on the live page.")
         return None
 
+    def _heal_get_by(self, selector_key, meta, broken_candidates):
+        """try_heal() for the key of a heal.page.get_by_*() call (see mendwright.getby),
+        after the destructive and page checks: the fingerprint tier only. A call names its
+        element by role and words, and when it breaks those are what changed, so a model
+        given the old call could only guess. The fingerprint holds what survives a redesign
+        (ids, test ids, names, classes, ancestors), and the tier needs a strong identity
+        signal and a margin before it proposes anything. So no provider, gateway or local
+        model is asked, no page leaves the machine, and the rate limit is not used.
+
+        Declined, in order: MENDWRIGHT_DISABLE=1, the fingerprint tier off, no fingerprint
+        in the store (a call that never matched is more often a mistake in the call than a
+        redesign), an unknown role, a guard that blocks; then whatever the tier itself does
+        not heal. Its pick goes through apply(), whose live check also asks Playwright for
+        the ARIA role of a get_by_role() call (gate.live_reason)."""
+        if self.disabled:
+            return self._decline(selector_key, DISABLED_REASON)
+        if not self.fingerprint:
+            return self._decline(selector_key, getby.tier_off_message(selector_key))
+        if not _fingerprint.valid(meta.get('fingerprint')):
+            return self._decline(selector_key, getby.no_fingerprint_message(selector_key))
+        role = meta.get('expectedRole')
+        if not role or role == 'unknown':
+            return self._decline(selector_key, getby.role_unknown_message(selector_key))
+        if not self.guard():
+            return self._decline(selector_key, GUARD_REASON)
+        applied, note, _requested = self._fingerprint_tier(
+            selector_key, meta, broken_candidates, self.html_provider(), self.clock())
+        if applied is not None:
+            return applied      # the heal, or False after the dry run declined it
+        return self._decline(selector_key, note + '. ' + getby.NO_MODEL)
+
     def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
         """The first tier: (applied, note, requested). applied is the xpath applied, False
         when dry run declined the heal (with its reason recorded), or None to go on to the
@@ -397,6 +565,343 @@ class HealCoordinator:
         self._decline(selector_key, _list_missing_message(
             selector_key, lfp.get('count') if isinstance(lfp, dict) else None))
         return self.explain(selector_key)
+
+    def propose_list(self, selector_key, meta, broken, context):
+        """Look for list key, which heal.locator_all(..., nonempty=True) says has items here
+        and whose selectors ``broken`` all match nothing, and save what is found as a proposed
+        list heal for a person to check (see mendwright.lists). It is never used: only the
+        selectors in your code give a list. Returns a ListOutcome; every refusal is recorded
+        and logged as a heal that did not apply (see ``explain``).
+
+        In order, it refuses a key marked destructive, a key with no list fingerprint, no live
+        driver or one without list_items(), a list fingerprint without where the list sat
+        (recorded by 0.8.0, or before a call with nonempty=True matched), a page the key was
+        never found on, an unknown role, the guard and a store that can't save a proposal.
+        Then it captures the page and looks (lists.find), refuses a group picked by a word
+        for a state the list didn't have (lists.state_word), and runs the list gate
+        (client.list_gate). No provider is asked, and the rate limit is not touched."""
+        from .client import list_gate
+        from .drivers.base import driver_places
+        lfp = meta.get('listFingerprint')
+        if meta.get('destructive'):
+            return self._list_refused(selector_key, _destructive_message(selector_key))
+        if not _lists.valid(lfp):
+            return self._list_refused(selector_key, nonempty_unsearched(
+                selector_key, 'mendwright has never seen this list match 2 or more elements, '
+                "so it has nothing to look for. It records a list each time the list's "
+                'selector matches 2 or more.'))
+        driver = self.driver
+        what = None
+        if driver is None:
+            what = 'be reached (this lookup has no live page)'
+        elif not callable(getattr(driver, 'list_items', None)):
+            what = 'read the elements of a list (it has no list_items())'
+        elif not _lists.placed(lfp) and not driver_places(driver):
+            what = 'record where a list sits (its list_fingerprint() takes no place=)'
+        if what:
+            return self._list_refused(selector_key, nonempty_unsearched(
+                selector_key, "The driver of this page can't " + what + ", so mendwright can't "
+                'check a list it finds.'))
+        count = lfp.get('count')
+        if not _lists.placed(lfp):
+            return self._list_refused(selector_key, nonempty_searched(
+                selector_key, count, 'its list fingerprint was recorded by mendwright 0.8.0 or '
+                "before a call with nonempty=True matched the list, so it doesn't hold where "
+                "the list was or its heading, and another list that holds its items can't be "
+                'told from it. mendwright records them the next time the list matches in a call '
+                'with nonempty=True'))
+        moved = self._flow_change(selector_key, context)
+        if moved:
+            return self._list_refused(selector_key, moved)
+        role = meta.get('expectedRole')
+        if not role or role == 'unknown':
+            return self._list_refused(selector_key, 'mendwright ' + _role_needed(
+                selector_key, call='heal.locator_all()'))
+        if not self.guard():
+            return self._list_refused(selector_key, _GUARD_BLOCKS)
+        if not callable(getattr(self.store, 'propose_list_heal', None)):
+            return self._list_refused(selector_key, self._unsaved(selector_key, 'it has no '
+                                                                  'propose_list_heal()'))
+        html = self.html_provider()
+        self.journal.requested(selector_key, list=True)
+        started = self.clock()
+        match = _lists.find(lfp, html, role, visible=self._list_visible)
+        if not match.xpath:
+            if match.code not in ('L2', 'L3', 'L10'):
+                self.journal.rejected(selector_key, list=True, reason=match.reason,
+                                      source=FINGERPRINT_PROVIDER)
+            return self._list_refused(selector_key, nonempty_searched(
+                selector_key, count, match.fragment))
+        state = _lists.state_word(match.xpath, lfp)
+        if state:
+            token, word = state
+            reason = ('the group it found, ' + match.xpath + ', is picked by '
+                      + repr(_lists._printable(token)) + ', and ' + repr(word) + ' names a state '
+                      "the recorded list didn't have, so these are most likely the list's items "
+                      'in another state, or another list, such as completed tasks or items saved '
+                      'for later')
+            self.journal.rejected(selector_key, xpath=match.xpath, list=True, reason=reason,
+                                  source=FINGERPRINT_PROVIDER)
+            return self._list_refused(selector_key, nonempty_searched(selector_key, count, reason))
+        reasoning = ('list fingerprint score ' + format(match.score, '.2f') + ', next best '
+                     + format(match.runner_up, '.2f') + ', ' + str(match.count) + ' elements, '
+                     + str(match.held) + ' of ' + str(match.recorded) + ' recorded items')
+        self.journal.proposed(selector_key, xpath=match.xpath, reasoning=reasoning,
+                              source=FINGERPRINT_PROVIDER, list=True)
+        kind, why, found, css = list_gate(self.store, selector_key, match.xpath, html, meta,
+                                          driver, match.css)
+        if kind == 'came':
+            return ListOutcome('came', reason=why, xpath=match.xpath)
+        if kind == 'accepted':
+            rows = [r for r in self._list_heals(selector_key) if r.get('xpath') == match.xpath]
+            return ListOutcome('accepted', xpath=match.xpath, row=rows[0] if rows else None,
+                               count=match.count)
+        if kind == 'refused':
+            self.journal.rejected(selector_key, xpath=match.xpath, list=True, reason=why,
+                                  source=FINGERPRINT_PROVIDER)
+            return self._list_refused(selector_key, nonempty_searched(
+                selector_key, count, 'the group it found, ' + match.xpath + ", failed "
+                "mendwright's list checks (" + why + ')'))
+        if self.dry_run:
+            self._emit(logging.INFO, '[heal dry-run] key=' + selector_key + ' proposed='
+                       + match.xpath + ' (list) valid=True (not saved)')
+            reason = ('dry-run mode is on, so the list mendwright found for '
+                      + repr_key(selector_key) + ', ' + match.xpath + ', was checked but not '
+                      'saved. Turn off dry_run to save it for you to check.')
+            self._decline(selector_key, reason, level=logging.INFO)
+            return ListOutcome('dry_run', reason=reason, xpath=match.xpath)
+        return self._hold_list(selector_key, meta, lfp, match, css, broken, context, started)
+
+    def _hold_list(self, selector_key, meta, lfp, match, css, broken, context, started):
+        """Save what propose_list() found as a proposed list heal: journal heal.held,
+        remember it in self.held, record the message for ``explain`` and log it."""
+        from .store import _now_iso
+        old = _old_selectors(broken)
+        page = (context or {}).get('page') if isinstance(context, dict) else None
+        if not isinstance(page, str):
+            page = ''
+        evidence = _lists.proposal_evidence(selector_key, lfp, match, match.xpath, css, old,
+                                            page, _now_iso())
+        try:
+            row = self.store.propose_list_heal(selector_key, match.xpath, css=css,
+                                               proposal=evidence)
+        except Exception as exc:
+            detail = type(exc).__name__ + (': ' + str(exc) if str(exc) else '')
+            return self._list_refused(selector_key, self._unsaved(selector_key,
+                                                                  'it raised ' + detail))
+        # The write takes in the file: a person may have accepted or rejected this list heal
+        # since the store was read (see SelectorStore._merge_status), and then it is not
+        # proposed.
+        status = row.get('status') if isinstance(row, dict) else None
+        if status == 'accepted':
+            return ListOutcome('accepted', xpath=match.xpath, row=row, count=match.count)
+        if status == 'quarantined':
+            from .client import _REJECTED_LIST
+            self.journal.rejected(selector_key, xpath=match.xpath, list=True,
+                                  reason=_REJECTED_LIST, source=FINGERPRINT_PROVIDER)
+            return self._list_refused(selector_key, nonempty_searched(
+                selector_key, lfp.get('count'), 'the group it found, ' + match.xpath
+                + ", failed mendwright's list checks (" + _REJECTED_LIST + ')'))
+        seconds = max(0.0, self.clock() - started)
+        now = evidence['now']
+        self.journal.held(selector_key, provider=FINGERPRINT_PROVIDER,
+                          latency_ms=int(round(seconds * 1000)), xpath=match.xpath, css=css,
+                          id=evidence['id'], list=True, items=match.count, label=now['label'],
+                          differs=evidence['differs'], old=old, page=evidence['page'],
+                          source=FINGERPRINT_PROVIDER)
+        self.held.append({'key': selector_key, 'xpath': match.xpath, 'id': evidence['id'],
+                          'label': now['label'], 'count': match.count})
+        role = meta.get('expectedRole')
+        message = self._proposal_message(selector_key, lfp, match.xpath, css, role, evidence)
+        self.heal_reasons[selector_key] = message
+        was = old[0] + (' (+' + str(len(old) - 1) + ' more)' if len(old) > 1 else '') if old else (
+            '(no stored selector)')
+        self._emit(logging.WARNING, 'found a list for ' + repr(selector_key) + ' ('
+                   + str(match.count) + ' ' + str(role) + ' elements'
+                   + (' under ' + repr(now['label']) if now['label'] else '') + '): ' + was
+                   + ' -> ' + match.xpath + ' (' + format(seconds, '.1f') + 's). It is not used. '
+                   'Check it with: mendwright lists')
+        return ListOutcome('proposed', reason=message, xpath=match.xpath, row=row,
+                           count=match.count)
+
+    def _proposal_message(self, selector_key, lfp, xpath, css, role, evidence):
+        """The reason a lookup that made a proposal raises with (L0 of the guide's table)."""
+        from .cli import _when, command_key
+        was, now = evidence['was'], evidence['now']
+        flag = _store_flag(self.store)
+        word, note = command_key(selector_key)
+        alike = now.get('alike') or [1, 1]
+        here = _place(now['label'], now['container'])
+        if alike[1] > 1:
+            here += ', the ' + _lists._ordinal(alike[0]) + ' of ' + str(alike[1]) + ' alike'
+        if here:
+            here += ','
+        differs = ''
+        if 'heading' in evidence['differs']:
+            differs += (' The heading is not the same: the list was under '
+                        + (repr(was['label']) if was['label'] else 'no heading')
+                        + ', and these are under '
+                        + (repr(now['label']) if now['label'] else 'no heading') + '.')
+        if 'container' in evidence['differs']:
+            differs += (' The container is not the same: the list was in '
+                        + (was['container'] or '<body>') + ', and these are in '
+                        + (now['container'] or '<body>') + '.')
+        other = ''
+        for row in self._list_heals(selector_key):
+            if row.get('status') == 'accepted' and row.get('xpath') != xpath:
+                when = row.get('acceptedAt')
+                other = (' You accepted another list heal for ' + repr_key(selector_key) + ' on '
+                         + (_when(when) if when else 'date unknown') + ', ' + row['xpath']
+                         + ', which matches nothing now. mendwright fix writes neither until '
+                         'you accept this one or reject it.')
+                break
+        seeded = self._seed_selectors(selector_key)
+        if seeded is None:
+            write = ' Then write it into your code with: mendwright fix --apply' + flag + '.'
+        else:
+            write = ' ' + _in_seed(was.get('selectors') or seeded, then='then ')
+        return (repr_key(selector_key) + ' matched ' + _had(lfp.get('count')) + ' when its list '
+                'fingerprint was recorded' + _place(was['label'], was['container']) + ', and none '
+                'of its selectors matches now. nonempty=True says the list has items here, so '
+                'mendwright looked for it and found ' + str(evidence['count']) + ' ' + str(role)
+                + ' elements' + here + ' that hold ' + str(evidence['found']) + ' of the '
+                + str(evidence['recorded']) + ' items it recorded: ' + xpath
+                + (' (as CSS: ' + css + ')' if css else '') + '.' + differs + ' mendwright never '
+                'uses a list it finds, because the items of an emptied list can show in another '
+                'list on the page. If this is the list, look at it with: mendwright lists' + flag
+                + '. Accept it with: mendwright lists accept ' + word + ' ' + evidence['id'] + flag
+                + note + '.' + write + other + ' If the list can be empty here, remove '
+                'nonempty=True.')
+
+    def _seed_selectors(self, selector_key):
+        """key's selectors when they all come from a seed file: no selector of your code is
+        saved for it, so mendwright fix, which changes only the code, can't write a list heal
+        for it. None when one comes from the code, or the store can't say."""
+        try:
+            rows = list(self.store.candidates(selector_key))
+        except Exception:
+            return None
+        if not rows or any(c.get('source') == 'code' for c in rows):
+            return None
+        return [c['xpath'] for c in rows if c.get('source') != 'heal' and not c.get('frameXPath')]
+
+    def _list_heals(self, selector_key):
+        """store.list_heals(key), or [] for a store without it, or that raised."""
+        method = getattr(self.store, 'list_heals', None)
+        if not callable(method):
+            return []
+        try:
+            return list(method(selector_key))
+        except Exception:
+            return []
+
+    def _unsaved(self, selector_key, why):
+        return nonempty_unsearched(selector_key, "The store passed to mendwright.open() can't "
+                                   'save a list heal for you to check (' + why + '), so '
+                                   'mendwright did not look.')
+
+    def _list_refused(self, selector_key, reason, level=logging.WARNING):
+        """Decline a list looked up with nonempty=True (see _decline), as a ListOutcome."""
+        self._decline(selector_key, reason, level=level)
+        return ListOutcome('refused', reason=reason)
+
+    def decline_nonempty(self, selector_key, text):
+        """Decline list key, looked up with nonempty=True, before anything was looked for:
+        text says why (see nonempty_unsearched). Returns the reason."""
+        reason = nonempty_unsearched(selector_key, text)
+        self._decline(selector_key, reason)
+        return reason
+
+    def came(self, selector_key, selector):
+        """Log that list key came while mendwright looked for it: its own selector
+        ``selector`` gave the list, and nothing was proposed."""
+        self.heal_reasons.pop(selector_key, None)
+        self._emit(logging.INFO, repr(selector_key) + ' came while mendwright looked for it, '
+                   'so ' + selector + ' was used as it is.')
+
+    def came_and_went(self, selector_key, meta, xpath, selector):
+        """Decline list key when a selector of its code matched while mendwright looked for
+        the list (ListOutcome 'came') and matches nothing again now. Returns the reason."""
+        why = ('the selector in your code, ' + selector + ', matched while mendwright looked '
+               'and matches nothing now')
+        self.journal.rejected(selector_key, xpath=xpath, list=True, reason=why,
+                              source=FINGERPRINT_PROVIDER)
+        lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
+        reason = nonempty_searched(selector_key, (lfp or {}).get('count'),
+                                   'the group it found, ' + str(xpath) + ", failed mendwright's "
+                                   'list checks (' + why + ')')
+        self._decline(selector_key, reason)
+        return reason
+
+    def waits_for_fix(self, selector_key, meta, row, count):
+        """Record and log why list key, looked up with nonempty=True, raises when a list heal
+        a person accepted for it matches count elements on the page now: mendwright takes a
+        list only from the selectors in the code, and mendwright fix puts it there. Returns
+        the reason."""
+        from .cli import _when
+        lfp = meta.get('listFingerprint') if isinstance(meta, dict) else None
+        when = (row or {}).get('acceptedAt')
+        seeded = self._seed_selectors(selector_key)
+        if seeded is None:
+            where = ('the selectors in your code. Write it there with: mendwright fix --apply'
+                     + _store_flag(self.store) + '.')
+        else:
+            evidence = (row or {}).get('proposal')
+            was = evidence.get('was') if isinstance(evidence, dict) else None
+            replaced = was.get('selectors') if isinstance(was, dict) else None
+            where = ("the key's own selectors. "
+                     + _in_seed(replaced if isinstance(replaced, list) and replaced else seeded))
+        reason = (repr_key(selector_key) + ' matched ' + _had((lfp or {}).get('count'))
+                  + ' when its list fingerprint was recorded, and none of its selectors matches '
+                  'now. You accepted a list heal for it on '
+                  + (_when(when) if isinstance(when, str) and when else 'date unknown') + ', '
+                  + str((row or {}).get('xpath')) + ', which matches ' + _elements(count)
+                  + ' now, but mendwright takes a list only from ' + where
+                  + ' If the list can be empty here, remove nonempty=True.')
+        self.heal_reasons[selector_key] = reason
+        self._emit(logging.WARNING, repr(selector_key) + (' waits for mendwright fix: '
+                                                          if seeded is None
+                                                          else ' waits for its seed file: ')
+                   + reason)
+        return reason
+
+    def retired_lists(self, selector_key, selector, count, changes, rows):
+        """Log, and journal, the list heals of key that retire_list_heals() ended when its
+        selector ``selector`` matched count elements: changes are its (xpath, old status, new
+        status), rows the list heals as they were before."""
+        from .cli import _when
+        before = {r.get('xpath'): r for r in rows}
+        for xpath, old, _new in changes:
+            row = before.get(xpath) or {}
+            if old == 'proposed':
+                evidence = row.get('proposal') if isinstance(row.get('proposal'), dict) else {}
+                when = evidence.get('at')
+                self._emit(logging.INFO, selector + ' matches ' + repr(selector_key) + ' again, '
+                           'so the list heal found for it on '
+                           + (_when(when) if isinstance(when, str) and when else 'date unknown')
+                           + ' is no longer proposed.')
+                continue
+            when = row.get('acceptedAt')
+            self._emit(logging.WARNING, 'the selector in your code for ' + repr(selector_key)
+                       + ', ' + selector + ', matches ' + _elements(count) + ' again, so the list '
+                       'heal you accepted for it on '
+                       + (_when(when) if isinstance(when, str) and when else 'date unknown')
+                       + ', ' + xpath + ', is quarantined: the list was not broken, or the key '
+                       "is used on more than one page. mendwright fix won't write it.")
+            self.journal.quarantine(selector_key, xpath=xpath, list=True,
+                                    reason='the selector it replaced matches again')
+
+    def _list_visible(self, xpath):
+        """For lists.find(): False when the live page has elements of xpath and none of them
+        is visible, True when one is, None when it could not be read or has none."""
+        from .drivers.base import driver_list_items
+        try:
+            items = driver_list_items(self.driver, xpath)
+        except Exception:
+            return None
+        if not items:
+            return None
+        return any(item.get('visible') for item in items)
 
     def _live_visible(self, xpath):
         """For the fingerprint tier: False when xpath does not reach one visible element on
@@ -466,11 +971,14 @@ class HealCoordinator:
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + ': ' + was + ' -> '
                    + applied + timing)
 
-    def confirm(self, selector_key, xpath, success, reason=None):
+    def confirm(self, selector_key, xpath, success, reason=None, *, by=None, test=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
         candidate whose retry failed. A heal from the fingerprint tier, or a key followed
         into an iframe, is not reported to the provider, which did not propose it. reason,
-        when given, is journaled with the canary (see mendwright.values)."""
+        when given, is journaled with the canary (see mendwright.values). by says what
+        confirmed or refused the heal ('test', 'expect', 'expect_value', 'confirm', 'action'
+        or 'destructive'), and test is the pytest node id for by='test'; both are journaled
+        when given, so mendwright fix can say what confirmed each heal it writes back."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
         if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER):
@@ -478,7 +986,8 @@ class HealCoordinator:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:
                 pass
-        self.journal.canary(selector_key, xpath=xpath, success=bool(success), reason=reason)
+        _canary_call(self.journal.canary, selector_key, xpath=xpath, success=bool(success),
+                     reason=reason, by=by, test=test)
         if heal is not None:
             heal['confirmed'] = bool(success)
         if not success:
@@ -490,15 +999,17 @@ class HealCoordinator:
         confirmed yet."""
         return xpath is not None and self.pending.get(selector_key) == xpath
 
-    def confirm_pending(self, selector_key, success, reason=None, xpath=None):
+    def confirm_pending(self, selector_key, success, reason=None, xpath=None, *, by=None,
+                        test=None):
         """Report the action outcome for a just-healed key, then clear its marker.
         A failed action quarantines the healed candidate so it can't outrank the seed.
-        With xpath, only when the key's heal waiting is the one that applied xpath."""
+        With xpath, only when the key's heal waiting is the one that applied xpath. by and
+        test go to confirm() (see there) when it takes them."""
         if xpath is not None and self.pending.get(selector_key) != xpath:
             return
         xpath = self.pending.pop(selector_key, None)
         if xpath is not None:
-            self.confirm(selector_key, xpath, success, reason)
+            _canary_call(self.confirm, selector_key, xpath, success, reason, by=by, test=test)
 
     def explain(self, selector_key):
         """The human-readable reason the last heal attempt for ``selector_key`` did not

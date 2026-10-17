@@ -3,23 +3,29 @@ the same methods (detected by those methods, never by module name).
 
 Selectors can be any kind mendwright.selectors knows: XPath runs as 'xpath=...', CSS as
 'css=...', and Playwright engine selectors ('text=...', "role=button[name='Save']",
-chains with ' >> ') pass through unchanged. Frame chains take the same kinds.
+chains with ' >> ') pass through unchanged. A get_by_* call written out, such as
+'get_by_role("button", name="Go")' (see mendwright.getby), runs as that call on the page.
+Frame chains take the same kinds, but for calls.
 
 A malformed selector raises InvalidSelector straight away, whether lxml catches it before
-the call or the browser rejects it. Other errors on the read methods (a detached frame,
-a navigation in progress) fall back to a safe default so the resolver keeps polling.
+the call or the browser rejects it, and so does a get_by_* call whose arguments the
+browser rejects when it runs (level= on a button, say). Other errors on the read methods
+(a detached frame, a navigation in progress) fall back to a safe default so the resolver
+keeps polling.
 """
 
 import re
 
+from .. import getby
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..flow import click_may_have_run
-from ..lists import LIST_JS
+from ..getby import GetByCall
+from ..lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS
 from ..lists import from_raw as list_from_raw
-from ..selectors import CSS, XPATH, InvalidSelector, check_syntax, strip_prefix
+from ..selectors import CSS, GET_BY, XPATH, InvalidSelector, check_syntax, strip_prefix
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
-                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api,
+                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api, item_rows,
                    looks_like_locator, summary_from_js, visible_match_from_js)
 
 # How Playwright words a selector it cannot parse. The CSS and engine messages come from
@@ -28,6 +34,13 @@ from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
 _BROWSER_SELECTOR_ERROR = re.compile(
     r'while parsing|Unknown engine|not a valid (?:XPath|selector)|not a legal expression'
     r'|did not match the expected pattern', re.IGNORECASE)
+
+# How Playwright's role engine words a get_by_* call whose arguments it rejects when the
+# call runs, not when it is built: level= or a state on a role that has none, for example
+# '"level" attribute is only supported for roles: "heading", ...'.
+_GET_BY_REJECTED = re.compile(
+    r'is only supported for roles|Unknown attribute|does not support .* matcher'
+    r'|must be a string or a regular expression|Role must not be empty')
 
 
 def playwright_selector(selector):
@@ -43,19 +56,39 @@ def playwright_selector(selector):
     return selector.strip()
 
 
+def playwright_target(selector):
+    """What a driver builds a Locator from for a mendwright selector: the GetByCall of a
+    get_by_* call (see mendwright.getby), else the string playwright_selector() gives.
+
+    Raises TypeError for a non-string and InvalidSelector for an empty selector or bad
+    XPath."""
+    if check_syntax(selector, calls=True) == GET_BY:
+        return getby.parse(selector)
+    return playwright_selector(selector)
+
+
 def browser_rejected(exc):
     """True for a Playwright error that says the browser cannot parse a selector."""
     lines = str(exc).strip().splitlines()
     return bool(lines) and bool(_BROWSER_SELECTOR_ERROR.search(lines[0]))
 
 
-def _raise_if_invalid(exc, selector, frame_chain):
-    """Re-raise a Playwright 'cannot parse this selector' error as InvalidSelector."""
+def _raise_if_invalid(exc, selector, frame_chain, target=None):
+    """Re-raise a Playwright 'cannot parse this selector' error as InvalidSelector, and,
+    when target is a GetByCall, an error of the role engine about its arguments too (see
+    _GET_BY_REJECTED)."""
     lines = str(exc).strip().splitlines()
     first = lines[0] if lines else ''
+    detail = first.split(': ', 1)[1] if re.match(r'^\w+\.\w+: ', first) else first
+    if first and isinstance(target, GetByCall) and _GET_BY_REJECTED.search(first):
+        detail = detail[len('Error: '):] if detail.startswith('Error: ') else detail
+        raise InvalidSelector.build(
+            None if frame_chain else selector, GET_BY,
+            'the browser rejected a get_by_* call (' + detail.rstrip('.') + ').',
+            "Check the call's arguments against what Playwright's " + target.method
+            + '() takes.') from exc
     if not first or not _BROWSER_SELECTOR_ERROR.search(first):
         return
-    detail = first.split(': ', 1)[1] if re.match(r'^\w+\.\w+: ', first) else first
     raise InvalidSelector.build(
         None if frame_chain else selector, None,
         'the browser rejected a selector (' + detail.rstrip('.') + ').',
@@ -111,7 +144,7 @@ class PlaywrightSyncDriver:
     outer_html. All take a selector of any kind plus an optional frame chain (frame
     selectors, outermost first). Optional extras, which callers reach through the
     driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint,
-    visible_match, and for lists handles and list_fingerprint."""
+    visible_match, role_match, and for lists handles, list_fingerprint and list_items."""
 
     def __init__(self, page):
         self._page = page
@@ -119,12 +152,20 @@ class PlaywrightSyncDriver:
     def _targets(self, selector, frame_chain):
         """Convert the selector and frame chain up front so a bad one raises here,
         outside any try that would swallow it."""
-        return playwright_selector(selector), tuple(playwright_selector(f) for f in frame_chain)
+        return playwright_target(selector), tuple(playwright_selector(f) for f in frame_chain)
 
-    def _build(self, target, frames):
+    def _context(self, frames):
         ctx = self._page
         for frame in frames:
             ctx = ctx.frame_locator(frame)
+        return ctx
+
+    def _build(self, target, frames):
+        """The Locator for a playwright_target() result inside the frame chain: the call
+        for a GetByCall (getby.build), else ctx.locator(target)."""
+        ctx = self._context(frames)
+        if isinstance(target, GetByCall):
+            return getby.build(ctx, target)
         return ctx.locator(target)
 
     def _probe(self, selector, frame_chain, op, default):
@@ -132,7 +173,7 @@ class PlaywrightSyncDriver:
         try:
             return op(self._build(target, frames))
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             return default
 
     def count(self, selector, frame_chain=()):
@@ -149,11 +190,12 @@ class PlaywrightSyncDriver:
         return self._build(*self._targets(selector, frame_chain))
 
     def act(self, selector, verb, *args, frame_chain=(), **kwargs):
-        loc = self.handle(selector, frame_chain)
+        target, frames = self._targets(selector, frame_chain)
+        loc = self._build(target, frames)
         try:
             return self.act_on(loc, verb, *args, **kwargs)
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             raise
 
     def act_on(self, native, verb, *args, **kwargs):
@@ -203,21 +245,35 @@ class PlaywrightSyncDriver:
     def handles(self, selector, frame_chain=()):
         """A Locator for each element the selector matches now, as Locator.all() gives them
         (nth(0), nth(1), ...). A malformed selector raises InvalidSelector."""
-        loc = self.handle(selector, frame_chain)
+        target, frames = self._targets(selector, frame_chain)
+        loc = self._build(target, frames)
         try:
             count = loc.count()
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             raise
         return [loc.nth(i) for i in range(count)]
 
-    def list_fingerprint(self, selector, frame_chain=()):
+    def list_fingerprint(self, selector, frame_chain=(), *, place=False):
         """The list fingerprint of the elements the selector matches (see mendwright.lists),
-        or None when it matches fewer than two. One round trip (evaluate_all), which reads no
-        input value. A malformed selector raises InvalidSelector; any other error gives
-        None."""
+        or None when it matches fewer than two; with place=True, with the list's label and
+        where it sits (LIST_PLACE_JS). One round trip (evaluate_all), which reads no input
+        value. A malformed selector raises InvalidSelector; any other error gives None."""
+        script = LIST_PLACE_JS if place else LIST_JS
         return self._probe(selector, frame_chain,
-                           lambda loc: list_from_raw(loc.evaluate_all(LIST_JS)), None)
+                           lambda loc: list_from_raw(loc.evaluate_all(script)), None)
+
+    def list_items(self, selector, frame_chain=()):
+        """[{'tag', 'role', 'type', 'visible'}] for the first 200 elements the selector
+        matches, in one round trip (evaluate_all) that does not wait. A malformed selector
+        raises InvalidSelector, and any other error raises as it is: the live check of a
+        list fails on it."""
+        target, frames = self._targets(selector, frame_chain)
+        try:
+            return item_rows(self._build(target, frames).evaluate_all(ITEMS_JS))
+        except Exception as exc:
+            _raise_if_invalid(exc, selector, frame_chain)
+            raise
 
     def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one
@@ -225,12 +281,12 @@ class PlaywrightSyncDriver:
         matches there, whether the frame sits inside another iframe, and, for one that does
         not, a CSS selector for its iframe element in this page (see base.frame_selector),
         or None when nothing tells it apart. A malformed selector raises InvalidSelector;
-        any other error skips that frame."""
-        target = playwright_selector(selector)
+        any other error skips that frame. A get_by_* call runs as that call in each frame."""
+        target = playwright_target(selector)
         found = []
         for frame in child_frames(self._page):
             try:
-                n = frame.locator(target).count()
+                n = _frame_locator(frame, target).count()
             except Exception:
                 continue
             if n > 0:
@@ -244,6 +300,22 @@ class PlaywrightSyncDriver:
                         pass
                 found.append(info)
         return found
+
+    def role_match(self, selector, role, level=None, frame_chain=()):
+        """Whether Playwright gives the one element selector matches the ARIA role ``role``
+        (and heading level ``level``), by its own matcher: True when
+        get_by_role(role, level=level).and_(the selector's Locator) matches one element,
+        False when it does not, None on any error. One round trip. Like a get_by_role() call
+        without include_hidden=True, it leaves out an element hidden from the accessibility
+        tree."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            options = {} if level is None else {'level': level}
+            loc = self._context(frames).get_by_role(role, **options).and_(
+                self._build(target, frames))
+            return loc.count() == 1
+        except Exception:
+            return None
 
     def framed(self, frame_selector):
         """A driver for the document inside the one iframe that frame_selector matches in
@@ -323,6 +395,13 @@ class PlaywrightSyncDriver:
 
     def popup_release(self, root):
         root.dispose()
+
+
+def _frame_locator(frame, target):
+    """The Locator for a playwright_target() result in a Frame (see frame_matches)."""
+    if isinstance(target, GetByCall):
+        return getby.build(frame, target)
+    return frame.locator(target)
 
 
 def detect(obj) -> bool:

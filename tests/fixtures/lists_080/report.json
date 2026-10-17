@@ -1,0 +1,111 @@
+{
+  "store": "<FOLDER>/overrides.json",
+  "keys": [
+    {
+      "key": "accept_terms",
+      "role": "checkbox",
+      "destructive": false,
+      "candidates": [
+        {
+          "selector": "#accept-terms",
+          "source": "code",
+          "status": "active",
+          "last_success": "2026-10-01T08:00:00+00:00",
+          "added": null
+        },
+        {
+          "selector": "//label//input[@type='checkbox']",
+          "source": "heal",
+          "status": "active",
+          "last_success": "2026-10-02T09:30:00+00:00",
+          "added": null
+        },
+        {
+          "selector": "//input[@name='terms']",
+          "source": "heal",
+          "status": "quarantined",
+          "last_success": null,
+          "added": null
+        }
+      ]
+    },
+    {
+      "key": "go",
+      "role": "button",
+      "destructive": true,
+      "candidates": [
+        {
+          "selector": "//button[@id='go'] | //a[@id='go']",
+          "source": "seed",
+          "status": "active",
+          "last_success": null,
+          "added": null
+        },
+        {
+          "selector": "#old-go",
+          "source": "code",
+          "status": "superseded",
+          "last_success": null,
+          "added": null,
+          "frame": "//iframe[@id='shop']"
+        }
+      ]
+    },
+    {
+      "key": "pay_button",
+      "role": "button",
+      "destructive": false,
+      "candidates": []
+    }
+  ],
+  "journal": {
+    "path": "<FOLDER>/journal.jsonl",
+    "exists": true,
+    "counts": {
+      "requested": 3,
+      "applied": 2,
+      "rejected": 1,
+      "quarantined": 1
+    },
+    "per_key": {
+      "accept_terms": {
+        "requested": 2,
+        "applied": 2,
+        "rejected": 1,
+        "quarantined": 1
+      },
+      "go": {
+        "requested": 1,
+        "applied": 0,
+        "rejected": 0,
+        "quarantined": 0
+      }
+    },
+    "last_applied": [
+      {
+        "when": "2026-10-03T10:00:03+00:00",
+        "key": "accept_terms",
+        "old": [
+          "#accept-terms",
+          "x",
+          "y"
+        ],
+        "new": "//label//input[@type='checkbox']",
+        "provider": "AnthropicProvider",
+        "model": "claude-test",
+        "latency_ms": 900
+      },
+      {
+        "when": "2026-10-02T09:30:00+00:00",
+        "key": "accept_terms",
+        "old": [
+          "#accept-terms"
+        ],
+        "new": "//input[@name='terms']",
+        "provider": "AnthropicProvider",
+        "model": "claude-test",
+        "latency_ms": 1400
+      }
+    ]
+  }
+}

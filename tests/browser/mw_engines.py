@@ -91,6 +91,44 @@ SIGNUP_V2 = page("""
   <button type="button" id="next">Next</button>
 </form>""", 'signup v2')
 
+# A checkout page before and after a redesign that breaks three selectors: the checkbox
+# loses its id (the fingerprint finds it), the search box is new (a model finds it),
+# and the pay button loses its id. A OneTrust cookie banner covers the new page, and
+# its Reject All button writes 'rejected' into #consent. See test_browser_action_flow.py.
+CHECKOUT_V1 = page("""
+<form id="checkout">
+  <label for="email">Email</label><input id="email" name="email" type="email">
+  <div class="consent"><label><input id="accept-terms" name="terms" type="checkbox">
+    <span>I accept the terms and conditions</span></label></div>
+  <button type="button" id="pay">Pay now</button>
+</form>""", 'checkout v1')
+
+CHECKOUT_V2 = page("""
+<p>Consent: <span id="consent">none</span></p>
+<form id="checkout">
+  <label for="email">Email</label><input id="email" name="email" type="email">
+  """ + TERMS_V2 + """
+  <label for="q">Find products</label><input id="q" name="q" type="text">
+  <button type="button" id="pay-now">Pay now</button>
+</form>
+<div id="onetrust-consent-sdk">
+  <div class="onetrust-pc-dark-filter" style="position: fixed; inset: 0; z-index: 9;
+    background: rgba(0, 0, 0, 0.5)"></div>
+  <div id="onetrust-banner-sdk" role="region" aria-label="Cookie banner"
+    style="position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: #fff;
+    padding: 16px">
+    <div id="onetrust-policy-text">We use cookies to improve your experience.</div>
+    <button id="onetrust-reject-all-handler" onclick="choose('rejected')">Reject All</button>
+    <button id="onetrust-accept-btn-handler" onclick="choose('accepted')">Accept All</button>
+  </div>
+</div>
+<script>
+function choose(choice) {
+  document.getElementById('consent').textContent = choice;
+  document.getElementById('onetrust-consent-sdk').remove();
+}
+</script>""", 'checkout v2')
+
 STALE = "//input[@id='accept-terms']"
 HEALED = "//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']"
 V2_CHECKBOX = "[data-testid='legal-consent']"

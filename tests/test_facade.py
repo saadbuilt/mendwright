@@ -107,3 +107,167 @@ def test_facade_never_downgrades_a_destructive_key(tmp_path):
     assert healer.store.meta('pay')['destructive'] is True
     healer.locator('pay', role='button', timeout_ms=0, poll_ms=0)   # role given, destructive omitted
     assert healer.store.meta('pay')['destructive'] is True          # still protected
+
+
+# --- lastUrl: the address saved for `mendwright check` -------------------------------------
+
+NOTE = "<form><textarea id='note'></textarea></form>"
+
+
+def _writes(healer):
+    writes = []
+    real = healer.store._write
+
+    def write(payload):
+        writes.append(payload)
+        real(payload)
+    healer.store._write = write
+    return writes
+
+
+def _note(healer):
+    return healer.locator('note', '#note', role='textarea', timeout_ms=0, poll_ms=0)
+
+
+def test_the_address_is_saved_with_the_page_in_one_write(tmp_path, make_page):
+    page = make_page(NOTE, url='about:blank')
+    healer = sh_open(page, store_path=str(tmp_path / 'o.json'))
+    _note(healer)                               # no address on about:blank
+    assert healer.store.last_url('note') is None
+    writes = _writes(healer)
+    page.url = 'https://u:p@Shop.Example/Orders/10482/?t=1#x'
+    _note(healer)
+    assert len(writes) == 1
+    import json
+    saved = json.loads((tmp_path / 'o.json').read_text(encoding='utf-8'))['selectors']['note']
+    assert saved['lastUrl'] == 'https://shop.example/Orders/*/'
+    assert saved['lastPage'] == '/orders/*' and saved['pages'] == ['/orders/*']
+    # Another record of the same page: nothing new to save.
+    page.url = 'https://shop.example/Orders/10483/'
+    _note(healer)
+    assert len(writes) == 1
+    # Another page: one write for lastPage, pages and lastUrl together.
+    page.url = 'https://shop.example/Help'
+    _note(healer)
+    assert len(writes) == 2
+    saved = json.loads(writes[-1])['selectors']['note']
+    assert saved['lastUrl'] == 'https://shop.example/Help'
+    assert saved['pages'] == ['/help', '/orders/*']
+
+
+def test_a_new_port_changes_the_address_in_memory_only(tmp_path, make_page):
+    page = make_page(NOTE, url='http://127.0.0.1:8000/signup')
+    healer = sh_open(page, store_path=str(tmp_path / 'o.json'))
+    _note(healer)
+    writes = _writes(healer)
+    page.url = 'http://127.0.0.1:8123/signup'
+    _note(healer)
+    assert writes == []
+    assert healer.store.last_url('note') == 'http://127.0.0.1:8123/signup'
+
+
+def test_the_site_root_saves_no_address_over_a_page(tmp_path, make_page):
+    # A header link found on /signup, then on the home page: lastPage stays /signup, so
+    # lastUrl stays the address of /signup, and `mendwright check` loads it there.
+    page = make_page(NOTE, url='https://shop.example/signup')
+    healer = sh_open(page, store_path=str(tmp_path / 'o.json'))
+    _note(healer)
+    page.url = 'https://shop.example/'
+    _note(healer)
+    assert healer.store.meta('note')['lastPage'] == '/signup'
+    assert healer.store.last_url('note') == 'https://shop.example/signup'
+    # A key found only on the root gets the root's address.
+    page = make_page(NOTE, url='https://shop.example/')
+    healer = sh_open(page, store_path=str(tmp_path / 'r.json'))
+    _note(healer)
+    assert healer.store.last_url('note') == 'https://shop.example/'
+    assert healer.store.meta('note')['lastPage'] is None
+
+
+def test_a_healer_on_a_frame_saves_no_address(tmp_path, make_page):
+    frame = make_page(NOTE, url='https://shop.example/embed/consent')
+    del frame.frames                            # a Playwright Frame has no frames list
+    healer = sh_open(frame, store_path=str(tmp_path / 'o.json'))
+    _note(healer)
+    assert healer.store.last_url('note') is None
+    assert healer.store.meta('note')['lastPage'] == '/embed/consent'
+
+
+def test_a_frame_after_the_site_root_leaves_the_root_address_next_to_its_page(tmp_path,
+                                                                             make_page):
+    # A limit the guide names: `mendwright check` reads this pair as two processes that
+    # saved the key at once, and loads the frame's path on the site named.
+    from mendwright.drift import plan_check
+    path = str(tmp_path / 'o.json')
+    _note(sh_open(make_page(NOTE, url='https://shop.example/'), store_path=path))
+    frame = make_page(NOTE, url='https://consent.vendor.example/widget')
+    del frame.frames
+    healer = sh_open(frame, store_path=path)
+    _note(healer)
+    assert healer.store.last_url('note') == 'https://shop.example/'
+    assert healer.store.meta('note')['lastPage'] == '/widget'
+    origins = {'https://shop.example': 'https://shop.example'}
+    [page] = plan_check(healer.store, ['note'], origins=origins).pages
+    assert page.address == 'https://shop.example/widget'
+
+
+def _selenium(url, framed):
+    from mendwright.drivers.selenium import SeleniumDriver
+
+    class Element:
+        def is_displayed(self):
+            return True
+
+        def get_attribute(self, name):
+            return '<textarea id="note"></textarea>'
+
+    class WebDriver:
+        def __init__(self):
+            self.current_url = url
+            self.switch_to = None
+
+        def find_elements(self, by, value):
+            return [Element()] if value == "//textarea[@id='note']" else []
+
+        def execute_script(self, script, *args):
+            return None
+
+        page_source = '<form><textarea id="note"></textarea></form>'
+
+    class Driver(SeleniumDriver):
+        calls = 0
+
+        def inside_frame(self):
+            Driver.calls += 1
+            return framed
+
+    return Driver(WebDriver()), Driver
+
+
+def test_selenium_saves_the_address_on_the_top_document_only(tmp_path):
+    driver, cls = _selenium('https://shop.example/notes', framed=False)
+    healer = sh_open(driver, store_path=str(tmp_path / 'o.json'))
+    for _ in range(10):
+        healer.locator('note', "//textarea[@id='note']", role='textarea', timeout_ms=0, poll_ms=0)
+    assert healer.store.last_url('note') == 'https://shop.example/notes'
+    assert cls.calls == 1                       # one round trip: the address was new once
+    driver, cls = _selenium('https://shop.example/notes', framed=True)
+    healer = sh_open(driver, store_path=str(tmp_path / 'f.json'))
+    healer.locator('note', "//textarea[@id='note']", role='textarea', timeout_ms=0, poll_ms=0)
+    assert healer.store.last_url('note') is None
+    assert healer.store.meta('note')['lastPage'] == '/notes'
+
+
+def test_a_store_without_set_last_url_still_works(tmp_path, make_page):
+    from mendwright.store import SelectorStore, load_store
+
+    class OldStore(SelectorStore):
+        set_last_url = None
+        last_url = None
+
+    base = load_store(None, str(tmp_path / 'o.json'))
+    store = OldStore(base._data, str(tmp_path / 'o.json'))
+    healer = sh_open(make_page(NOTE, url='https://shop.example/notes'), store=store)
+    _note(healer)
+    assert store.meta('note')['lastPage'] == '/notes'
+    assert 'lastUrl' not in (tmp_path / 'o.json').read_text(encoding='utf-8')

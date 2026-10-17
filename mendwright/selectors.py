@@ -1,8 +1,13 @@
-"""Selector kinds: XPath, CSS, or a Playwright engine selector.
+"""Selector kinds: XPath, CSS, a Playwright engine selector, or a get_by_* call.
 
 mendwright stores selectors as plain strings. ``classify`` decides how a driver should
 run one, using Playwright's conventions:
 
+- A Playwright get_by_* call written out, such as ``get_by_role("button", name="Go")``,
+  is the kind ``get_by`` (see mendwright.getby): the key and the selector of a
+  heal.page.get_by_*() call. Only the Playwright drivers run one, and check_syntax()
+  refuses it unless the caller runs stored candidates (calls=True), so heal.locator() and
+  the others never take one.
 - ``xpath=...``, or anything starting with ``/``, ``(``, ``./`` or ``..`` is XPath.
 - ``css=...`` is CSS.
 - ``text=``, ``role=``, ``id=``, ``data-testid=``, ``internal:...`` and any other
@@ -24,9 +29,12 @@ import re
 
 import lxml.etree
 
+from .getby import canonical as _canonical, parse as _parse_call
+
 XPATH = 'xpath'
 CSS = 'css'
 ENGINE = 'engine'
+GET_BY = 'get_by'
 
 _XPATH_STARTS = ('/', '(', './', '..')
 # A Playwright engine prefix: 'text=', 'role=', 'data-testid=', 'nth=', '_react=', ...
@@ -45,8 +53,8 @@ class InvalidSelector(ValueError):
     Raised straight away instead of being polled until the timeout. It is a ValueError,
     not an AttentionRequired, so the heal loop never spends a model call on a typo.
 
-    Attributes: ``selector`` (the string as given), ``kind`` (xpath, css or engine, when
-    known), ``reason`` (what is wrong) and ``hint`` (what to do about it).
+    Attributes: ``selector`` (the string as given), ``kind`` (xpath, css, engine or get_by,
+    when known), ``reason`` (what is wrong) and ``hint`` (what to do about it).
     """
 
     def __init__(self, message, *, selector=None, kind=None, reason=None, hint=None):
@@ -101,11 +109,14 @@ def _is_chain(text):
 
 
 def classify(selector):
-    """Return 'xpath', 'css' or 'engine' for a selector string (see the module docstring).
+    """Return 'xpath', 'css', 'engine' or 'get_by' for a selector string (see the module
+    docstring).
 
     Raises TypeError for a non-string such as a Playwright Locator."""
     _require_str(selector)
     text = selector.strip()
+    if text.startswith('get_by_') and _parse_call(text) is not None:
+        return GET_BY
     if _is_chain(text):
         return ENGINE
     if text.startswith('xpath='):
@@ -134,9 +145,12 @@ def strip_prefix(selector):
 def normalize(selector):
     """A canonical spelling for storing a selector: trimmed, and without a redundant
     'xpath=' or 'css=' prefix. The prefix stays when dropping it would change the kind,
-    so 'xpath=html/body' and 'css=/x' keep theirs."""
+    so 'xpath=html/body' and 'css=/x' keep theirs. A get_by_* call gets its key's spelling
+    (mendwright.getby.canonical)."""
     kind = classify(selector)
     body = strip_prefix(selector)
+    if kind == GET_BY:
+        return _canonical(_parse_call(body))
     if kind == ENGINE:
         return body
     if body and classify(body) == kind:
@@ -149,7 +163,7 @@ def frame_spelling(selector):
     or 'css=' prefix written out. A selector on the page is saved without it (see
     normalize), so the store, which tells candidates apart by their text, keeps the two
     apart: a heal or a quarantine inside an iframe never lands on, or blocks, the same text
-    on the page. None for a Playwright engine selector.
+    on the page. None for a Playwright engine selector or a get_by_* call.
 
     Raises TypeError for a non-string."""
     kind = classify(selector)
@@ -170,11 +184,14 @@ def _compile_xpath(expr):
     return True
 
 
-def check_syntax(selector):
+def check_syntax(selector, *, calls=False):
     """Check what can be checked without a browser and return the selector's kind.
 
     - Non-string (for example a Playwright Locator): TypeError.
     - Empty selector, or an XPath that lxml cannot compile: InvalidSelector.
+    - A get_by_* call (kind 'get_by'): InvalidSelector, unless calls=True, which the code
+      that runs stored candidates passes (the resolver and the drivers). A call is the key
+      of a heal.page.get_by_*() call, never a selector of heal.locator() and the others.
     - CSS and engine selectors pass here; the browser checks them when they run.
     """
     _require_str(selector)
@@ -184,6 +201,14 @@ def check_syntax(selector):
             "Pass an XPath such as \"//button[@id='save']\" or a CSS selector such as '#save'; "
             "mendwright.selectors.check_syntax() checks one without a browser.")
     kind = classify(selector)
+    if kind == GET_BY:
+        if calls:
+            return kind
+        method = _parse_call(selector).method
+        raise InvalidSelector.build(
+            selector, kind, repr(selector) + ' is a get_by_* call, not a selector.',
+            'Call heal.page.' + method + '(...) on mendwright.open(page, heal_get_by=True), or '
+            'pass an XPath, CSS or Playwright selector.')
     body = strip_prefix(selector)
     if not body or (kind == ENGINE and _ENGINE_PREFIX.fullmatch(body)):
         raise InvalidSelector.build(

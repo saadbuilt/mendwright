@@ -30,7 +30,14 @@ Every safety decision is made by the sync core, unchanged:
   handling an interruption does. heal.step() and run_steps() (see mendwright.steps) look
   at the landmarks on the event loop and await each step's function.
 - Lists (locator_all(), see mendwright.lists) and expect_value= (see mendwright.values)
-  work as on the sync Healer. A list is looked up on the event loop, and never healed.
+  work as on the sync Healer. A list is looked up on the event loop, and never healed. With
+  nonempty=True, the search for a list whose selectors match nothing runs the sync
+  coordinator in a worker thread through SyncBridge, as a heal does, and what it finds is
+  only proposed, as there.
+- With open(heal_get_by=True), heal.page.get_by_role() and the other get_by_* calls are
+  looked up and healed as on the sync Healer (see Healer._get_by_locator): the lookup is
+  awaited on the event loop, the heal runs the coordinator in a worker thread, and a miss
+  raised by the await is also Playwright's TimeoutError.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -45,6 +52,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import inspect
 import logging
 import os
@@ -53,8 +61,10 @@ import time
 import weakref
 from typing import Any, Callable, Iterable, Sequence
 
-from .coordinator import HealCoordinator, resolve_with_heal
-from .drivers.base import _member, is_async_api, is_driver, looks_like_locator, unsupported_message
+from . import getby
+from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
+from .drivers.base import (_member, _takes_place, is_async_api, is_driver, looks_like_locator,
+                           unsupported_message)
 from .drivers.playwright_async import AsyncPlaywrightDriver, is_async_driver
 from .drivers.playwright_async import detect as _detect_async_playwright
 from .drivers.registry import _REGISTRY
@@ -62,17 +72,19 @@ from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
-from .facade import _dismiss_choice
+from .facade import _dismiss_choice, _get_by_choice, get_by_setting
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
-                     _locator_args, _overlay_locator, _overlay_options, _overlay_owner,
-                     _raised_by_run, _removable, _reraise, _setup, latest_success)
+                     _locator_args, _nonempty_args, _overlay_locator, _overlay_options,
+                     _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
+                     latest_success)
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
 from .limits import Guardrails
-from .resolver import _frame_chain, _no_match_message, _require_visible, _split_runnable
+from .resolver import (THROUGH, _frame_chain, _no_match_message, _require_visible,
+                       _split_runnable)
 from .selectors import XPATH, InvalidSelector, classify
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
@@ -181,12 +193,14 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory and fingerprint), act_on for an
-    interruption's action, visible_match for the WARNING about a selector that matches
-    several elements, the popup methods of open(dismiss=True) (popup_probe and the others),
-    run() for any other callable, and wait() for a run= function of heal.interrupt().
-    describe, fingerprint, visible_match and the popup methods are None when the async
-    driver has none."""
+    handle, url, outer_html, describe, inventory, fingerprint, and role_match for a heal of
+    a get_by_role() call, and for a list looked for with nonempty=True list_items and
+    list_fingerprint), act_on for an interruption's action, visible_match for the WARNING
+    about a selector that matches several elements, the popup methods of open(dismiss=True)
+    (popup_probe and the others), run() for any other callable, and wait() for a run=
+    function of heal.interrupt(). describe, fingerprint, role_match, visible_match,
+    list_items, list_fingerprint and the popup methods are None when the async driver has
+    none, and list_fingerprint takes no place= when the async driver's does not."""
 
     timeout = 30.0
 
@@ -203,8 +217,17 @@ class SyncBridge:
             self.describe = None
         if not callable(_member(driver, 'fingerprint')):
             self.fingerprint = None
+        if not callable(_member(driver, 'role_match')):
+            self.role_match = None      # a heal of a get_by_role() call is then refused
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
+        if not callable(_member(driver, 'list_items')):
+            self.list_items = None
+        method = _member(driver, 'list_fingerprint')
+        if not callable(method):
+            self.list_fingerprint = None
+        elif not _takes_place(method):
+            self.list_fingerprint = self._list_fingerprint_unplaced
         for name in _POPUP_METHODS:
             if not callable(_member(driver, name)):
                 setattr(self, name, None)   # open(dismiss=True) leaves popups alone
@@ -286,6 +309,18 @@ class SyncBridge:
 
     def visible_match(self, selector, frame_chain=()):
         return self.run(self._driver.visible_match, selector, frame_chain)
+
+    def role_match(self, selector, role, level=None, frame_chain=()):
+        return self.run(self._driver.role_match, selector, role, level, frame_chain)
+
+    def list_items(self, selector, frame_chain=()):
+        return self.run(self._driver.list_items, selector, frame_chain)
+
+    def list_fingerprint(self, selector, frame_chain=(), *, place=False):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain, place=place)
+
+    def _list_fingerprint_unplaced(self, selector, frame_chain=()):
+        return self.run(self._driver.list_fingerprint, selector, frame_chain)
 
     def act_on(self, native, verb, *args, **kwargs):
         """Run verb on a handle() result, through the async driver's act_on when it has
@@ -370,22 +405,26 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
                timeout_ms: int | None = None, cookies: str | None = None,
                heal_across_pages: bool = False, fingerprint: bool | None = None,
-               dismiss: bool = False, expect_values: dict | None = None) -> AsyncHealer:
+               dismiss: bool = False, expect_values: dict | None = None,
+               heal_get_by: bool | None = None) -> AsyncHealer:
     """Wrap an async Playwright Page or Frame into an AsyncHealer. Await it inside the
     event loop that runs the page.
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
-    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT)
-    and defaults as mendwright.open(), cookies=, heal_across_pages=, fingerprint=,
-    dismiss= and expect_values= included. guard may be a plain or an async callable; it
-    runs on the event loop. The provider stays sync and is called in a worker thread. A
-    driver whose count, is_visible and handle are coroutine functions is used as it is.
+    MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT,
+    MENDWRIGHT_HEAL_GET_BY) and defaults as mendwright.open(), cookies=,
+    heal_across_pages=, fingerprint=, dismiss=, expect_values= and heal_get_by= included.
+    guard may be a plain or an async callable; it runs on the event loop. The provider stays
+    sync and is called in a worker thread. A driver whose count, is_visible and handle are
+    coroutine functions is used as it is.
     """
     from .proxies import unwrap
     page = unwrap(page)    # heal.page of another healer: use the real page
     preset = _cookie_preset(cookies, 'mendwright.aio.open()')
     _dismiss_choice(dismiss, 'mendwright.aio.open()')
+    _get_by_choice(heal_get_by, 'mendwright.aio.open()')
     checks = expectations(expect_values)
+    heal_get_by = get_by_setting(heal_get_by)
     driver = _async_driver(page)
     bridge = SyncBridge(driver, asyncio.get_running_loop())
     if guard is not None:
@@ -406,10 +445,29 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     healer = AsyncHealer(page, driver, store, coord, timeout_ms=timeout_ms)
     healer._core._dismiss_on = dismiss
     healer._core._expect_values = checks
+    healer._core._heal_get_by = heal_get_by
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
         await healer._watch(preset)
     return healer
+
+
+def _quiet_framed(driver):
+    """AsyncPlaywrightDriver.framed() without its wait, for heal.drift(): before the wait of
+    Locator.element_handle() Playwright runs the page's overlay handlers, the script's own
+    among them, and a count() and query_selector() run none (see drift._quiet_framed)."""
+    from .drivers.playwright_sync import playwright_selector
+
+    async def framed(frame_selector):
+        try:
+            if await driver.count(frame_selector) != 1:
+                return None
+            handle = await driver._page.query_selector(playwright_selector(frame_selector))
+            frame = await handle.content_frame() if handle is not None else None
+        except Exception:
+            return None
+        return AsyncPlaywrightDriver(frame) if frame is not None else None
+    return framed
 
 
 # --- the async healer --------------------------------------------------------------------
@@ -473,7 +531,8 @@ class AsyncHealer:
         """The page to use in place of your own: page = (await mendwright.aio.open(page)).page.
         For an async Playwright page it is an AsyncHealingPage: page.locator(selector) and
         the page shortcuts that take a selector work as on Healer.page, with the actions
-        and reads awaited. Everything else is the real page's. For a custom async driver,
+        and reads awaited, and so do get_by_role() and the other get_by_* calls with
+        open(heal_get_by=True). Everything else is the real page's. For a custom async driver,
         the object mendwright was opened on."""
         proxy = self.__dict__.get('_page_proxy')
         if proxy is None:
@@ -637,19 +696,21 @@ class AsyncHealer:
 
     def locator_all(self, key: str, selector: Selector | None = None, *,
                     role: Role | None = None, timeout_ms: int | None = None, poll_ms: int = 200,
-                    optional: bool = False):
+                    optional: bool = False, nonempty: bool = False):
         """Healer.locator_all(), awaited: ``await heal.locator_all(key, selector)`` gives an
         AsyncActionProxy for each element of the list, resolved. A list whose selectors all
-        match nothing is never healed, as there. Argument errors raise here, before anything
-        is awaited."""
-        roles, code = _locator_args(key, selector, role, None)
+        match nothing is never healed, as there, and with nonempty=True what mendwright finds
+        for it is only proposed, as there. Argument errors raise here, before anything is
+        awaited."""
+        roles, code = _locator_args(key, selector, role, None, entry='heal.locator_all()')
+        _nonempty_args(key, nonempty, optional)
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional))
+        return self._locate_all(key, roles, code, timeout, poll_ms, bool(optional), nonempty)
 
-    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional):
+    async def _locate_all(self, key, roles, code, timeout, poll_ms, optional, nonempty=False):
         __tracebackhide__ = True  # pytest shows the caller
         async with self._turn():
-            natives = await self._list(key, roles, code, timeout, poll_ms, optional)
+            natives = await self._list(key, roles, code, timeout, poll_ms, optional, nonempty)
         due = [True]    # one check of the interruptions for the reads of the whole list
         return [_guarded(self, key, native, timeout, due) for native in natives]
 
@@ -679,7 +740,7 @@ class AsyncHealer:
                 raise AttentionRequired(_no_match_message(key, runnable, []))
             await self._sleep(poll_ms / 1000.0)
 
-    async def _list(self, key, roles, code, timeout, poll_ms, optional=False):
+    async def _list(self, key, roles, code, timeout, poll_ms, optional=False, nonempty=False):
         """Healer._list(), awaited, under the lock (see _turn). What a lookup that matches at
         once saves costs one write of the store, as there."""
         __tracebackhide__ = True  # pytest shows the caller
@@ -688,8 +749,8 @@ class AsyncHealer:
             core._prime(key, roles, code, None, None)
             found = await self._list_look(key, core._list_runnable(key))
             if found is not None:
-                return await self._list_found(key, roles, found)
-        if optional or not core._list_waits(key):
+                return await self._list_found(key, roles, found, nonempty)
+        if not nonempty and (optional or not core._list_waits(key)):
             return []
         try:
             found = await self._resolve_step(
@@ -700,36 +761,81 @@ class AsyncHealer:
         except AttentionRequired as exc:
             if _raised_by_run(exc):
                 raise   # a run= function's own, not a miss of this list
+            if nonempty:
+                return await self._list_nonempty_missing(key, roles, exc)
             raise core._list_missing(key, exc) from exc
         with _batched(self.store):
-            return await self._list_found(key, roles, found)
+            return await self._list_found(key, roles, found, nonempty)
 
-    async def _list_found(self, key, roles, found):
+    async def _list_found(self, key, roles, found, place=False):
         """Healer._list_found(), awaited."""
         core = self._core
         selector, count = found
         core._remember_page(key, await _url(self._driver))
-        if core._list_target(key, selector, count):
-            await self._keep_list(key, selector, roles)
+        placed = bool(place) or core._list_placed(key)
+        if core._list_target(key, selector, count, placed):
+            await self._keep_list(key, selector, roles, placed)
+        core._retire_lists(key, selector, count)
         if callable(_member(self._driver, 'handles')):
             return list(await _awaited(self._driver.handles(selector)))
         return [await _awaited(self._driver.handle(selector))]
 
-    async def _keep_list(self, key, selector, roles):
-        """Read the list fingerprint of what selector matches and save it for key
+    async def _keep_list(self, key, selector, roles, place=False):
+        """Read the list fingerprint of what selector matches, with where it sits when
+        place and the driver's list_fingerprint() takes place=, and save it for key
         (Healer._keep_list)."""
         lfp = None
-        if callable(_member(self._driver, 'list_fingerprint')):
+        method = _member(self._driver, 'list_fingerprint')
+        if callable(method):
             try:
-                lfp = await _awaited(self._driver.list_fingerprint(selector))
+                if place and _takes_place(method):
+                    lfp = await _awaited(self._driver.list_fingerprint(selector, place=True))
+                else:
+                    lfp = await _awaited(self._driver.list_fingerprint(selector))
             except Exception:
                 lfp = None
-        self._core._keep_list(key, selector, roles, lfp if valid_list(lfp) else None)
+        self._core._keep_list(key, selector, roles, lfp if valid_list(lfp) else None, place)
+
+    async def _list_nonempty_missing(self, key, roles, exc):
+        """Healer._list_nonempty_missing(), with the page reads awaited on the event loop
+        and the search (Healer._propose_list) in a worker thread, where the coordinator
+        reaches the page through SyncBridge."""
+        __tracebackhide__ = True  # pytest shows the caller
+        core = self._core
+        reason = core._nonempty_blocked(key)
+        if reason:
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
+        core._reload_lists(key)
+        for row in core._list_rows(key):
+            if row.get('status') == 'accepted':
+                count = await self._count_live(row.get('xpath'))
+                if count:
+                    raise core._waits_for_fix(key, exc, row, count) from exc
+        outcome = await _in_thread(core._propose_list, key, exc, await _url(self._driver))
+        if outcome.kind == 'came':
+            with _batched(self.store):
+                found = await self._list_look(key, core._list_runnable(key))
+                if found is not None:
+                    self.coordinator.came(key, found[0])
+                    return await self._list_found(key, roles, found, True)
+        raise core._list_outcome_error(key, exc, outcome) from exc
+
+    async def _count_live(self, selector):
+        """Healer._count_live(), awaited."""
+        try:
+            if not isinstance(selector, str):
+                return 0
+            return int(await _awaited(self._driver.count(selector)))
+        except Exception:
+            return 0
 
     async def present(self, key: str) -> bool:
         """True if one of key's stored selectors matches a single element right now.
-        No waiting and no healing."""
+        No waiting and no healing. For the key of a get_by_* call, the call itself first,
+        as on Healer.present()."""
         async with self._turn():
+            if getby.is_key(key):
+                return await self._present_get_by(getby.canonical_key(key))
             store = self.store
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)
@@ -743,6 +849,66 @@ class AsyncHealer:
             if candidates and len(errors) == len(candidates):
                 raise errors[0]
             return False
+
+    async def drift(self, keys: Iterable[str] | None = None, *, timeout_ms: int | None = None,
+                    poll_ms: int = 200) -> Any:
+        """Healer.drift(), awaited: check whether the selectors saved for keys still find
+        their elements on this page, and what a run would do about the ones that don't,
+        without acting on the page, saving anything or asking a model. Returns a
+        mendwright.drift.DriftReport. The arguments mean what they mean there, and argument
+        errors raise before anything is awaited.
+
+        It holds the healer's lock, so a lookup started meanwhile waits for it, and runs
+        the sync engine in a worker thread, which reaches the page through SyncBridge. A key
+        whose selector matches only inside an iframe is followed there as in a run, with
+        the async driver's frame lookups awaited on the event loop."""
+        from . import drift as _drift
+        core = self._core
+        wanted = _drift.drift_keys(self.store, keys, timeout_ms, poll_ms)
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        skips, canaries = _drift.journal_evidence(_drift.store_journal(self.store))
+        async with self._turn():
+            with core._overlays.handling():
+                url = await _url(self._driver)
+                if wanted is None:
+                    wanted = _drift.keys_on_page(self.store, url)
+                bridge = self._sync_driver()
+                frames = self._drift_frames(bridge)
+
+                def probe():
+                    return _drift.probe_page(
+                        core, wanted, driver=bridge, frames=frames, timeout_ms=timeout,
+                        poll_ms=poll_ms, sleep=lambda ms: time.sleep(ms / 1000.0),
+                        skips=skips, canaries=canaries, optional=set(core._interruptions),
+                        opener='await mendwright.aio.open', url=url)
+                report = await _in_thread(probe)
+        logger.info('mendwright: ' + report.summary())
+        return report
+
+    def _drift_frames(self, bridge):
+        """drift.Frames for the async driver: its frame_matches() and framed() awaited on the
+        event loop through bridge, and a framed driver wrapped in a SyncBridge of its own,
+        as _heal_scope() wraps it. None for one the driver lacks."""
+        from .drift import Frames
+        driver, loop = self._driver, asyncio.get_running_loop()
+        finder = framer = None
+        if callable(_member(driver, 'frame_matches')):
+            def finder(selector):
+                return bridge.run(driver.frame_matches, selector)
+        if isinstance(driver, AsyncPlaywrightDriver):
+            look = _quiet_framed(driver)       # no wait, so no overlay handler runs
+        elif callable(_member(driver, 'framed')):
+            look = driver.framed
+        else:
+            look = None
+        if look is not None:
+            def framer(frame_selector):
+                try:
+                    inner = bridge.run(look, frame_selector)
+                except Exception:
+                    return None
+                return SyncBridge(inner, loop) if inner is not None else None
+        return Frames(finder, framer)
 
     # --- heals awaiting confirmation (hooks for test runners) ------------------------
 
@@ -766,7 +932,9 @@ class AsyncHealer:
     async def _resolve_proxy(self, proxy):
         __tracebackhide__ = True  # pytest shows the caller
         async with self._turn():
-            if proxy._native is _UNRESOLVED:
+            if proxy._native is _UNRESOLVED and proxy._get_by is not None:
+                await self._locate_get_by(proxy)
+            elif proxy._native is _UNRESOLVED:
                 native = await self._locate(proxy._key, *proxy._plan)
                 if native is _ABSENT:
                     proxy._present = False
@@ -809,6 +977,170 @@ class AsyncHealer:
         core._remember_page(key, await _url(self._driver))
         await self._remember_fingerprint(key)
         return native
+
+    # --- heal.page.get_by_*(), with open(heal_get_by=True) ----------------------------
+
+    def _get_by_locator(self, call, target, *, timeout_ms=None, poll_ms=200):
+        """Healer._get_by_locator() for the async healer: an AsyncActionProxy that looks the
+        call up when it is awaited, or an action or read on it is (see _locate_get_by)."""
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        key = getby.canonical(call)
+        proxy = AsyncActionProxy(self, key, (None, None, None, None, timeout, poll_ms, False,
+                                             None))
+        proxy._get_by = (call, target)
+        proxy._expect = self._core._expect_values.get(key)
+        return proxy
+
+    async def _locate_get_by(self, proxy):
+        """Healer._get_by_locator()'s steps A to D for proxy, with the page work awaited on
+        the event loop and the heal in a worker thread. Runs under the lock, as _locate()
+        does. A call that goes to Playwright as written leaves proxy on the real Locator,
+        with the heal canary off; a miss is raised as a getby.GetByNotFound."""
+        __tracebackhide__ = True  # pytest shows the caller
+        core = self._core
+        call, target = proxy._get_by
+        key, timeout, poll_ms = proxy._key, proxy._plan[4], proxy._plan[5]
+        budget = Budget()
+        state, why = await self._get_by_state(key)
+        if state is None:
+            return self._get_by_through(proxy, target, why)
+        early = state[0] == 0 and bool(core._others(key)) and await self._interrupt(
+            key, budget, timeout, poll_ms)
+        first = [None if early else state]
+        core._prime(key, None, [key], None, None)
+
+        async def attempt(wait=timeout):
+            return await self._resolve_get_by(key, wait, poll_ms, first.pop() if first else None)
+
+        try:
+            try:
+                native = await self._resolve_step(key, attempt, budget, timeout, poll_ms)
+            except InterruptionLoop:
+                raise
+            except AttentionRequired as exc:
+                if _raised_by_run(exc):
+                    raise
+                await self._get_by_frames(key, exc)
+                native = await self._heal(key, exc, attempt)
+        except InterruptionLoop:
+            raise   # the page is blocked: a heal would not help
+        except AttentionRequired as exc:
+            if _raised_by_run(exc):
+                raise   # a run= function's own, not a miss of this step
+            raise getby.not_found_error(exc) from exc
+        if native is THROUGH:
+            return self._get_by_through(proxy, target, getby.STARTED_TO_MATCH)
+        await self._check_healed_target(key)
+        await self._learn(key, None)
+        core._remember_page(key, await _url(self._driver))
+        await self._remember_fingerprint(key)
+        proxy._native = native
+        proxy._healed = core._healed(key)
+        proxy._canary = proxy._healed is not None
+
+    def _get_by_through(self, proxy, target, why):
+        """Leave proxy on the real Locator of a call that goes to Playwright as written:
+        nothing saved, no heal used, and nothing reported to the heal canary."""
+        logger.debug('mendwright: ' + getby.through_message(proxy._key, why))
+        proxy._native, proxy._healed, proxy._canary = target, None, False
+
+    async def _call_state(self, key, require_visible):
+        """(count, visible) of the call key itself; InvalidSelector propagates."""
+        driver = self._driver
+        count = await _awaited(driver.count(key))
+        visible = None
+        if count == 1 and require_visible:
+            visible = bool(await _awaited(driver.is_visible(key)))
+        return count, visible
+
+    async def _get_by_state(self, key):
+        """Healer._get_by_state(), awaited."""
+        try:
+            count, visible = await self._call_state(key, _require_visible(self.store, key))
+        except InvalidSelector:
+            return None, getby.REJECTED
+        if count >= 2:
+            return None, 'matches ' + str(count) + ' elements'
+        if count == 1 and _require_visible(self.store, key) and not visible:
+            return None, getby.HIDDEN
+        return (count, visible), ''
+
+    async def _resolve_get_by(self, key, timeout_ms, poll_ms, first=None):
+        """mendwright.resolver.resolve_get_by(), awaited: the call first, a saved heal only
+        while the call matches nothing, THROUGH for a call that matches several elements or
+        one hidden one, or that the browser rejects, AttentionRequired at the deadline."""
+        store, driver = self.store, self._driver
+        require_visible = _require_visible(store, key)
+        candidates = store.candidates(key)
+        runnable, errors = _split_runnable(key, [c for c in candidates if c.get('xpath') != key])
+        deadline = self._clock() + timeout_ms / 1000.0
+        while True:
+            try:
+                state = first if first is not None else await self._call_state(
+                    key, require_visible)
+                if state[0] == 1 and require_visible and state[1] is None:
+                    state = await self._call_state(key, require_visible)
+            except InvalidSelector:
+                return THROUGH
+            first = None
+            if state[0] == 1 and (not require_visible or state[1]):
+                try:
+                    await driver.scroll_into_view(key)
+                except Exception:
+                    pass
+                store.record_success(key, key)
+                return await driver.handle(key)
+            if state[0] >= 1:
+                return THROUGH
+            for candidate in list(runnable):
+                try:
+                    handle = await _match_handle(driver, candidate, require_visible)
+                except InvalidSelector as exc:
+                    runnable.remove(candidate)
+                    errors.append(exc.for_key(key))
+                    continue
+                if handle is not None:
+                    try:
+                        await driver.scroll_into_view(candidate['xpath'], _frame_chain(candidate))
+                    except Exception:
+                        pass
+                    store.record_success(key, candidate['xpath'])
+                    return handle
+            if self._clock() >= deadline:
+                raise AttentionRequired(_no_match_message(key, candidates, errors))
+            await self._sleep(poll_ms / 1000.0)
+
+    async def _present_get_by(self, key):
+        """mendwright.resolver.present_get_by(), awaited."""
+        require_visible = _require_visible(self.store, key)
+        try:
+            count, visible = await self._call_state(key, require_visible)
+        except InvalidSelector:
+            return False
+        if count >= 1:
+            return count == 1 and (not require_visible or bool(visible))
+        runnable, _errors = _split_runnable(key, [c for c in self.store.candidates(key)
+                                                  if c.get('xpath') != key])
+        for candidate in runnable:
+            try:
+                if await _match_handle(self._driver, candidate, require_visible) is not None:
+                    return True
+            except InvalidSelector:
+                continue
+        return False
+
+    async def _get_by_frames(self, key, exc):
+        """Healer._get_by_frames(), with the frame lookups awaited."""
+        __tracebackhide__ = True
+        if not callable(_member(self._driver, 'frame_matches')):
+            return
+        try:
+            frames = await _awaited(self._driver.frame_matches(key))
+        except Exception:
+            return
+        if frames:
+            self._core._frame_stop(key, exc, key, frames, 'await mendwright.aio.open',
+                                   getby.NOT_FOLLOWED)
 
     async def _resolve_step(self, key, attempt, budget, timeout, poll_ms):
         """Healer._resolve_step(), awaited: after a miss, handle the registered
@@ -893,6 +1225,15 @@ class AsyncHealer:
     def _dismiss_on(self):
         """Whether open(dismiss=True) was passed (see Healer._dismiss)."""
         return self._core._dismiss_on
+
+    @property
+    def _heal_get_by(self):
+        """Whether open(heal_get_by=True) was passed (see Healer._get_by_locator)."""
+        return self._core._heal_get_by
+
+    def _note_get_by(self, step, why):
+        """Healer._note_get_by(): one INFO line for a get_by_* call that is never a key."""
+        self._core._note_get_by(step, why)
 
     async def _dismiss_before(self, key, native, verb, budget, timeout_ms, poll_ms):
         """Healer._dismiss_before(), awaited."""
@@ -1037,7 +1378,8 @@ class AsyncHealer:
         if coordinator.is_pending(key, xpath):
             # A heal from earlier in this process. A gateway provider reports the outcome
             # over HTTP.
-            await _in_thread(coordinator.confirm_pending, key, False, None, xpath)
+            await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending, key,
+                                               False, None, xpath, by='destructive'))
         else:
             self.store.quarantine(key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath)
@@ -1175,12 +1517,15 @@ class AsyncHealer:
             return None
         return out if isinstance(out, dict) else None
 
-    async def _confirm(self, key, success):
+    async def _confirm(self, key, success, by=None):
         """coordinator.confirm_pending(), in a worker thread (a gateway provider reports
-        the outcome over HTTP) and under the lock."""
+        the outcome over HTTP) and under the lock. by goes to the journal (see
+        HealCoordinator.confirm). _in_thread() passes positional arguments only, hence the
+        partial."""
         async with self._turn():
             if key in self.coordinator.pending:
-                await _in_thread(self.coordinator.confirm_pending, key, bool(success))
+                await _in_thread(functools.partial(_canary_call, self.coordinator.confirm_pending,
+                                                   key, bool(success), by=by))
 
     async def _check_value(self, key, healed, verb, args, value, expect):
         """Healer._check_value(), with the canary report in a worker thread and under the
@@ -1194,7 +1539,8 @@ class AsyncHealer:
         reason = None if ok else refusal_reason(verb, args, expect)
         async with self._turn():
             if coordinator.is_pending(key, healed):
-                await _in_thread(coordinator.confirm_pending, key, ok, reason, healed)
+                await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending,
+                                                   key, ok, reason, healed, by='expect_value'))
             elif not ok:
                 self.store.quarantine(key, healed)
                 coordinator.journal.quarantine(key, xpath=healed, reason=reason)
@@ -1289,6 +1635,9 @@ class AsyncActionProxy:
     # Whether an action's outcome goes to the heal canary, as on ActionProxy: off for an
     # element mendwright did not resolve itself, or one of a list (see _guarded).
     _canary = True
+    # (GetByCall, real Locator) for a heal.page.get_by_*() call (see
+    # AsyncHealer._get_by_locator), else None.
+    _get_by = None
 
     def __init__(self, healer: AsyncHealer, key: str, plan: tuple) -> None:
         self._healer = healer
@@ -1389,19 +1738,19 @@ class AsyncActionProxy:
                 ok = bool(await _awaited(expect()))
             except Exception:
                 ok = False
-            await self._confirm(ok)
+            await self._confirm(ok, 'expect')
         return result
 
     async def _failed(self, error):
         """ActionProxy._failed(), awaited: report a failed action to the heal canary, unless
         error is a stale element (see mendwright.flow.is_stale_error)."""
         if not is_stale_error(error):
-            await self._confirm(False)
+            await self._confirm(False, 'action')
 
-    async def _confirm(self, success):
+    async def _confirm(self, success, by=None):
         """Report the action's outcome to the heal canary, unless _canary is off."""
         if self._canary:
-            await self._healer._confirm(self._key, success)
+            await self._healer._confirm(self._key, success, by)
 
     async def click(self, *args: Any, expect: AsyncExpect | None = None, **kwargs: Any) -> Any:
         return await self._act('click', args, kwargs, expect)
@@ -1468,7 +1817,8 @@ class AsyncActionProxy:
         own. An element of heal.locator_all() reports nothing, as ActionProxy.confirm()
         says. Sync, like ActionProxy.confirm()."""
         if self._canary:
-            self._healer.coordinator.confirm_pending(self._key, bool(success))
+            _canary_call(self._healer.coordinator.confirm_pending, self._key, bool(success),
+                         by='confirm')
         return self
 
     def __getattr__(self, name: str) -> Any:

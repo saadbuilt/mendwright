@@ -241,3 +241,31 @@ def test_fix_lists_a_csharp_verbatim_string_instead_of_escaping_it(root, capsys)
     (root / 'Save.cs').write_text(source, encoding='utf-8')
     cli.main(['fix', '--apply', '--glob', '*.cs'])
     assert (root / 'Save.cs').read_text(encoding='utf-8') == source
+
+
+# Pages with the attribute values css_string() has to escape: quotes, a backslash, a line
+# break, a carriage return and a form feed, and containers that tell twin elements apart.
+_ESCAPES = """<div id="shop"><ul class="items">
+<li><button aria-label='Say "hi"'>A</button></li><li><button title="a\\b">B</button></li></ul>
+<section class="panel"><button>Buy</button></section><section class="other"><button>Buy</button></section>
+<label for="line&#10;break">L</label><input placeholder="x&#13;y"><input name="f&#12;g">
+<p data-qa="q1"><span>One</span></p><p data-qa="q2"><span>One</span></p></div>"""
+
+
+def test_every_css_form_css_selectors_builds_is_one_fix_writes():
+    """mendwright fix refuses a heal whose CSS form is not one mendwright.css builds
+    (fixback._CSS_TWIN). That must never refuse mendwright's own output."""
+    from mendwright import fixback
+    pages = [PAGE, _ESCAPES,
+             "<p><a href='/cart?session=abc'>Cart</a><a href='/help'>Help</a></p>",
+             '<p><button id="save">Delete</button><button id="save' + '\n' + '">Save</button></p>']
+    checked = 0
+    for html in pages:
+        doc = lxml.html.fromstring(html)
+        for el in doc.iter():
+            if not isinstance(el.tag, str):
+                continue
+            for css in css_selectors(el, doc, limit=20):
+                assert fixback._CSS_TWIN.fullmatch(css), css
+                checked += 1
+    assert checked > 30

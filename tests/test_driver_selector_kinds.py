@@ -1,9 +1,14 @@
-"""Drivers run XPath, CSS and Playwright engine selectors; bad selectors raise
-InvalidSelector at once instead of reading as count()=0 and burning the timeout."""
+"""Drivers run XPath, CSS and Playwright engine selectors, and get_by_* calls on
+Playwright; bad selectors raise InvalidSelector at once instead of reading as count()=0 and
+burning the timeout."""
+
+import asyncio
 
 import pytest
 
 from mendwright import AttentionRequired, InvalidSelector, present, resolve, resolve_with_heal
+from mendwright.drivers.base import driver_role_match
+from mendwright.drivers.playwright_async import AsyncPlaywrightDriver
 from mendwright.drivers.playwright_sync import PlaywrightSyncDriver, playwright_selector
 from mendwright.drivers.selenium import SeleniumDriver, selenium_locator
 
@@ -31,6 +36,15 @@ class RecLoc:
     def scroll_into_view_if_needed(self):
         pass
 
+    def and_(self, other):
+        return RecLoc(self.page, self.chain, self.selector + ' & ' + other.selector)
+
+
+def call_text(method, args, kwargs):
+    """How RecFrame names a get_by_* call it was asked for: get_by_role('button', name='Go')."""
+    parts = [repr(a) for a in args] + [k + '=' + repr(v) for k, v in sorted(kwargs.items())]
+    return method + '(' + ', '.join(parts) + ')'
+
 
 class RecFrame:
     def __init__(self, page, chain):
@@ -41,6 +55,14 @@ class RecFrame:
 
     def frame_locator(self, selector):
         return RecFrame(self.page, self.chain + (selector,))
+
+    def __getattr__(self, method):
+        if not method.startswith('get_by_'):
+            raise AttributeError(method)
+
+        def get_by(*args, **kwargs):
+            return RecLoc(self.page, self.chain, call_text(method, args, kwargs))
+        return get_by
 
 
 class RecPage(RecFrame):
@@ -275,3 +297,123 @@ def test_resolve_with_heal_never_asks_the_provider_about_a_typo():
         resolve_with_heal(lambda: resolve(coord.store, RecPage(), 'k', timeout_ms=0),
                           coord, 'k', {'expectedRole': 'button'}, {})
     assert Coordinator.tried is False
+
+
+# --- get_by_* calls -------------------------------------------------------------------------
+
+GO = 'get_by_role("button", name="Go", exact=True)'
+SENT = "get_by_role('button', exact=True, name='Go')"
+# What Playwright's role engine says, when the call runs, about level= on a button.
+LEVEL_ERROR = PwError('Locator.count: Error: "level" attribute is only supported for roles: '
+                      '"heading", "listitem", "row", "treeitem"')
+
+
+def test_playwright_drivers_build_a_call_through_get_by():
+    page = RecPage(counts={SENT: 1, "get_by_test_id('go')": 2})
+    driver = PlaywrightSyncDriver(page)
+    assert driver.count(GO) == 1
+    assert driver.count('get_by_test_id("go")') == 2
+    assert driver.count(GO, ('#pay',)) == 1     # the fake counts the call in any frame
+    assert page.counted == [((), SENT), ((), "get_by_test_id('go')"), (('css=#pay',), SENT)]
+    assert driver.handle(GO).selector == SENT
+
+
+def test_the_async_driver_builds_a_call_through_get_by():
+    class AsyncLoc(RecLoc):
+        async def count(self):
+            return RecLoc.count(self)
+
+    class AsyncFrame(RecFrame):
+        def frame_locator(self, selector):
+            return AsyncFrame(self.page, self.chain + (selector,))
+
+        def __getattr__(self, method):
+            build = RecFrame.__getattr__(self, method)
+            return lambda *a, **k: AsyncLoc(self.page, self.chain, build(*a, **k).selector)
+
+    class AsyncPage(AsyncFrame):
+        def __init__(self):
+            super().__init__(self, ())
+            self.counts, self.errors, self.counted = {SENT: 1, SENT + ' & ' + SENT: 1}, {}, []
+
+    page = AsyncPage()
+    driver = AsyncPlaywrightDriver(page)
+    assert asyncio.run(driver.count(GO)) == 1
+    assert asyncio.run(driver.count(GO, ('#pay',))) == 1
+    assert page.counted == [((), SENT), (('css=#pay',), SENT)]
+    page.errors[SENT] = LEVEL_ERROR
+    with pytest.raises(InvalidSelector):
+        asyncio.run(driver.count(GO))
+
+
+def test_a_role_engine_error_rejects_a_call_and_nothing_else():
+    page = RecPage(errors={SENT: LEVEL_ERROR, 'role=button[level=2]': LEVEL_ERROR})
+    driver = PlaywrightSyncDriver(page)
+    with pytest.raises(InvalidSelector) as info:
+        driver.count(GO)
+    assert info.value.kind == 'get_by'
+    assert 'the browser rejected a get_by_* call ("level" attribute is only supported' in str(
+        info.value)
+    # The same words for an engine selector keep their 0.8.0 meaning: no match.
+    assert driver.count('role=button[level=2]') == 0
+    page.errors[SENT] = PwError('Locator.count: Target page, context or browser has been closed')
+    assert driver.count(GO) == 0
+
+
+def test_role_match_asks_playwright_for_the_role():
+    xpath = "xpath=//button[@id='go']"
+    page = RecPage(counts={"get_by_role('tab') & " + xpath: 1,
+                           "get_by_role('heading', level=2) & " + xpath: 0})
+    driver = PlaywrightSyncDriver(page)
+    assert driver.role_match("//button[@id='go']", 'tab') is True
+    assert driver.role_match("//button[@id='go']", 'heading', 2) is False
+    page.errors["get_by_role('link') & " + xpath] = PwError('Locator.count: detached')
+    assert driver.role_match("//button[@id='go']", 'link') is None
+    assert driver_role_match(driver, "//button[@id='go']", 'tab') is True
+    assert driver_role_match(object(), "//button[@id='go']", 'tab') is None
+
+    class Broken:
+        def role_match(self, *args):
+            raise RuntimeError('gone')
+
+    class Unsure:
+        def role_match(self, *args):
+            return 1
+
+    assert driver_role_match(Broken(), '//a', 'link') is None
+    assert driver_role_match(Unsure(), '//a', 'link') is None
+
+
+def test_frame_matches_runs_a_call_in_each_frame():
+    class Frame:
+        def __init__(self, parent, counts):
+            self.parent_frame, self.name, self.url = parent, 'payment', 'https://pay.test/'
+            self.counts = counts
+
+        def get_by_role(self, *args, **kwargs):
+            frame = self
+
+            class Loc:
+                def count(self):
+                    return frame.counts.get(call_text('get_by_role', args, kwargs), 0)
+            return Loc()
+
+        def frame_element(self):
+            raise RuntimeError('not needed here')
+
+    page = RecPage()
+    main = Frame(None, {})
+    page.frames = [main, Frame(main, {SENT: 1})]
+    found = PlaywrightSyncDriver(page).frame_matches(GO)
+    assert [(f['name'], f['count'], f['nested']) for f in found] == [('payment', 1, False)]
+
+
+def test_selenium_cannot_run_a_call():
+    drv = SelDriver()
+    with pytest.raises(InvalidSelector) as info:
+        SeleniumDriver(drv).count('get_by_role("button")')
+    assert str(info.value).startswith("mendwright: 'get_by_role(\"button\")' is a Playwright "
+                                      'get_by_* call, and Selenium cannot run it.')
+    assert info.value.kind == 'get_by' and drv.queries == []
+    with pytest.raises(InvalidSelector):
+        selenium_locator('get_by_text("Save")')

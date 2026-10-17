@@ -91,3 +91,19 @@ class HealClientTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_apply_passes_the_call_of_a_call_key_to_the_live_check(tmp_path, monkeypatch):
+    from mendwright import SelectorStore, client
+    from mendwright.getby import parse
+
+    seen = []
+    monkeypatch.setattr(client, 'live_reason',
+                        lambda driver, xpath, meta, frame_chain=(), call=None: seen.append(call) or '')
+    html = "<main><button id='login'>Log in</button></main>"
+    for key in ('get_by_role("button", name="Sign in")', 'login'):
+        store = SelectorStore({'schema': 2, 'selectors': {}}, str(tmp_path / (str(len(seen)) + '.json')))
+        applied, _ = client.apply(store, key, {'xpath': "//button[@id='login']"}, html,
+                                  {'expectedRole': 'button'}, driver=object())
+        assert applied == "//button[@id='login']"
+    assert seen == [parse('get_by_role("button", name="Sign in")'), None]

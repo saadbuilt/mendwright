@@ -3,26 +3,29 @@ patchright and camoufox, detected by duck typing). mendwright.aio uses it; wrap(
 mendwright.open() stay sync and reject async pages.
 
 It mirrors PlaywrightSyncDriver with coroutines: selectors of any kind (XPath runs as
-'xpath=...', CSS as 'css=...', engine selectors pass through), frame chains of frame
-selectors (outermost first), InvalidSelector straight away for a malformed selector, and a
-safe default (0, False, None) for any other error on the read methods so resolution keeps
-polling. page.locator() and frame_locator() are plain calls in the async API; only the
-queries and actions are awaited.
+'xpath=...', CSS as 'css=...', engine selectors pass through, a get_by_* call runs as that
+call), frame chains of frame selectors (outermost first), InvalidSelector straight away for
+a malformed selector or a call whose arguments the browser rejects, and a safe default (0,
+False, None) for any other error on the read methods so resolution keeps polling.
+page.locator(), frame_locator() and the get_by_* methods are plain calls in the async API;
+only the queries and actions are awaited.
 """
 
 import inspect
 
+from .. import getby
 from ..fingerprint import FINGERPRINT_JS, from_raw
 from ..flow import click_may_have_run
-from ..lists import LIST_JS
+from ..getby import GetByCall
+from ..lists import ITEMS_JS, LIST_JS, LIST_PLACE_JS
 from ..lists import from_raw as list_from_raw
 from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, POPUP_CONTROL_JS,
                    POPUP_CONTROLS_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS, UNSURE,
                    _member,
-                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api,
+                   VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api, item_rows,
                    looks_like_locator, summary_from_js, visible_match_from_js)
-from .playwright_sync import (_raise_if_invalid, child_frames, frame_info, is_direct_child,
-                              playwright_selector)
+from .playwright_sync import (_frame_locator, _raise_if_invalid, child_frames, frame_info,
+                              is_direct_child, playwright_selector, playwright_target)
 
 
 async def _awaited(value):
@@ -36,8 +39,8 @@ class AsyncPlaywrightDriver:
     """Wraps an async Playwright Page or Frame (or a patchright / camoufox one).
 
     Every method is a coroutine: count, is_visible, scroll_into_view, handle, act, act_on,
-    url, outer_html, describe, fingerprint, visible_match, inventory, handles and
-    list_fingerprint, with the same arguments and results as
+    url, outer_html, describe, fingerprint, visible_match, role_match, inventory, handles,
+    list_fingerprint and list_items, with the same arguments and results as
     PlaywrightSyncDriver. handle() returns the native async Locator."""
 
     def __init__(self, page):
@@ -46,12 +49,20 @@ class AsyncPlaywrightDriver:
     def _targets(self, selector, frame_chain):
         """Convert the selector and frame chain up front so a bad one raises here,
         outside any try that would swallow it."""
-        return playwright_selector(selector), tuple(playwright_selector(f) for f in frame_chain)
+        return playwright_target(selector), tuple(playwright_selector(f) for f in frame_chain)
 
-    def _build(self, target, frames):
+    def _context(self, frames):
         ctx = self._page
         for frame in frames:
             ctx = ctx.frame_locator(frame)
+        return ctx
+
+    def _build(self, target, frames):
+        """The Locator for a playwright_target() result (see PlaywrightSyncDriver._build).
+        Building one is a plain call in the async API."""
+        ctx = self._context(frames)
+        if isinstance(target, GetByCall):
+            return getby.build(ctx, target)
         return ctx.locator(target)
 
     async def _probe(self, selector, frame_chain, op, default):
@@ -59,7 +70,7 @@ class AsyncPlaywrightDriver:
         try:
             return await op(self._build(target, frames))
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             return default
 
     async def count(self, selector, frame_chain=()):
@@ -82,11 +93,12 @@ class AsyncPlaywrightDriver:
         return self._build(*self._targets(selector, frame_chain))
 
     async def act(self, selector, verb, *args, frame_chain=(), **kwargs):
-        loc = await self.handle(selector, frame_chain)
+        target, frames = self._targets(selector, frame_chain)
+        loc = self._build(target, frames)
         try:
             return await self.act_on(loc, verb, *args, **kwargs)
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             raise
 
     async def act_on(self, native, verb, *args, **kwargs):
@@ -137,30 +149,43 @@ class AsyncPlaywrightDriver:
     async def handles(self, selector, frame_chain=()):
         """A Locator for each element the selector matches now (see
         PlaywrightSyncDriver.handles)."""
-        loc = self._build(*self._targets(selector, frame_chain))
+        target, frames = self._targets(selector, frame_chain)
+        loc = self._build(target, frames)
         try:
             count = await loc.count()
         except Exception as exc:
-            _raise_if_invalid(exc, selector, frame_chain)
+            _raise_if_invalid(exc, selector, frame_chain, target)
             raise
         return [loc.nth(i) for i in range(count)]
 
-    async def list_fingerprint(self, selector, frame_chain=()):
+    async def list_fingerprint(self, selector, frame_chain=(), *, place=False):
         """The list fingerprint of the elements the selector matches, or None (see
         PlaywrightSyncDriver.list_fingerprint)."""
+        script = LIST_PLACE_JS if place else LIST_JS
+
         async def op(loc):
-            return list_from_raw(await loc.evaluate_all(LIST_JS))
+            return list_from_raw(await loc.evaluate_all(script))
         return await self._probe(selector, frame_chain, op, None)
+
+    async def list_items(self, selector, frame_chain=()):
+        """[{'tag', 'role', 'type', 'visible'}] for the first 200 elements the selector
+        matches; errors raise (see PlaywrightSyncDriver.list_items)."""
+        loc = self._build(*self._targets(selector, frame_chain))
+        try:
+            return item_rows(await loc.evaluate_all(ITEMS_JS))
+        except Exception as exc:
+            _raise_if_invalid(exc, selector, frame_chain)
+            raise
 
     async def frame_matches(self, selector):
         """The frames inside this page (any depth) in which selector matches at least one
         element, as [{'name', 'url', 'count', 'nested', 'selector'}] (see
         PlaywrightSyncDriver.frame_matches)."""
-        target = playwright_selector(selector)
+        target = playwright_target(selector)
         found = []
         for frame in child_frames(self._page):
             try:
-                n = await frame.locator(target).count()
+                n = await _frame_locator(frame, target).count()
             except Exception:
                 continue
             if n > 0:
@@ -178,6 +203,19 @@ class AsyncPlaywrightDriver:
                         pass
                 found.append(info)
         return found
+
+    async def role_match(self, selector, role, level=None, frame_chain=()):
+        """Whether Playwright gives the one element selector matches the ARIA role ``role``
+        (and level ``level``): True, False, or None on any error (see
+        PlaywrightSyncDriver.role_match). One round trip."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            options = {} if level is None else {'level': level}
+            loc = self._context(frames).get_by_role(role, **options).and_(
+                self._build(target, frames))
+            return await loc.count() == 1
+        except Exception:
+            return None
 
     async def framed(self, frame_selector):
         """An AsyncPlaywrightDriver for the document inside the one iframe that

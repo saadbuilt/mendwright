@@ -302,10 +302,10 @@ def test_a_key_whose_heal_is_a_list_heal_is_left_alone(root, capsys):
     code, out, _err = run(capsys, "--apply")
     assert code == 0 and source.read_text(encoding="utf-8") == text
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
-    assert ("  .cart-item: its heal is a heal of a list (heal.locator_all()), which mendwright no "
-            "longer makes or uses: it can't tell a list that was emptied from one whose selector "
-            "broke, so the heal can be another list. If the selector broke, change it by "
-            "hand.") in out.splitlines()
+    assert ("  .cart-item: its heal is a list heal saved by a build of 0.8.0 before its release, "
+            "which nobody checked: it can be another list that holds the items of an emptied one. "
+            "If the selector broke, change it by hand, or run the test with nonempty=True to have "
+            "one proposed.") in out.splitlines()
 
 
 def test_a_heal_of_one_element_is_never_written_into_a_list_s_key(root, capsys):
@@ -374,7 +374,14 @@ def rewrite(root, capsys, line, old="#save", new=TERMS):
         "triple-trailing-single", "raw-switch", "raw-keeps-backslash", "raw-both-quotes",
         "raw-trailing-backslash", "u-prefix", "backslash", "control-characters"])
 def test_the_new_literal_is_valid_python_with_the_right_value(root, capsys, line, new, expected):
-    assert rewrite(root, capsys, line, new=new) == expected
+    if fixback._could_be_saved(new):
+        assert rewrite(root, capsys, line, new=new) == expected
+    else:
+        # Not an XPath, so not a heal mendwright saves: fix leaves it alone (see
+        # test_a_heal_mendwright_could_not_have_saved_is_never_written), and the writer still
+        # has to get it right.
+        assert rewrite(root, capsys, line, new=new) is None
+        assert "x = " + fixback.python_literal(new, line[len("x = "):]) == expected
     value = ast.literal_eval(expected[len("x = "):])
     assert value == new
 
@@ -516,14 +523,19 @@ def test_a_key_or_a_role_value_equal_to_the_selector_is_not_rewritten(root, caps
         heal.locator_all("#login", "#login")
         page.locator("#login").click()
     '''))
-    assert run(capsys, "--apply")[0] == 0
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
     assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
         heal.locator("#login", "{0}").click()
         heal.locator("#login", selector="{0}", text="#login")
-        heal.interrupt("#login", "{0}", action="click")
+        heal.interrupt("#login", "#login", action="click")
         heal.locator_all("#login", "{0}")
         page.locator("{0}").click()
     ''').format(new)
+    # The interruption's selector is never rewritten (see test_flow_selectors_are_never_rewritten).
+    assert ("  test_a.py:3 was not changed: '#login' is passed to heal.interrupt(), and mendwright "
+            "fix never rewrites the selector of an interruption. It equals the old selector of "
+            "#login, so if the interruption broke too, change it by hand.") in out.splitlines()
 
 
 def test_a_key_whose_old_selector_is_a_bare_word_is_left_alone(root, capsys):
@@ -969,6 +981,437 @@ def test_the_text_and_the_diff_never_carry_carriage_returns(root, capsys):
     assert '-b = "#save"' in out.splitlines()
 
 
+# --- what fix never writes (0.9.0) -------------------------------------------------------
+
+def test_flow_selectors_are_never_rewritten(root, capsys):
+    new = "//button[@data-testid='cookie-ok']"
+    confirmed_project(root, "accept", "#x", new, role="button")
+    source = write(root, "tests/test_flow.py", textwrap.dedent('''\
+        heal.interrupt("banner", "#x")
+        heal.interrupt("banner", selector="#x", action="click")
+        heal.interrupt("banner", ["#x", "#y"])
+        heal.step("pay", "#x")
+        heal.step("pay", when=["#x"])
+        heal.step("pay", when=("#y", "#x"), fn=pay)
+        allure.step("#x")
+        heal.locator("accept", "#x").click()
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == textwrap.dedent('''\
+        heal.interrupt("banner", "#x")
+        heal.interrupt("banner", selector="#x", action="click")
+        heal.interrupt("banner", ["#x", "#y"])
+        heal.step("pay", "#x")
+        heal.step("pay", when=["#x"])
+        heal.step("pay", when=("#y", "#x"), fn=pay)
+        allure.step("{0}")
+        heal.locator("accept", "{0}").click()
+    ''').format(new)
+    lines = out.splitlines()
+    for line in (1, 2, 3):
+        assert ("  tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to "
+                "heal.interrupt(), and mendwright fix never rewrites the selector of an "
+                "interruption. It equals the old selector of accept, so if the interruption "
+                "broke too, change it by hand.") in lines, out
+    for line in (4, 5, 6):
+        assert ("  tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to "
+                "heal.step(when=), and mendwright fix never rewrites a step's landmark. It "
+                "equals the old selector of accept, so if the step's landmark broke too, change "
+                "it by hand.") in lines, out
+    assert "no string equal to" not in out
+
+
+def test_a_selector_seen_only_under_a_flow_call_is_found_but_not_written(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "test_a.py", 'heal.interrupt("banner", "#x")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert "no string equal to" not in out
+    assert "test_a.py:1 was not changed: '#x' is passed to heal.interrupt()" in out
+
+
+FLOW_THROUGH = {
+    "constant": ('ACCEPT = "#x"\n'
+                 'def test_a(heal):\n'
+                 '    heal.interrupt("banner", ACCEPT)\n'
+                 '    heal.locator("accept", ACCEPT).click()\n', [(1, "ACCEPT")]),
+    "dict-of-interruptions": ('INTERRUPTIONS = {"banner": "#x", "chat": "#chat-close"}\n'
+                              'def test_a(heal):\n'
+                              '    for key, selector in INTERRUPTIONS.items():\n'
+                              '        heal.interrupt(key, selector)\n', [(1, "selector")]),
+    "subscript": ('SELECTORS = {"banner": "#x"}\n'
+                  'heal.interrupt("banner", selector=SELECTORS["banner"])\n',
+                  [(1, 'SELECTORS["banner"]')]),
+    "class-constant": ('class Sel:\n'
+                       '    ACCEPT = "#x"\n'
+                       'heal.step("pay", when=[Sel.ACCEPT])\n', [(2, "Sel.ACCEPT")]),
+    "attribute": ('class Checkout:\n'
+                  '    def __init__(self, heal):\n'
+                  '        self.banner = "#x"\n'
+                  '        heal.interrupt("banner", self.banner)\n', [(3, "self.banner")]),
+    "helper": ('def dismiss(heal, selector="#x"):\n'
+               '    heal.interrupt("banner", selector)\n'
+               'def test_a(heal):\n'
+               '    dismiss(heal, "#x")\n'
+               '    dismiss(heal, selector="#x")\n', [(1, "selector"), (4, "selector"), (5, "selector")]),
+    "staticmethod": ('class Banner:\n'
+                     '    @staticmethod\n'
+                     '    def dismiss(heal, selector):\n'
+                     '        heal.interrupt("banner", selector)\n'
+                     'def test_a(heal, banner):\n'
+                     '    Banner.dismiss(heal, "#x")\n'
+                     '    banner.dismiss(heal, "#x")\n', [(6, "selector"), (7, "selector")]),
+    "classmethod": ('class Banner:\n'
+                    '    @classmethod\n'
+                    '    def dismiss(cls, heal, selector):\n'
+                    '        heal.interrupt("banner", selector)\n'
+                    'def test_a(heal):\n'
+                    '    Banner.dismiss(heal, "#x")\n', [(6, "selector")]),
+    "method-through-its-class": ('class Banner:\n'
+                                 '    def dismiss(self, heal, selector):\n'
+                                 '        heal.interrupt("banner", selector)\n'
+                                 'def test_a(heal, banner):\n'
+                                 '    Banner.dismiss(banner, heal, "#x")\n', [(5, "selector")]),
+    "args": ('def dismiss_all(heal, *selectors):\n'
+             '    for selector in selectors:\n'
+             '        heal.interrupt("banner", selector)\n'
+             'def test_a(heal):\n'
+             '    dismiss_all(heal, "#chat-close", "#x")\n', [(5, "selector")]),
+    "kwargs": ('def dismiss_all(heal, **selectors):\n'
+               '    for key, selector in selectors.items():\n'
+               '        heal.interrupt(key, selector)\n'
+               'def test_a(heal):\n'
+               '    dismiss_all(heal, banner="#x")\n', [(5, "selector")]),
+    "css-helper": ('def dismiss_css(heal, selector):\n'
+                   '    heal.interrupt("banner", selector)\n'
+                   'def test_a(heal):\n'
+                   '    dismiss_css(heal, "#x")\n', [(4, "selector")]),
+    "item-assignment": ('INTERRUPTIONS = {}\n'
+                        'INTERRUPTIONS["banner"] = "#x"\n'
+                        'def test_a(heal):\n'
+                        '    for key, selector in INTERRUPTIONS.items():\n'
+                        '        heal.interrupt(key, selector)\n', [(2, "selector")]),
+    "append": ('SELECTORS = []\n'
+               'SELECTORS.append("#x")\n'
+               'def test_a(heal):\n'
+               '    for selector in SELECTORS:\n'
+               '        heal.interrupt("banner", selector)\n', [(2, "selector")]),
+    "dict-call": ('INTERRUPTIONS = dict(banner="#x")\n'
+                  'def test_a(heal):\n'
+                  '    for key, selector in INTERRUPTIONS.items():\n'
+                  '        heal.interrupt(key, selector)\n', [(1, "selector")]),
+    "global": ('SEL = None\n'
+               'def setup_module():\n'
+               '    global SEL\n'
+               '    SEL = "#x"\n'
+               'def test_a(heal):\n'
+               '    heal.interrupt("banner", SEL)\n', [(4, "SEL")]),
+    "nonlocal": ('def test_a(heal):\n'
+                 '    sel = None\n'
+                 '    def pick():\n'
+                 '        nonlocal sel\n'
+                 '        sel = "#x"\n'
+                 '    pick()\n'
+                 '    heal.interrupt("banner", sel)\n', [(5, "sel")]),
+    "nonlocal-read": ('def test_a(heal):\n'
+                      '    sel = "#x"\n'
+                      '    def dismiss():\n'
+                      '        nonlocal sel\n'
+                      '        heal.interrupt("banner", sel)\n'
+                      '    dismiss()\n', [(2, "sel")]),
+}
+
+
+@pytest.mark.parametrize("name", list(FLOW_THROUGH))
+def test_a_flow_selector_passed_through_a_name_is_never_rewritten(root, capsys, name):
+    source_text, notes = FLOW_THROUGH[name]
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_flow.py", source_text)
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == source_text
+    what = "heal.step(when=)" if name == "class-constant" else "heal.interrupt()"
+    for line, via in notes:
+        assert ("tests/test_flow.py:" + str(line) + " was not changed: '#x' is passed to " + what
+                + " through " + via + ", and mendwright fix never rewrites") in out, out
+    assert "no string equal to" not in out
+
+
+def test_a_flow_selector_passed_to_a_css_helper_keeps_its_value_too(root, capsys):
+    # A literal passed to a function with css in its name takes the heal's CSS form, unless the
+    # function hands it on to heal.interrupt().
+    new = "//button[@id='ok']"
+    write_store(root, {"accept": {"expectedRole": "button", "candidates": [
+        cand("#x", "code", T0), dict(cand(new, "heal", T1), css="button#ok")]}},
+        [applied("accept", new, ["#x"]), canary("accept", new)])
+    text = ('def dismiss_css(heal, selector):\n'
+            '    heal.interrupt("banner", selector)\n'
+            'def test_a(heal, driver):\n'
+            '    dismiss_css(heal, "#x")\n'
+            '    find_css(driver, "#x")\n')
+    source = write(root, "tests/test_flow.py", text)
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == text.replace('find_css(driver, "#x")',
+                                                             'find_css(driver, "button#ok")')
+    assert ("tests/test_flow.py:4 was not changed: '#x' is passed to heal.interrupt() through "
+            "selector, and mendwright fix never rewrites") in out, out
+
+
+def test_a_method_does_not_see_the_names_of_its_class_body(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_scope.py", textwrap.dedent('''\
+        SEL = "#cookie-ok"
+        class Banner:
+            SEL = "#x"
+            def dismiss(self, heal):
+                heal.interrupt("cookies", SEL)
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == 'SEL = "#cookie-ok"'
+    assert lines[2] == '    SEL = "//button[@id=\'ok\']"'       # not what dismiss() passes
+    assert "was not changed" not in out
+
+
+def test_a_name_is_followed_in_its_own_scope_only(root, capsys):
+    confirmed_project(root, "accept", "#x", "//button[@id='ok']", role="button")
+    source = write(root, "tests/test_scope.py", textwrap.dedent('''\
+        SEL = "#x"
+        def test_banner(heal):
+            heal.interrupt("banner", SEL)
+        def test_accept(heal):
+            SEL = "#x"
+            heal.locator("accept", SEL).click()
+        def test_other(heal):
+            sel = "#x"
+            heal.locator("accept", sel).click()
+        def test_flow(heal):
+            sel = "#cookie-ok"
+            heal.interrupt("cookies", sel)
+        def test_list(heal):
+            sels = []
+            sels.append("#cookie-ok")
+            for s in sels:
+                heal.interrupt("cookies", s)
+        def test_other_list(heal):
+            sels = []
+            sels.append("#x")
+            heal.locator("accept", sels[0]).click()
+    '''))
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == 'SEL = "#x"'                                 # the interruption's
+    assert lines[4] == '    SEL = "//button[@id=\'ok\']"'          # a local of another test
+    assert lines[7] == '    sel = "//button[@id=\'ok\']"'
+    assert lines[19] == '    sels.append("//button[@id=\'ok\']")'
+    assert "tests/test_scope.py:1 was not changed: '#x' is passed to heal.interrupt() through SEL" \
+        in out
+
+
+@pytest.mark.parametrize("new, why", [
+    ("#not-an-xpath", "its healed selector '#not-an-xpath' is not an XPath"),
+    ("//button[@id='x'", "its healed selector \"//button[@id='x'\" is not an XPath"),
+    ("text=Save", "its healed selector 'text=Save' is not an XPath"),
+], ids=["css", "does-not-compile", "engine"])
+def test_a_heal_mendwright_could_not_have_saved_is_never_written(root, capsys, new, why):
+    confirmed_project(root, "save", "#save", new, role="button")
+    source = write(root, "test_a.py", 'heal.locator("save", "#save")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply", "--include-unconfirmed")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  save: " + why + " that lxml can compile, and mendwright saves only heals that "
+            "are, so something else wrote it into overrides.json. Check the store; nothing is "
+            "written for this key.") in out.splitlines()
+
+
+@pytest.mark.parametrize("css", [
+    'form > button', 'button:hover', 'a[href=x]', "a[href='x']", 'div.a span.b em',
+    'button[name="x"]::after', '*', 'a, b', 'a  b', '#1x',
+])
+def test_a_css_form_mendwright_does_not_build_is_never_written(root, capsys, css):
+    new = "//button[@name='save']"
+    confirmed_project(root, "save", "#save", new, role="button", candidates=[
+        cand("#save", "code", T0), dict(cand(new, "heal", T1), css=css)])
+    source = write(root, "test_a.py", 'heal.locator("save", "#save")\n')
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before
+    assert ("  save: the CSS form of its heal, " + repr(css) + ", is not one mendwright builds (a "
+            'tag name, #id, .class and [attribute="value"], with at most one ancestor before '
+            "it), so something else wrote it into overrides.json. Check the store; nothing is "
+            "written for this key.") in out.splitlines()
+
+
+@pytest.mark.parametrize("css", [
+    '#coupon-code', '[data-testid="save-btn"]', 'button[type="submit"]', '[id="a.b"]',
+    'button.btn.primary', 'form#checkout button', 'div.row button.btn', 'input[aria-label="a \\"b\\""]',
+    'label[for="x\\a y"]', '-x', '_a.b-c',
+])
+def test_every_css_form_mendwright_builds_is_written(css):
+    assert fixback._CSS_TWIN.fullmatch(css), css
+
+
+def test_destructive_key_skips_a_key_the_store_does_not_mark(root, capsys):
+    write_store(root, {
+        "pay": healed("#pay", "//button[@id='pay-now']", role="button"),
+        "refund": healed("#refund", "//button[@id='refund-now']", role="button"),
+        "save": healed("#save", "//button[@id='save-now']", role="button"),
+    }, [canary("pay", "//button[@id='pay-now']"), canary("refund", "//button[@id='refund-now']"),
+        canary("save", "//button[@id='save-now']")])
+    source = write(root, "test_a.py", 'A = "#pay"\nB = "#refund"\nC = "#save"\n')
+    code, out, err = run(capsys, "--apply", "--destructive-key", "pay", "--destructive-key",
+                         "refund", "other")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == ('A = "#pay"\nB = "#refund"\n'
+                                                  'C = "//button[@id=\'save-now\']"\n')
+    for key in ("pay", "refund"):
+        assert ("  " + key + ": it is marked destructive, so its heals are never written into "
+                "code. Fix the selector by hand.") in out.splitlines()
+
+
+QUARANTINED = ("  email: its newest heal //input[@name='e-mail'] was quarantined (an action on "
+               "it failed, a check said it was the wrong element, or the key is marked "
+               "destructive), and no selector has worked for the key since, so there is nothing "
+               "to write back.")
+
+
+def _with_quarantine(*candidates):
+    return {"email": {"expectedRole": "textbox", "candidates": list(candidates)}}
+
+
+def test_a_key_whose_newest_heal_was_quarantined_is_listed(root, capsys):
+    bad = "//input[@name='e-mail']"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T0), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)),
+        [canary("email", bad, False)])
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert QUARANTINED in out.splitlines()
+    assert "No key has a healed selector ahead" not in out
+
+
+def test_a_quarantined_heal_is_not_listed_once_a_selector_works_again(root, capsys):
+    bad = "//input[@name='e-mail']"
+    later = "2026-10-03T00:00:00+00:00"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", later), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert "quarantined" not in run(capsys)[1]
+    # The same second counts as after.
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T1), dict(cand(bad, "heal", None, status="quarantined"), addedAt=T1)))
+    assert "quarantined" not in run(capsys)[1]
+
+
+def test_a_tie_between_an_active_and_a_quarantined_heal_is_not_listed(root, capsys):
+    # Every row is added at T0, and the code selector last matched before that.
+    bad, good = "//input[@name='e-mail']", "//input[@name='mail']"
+    before = "2026-09-30T00:00:00+00:00"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", before), cand(bad, "heal", None, status="quarantined"),
+        cand(good, "heal", None)))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert "quarantined" not in run(capsys)[1]
+    write_store(root, _with_quarantine(
+        cand("#email", "code", before), cand(bad, "heal", None, status="quarantined"),
+        cand("//input[@id='other']", "heal", None, status="quarantined")))
+    assert QUARANTINED in run(capsys)[1].splitlines()
+
+
+def test_a_key_with_only_quarantined_selectors_is_listed(root, capsys):
+    bad = "//input[@name='e-mail']"
+    write_store(root, _with_quarantine(
+        cand("#email", "code", T0, status="quarantined"), cand(bad, "heal", None, status="quarantined")))
+    write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    assert QUARANTINED in run(capsys)[1].splitlines()
+
+
+def test_an_old_quarantine_is_not_listed_when_a_newer_heal_is_written(root, capsys):
+    bad, good = "//input[@name='e-mail']", "//input[@name='mail']"
+    write_store(root, _with_quarantine(
+        dict(cand("#email", "code", T0), addedAt="2026-09-01T00:00:00+00:00"),
+        dict(cand(bad, "heal", None, status="quarantined"), addedAt="2026-09-02T00:00:00+00:00"),
+        cand(good, "heal", T1)), [canary("email", good)])
+    source = write(root, "test_a.py", 'heal.locator("email", "#email")\n')
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert "quarantined" not in out
+    assert good in source.read_text(encoding="utf-8")
+
+
+def test_github_folders_are_never_scanned(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    script = write(root, ".github/scripts/x.py", 'x = "#save"\n')
+    workflow = write(root, ".github/workflows/ci.yml", 'run: echo "#save"\n')
+    nested = write(root, "pkg/.github/x.py", 'x = "#save"\n')
+    other_case = write(root, "lib/.GitHub/x.py", 'x = "#save"\n')     # skipped in any case
+    for args in ((), ("--glob", "*.yml"), ("--path", ".github"), ("--path", ".github/scripts/x.py")):
+        code, out, err = run(capsys, "--apply", *args)
+        assert (code, err) == (0, ""), (args, err)
+        for path in (script, workflow, nested, other_case):
+            assert "#save" in path.read_text(encoding="utf-8"), (args, path)
+    code, out, err = run(capsys, "--path", ".github/nope")
+    assert code == 1 and "no such file or folder: .github/nope" in err
+
+
+def _folder_link(target, link):
+    """link as a symbolic link to the folder target, else a Windows junction, else skip."""
+    try:
+        os.symlink(str(target), str(link), target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    winapi = pytest.importorskip("_winapi")
+    if not hasattr(winapi, "CreateJunction"):
+        pytest.skip("neither symbolic links nor junctions can be made here")
+    winapi.CreateJunction(str(target), str(link))
+
+
+def test_a_path_that_leads_into_github_through_a_link_or_another_case_is_not_scanned(root, capsys):
+    confirmed_project(root, "k", "#save", "//b[@id='y']")
+    script = write(root, ".github/scripts/x.py", 'x = "#save"\n')
+    workflow = write(root, ".github/workflows/ci.yml", 'run: echo "#save"\n')
+    _folder_link(root / ".github", root / "gh")
+    try:
+        for args in (("--path", "gh"), ("--path", "gh/scripts"), ("--path", "gh/scripts/x.py"),
+                     ("--path", "gh/workflows", "--glob", "*.yml")):
+            code, out, err = run(capsys, "--apply", *args)
+            assert (code, err) == (0, ""), (args, err)
+            for path in (script, workflow):
+                assert "#save" in path.read_text(encoding="utf-8"), (args, path)
+        if (root / ".GitHub").exists():         # a file system that ignores case
+            code, out, err = run(capsys, "--apply", "--path", ".GitHub", "--glob", "*.yml")
+            assert (code, err) == (0, "")
+            for path in (script, workflow):
+                assert "#save" in path.read_text(encoding="utf-8"), path
+    finally:
+        if os.path.islink(str(root / "gh")):
+            os.unlink(str(root / "gh"))
+        else:
+            os.rmdir(str(root / "gh"))          # removes the junction, not its target
+
+
+def test_a_project_inside_a_folder_named_github_is_still_scanned(tmp_path, capsys, monkeypatch):
+    # An organisation's .github repository is checked out at .../.github/.github on a runner.
+    project = tmp_path / ".github"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    confirmed_project(project, "k", "#save", "//b[@id='y']")
+    source = write(project, "tests/test_a.py", 'x = "#save"\n')
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == 'x = "//b[@id=\'y\']"\n'
+
+
 # --- the command line --------------------------------------------------------------------
 
 def test_fix_help_lists_the_options(capsys):
@@ -1052,3 +1495,344 @@ def test_a_real_heal_is_written_back_and_then_wins_on_the_next_run(root, capsys,
     code, out, err = run(capsys, "--apply")
     assert (code, err) == (0, "")
     assert out.splitlines()[0] == "mendwright fix: nothing to write back."
+
+
+# --- heal.page.get_by_*() calls: never rewritten -------------------------------------------
+
+SIGN_IN = 'get_by_role("button", name="Sign in")'
+LOGIN = "//button[@id='login']"
+SIGN_IN_SOURCE = (
+    'import re\n'
+    '\n'
+    'def test_login(page):\n'
+    '    page.get_by_role("button", name="Sign in").click()\n'
+    "    page.get_by_role(role='button', name='Sign in', exact=False).click()\n"
+    '    NAME = "Sign in"\n'
+    '    page.get_by_role("button", name=NAME).click()\n'
+    '    page.get_by_role("button", name=re.compile("sign in", re.I)).click()\n'
+    '    expect_values = {\'get_by_role("button", name="Sign in")\': "money"}\n')
+
+
+def _call_line(state, where):
+    return ('  ' + SIGN_IN + ': it is a heal.page.get_by_role() call, and mendwright fix does not '
+            'rewrite calls: from the code it cannot tell whether a call with these arguments runs '
+            'on heal.page or inside another locator, where it may still find the element it was '
+            'written for. Its healed selector, ' + state + ', is ' + LOGIN + ". Change the call's "
+            "arguments by hand to the element's new role or words, or replace it with "
+            'page.locator("' + LOGIN + '"). ' + where)
+
+
+def test_a_call_key_is_left_alone_with_its_healed_selector_and_places(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    source = write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    before = source.read_bytes()
+    code, out, err = run(capsys, "--apply")
+    assert (code, err) == (0, "")
+    assert source.read_bytes() == before        # the dict key equal to the call text too
+    lines = out.splitlines()
+    assert lines[0] == "mendwright fix: nothing to write back."
+    assert "Left alone:" in lines
+    assert _call_line('confirmed', 'Calls with these arguments: tests/test_login.py:4, '
+                                   'tests/test_login.py:5.') in lines
+
+
+def test_an_unconfirmed_call_heal_and_no_place_found(root, capsys):
+    write_store(root, {SIGN_IN: healed(SIGN_IN, LOGIN, role="button")}, [])
+    write(root, "test_a.py", 'NAME = "Sign in"\npage.get_by_role("button", name=NAME).click()\n')
+    write(root, "notes.txt", 'page.get_by_role("button", name="Sign in")\n')
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert _call_line('not confirmed yet (check that it finds the right element)',
+                      'No call with these arguments written as literals was found in 1 Python '
+                      'file; calls whose arguments come from variables are not searched.') in (
+        out.splitlines())
+
+
+def test_more_than_ten_places_are_cut(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    write(root, "test_many.py", 'page.get_by_role("button", name="Sign in")\n' * 13)
+    code, out, _err = run(capsys)
+    places = ', '.join('test_many.py:' + str(n) for n in range(1, 11))
+    assert _call_line('confirmed', 'Calls with these arguments: ' + places + ', and 3 more.') in (
+        out.splitlines())
+
+
+def test_a_destructive_call_key_keeps_the_destructive_reason(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button", destructive=True)
+    code, out, _err = run(capsys)
+    assert ("  " + SIGN_IN + ": it is marked destructive, so its heals are never written into "
+            "code. Fix the selector by hand.") in out.splitlines()
+    assert "is a heal.page.get_by_role() call" not in out
+
+
+def test_python_call_sites_reads_literal_calls_only():
+    text = ('page.get_by_role("button", name="Sign in")\n'
+            'x.get_by_role(role="button", name="Sign in")\n'
+            'page.get_by_role("button", name=name)\n'
+            'page.get_by_text(re.compile("total", re.I))\n'
+            'get_by_role("button", name="Sign in")\n'
+            'page.get_by_role("button", name="Sign in", checked=True)\n')
+    keys = {SIGN_IN, 'get_by_text(re.compile("total", re.IGNORECASE))'}
+    assert fixback.python_call_sites(text, keys) == {
+        SIGN_IN: [1, 2], 'get_by_text(re.compile("total", re.IGNORECASE))': [4]}
+    assert fixback.python_call_sites('def broken(:\n', keys) == {}
+
+
+def test_a_call_key_never_enters_the_table_of_strings_to_replace():
+    store = {"schema": 2, "selectors": {SIGN_IN: healed(SIGN_IN, LOGIN, role="button")}}
+    plan = fixback.plan_fixes(store, [canary(SIGN_IN, LOGIN)])
+    assert plan.fixes == [] and plan.new_for == {}
+    assert plan.calls == [fixback.CallLeft(SIGN_IN, 'get_by_role', LOGIN, True)]
+
+
+# --- list heals that heal.locator_all(..., nonempty=True) proposed ---------------------------------
+
+ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]"
+T2 = "2026-10-03T10:00:00+00:00"
+
+
+def list_row(xpath, status, pid="3f2a9c1d", at=T1, accepted=None, css="div.cart-row",
+             differs=(), was=(".cart-item",)):
+    row = dict(cand(xpath, "heal", None, status=status), list=True, css=css, proposal={
+        "id": pid, "at": at, "by": "fingerprint", "page": "/cart", "count": 3, "found": 3,
+        "recorded": 3, "score": 0.86, "next": 0.31,
+        "was": {"selectors": list(was), "count": 3, "label": "Your bag",
+                "container": '<section class="cart">', "items": ["Blue mug"]},
+        "now": {"label": "Shopping cart" if differs else "Your bag",
+                "container": '<section class="cart">', "alike": [1, 1], "items": ["Blue mug"]},
+        "differs": list(differs)})
+    if accepted:
+        row["acceptedAt"] = accepted
+    return row
+
+
+def cart_key(*rows, code=(".cart-item",), **extra):
+    entry = {"expectedRole": "div", "listFingerprint": {"v": 1, "count": 3, "items": []},
+             "candidates": [cand(c, "code", T0) for c in code] + list(rows)}
+    entry.update(extra)
+    return entry
+
+
+CART_TEST = 'for row in heal.locator_all("cart", ".cart-item", nonempty=True):\n    row.click()\n'
+
+
+@pytest.mark.parametrize("flag", [(), ("--include-unconfirmed",)])
+def test_a_proposed_list_heal_is_left_alone_with_the_command_that_accepts_it(root, capsys, flag):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "proposed"))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply", *flag)
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: its list heal waits for you to check it. Run mendwright lists, then: "
+            "mendwright lists accept cart 3f2a9c1d") in out.splitlines()
+
+
+def test_an_accepted_list_heal_is_written_into_the_list_call(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2,
+                                                 differs=("heading",)))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0
+    assert source.read_text(encoding="utf-8") == CART_TEST.replace('".cart-item", nonempty',
+                                                                   '"div.cart-row", nonempty')
+    lines = out.splitlines()
+    assert "cart  (div)  list heal, accepted 2026-10-03 10:00:00 UTC" in lines
+    assert "  was  .cart-item" in lines and "  now  div.cart-row" in lines
+    assert "       3 elements under 'Shopping cart', in <section class=\"cart\">" in lines
+    assert ("  check  The heading is not the same: 'Your bag' then, 'Shopping cart' now."
+            in lines)
+
+
+def test_an_accepted_list_heal_is_written_as_an_xpath_into_an_xpath(root, capsys):
+    old = "//div[@class='cart-item']"
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2, was=(old,)),
+                                        code=(old,))})
+    text = 'rows = heal.locator_all("cart", "//div[@class=\'cart-item\']", nonempty=True)\n'
+    source = write(root, "test_cart.py", text)
+    assert run(capsys, "--apply")[0] == 0
+    assert ROWS in source.read_text(encoding="utf-8") and '"cart"' in source.read_text("utf-8")
+
+
+def test_an_accepted_list_heal_with_a_newer_proposal_is_left_alone(root, capsys):
+    write_store(root, {"cart": cart_key(
+        list_row(ROWS, "accepted", accepted=T1),
+        list_row("//li[@class='line']", "proposed", pid="9b8c7d6e", at=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: a newer list heal waits for you to check it, so mendwright can't tell which "
+            "one you want. Run mendwright lists, then accept or reject it.") in out.splitlines()
+
+
+def test_what_keeps_a_heal_out_of_the_code_keeps_an_accepted_list_heal_out(root, capsys):
+    accepted = list_row(ROWS, "accepted", accepted=T2)
+    write_store(root, {
+        "pay": cart_key(accepted, destructive=True),
+        "seeded": cart_key(accepted, code=()),
+        "word": cart_key(list_row(ROWS, "accepted", accepted=T2, was=("div",)), code=("div",)),
+        "both": cart_key(accepted, cand("//div[@id='p1']", "heal", T1)),
+        "framed": cart_key(dict(accepted, frameXPath="//iframe[@id='shop']"))})
+    write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    lines = out.splitlines()
+    assert code == 0 and out.splitlines()[0] == "mendwright fix: nothing to write back."
+    assert ("  pay: it is marked destructive, so its heals are never written into code. Fix the "
+            "selector by hand.") in lines
+    assert any(line.startswith("  seeded: no selector from your code is saved for it")
+               and line.endswith("Update the seed file by hand, to: " + ROWS) for line in lines)
+    assert any(line.startswith("  word: its old selector 'div' is a bare word") for line in lines)
+    assert ("  framed: its healed selector runs inside the iframe //iframe[@id='shop'], and a "
+            "selector in your code runs in the page itself. Change the selector and the frame "
+            "handling by hand.") in lines
+    assert ("  both: it has a heal of the list (heal.locator_all()) and a heal of one element "
+            "under the same key, and one selector in your code cannot be both, so mendwright "
+            "cannot tell which one goes where. Change the selectors by hand, or give the list a "
+            "key of its own: the list to div.cart-row, the element to //div[@id='p1']") in lines
+
+
+T3 = "2026-10-04T11:00:00+00:00"
+WISH_TEST = ('def test_cart(heal):\n    rows = heal.locator_all("cart", ".cart-item", nonempty=True)\n'
+             'def test_wish(heal):\n    rows = heal.locator_all("cart", ".wish")\n')
+
+
+def test_an_accepted_list_heal_is_written_only_over_the_selector_it_replaced(root, capsys):
+    # The key is used on two pages, and the wish list's call ran last: .cart-item is not one of
+    # the last run's selectors, and .wish works. Nothing is written over .wish.
+    write_store(root, {"cart": cart_key(
+        cand(".cart-item", "code", T0, status="superseded"), cand(".wish", "code", T3),
+        list_row(ROWS, "accepted", accepted=T2), code=())})
+    source = write(root, "test_cart.py", WISH_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == WISH_TEST
+    assert ("  cart: its list heal replaced '.cart-item', and the last run passed '.wish' for it "
+            "instead: your code changed, or the key is used with another selector on another "
+            "page, so mendwright can't tell that a string it would replace is the selector that "
+            "broke. If '.cart-item' is still in your code, change it by hand to: div.cart-row. "
+            "If your code already has a selector that works, drop the list heal with: mendwright "
+            "lists reject cart") in out.splitlines()
+    # The cart's call ran last: only that call is changed.
+    write_store(root, {"cart": cart_key(
+        cand(".wish", "code", T3, status="superseded"), list_row(ROWS, "accepted", accepted=T2))})
+    assert run(capsys, "--apply")[0] == 0
+    assert source.read_text(encoding="utf-8") == WISH_TEST.replace(
+        '".cart-item", nonempty', '"div.cart-row", nonempty')
+
+
+def test_an_accepted_list_heal_is_not_written_over_a_selector_fixed_by_hand(root, capsys):
+    text = 'rows = heal.locator_all("cart", ".cart-row", nonempty=True)\n'
+    write_store(root, {"cart": cart_key(
+        cand(".cart-item", "code", T0, status="superseded"), cand(".cart-row", "code", T3),
+        list_row(ROWS, "accepted", accepted=T2), code=())})
+    source = write(root, "test_cart.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == text
+    assert any(line.startswith("  cart: its list heal replaced '.cart-item', and the last run "
+                               "passed '.cart-row' for it instead") for line in out.splitlines())
+
+
+def test_an_accepted_list_heal_is_not_written_once_the_old_selector_matched_again(root, capsys):
+    # A run that did not retire it (mendwright 0.8.0 on the same store) saw .cart-item match.
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2),
+                                        code=())})
+    store = root / ".mendwright" / "overrides.json"
+    data = json.loads(store.read_text(encoding="utf-8"))
+    data["selectors"]["cart"]["candidates"].insert(0, cand(".cart-item", "code", T3))
+    store.write_text(json.dumps(data), encoding="utf-8")
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: its selector '.cart-item' matched on 2026-10-04 11:00:00 UTC, after its list "
+            "heal was found on 2026-10-02 09:30:00 UTC, so the list was not broken there, or your "
+            "code has a new selector already. Look at the page, then change the selector by hand "
+            "to: div.cart-row, or drop the list heal with: mendwright lists reject cart"
+            ) in out.splitlines()
+
+
+def test_an_accepted_list_heal_without_its_evidence_counts_every_code_selector(root, capsys):
+    # A 0.8.0 write dropped the proposal and acceptedAt: the row is still accepted.
+    bare = {k: v for k, v in list_row(ROWS, "accepted").items() if k != "proposal"}
+    write_store(root, {"cart": cart_key(bare)})
+    source = write(root, "test_cart.py", CART_TEST)
+    assert run(capsys, "--apply")[0] == 0
+    assert '"div.cart-row", nonempty' in source.read_text(encoding="utf-8")
+    write_store(root, {"cart": cart_key(cand(".wish", "code", T3), bare, code=())})
+    text = 'rows = heal.locator_all("cart", ".wish")\n'
+    wish = write(root, "test_wish.py", text)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and wish.read_text(encoding="utf-8") == text
+    assert any(line.startswith("  cart: its selector '.wish' matched on 2026-10-04 11:00:00 UTC, "
+                               "after its list heal was found on 2026-10-01 08:00:00 UTC")
+               for line in out.splitlines())
+
+
+def test_an_accepted_list_heal_is_not_written_once_a_seed_selector_matched_again(root, capsys):
+    # The code's .cart-item last matched before the list heal was found, the seed file's
+    # selector of the key after: the list was not broken there.
+    seeded = "//div[@class='cart-item']"
+    write_store(root, {"cart": cart_key(cand(seeded, "seed", T3),
+                                        list_row(ROWS, "accepted", accepted=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert any(line.startswith("  cart: its selector " + repr(seeded) + " matched on 2026-10-04 "
+                               "11:00:00 UTC, after its list heal was found on 2026-10-02 "
+                               "09:30:00 UTC") for line in out.splitlines())
+
+
+def test_an_accepted_list_heal_that_names_no_selector_it_replaced_is_left_alone(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2, was=()))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: its list heal doesn't name the selector it replaced, so mendwright can't "
+            "tell which string in your code to replace. Change it by hand to: div.cart-row. If "
+            "your code already has a selector that works, drop the list heal with: mendwright "
+            "lists reject cart") in out.splitlines()
+
+
+# --- what the merge of the 0.9.0 features needed --------------------------------------------
+
+def test_destructive_key_skips_an_accepted_list_heal(root, capsys):
+    write_store(root, {"cart": cart_key(list_row(ROWS, "accepted", accepted=T2))})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, err = run(capsys, "--apply", "--destructive-key", "cart")
+    assert (code, err) == (0, "")
+    assert source.read_text(encoding="utf-8") == CART_TEST
+    assert ("  cart: it is marked destructive, so its heals are never written into code. Fix the "
+            "selector by hand.") in out.splitlines()
+
+
+@pytest.mark.parametrize("row, said", [
+    (dict(list_row("#rows", "accepted", accepted=T2), css=None),
+     "  cart: its accepted list heal '#rows' is not an XPath that lxml can compile"),
+    (list_row(ROWS, "accepted", accepted=T2, css='div.cart-row, a[href^="javascript:"]'),
+     "  cart: the CSS form of its accepted list heal, "
+     "'div.cart-row, a[href^=\"javascript:\"]', is not one mendwright builds")])
+def test_an_accepted_list_heal_mendwright_could_not_have_saved_is_never_written(root, capsys,
+                                                                              row, said):
+    write_store(root, {"cart": cart_key(row)})
+    source = write(root, "test_cart.py", CART_TEST)
+    code, out, _err = run(capsys, "--apply")
+    assert code == 0 and source.read_text(encoding="utf-8") == CART_TEST
+    assert any(line.startswith(said) and line.endswith("Check the store; nothing is written for "
+                                                       "this key.") for line in out.splitlines())
+
+
+def test_destructive_key_reads_a_call_written_in_another_spelling(root, capsys):
+    confirmed_project(root, SIGN_IN, SIGN_IN, LOGIN, role="button")
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code, out, err = run(capsys, "--destructive-key", "get_by_role('button', name='Sign in')")
+    assert (code, err) == (0, "")
+    assert ("  " + SIGN_IN + ": it is marked destructive, so its heals are never written into "
+            "code. Fix the selector by hand.") in out.splitlines()
+    assert "is a heal.page.get_by_role() call" not in out
+
+
+def test_a_list_heal_rejected_with_mendwright_lists_is_named_so(root, capsys):
+    rejected = dict(list_row(ROWS, "quarantined"), addedAt=T1)
+    write_store(root, {"cart": cart_key(rejected)})
+    write(root, "test_cart.py", CART_TEST)
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    assert ("  cart: its newest heal, the list heal " + ROWS + ", was rejected with mendwright "
+            "lists reject, and no selector has worked for the key since, so there is nothing to "
+            "write back.") in out.splitlines()

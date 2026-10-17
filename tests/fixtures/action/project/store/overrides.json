@@ -1,0 +1,11 @@
+{"schema": 2, "selectors": {
+  "accept_terms": {"expectedRole": "checkbox", "candidates": [
+    {"xpath": "#accept-terms", "source": "code", "status": "active", "addedAt": "2026-10-15T05:00:00+00:00", "lastSucceededAt": "2026-10-15T05:00:00+00:00"},
+    {"xpath": "//label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']", "source": "heal", "status": "active", "addedAt": "2026-10-16T05:01:02+00:00", "lastSucceededAt": "2026-10-16T05:01:02+00:00"}]},
+  "email": {"expectedRole": "textbox", "candidates": [
+    {"xpath": "#email", "source": "code", "status": "active", "addedAt": "2026-10-15T05:00:00+00:00", "lastSucceededAt": "2026-10-15T05:00:00+00:00"},
+    {"xpath": "//input[@name='e-mail']", "source": "heal", "status": "active", "addedAt": "2026-10-16T05:01:03+00:00", "lastSucceededAt": "2026-10-16T05:01:03+00:00"}]},
+  "pay": {"expectedRole": "button", "destructive": true, "candidates": [
+    {"xpath": "#pay", "source": "code", "status": "active", "addedAt": "2026-10-15T05:00:00+00:00", "lastSucceededAt": "2026-10-15T05:00:00+00:00"},
+    {"xpath": "//button[@id='pay-now']", "source": "heal", "status": "active", "addedAt": "2026-10-14T05:00:00+00:00", "lastSucceededAt": "2026-10-16T05:01:04+00:00"}]}
+}}

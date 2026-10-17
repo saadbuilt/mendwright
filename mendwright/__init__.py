@@ -29,6 +29,7 @@ from .capture import build_bundle, redact
 from .client import DEFAULT_AUTH_HEADER, apply, report_outcome, request_heal
 from .coordinator import HealCoordinator, resolve_with_heal
 from .exceptions import AttentionRequired
+from .getby import get_by_key
 from .publish import publish, republish_bundle
 from .resolver import present, resolve
 from .selectors import InvalidSelector
@@ -69,7 +70,7 @@ __all__ = [
     'Driver', 'PlaywrightSyncDriver', 'SeleniumDriver', 'wrap', 'register_driver', 'register_driver_front',
     'HealProvider', 'GatewayProvider', 'AnthropicProvider', 'OpenAICompatibleProvider',
     'GeminiProvider', 'BedrockProvider', 'LiteLLMProvider', 'LocalModelProvider', 'auto_provider',
-    'Healer', 'HealEvent',
+    'Healer', 'HealEvent', 'get_by_key',
     'SelectorStore', 'load_store', 'merge', 'migrate_schema1', 'infer_role',
     'validate', 'Result',
     'build_bundle', 'redact',
@@ -88,6 +89,6 @@ try:
     try:
         __version__ = _dist_version('mendwright')
     except PackageNotFoundError:
-        __version__ = '0.8.0'
+        __version__ = '0.9.0'
 except Exception:  # pragma: no cover - importlib.metadata is stdlib on 3.10+
-    __version__ = '0.8.0'
+    __version__ = '0.9.0'
