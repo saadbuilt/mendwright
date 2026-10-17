@@ -146,10 +146,11 @@ The modules:
 - `store.py` and `roles.py`: the seed and override layers, candidate status, per-key metadata, the lock file and the merge; and the role vocabulary.
 - `capture.py`: `build_bundle()`, `redact()` and `clean_html()`.
 - `providers/`: the `HealProvider` protocol (`base.py`), the built-in providers, `auto_provider()` (`detect.py`) and the error text (`_errors.py`). `prompt.py` holds the one prompt every provider uses.
-- `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal.
+- `limits.py` and `journal.py`: the rate limit and spend cap for direct providers, and the JSONL journal, with the run id every event gets (`run_id()`).
+- `runsummary.py` and `notify.py`: `mendwright notify`. `runsummary.select()` picks the events of one run and `summarize()` and `message()` sum them up in mendwright's own words; `notify.payload()` builds what is sent and `notify.send()` makes the one POST, with no redirect and one retry.
 - `publish.py`: writes a confirmed selector into a seed JSON file.
 - `cli.py` and `demo/`: the `mendwright` command and the demo that ships in the wheel. `fixback.py` is `mendwright fix`, its JSON and its Markdown, `report_html.py` is `mendwright report --format html`, and `_md.py` puts text from a store or a journal into Markdown, in code spans and code blocks.
-- `action.yml` and `action/` (not part of the package): the GitHub Action. `action/mendwright_action.py` holds its steps, standard library only, and `action/requirements.txt` the one hash-pinned lxml wheel it installs. `tests/test_action_script.py` runs the steps against a real git repository and a fake GitHub API.
+- `action.yml` and `action/` (not part of the package): the GitHub Action. `action/mendwright_action.py` holds its steps (the alert's included), standard library only, and `action/requirements.txt` the one hash-pinned lxml wheel it installs. `tests/test_action_script.py` runs the steps against a real git repository and a fake GitHub API.
 - `pytest_plugin.py`: the `heal` fixture, confirmation from test results, strict mode and the summary.
 
 ## Writing a driver

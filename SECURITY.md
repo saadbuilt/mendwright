@@ -133,7 +133,7 @@ in:  Incorrect API key provided: sk-proj-abc123def456ghi. Authorization: Bearer 
 out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see https://gw.example/heal?key=[redacted]&x=1
 ```
 
-`mendwright doctor` adds its own masking. It replaces the value of any environment variable whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `AUTH` or `CREDENTIAL` with `***` wherever it appears in error text. It shows `MENDWRIGHT_GATEWAY` as scheme and host only, and shows `MENDWRIGHT_KEY` and other unlisted `MENDWRIGHT_*` variables as `(set, value hidden)`.
+`mendwright doctor` adds its own masking. It replaces the value of any environment variable whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `AUTH`, `CREDENTIAL` or `WEBHOOK` with `***` wherever it appears in error text and in the values it shows. It shows `MENDWRIGHT_GATEWAY` and `MENDWRIGHT_WEBHOOK_URL` as scheme and host only, and shows `MENDWRIGHT_KEY` and other unlisted `MENDWRIGHT_*` variables as `(set, value hidden)`.
 
 ## Files mendwright writes
 
@@ -144,6 +144,7 @@ out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see
 - A list fingerprint is saved for every `heal.locator_all()` lookup that matched two or more elements while the fingerprint tier is on. `heal.page.locator(...).all()` and `heal.driver.find_elements()` save nothing. It holds the fingerprints of three of the items, as above, the tag names inside each of them and how many of each, how many items there were, and the tag, id, test id, `aria-label`, non-generated class names and role of their container. Once a lookup with `nonempty=True` recorded it, it also holds the list's heading or `aria-label` (up to 80 characters) and where the list sat: 4-byte hashes of the tags, ids, test ids and classes of its container and the elements around it, of up to 1,000 other elements of the page, and of up to 200 of its headings and labels. The hashes are short and can be guessed from a dictionary, so they don't keep that page text secret. It is never sent to any provider, and no provider is asked about a list.
 - A list heal that `heal.locator_all(..., nonempty=True)` proposes saves what you check it by: two headings, two container summaries (tag, id, non-generated classes), the text of two recorded items and of two items found (each up to 80 characters, runs of 12 to 19 digits as `#`), the page's path and the selectors that matched nothing, at most 3 per key. The list fingerprint already holds item texts, so the kind of data is not new, but there is more of it, and it goes into the CI cache with the store. `mendwright lists` and `mendwright report` print these texts, so CI logs hold them; the error a lookup raises prints the headings, containers and selector, but no item text. Every control character in the page text a proposal saves, and in what `mendwright lists` and the list messages print, keys included, is turned into `?`, apart from the first line of the error a lookup raises, `No matching element for: KEY`, which names the key as your code passed it, as in 0.8.0; a command for a key with one says `KEY` and asks you to quote the key. `mendwright lists accept` and `reject` change only the rows they are about, and accepting never makes a selector run: only your code does.
 - `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. A `heal.held` event of a proposed list heal holds its heading too. With `dismiss=True`, a `flow.dismiss` event also holds up to 60 characters of the popup's text (runs of 12 to 19 digits redacted) and the labels of the buttons mendwright clicked on it, as the WARNING line does. On POSIX it's created with mode 0600.
+- Since 0.10.0, each journal event has `run`, the run's id (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`). A `heal.declined` event holds the `reason` a heal did not apply, the text the log line and the error give, which can quote the page, as `reasoning` can. A `flow.stop` event holds a code, a key and a step or page path, never the message, so no popup text.
 - `overrides.json.lock` while a write is in progress.
 - A `heal.canary` in the journal says what confirmed the heal and, for a passing test, holds the test's node id, which can hold a parametrized test's values.
 - Uploaded as an artifact for the GitHub Action, the store and the journal can be downloaded by anyone who can read the repository, until the artifact expires. The guide's workflow uploads only the two files, for one day.
@@ -165,6 +166,19 @@ The action (`action.yml` at the root of this repository) runs `mendwright fix --
 
 What review still has to catch: a forged store can name any string literal in your Python files that isn't a bare word as a key's old selector, and propose any XPath that compiles in its place, with a forged canary to confirm it. `mendwright fix` refuses a heal mendwright could not have saved, but an XPath such as `//cdn.example/x.js` is also a protocol-relative URL. With `--glob`, the same holds for quoted strings in other files. The pull request lists every replacement with its old and new value and where it is; read it as you would read a change from a contributor. The action is as trustworthy as everything that runs in your test job.
 
+## Webhooks
+
+`mendwright notify` and the action's `webhook-url` post a summary of one run to a webhook. A webhook URL is a secret: its path is the key that lets anyone post to your channel.
+
+- The URL comes only from the environment variable `MENDWRIGHT_WEBHOOK_URL`. No option takes it, since a command line shows in process lists, shell history and CI logs.
+- It must be `https://` with a host; `http://` only for `localhost`, `127.0.0.1` and `[::1]`. Anything else is refused before any request. TLS is verified with Python's default context, and `HTTPS_PROXY` is honoured as urllib does.
+- It is never printed. Messages name the webhook by its scheme and host, and the URL, its path, its query and its user info are written as `***` in everything mendwright prints, the webhook's error text included. `mendwright doctor` shows its scheme and host only.
+- No redirect is followed: a 3xx is a failure. At most two attempts are made, the second after 2 seconds, on HTTP 429, a 5xx, a timeout or a connection error.
+- In the action, only the step that sends the alert gets the URL. It masks the URL, its path and its query with `::add-mask::` before it prints anything, and it runs only for a run the guard let through, never on `pull_request`.
+- A webhook that fails never fails the command or the job (`--fail-on-error` makes the command exit 1).
+
+What is sent: counts, codes, mendwright's own phrases, key names, the title (the repository, or `--title`), the links to the run and the pull request, how the tests ended and mendwright's version. What is never sent: page HTML, input values, selectors (old or healed), the model's reasoning, the reason text of a heal that did not apply, popup text and button labels, page paths, interruption selectors, test node ids, store and journal paths, and provider and model names. `mendwright notify` reads only the journal, which holds no page HTML and no input values. The keys of `heal.page` and `heal.driver` calls are the selectors in your code, such as `#email`, and a key can name something personal; `--detail counts` (`notify-detail: counts`) leaves every key out. In Slack text, `&`, `<` and `>` are written as entities, so a key can't mention `@channel` or a person.
+
 ## Residual risks
 
 - The live check and the retried action are separate calls. The page can change between them.
@@ -179,6 +193,7 @@ What review still has to catch: a forged store can name any string literal in yo
 - Anything that can write the test job's files can forge the store and the journal; the pull request is then the only check.
 - A collaborator who can push to the repository can push code that writes a store on `push`. The action trusts collaborators as much as the repository does.
 - With a personal access token or a GitHub App token, the action's push and pull request start workflows. It skips a run on its own branches, so it doesn't loop, but your other workflows run on the branch.
+- An alert names keys, unless `--detail counts`. Anyone who reads the channel reads them, and the webhook's service keeps them.
 - A key name or a selector in the pull request can hold words such as `closes #5`. GitHub doesn't act on them in a description, but a squash merge that copies the description into the commit message can close that issue.
 
 If you find a way to get a selector past the checks, to heal a key marked destructive, or to send more page data than this page describes, please report it privately as described at the top.
