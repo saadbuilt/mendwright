@@ -305,6 +305,9 @@ describe('what is never healed', () => {
     await assert.rejects(w.open().locator('create', '#create', { destructive: true }).click(), /never acts through a healed selector/);
     assert.deepEqual(w.page.actions, []);
     assert.equal(loadStore(w.storePath).status('create', "//button[@id='create-account']"), 'quarantined');
+    // by says why, so the Python package's mendwright notify does not call the repair wrong.
+    assert.deepEqual(journalOf(w.dir).filter((e) => e.event === 'heal.quarantine').map((e) => [e.key, e.by]),
+      [['create', 'destructive']]);
   });
 
   test('a key on a page where it was never found (the page guard)', async () => {

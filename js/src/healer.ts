@@ -486,8 +486,9 @@ export class Healer {
     if (this.coordinator.isPending(key, xpath)) {
       this.coordinator.confirmPending(key, false, { xpath, by: 'destructive' });
     } else {
+      // A heal saved before the key was marked: by says why, as the Python package's does.
       this.store.quarantine(key, xpath);
-      this.coordinator.journal.event('heal.quarantine', { key, xpath });
+      this.coordinator.journal.event('heal.quarantine', { key, xpath, by: 'destructive' });
     }
     const fix = this.store.isLockedDestructive(key) ? 'Fix the selector in your code.'
       : 'Fix the selector in your code, or pass destructive: false to heal.locator() if this control is safe to act on.';
