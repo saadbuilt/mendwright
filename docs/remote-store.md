@@ -2,7 +2,7 @@
 
 > **Draft.** The backends on this page exist and pass the contract tests, but `mendwright.open()` doesn't use them yet. The work that wires them in will finish this page, and the guide will link to it then.
 
-A remote store lets many machines share one set of repairs. Instead of a file on each machine, the store lives in an S3 bucket or behind an HTTPS server. Every write is a compare-and-swap, so workers on many machines can change it at the same time without losing each other's changes.
+A remote store lets many machines share one set of repairs. Instead of a file on each machine, the store lives in an S3 bucket or behind an HTTPS server. The backends write with compare-and-swap (a write that names the version it read fails if someone else wrote first), which is what lets workers on many machines change one store at the same time without losing each other's changes.
 
 ## URL forms
 
