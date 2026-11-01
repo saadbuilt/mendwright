@@ -26,6 +26,7 @@ Contents:
 - [Roles](#roles)
 - [Destructive controls](#destructive-controls)
 - [Store and journal](#store-and-journal)
+- [Many workers at once](#many-workers-at-once)
 - [CI](#ci)
 - [Checking for drift before a run](#checking-for-drift-before-a-run)
 - [Logging](#logging)
@@ -51,7 +52,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `dry_run` | `MENDWRIGHT_DRY_RUN`, else off | Ask for heals and check each proposal against the captured HTML only (no live-page check), but save nothing and raise `AttentionRequired` |
 | `destructive_keys` | none | Keys that are never healed. Nothing can unmark them later. |
 | `guard` | always allows | A callable. While it returns False, heals are declined, for example while a payment is in flight. |
-| `rate_per_key_per_hour` | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR`, else 3 | Heal attempts per key per hour for a direct provider (rejected and dry-run attempts count, and each attempt makes up to 2 model calls). `None` removes the limit. |
+| `rate_per_key_per_hour` | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR`, else 3 | Heal attempts per key per hour for a direct provider (rejected and dry-run attempts count, and each attempt makes up to 2 model calls), for every process on the machine that uses the same store file together. `None` removes the limit. |
 | `rate_global_per_hour` | `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`, else 60 | Heal attempts per hour across all keys for a direct provider. `None` removes the limit. |
 | `guardrails` | built from the two rates | A `mendwright.limits.Guardrails`, for example with a `SpendCap(max_calls=...)` added |
 | `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
@@ -62,7 +63,8 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `heal_get_by` | `MENDWRIGHT_HEAL_GET_BY`, else off | `True` looks up and heals `heal.page.get_by_role()` and the other `get_by_*` calls too, from their fingerprints only. `"model"` does the same and asks the model provider when the fingerprint doesn't heal a call. On Selenium it does nothing. See [get_by locators](#get_by-locators). |
 | `suggest_get_by` | `MENDWRIGHT_SUGGEST_GET_BY`, else off | `True` saves every heal on Playwright with a `get_by_*` call that matched the healed element, for [`mendwright fix`](#mendwright-fix) to suggest. A heal of a `get_by_*` call gets one either way. See [Suggested calls](#suggested-calls). |
 
-The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
+The two rates are shared by every Healer in one process that uses the same store file and the same two rate values, and the per-key rate also by the other processes of the machine on that store (see [Many workers at once](#many-workers-at-once)).
+Only the worker that leads a heal spends them: the workers waiting for it use its heal.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
 
 ### Healer.locator()
@@ -157,6 +159,7 @@ That counts only in the same place: a selector quarantined inside an iframe does
 | `MENDWRIGHT_TIMEOUT_MS` | Default `timeout_ms`, in whole milliseconds |
 | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` | Default `rate_per_key_per_hour`: a whole number, or `none` for no limit. `0` lets no model attempt through, while fingerprint heals still happen |
 | `MENDWRIGHT_RATE_GLOBAL_PER_HOUR` | Default `rate_global_per_hour`, in the same form |
+| `MENDWRIGHT_DECLINE_TTL_SECONDS` | How long the model's decline of a key on a page is reused instead of asking again, in whole seconds (default 600). `0` asks every time. See [Declines are reused](#declines-are-reused) |
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
 | `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=`. The fingerprint tier is off too. |
 | `MENDWRIGHT_FINGERPRINT` | `0` turns the fingerprint tier off, the default for `fingerprint=` |
@@ -1096,6 +1099,7 @@ For a strict CI job, give each run a fresh store (see [CI](#ci)).
 ### pytest-xdist and async tests
 
 Store writes take a lock file and merge with what other processes wrote, so `pytest -n auto` can share one store.
+When a key breaks for several workers at once, one of them heals it and the others use that heal (see [Many workers at once](#many-workers-at-once)).
 The controller prints the summary once.
 Under xdist the one-line strict reason is missing from the short summary, but the full failure text is there.
 
@@ -1924,6 +1928,7 @@ Heals are XPath, because the gate checks them with lxml. When a key's selector i
 ## Roles
 
 A proposal is accepted only if the element it finds has the step's role, both in the captured HTML and again on the live page.
+A selector a heal or a seed file saved is checked again on the page each time it is used, when a control is involved (see [What is checked when a saved heal is used](#what-is-checked-when-a-saved-heal-is-used)); the selectors in your code are not.
 Roles use mendwright's own vocabulary: `button`, `checkbox`, `radio`, `link`, `input` and `combobox`, or the tag name for anything else (`textarea`, `div`, `h1`).
 
 The check reads an element like this:
@@ -2031,6 +2036,8 @@ The real file is a single line; it is wrapped here.
 Writes take a lock file (`overrides.json.lock`), merge with what other processes wrote since the last read, and replace the file atomically.
 On a conflict, `quarantined` wins, then `accepted`, and `destructive: true` wins.
 If a write fails, mendwright logs one WARNING and keeps working in memory.
+A worker also looks at the file for one key before it uses a saved selector and while a step keeps missing, and writes the order of last successes, page lists and fingerprints at most every 5 minutes per key (see [Many workers at once](#many-workers-at-once)).
+The `keys/` folder next to the file holds one small [coordination record](#coordination-records) per key, never a heal.
 
 A file that is corrupt or can't be read raises an error when the store loads. It is never treated as empty, because the next write would replace it and lose every saved heal. Fix the file or move it aside.
 
@@ -2120,6 +2127,130 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 `flow.stop` is in [Log lines and journal events](#log-lines-and-journal-events). `mendwright report` and `mendwright fix` don't read `run`, `heal.declined` or `flow.stop`, and a 0.9.0 `mendwright fix` reading a 0.10.0 journal ignores them.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
+
+Two more events come from [many workers at once](#many-workers-at-once):
+
+- `heal.adopted` when a worker used a heal another worker saved since it read the store, after the live check on its own page (with `xpath`, and `old`, the selectors that missed, when known)
+- `heal.refused` when a selector a heal or a seed file saved matched an element that failed the live check where a lookup would use it (with `xpath`, `source`, `reason` and `page`)
+
+A `heal.declined` that reuses the model's answer from another worker, or from an earlier lookup, has `"cached": true`.
+
+## Many workers at once
+
+Many workers often share one store: threads with a Healer each, asyncio tasks, `pytest -n auto`, a pool of scrapers.
+Each `mendwright.open()` and `mendwright.aio.open()` is a worker, with its own copy of the store in memory.
+When a deploy breaks a key for all of them at once, mendwright heals it once, and the others use that heal.
+
+### One heal for many workers
+
+When a key misses for several workers on one store file, the first one to start its heal leads it, and the others wait for it:
+
+- **Threads and asyncio tasks of one process** wait for the leader in that process. A worker on the async healer waits on its event loop and holds no worker thread.
+- **Processes of one machine** wait through a small record per key next to the store (see [Coordination records](#coordination-records)). Exactly one process leads.
+- **Machines** each keep their own store, and learn a heal once per store. A store that several machines share on a network folder works as on one machine, but the leases and the shared budget read each machine's own clock, so between machines they are best effort.
+
+When the leader is done, each waiting worker:
+
+- **uses the leader's heal** when it passes the [live check](#what-is-checked-when-a-saved-heal-is-used) on its own page. The heal is then pending, as a heal of its own is: the next action confirms it or quarantines it, and no fingerprint is recorded through it until then. The journal gets `heal.adopted`. A heal that doesn't fit its page is not used, and the worker makes its own attempt.
+- **fails with the model's own reason** when the model looked at the page and gave no usable heal, with no model call (see [Declines are reused](#declines-are-reused)).
+- **makes its own attempt**, under the usual caps, after anything else: a rate limit, a failure of the provider, a dry run.
+
+A worker waits no longer than its step's own `timeout_ms`, then makes its own attempt under the usual caps.
+So keep `timeout_ms` above your model's usual answer time. The default, 10 seconds, is. With `timeout_ms` of 100 ms and a model that takes 2 seconds, every worker stops waiting before the leader has its answer, and heals alone, as before.
+
+Only the leader spends the hourly budget. An attempt still makes up to 2 model calls.
+`rate_per_key_per_hour` counts the attempts of every process on the machine together, and `rate_global_per_hour` those of one process.
+
+Which workers share a heal: those on the same store file, key and page signature.
+The page signature is the page's path as mendwright records it (lower case, record ids as `*`, no host, query or fragment) and the selectors of the key that stopped matching.
+Two variants of one page path, such as an A/B test, share a signature. That is safe, because every heal is checked live on each worker's own page, and a shared decline lasts only its TTL.
+The page's elements are left out on purpose: their text and generated ids differ from one worker to the next, so nothing would be shared.
+For the TypeScript port, the signature is SHA-256, in hex, of these netstrings (`<byte length>:<bytes>,`) in order: `mendwright-page-signature/1`, the page or the empty string when there is none, and each distinct selector, sorted by its UTF-8 bytes (see `mendwright.fleet.page_signature`).
+
+### Declines are reused
+
+When the model looks at a page and gives no usable heal, because it found no element that fits (code `not_here`) or nothing it proposed passed the checks (code `gate`), mendwright keeps that answer for the key and the page signature for `MENDWRIGHT_DECLINE_TTL_SECONDS`: 600 seconds by default, `0` to ask the model every time.
+Inside that time every worker on the store reuses it, in every process of the machine, instead of asking again. It costs no model call and no budget:
+
+```text
+No matching element for: accept_terms (tried 1 candidate(s)).
+  -> StubProvider returned no selector for 'accept_terms': the model says no element on this page fits: ... (mendwright asked the model about this page 42 seconds ago, in this or another worker, and reuses its answer for 600 seconds instead of asking again: MENDWRIGHT_DECLINE_TTL_SECONDS.)
+```
+
+- The journal gets a `heal.declined` with the same code and `"cached": true`.
+- A heal another worker saves still wins over a reused decline.
+- A failure of the provider itself (a network error, a rate limit, a bad key) is never kept: asking again can work.
+- A reused decline skips the fingerprint tier too: the worker that asked the model ran it on the same page signature first.
+
+### What is checked when a saved heal is used
+
+A selector a heal or a seed file saved can match another control on a page variant: `//input[@name='terms']`, saved on a checkbox, also matches an `<input type="submit" name="terms">`.
+So each time a lookup is about to use such a selector, the element it matches is checked again, on that page:
+
+- its role against the key's, the one `role=` passed or the store holds, when either is a control's (`button`, `checkbox`, `radio`, `link`, `input`, `combobox`, `textarea`). A guessed role isn't compared, and a `span` that became a `div` on a key you only read from is used as it is.
+- its text, for a key marked destructive that has expected text
+- its ARIA role, for the key of a `get_by_role()` call
+- one match, and visible unless the key is a checkbox, as before
+
+A selector that fails isn't used on that page. The lookup goes on with the key's other selectors, or heals.
+It logs one WARNING per key and page, and the journal gets `heal.refused`:
+
+```text
+mendwright: did not use //input[@name='terms'] for 'accept_terms' on /checkout: a heal saved that selector, and the element it matches here failed the live check (live element role mismatch: got button want checkbox). mendwright left it in the store for the pages where it fits and went on without it.
+```
+
+It isn't quarantined, because it may be right on other pages.
+The selectors in your code are used as they always were, and an element the driver can't read is used on its count and visibility, as before.
+`heal.drift()` and `mendwright check` show such a selector as `fails the live check`, and go on as a run does.
+
+### Open workers see each other's changes
+
+A worker reads the store file when it opens and each time it writes. In between, it looks at the file again for one key:
+
+- before it uses a selector a heal or a seed file saved, at most once a second per key, so a quarantine another worker made reaches it
+- about once a second while a step keeps missing, so it uses a heal another worker saved without waiting out its timeout
+- before its fingerprint tier, before it asks a model, and before it saves a heal it found
+
+A look costs one `stat` of the file when nothing changed. A changed file is parsed once per version per process, however many workers look, and only the one key is merged, with the merge rules of a write: a quarantine wins, then an acceptance; `destructive: true` wins; the newest success wins.
+A file that can't be read leaves memory as it is.
+
+### Fewer writes
+
+What the store file doesn't have yet is written at once: heals, quarantines, roles, destructive flags, your code's selectors, a first success, and a key's first pages, address, steps and fingerprint.
+A first success another worker already recorded isn't written again.
+
+Changes to what the file has are written at most every 5 minutes per key per process: the order of the last successes, a new page in a key's list, a new fingerprint, such as the fingerprint of an element whose text changes on every view.
+In between they wait in the worker's memory and go with its next write.
+Whatever still waits is written when the process exits, also from a `multiprocessing` child.
+`SelectorStore.flush()` and `mendwright.store.flush_all()` write what waits now; call one before `os._exit()`.
+
+### Coordination records
+
+Each key gets a small record next to the store, `keys/<first 32 hex digits of sha256(key)>.json` (for a store file with another name than `overrides.json`, `<file name>.keys/`). It holds:
+
+- the lease of the heal under way: the process that leads takes it with a compare-and-swap, so exactly one does, and renews it every 5 seconds while it heals. A lease nobody renewed for 15 seconds belongs to a process that died, and exactly one waiting process takes it over.
+- the times of the model attempts made for the key in the last hour, by every process
+- the reused declines, per page signature
+
+The times are the machine's own clock.
+A record that can't be read or written means no coordination: the worker heals on its own, under the caps of its process.
+These records are never in `overrides.json`, whose older writers would drop what they don't know. They hold no heal, so you can delete the folder at any time.
+
+### What it changes
+
+Measured with 1000 threads in one process, or 16 processes of 10 threads, on one broken key, with a fake model that takes 0.5 to 2 seconds:
+
+| Workers on one key, `timeout_ms=3000` | Before | Now |
+|---|---|---|
+| 1000 threads, the model heals | 3 model calls, 997 failures | 1 call, 999 adopted |
+| 1000 threads, the model heals, no rate caps | 1000 calls, 1001 writes | 1 call, 2 writes |
+| 1000 threads, the model finds nothing | 3 calls, 997 failures with the rate cap's message | 1 call, 999 with the model's reason |
+| 1000 threads, the fingerprint heals | 1000 fingerprint runs and heals, 1001 writes | 1 of each, 2 writes |
+| 100 threads arriving over 6 seconds | 3 calls, 97 failures | 1 call, 99 adopted |
+| 16 processes of 10 threads, the model heals | 48 calls, 112 failures | 1 call, 159 adopted |
+| 16 processes of 10 threads, the model finds nothing | 48 calls, 112 failures | 1 call, 159 with the model's reason |
+
+With `timeout_ms=100`, shorter than the model's answer, the workers stop waiting first and heal alone, so the thread herds make as many model calls as before: 3 with the caps, 1000 without. Without the caps, a worker still uses the heal another worker saved while it waited for its own answer: 2 writes where there were 1001. 1000 threads that heal from the fingerprint all finish before the first of them has saved, and save their own heals as before. 16 processes of 10 threads make 3 calls in all where they made 48, since the per-key cap counts every process, and so get 157 failures where they got 112; their fingerprint heal is made once, with 2 writes where there were 179.
 
 ## CI
 
@@ -2579,7 +2710,7 @@ Words are split on `/`, `-`, `_`, `.`, `+` and `~` and compared whole. So `/orde
 |---|---|---|
 | `ok` | A saved selector matches one visible element of the key's role (a hidden checkbox counts, as in a run). | Nothing. |
 | `ok (heal)` | The selectors from your code miss, and a heal saved earlier matches. A run uses it, with no model call. | Run [`mendwright fix`](#mendwright-fix) to put it in your code (for a `get_by_*` call, it shows the healed selector and where the call is, and leaves the call to you). It says when no passing test confirmed the heal. |
-| `wrong role` | A selector matches one visible element, but it is another control (a button that became a `div`). A run acts on it all the same: mendwright compares roles only for heals. A changed tag on a key you only read from, such as a `span` that became a `div`, is noted on an `ok`. | Check the selector in your code. |
+| `wrong role` | A selector in your code matches one visible element, but it is another control (a button that became a `div`). A run acts on it all the same: mendwright compares roles only for selectors a heal or a seed file saved, which a run doesn't use on a page where they fail (they show as `fails the live check`). A changed tag on a key you only read from, such as a `span` that became a `div`, is noted on an `ok`. | Check the selector in your code. |
 | `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or follow it into an [iframe](#iframes) or a [shadow root](#shadow-dom). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
 | `needs model` | The selectors miss, the fingerprint doesn't find the element with confidence, and a run would ask the model provider it names. | Check that the run has a provider, or fix the selector. |
 | `refused` | A run would stop with `AttentionRequired`: a key marked destructive, a page the key was never found on, an unknown role, a `guard=` that blocks, `MENDWRIGHT_DISABLE=1`, or no provider and no confident fingerprint. The reason is the run's own, the one [Troubleshooting](#attentionrequired) lists. A `get_by_*` call that matches several elements or one hidden element is `refused` too: a run hands it to Playwright, whose action fails. | Fix the selector by hand, or what the reason names. |
@@ -3177,6 +3308,7 @@ coordinator.confirm_pending(key, box.is_checked())
   - A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`, or `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), because only the page around its host could be searched.
 - A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
+- Of [Many workers at once](#many-workers-at-once), the low-level path keeps the live check of a saved selector (`resolve(..., refused=callback)` hears of each one it leaves out) and `store.refresh(key)`, which the heal calls before its fingerprint tier and its model call. It has no single-flight and adopts no other worker's heal, and `HealCoordinator.decline_ttl` is `0`: it asks the model every time.
 
 ## Troubleshooting
 
@@ -3211,7 +3343,8 @@ The first line names the key. The line after `->` says why there was no heal:
 | asks no model to heal a get_by_* call | With `heal_get_by=True`, the fingerprint found no confident match for the call's element, or its pick failed a check. Change the call by hand to the element's new role or words, or pass `heal_get_by="model"` to let a model look for it (see [A model for calls](#a-model-for-calls)). |
 | the call has not matched one element in this store, and only a get_by_role() call says what kind of element it finds | With `heal_get_by="model"`, a call that never matched names no kind of element to check a model's pick against, so no model was asked. Run the step once while the call matches. |
 | Playwright does not give it the ARIA role | The element the fingerprint found no longer has the call's role, or level. Change the call by hand. |
-| rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` (or `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` and `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`) |
+| did not ask the model to repair ... (the rate/spend cap of a direct provider) | The message says which cap is full: the attempts for the key in this process, or of every process on the store, or of all keys. They drop out of it within the hour. Many workers on one broken key share one heal (see [Many workers at once](#many-workers-at-once)); if they still hit the cap, check that `timeout_ms` is above your model's answer time. `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` and `MENDWRIGHT_RATE_GLOBAL_PER_HOUR` set the caps. |
+| reuses its answer for ... seconds | The model said no element on this page fits, for this or another worker, within `MENDWRIGHT_DECLINE_TTL_SECONDS`. Fix the step or the selector by hand, or set the variable to `0` to ask the model every time. |
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
 | turned off by MENDWRIGHT_DISABLE=1 | Unset it, or drop `--mendwright-disable` |
 | a transaction guard is currently blocking heals | Your `guard=` returned False. Run the step again once it allows heals. |
