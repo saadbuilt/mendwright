@@ -20,7 +20,7 @@ While the version starts with 0, a minor release can change the public API.
 ### Changed
 
 - A key last found inside an iframe heals inside that iframe, as the Python package's does, where it was refused: the fingerprint tier scores the iframe's elements, a model gets the iframe's HTML and elements, and both halves of the gate check the iframe's document, so an element that looks the same on the page around it is never picked. The heal is saved with the same `frameXPath` and its `xpath=` prefix written out, so it never shares a store row with the same XPath on the page, and only a quarantine made in that iframe blocks it. When that iframe is no longer on the page, the key heals on the page, as in the Python package. A key last found inside a shadow root in an iframe is still refused, with the code `shadow`.
-- The fingerprint tier and the selector of an iframe read an id as generated when a part of it mixes letters with a digit that Python's `str.isdigit()` counts, such as ², as the Python package reads it.
+- The fingerprint's score and the selector of an iframe read an id as generated when a part of it mixes letters with a digit that Python's `str.isdigit()` counts, such as ², as the Python package reads it.
 - The entries of `heal.handledInterruptions` have `popup`, `how` and `label`, which are `null` for a registered interruption, as the Python package's `InterruptionEvent` has them.
 - The registered interruptions an action or a read handles are handled under the healer's lock, as a lookup's are and as on the Python package's async healer, so two steps awaited together never handle one at once.
 
