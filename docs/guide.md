@@ -1970,7 +1970,7 @@ The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, never from an option, since a 
 ## Checking for drift before a run
 
 `mendwright check` opens the page where each key in the store was last found, in a headless Playwright browser, on a site you name, and looks at the key's saved selectors there the way a run does.
-It never clicks, types or presses anything, saves nothing and asks no model.
+It never clicks, types or presses anything, except a consent banner with `--cookies`, saves nothing and asks no model.
 Each key gets one result: it still resolves, it resolves only through a saved heal, it resolves to an element of another role, a run would heal it from memory, a run would need a model, a run would refuse it, or it couldn't be checked, with the reason.
 It exits 1 when a key broke, so a CI job can fail before the nightly run starts.
 
