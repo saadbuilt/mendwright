@@ -1749,12 +1749,12 @@ jobs:
       - uses: actions/checkout@<sha>  # v7.0.1
         with:
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.10.0
+      - uses: saadbuilt/mendwright@v0.10.1
         with:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.0` can be a SHA too, with a `# v0.10.0` comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.1` can be a SHA too, with a `# v0.10.0` comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -1800,7 +1800,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.10.0
+      - uses: saadbuilt/mendwright@v0.10.1
         with:
           tests-result: ${{ github.event.workflow_run.conclusion }}
 ```
@@ -1941,7 +1941,7 @@ Run: https://github.com/saadbuilt/shop/actions/runs/11893412207
 With the GitHub Action, pass the webhook as a secret:
 
 ```yaml
-      - uses: saadbuilt/mendwright@v0.10.0
+      - uses: saadbuilt/mendwright@v0.10.1
         with:
           tests-result: ${{ needs.test.result }}
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -1970,7 +1970,7 @@ The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, never from an option, since a 
 ## Checking for drift before a run
 
 `mendwright check` opens the page where each key in the store was last found, in a headless Playwright browser, on a site you name, and looks at the key's saved selectors there the way a run does.
-It never clicks, types or presses anything, saves nothing and asks no model.
+It never clicks, types or presses anything, except a consent banner with `--cookies`, saves nothing and asks no model.
 Each key gets one result: it still resolves, it resolves only through a saved heal, it resolves to an element of another role, a run would heal it from memory, a run would need a model, a run would refuse it, or it couldn't be checked, with the reason.
 It exits 1 when a key broke, so a CI job can fail before the nightly run starts.
 

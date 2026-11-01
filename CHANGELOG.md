@@ -7,6 +7,12 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-01
+
+### Changed
+
+- The README is rewritten: what mendwright does and how to try it come first, then why a repair can be trusted and where it can't, the benchmark with its caveats, and short answers to the usual questions (determinism, cost, speed, `data-testid`, removing it). The guide says that `mendwright check` clicks a consent banner with `--cookies`. The summary PyPI shows, and `mendwright --help`, describe the repair from a saved fingerprint first, then a model.
+
 ## [0.10.0] - 2026-11-01
 
 - `mendwright notify` posts a short summary of one run to a webhook (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#alerts)): how many selectors were repaired, from fingerprints, by the model, or found inside an iframe or a shadow root, and how many were confirmed, the cookie banners, popups and interruptions handled, and what needs a human, in mendwright's own words, such as `` `pay` is marked destructive, so mendwright did not repair it ``. `--format slack` (the default) works with Slack incoming webhooks and the services that take their format; `--format json` sends a JSON document of at most 16 KiB. It sends counts, codes, mendwright's phrases, key names (none with `--detail counts`), the title, the run and pull request links and how the tests ended: never page HTML, input values, selectors, the model's reasoning, reasons, popup text, page paths, test names or provider and model names. The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, must be `https://` (`http://` only on localhost), is never printed and no redirect is followed. Of the webhook's error answer, only one word such as Slack's `no_service` that is no part of the URL is shown, and the URL, its path, its query and each path segment and query value of 8 characters or more are written as `***` in any form. Messages name the webhook by its scheme and host, with a label of the host that looks random, such as the id of an AWS Lambda function URL, as `***`. `--when changes|attention|always` says when to send, `--run`, `--since` and `--all` which events are the run, and `--dry-run` prints the payload. It tries once more on HTTP 429, a 5xx and network errors, cuts each attempt off after `--timeout` seconds, however slowly the webhook answers, and a webhook that fails exits 0 unless `--fail-on-error`.
@@ -144,7 +150,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/saadbuilt/mendwright/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/saadbuilt/mendwright/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/saadbuilt/mendwright/compare/v0.7.0...v0.8.0
