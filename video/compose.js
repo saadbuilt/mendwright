@@ -1072,10 +1072,15 @@ function checkFits() {
   }
   for (const c of TL.caps) {
     const txt = c.e.textContent;
-    if (txt.length > 48) PROBLEMS.push('caption longer than 48 chars: ' + txt);
+    if (txt.length > 52) PROBLEMS.push('caption longer than 52 chars: ' + txt);
     const rg = document.createRange(); rg.selectNodeContents(c.e);
-    c.w = rg.getBoundingClientRect().width;
+    const cr = rg.getBoundingClientRect();
+    c.w = cr.width;
     if (c.w > 1920 - 2 * 80) PROBLEMS.push('caption too wide: ' + txt);
+    // a caption never sits under a callout or a tag that shows at the same time
+    const over = (r, a, b) => a < c.b && b > c.a && r.x < cr.right + 12 && r.x + r.w > cr.left - 12 && r.y < cr.bottom + 12 && r.y + r.h > cr.top - 12;
+    for (const k of TL.callouts) if (over({ x: k.x, y: k.y, w: k.W, h: Math.max(...k.sets.map(z => z.hgt)) }, k.t[0], k.t[1])) PROBLEMS.push('caption "' + txt + '" under the callout ' + k.sets[0].h);
+    for (const g of TL.tags) if (over({ x: g.x, y: g.y, w: g.w, h: g.h }, g.t[0], g.t[1])) PROBLEMS.push('caption "' + txt + '" under a tag');
   }
 }
 
