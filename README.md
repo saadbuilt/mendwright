@@ -19,8 +19,11 @@ On a 47-case benchmark of hand-built redesigns: 30 of 35 broken selectors repair
 
 ```bash
 pip install mendwright
-mendwright demo   # a redesign breaks two selectors: one is repaired, the pay button is refused. Offline: no browser, no API key
+mendwright demo              # a redesign breaks two selectors: your model repairs one, the pay button is refused
+mendwright demo --scripted   # the same with a canned reply: no model, no API key
 ```
+
+If `mendwright` isn't found, `python -m mendwright demo` works the same, and so does `python -m mendwright` for every command.
 
 https://github.com/user-attachments/assets/35eb4f22-28ee-46f9-a221-a10ad261ba8c
 
