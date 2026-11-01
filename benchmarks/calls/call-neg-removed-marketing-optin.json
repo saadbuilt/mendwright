@@ -1,0 +1,8 @@
+{
+  "id": "call-neg-removed-marketing-optin",
+  "category": "removed",
+  "description": "The step is the call get_by_label(\"Email me with news and offers\"). The opt-in checkbox was dropped; three other checkboxes remain.",
+  "pages": "neg-removed-marketing-optin",
+  "call": "get_by_label(\"Email me with news and offers\")",
+  "truth": null
+}

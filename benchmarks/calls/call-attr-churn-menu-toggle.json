@@ -1,0 +1,8 @@
+{
+  "id": "call-attr-churn-menu-toggle",
+  "category": "attribute_churn",
+  "description": "The step is the call get_by_role(\"button\", name=\"Toggle navigation bar\"). The menu button's label changed from \"Toggle navigation bar\" to \"Menu\".",
+  "pages": "attr-churn-menu-toggle",
+  "call": "get_by_role(\"button\", name=\"Toggle navigation bar\")",
+  "truth": "//button[@aria-controls='starlight__sidebar']"
+}

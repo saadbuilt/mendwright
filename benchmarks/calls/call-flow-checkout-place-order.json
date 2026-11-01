@@ -1,0 +1,8 @@
+{
+  "id": "call-flow-checkout-place-order",
+  "category": "flow",
+  "description": "The step is the call get_by_role(\"button\", name=\"Place order\"). The step now runs on a new payment page, whose primary button continues to review.",
+  "pages": "flow-checkout-place-order",
+  "call": "get_by_role(\"button\", name=\"Place order\")",
+  "truth": null
+}

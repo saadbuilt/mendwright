@@ -1,0 +1,8 @@
+{
+  "id": "call-neg-ambiguous-copy-button",
+  "category": "ambiguous",
+  "description": "The step is the call get_by_role(\"button\", name=\"Copy code to clipboard\"). The page now shows three install commands for another package, each with the same Copy button.",
+  "pages": "neg-ambiguous-copy-button",
+  "call": "get_by_role(\"button\", name=\"Copy code to clipboard\")",
+  "truth": null
+}
