@@ -84,14 +84,14 @@ const g2 = el('div', 'glow', null, bg, 'width:900px;height:700px;right:-260px;bo
 el('div', '', null, bg).id = 'grid';
 const stage = el('div', '', null, document.body); stage.id = 'stage';
 
-const ed = el('div', 'panel', `<div class="phead"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">checkout.py</span></div><div class="code"><div id="hl"></div></div><div class="veil"></div>`, stage,
+const ed = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="t">checkout.py</span></div><div class="code"><div id="hl"></div></div><div class="veil"></div>`, stage,
   `left:${ED.x}px;top:${ED.y}px;width:${ED.w}px;height:${ED.h}px`);
 ed.id = 'ed';
 const code = $('.code', ed), hl = $('#hl', ed), edHead = $('.phead', ed);
 const term = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.18)"></span><span class="t">Run</span></div><div class="veil"></div>`, stage,
   `left:${TERM.x}px;top:${TERM.y}px;width:${TERM.w}px;height:${TERM.h}px`);
 term.id = 'term';
-const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span><span class="u">northwind.example/checkout</span></div><div class="ctl"></div></div><div id="prog"></div><div class="content"><div id="ov"></div></div><div class="veil"></div>`, stage,
+const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span><span class="u">northwind.example/checkout</span></div><div class="ctl"></div></div><div id="prog"></div><div class="content"><div id="ov"></div></div><div class="veil"></div>`, stage,
   `left:${BR.x}px;top:${BR.y}px;width:${BR.w}px;height:${BR.h}px`);
 br.id = 'br';
 const content = $('.content', br), ov = $('#ov', br), prog = $('#prog', br), urlEl = $('.url .u', br);
@@ -99,7 +99,7 @@ const urlBox = $('.url', br), navEl = $('.nav', br), ctl = $('.ctl', br), edT = 
 const VEIL = { code: $('.veil', ed), run: $('.veil', term), page: $('.veil', br) };
 // a terminal as wide as the stage (the check beat): the other panels step back while it shows
 const WC = { x: 40, y: 56 + LAYOUT.HEAD, w: 1840, h: 874 - LAYOUT.HEAD };
-const wide = el('div', 'panel', `<div class="phead"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">Terminal</span></div><div class="content"></div>`, stage,
+const wide = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="t">Terminal</span></div><div class="content"></div>`, stage,
   `left:${WC.x}px;top:56px;width:${WC.w}px;height:874px`);
 wide.id = 'wide';
 const wideC = $('.content', wide);
@@ -1079,7 +1079,7 @@ function buildEnd() {
 <div class="feat">
  <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Repairs from memory first. No AI.</div>
  <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
- <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
  <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">PR</span>Confirmed fixes come back as a pull request.</div>
  <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners, popups, steps in any order.</div>
  <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">TS</span>Python and TypeScript share the saved fixes.</div>

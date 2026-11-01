@@ -205,7 +205,7 @@ window.popupBeat = function popupBeat(t0) {
   cur(t0 + 2.35, 'po:' + field, -90, 4); click(t0 + 2.6, 'po:' + field, C.white);
   blk.hl.push([t0, 'c1', 0], [t0 + .8, 'c1', 1], [t0 + 2.6, 'c1', 0]);
   blk.marks.push([t0 + 2.6, 'c1', '✓', C.green, tq]);
-  focus(t0 + 2.6, 'run+page');
+  focus(t0 + 2.6, 'all');            // the result, with the dismiss=True line that made it
   beat(t0 + 1.8, 'O1 an offer: never Get my code');
   beat(t0 + 3.4, 'O2 declined with No thanks');
   // the question: Escape, and nothing more; the step stops with the browser's own error
@@ -227,7 +227,7 @@ window.popupBeat = function popupBeat(t0) {
   tag({ at: 'pq:.ask-no', html: 'never', col: C.red, solid: true, t: [tq + 1.4, t1], clear: 'pq:#ask > div', leader: true, pad: 6 });
   blk.hl.push([tq + .8, 'c1', 1], [tq + 2.6, 'c1', 0]);
   blk.marks.push([tq + 2.6, 'c1', '⊘', C.amber, t1]);
-  focus(tq + 2.6, 'run+page');
+  focus(tq + 2.6, 'all');
   beat(tq + 1.6, 'O3 a question: only Escape');
   beat(tq + 3.4, 'O4 stopped, nothing clicked');
   return t1;
