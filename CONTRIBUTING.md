@@ -284,7 +284,7 @@ python -m pytest tests/test_success_heal.py
 | test-next | The same on the Python 3.15 prerelease. Failures are reported but don't fail the run. |
 | lowest-deps | The offline suite on Python 3.10 with lxml 5.0.0 and pytest 7. |
 | browsers | `python -m pytest -m browser -q -rs` on Ubuntu with Python 3.12. It installs Playwright's three browsers, uses the runner image's Chrome and Firefox for Selenium, and sets `MENDWRIGHT_REQUIRE_ENGINES`. patchright and camoufox aren't installed there, so their tests skip. |
-| package | Builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a fresh venv, runs `mendwright --version`, `python -m mendwright doctor` and `mendwright demo`, then runs the sdist's tests against the installed wheel. |
+| package | Builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a fresh venv, runs `mendwright --version`, `python -m mendwright doctor` and `mendwright demo --scripted`, then runs the sdist's tests against the installed wheel. |
 | js | In `js/` on Node 22: `npm ci`, the typecheck, the build, `npm test` with Python 3.12 and this checkout installed, the browser suite on Chromium, and `npm pack --dry-run`. |
 
 ### Charts
@@ -297,5 +297,4 @@ python docs/charts/build_charts.py --check   # exit 1 if an SVG is out of date, 
 ```
 
 The script uses only the standard library and gives the same bytes on every run.
-`docs/assets/demo.svg`, a terminal recording of `mendwright demo` (no longer in the README), is built from the real output of `mendwright demo` with `python docs/charts/build_demo_svg.py` (also `--check`). Run it again after any change to the demo's output.
-CI doesn't run either one, so run `--check` before a pull request that touches `data.json` or the demo.
+CI doesn't run it, so run `--check` before a pull request that touches `data.json`.
