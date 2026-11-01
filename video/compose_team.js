@@ -48,11 +48,13 @@ window.pullRequestBeat = function pullRequestBeat(t0, blk) {
   blk.t1 = t1;                      // checkout.py stays in the editor, veiled
   focus(t0, 'page');
   run({ t0, t1, cmd: [t0 + .1, '$ ' + TM.fixCmd] });
-  cap(t0 + .2, t0 + 4.8, 'Confirmed fixes come back as a <u>pull request</u>.');
-  reveal({ at: 'pr:.head', t: t0 + 1.4, what: TM.title });
-  reveal({ at: 'pr:.diff', t: t0 + 2.6, what: 'the diff of ' + TM.diffFile, result: true });
-  beat(t0 + 2.1, 'P1 a pull request');
-  beat(t0 + 4.2, 'P2 three selectors written back');
+  // the card comes in with its title as the page loads (never an empty card); the caption
+  // names it, then the diff
+  reveal({ at: 'pr:.card', t: t0 + .3, what: TM.title });
+  cap(t0 + 1.5, t0 + 5.7, 'Confirmed fixes come back as a <u>pull request</u>.');
+  reveal({ at: 'pr:.diff', t: t0 + 2.7, what: 'the diff of ' + TM.diffFile, result: true });
+  beat(t0 + 1.0, 'P1 a pull request');
+  beat(t0 + 4.3, 'P2 three selectors written back');
   return t1;
 };
 
