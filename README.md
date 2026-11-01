@@ -25,9 +25,9 @@ mendwright demo --scripted   # the same with a canned reply: no model, no API ke
 
 If `mendwright` isn't found, `python -m mendwright demo` works the same, and so does `python -m mendwright` for every command.
 
-https://github.com/user-attachments/assets/35eb4f22-28ee-46f9-a221-a10ad261ba8c
+https://github.com/user-attachments/assets/5367abb9-4ffb-45c8-8af2-fa5939d735cb
 
-<p align="center"><sub>A redeploy breaks three selectors. mendwright repairs them, and the next run reuses the fixes. Real runs, waits sped up.</sub></p>
+<p align="center"><sub>A redesign breaks three selectors. mendwright repairs them, the next run passes in 0.25 s, a promotion is declined and a confirm dialog is answered. Real runs, waits sped up.</sub></p>
 
 A front-end deploy renames `#terms`, and your nightly run dies on a step that is still on the page. mendwright fixes that step while the script runs.
 
