@@ -13,10 +13,16 @@
 // The capture is taken before a model call, which takes seconds, so the page can change in
 // between; the live check is what makes the element that is saved and acted on the one
 // that was checked. Any error on the way refuses the proposal (fail closed).
+//
+// A heal inside an iframe (see scope.ts) runs all of this in the iframe's document, through
+// a driver on its Frame: the captured page is the iframe's, only the quarantines made in that
+// iframe count, and the XPath is saved with the iframe's selector as its frameXPath and its
+// 'xpath=' prefix written out, so it never shares a store row with the same XPath on the page.
 
-import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
+import { TrustedTypesRefused } from './driver';
 import type { Proposal } from './prompt';
-import { XPATH, classify, hasPosition, isBrittle, normalize } from './selectors';
+import type { HealDriver } from './scope';
+import { XPATH, classify, frameSpelling, hasPosition, isBrittle, normalize } from './selectors';
 import type { KeyMeta, SelectorStore } from './store';
 
 export const NOT_LIVE = 'passed static validation but not uniquely present on the live page';
@@ -31,18 +37,20 @@ const RETIRED: Record<string, string> = {
   superseded: 'previously superseded',
 };
 
-/** '' when xpath passes the live check, else the reason it does not. */
-export async function liveReason(driver: PlaywrightDriver, xpath: string, meta: Pick<KeyMeta, 'expectedRole'>): Promise<string> {
+/** '' when xpath passes the live check, else the reason it does not. frame, when given, is
+ * the selector of an iframe of the page the driver reads: xpath is checked inside it. */
+export async function liveReason(driver: HealDriver, xpath: string, meta: Pick<KeyMeta, 'expectedRole'>,
+                                 frame: string | null = null): Promise<string> {
   try {
-    if ((await driver.count(xpath)) !== 1) return NOT_LIVE;
-    const live = await driver.describe(xpath);
+    if ((await driver.count(xpath, frame)) !== 1) return NOT_LIVE;
+    const live = await driver.describe(xpath, frame);
     if (!live || typeof live !== 'object') return UNREADABLE;
     const want = meta.expectedRole;
     if (want && want !== 'unknown' && live.role !== want) {
       return 'live element role mismatch: got ' + String(live.role) + ' want ' + String(want);
     }
     if (want === 'checkbox') return '';
-    if (!(await driver.isVisible(xpath))) return NOT_LIVE;
+    if (!(await driver.isVisible(xpath, frame))) return NOT_LIVE;
     return '';
   } catch {
     return NOT_LIVE;
@@ -58,7 +66,7 @@ interface StaticResult {
 /** The static half of the gate, on the captured page html (parsed in the browser, where no
  * script of it runs). A page that cannot be parsed refuses the proposal, with why when its
  * Trusted Types policy is the reason. */
-export async function validateStatic(driver: PlaywrightDriver, xpath: string, html: string, role: string,
+export async function validateStatic(driver: HealDriver, xpath: string, html: string, role: string,
                                      quarantined: string[] = []): Promise<StaticResult> {
   if (isBrittle(xpath)) return { ok: false, reason: 'brittle absolute-index path', count: 0 };
   try {
@@ -79,10 +87,12 @@ export function xpathForms(proposed: string): [string, string] {
   return [body, normalize('xpath=' + body)];
 }
 
-/** XPath bodies of the key's quarantined selectors on the page. */
-function quarantinedBodies(store: SelectorStore, key: string): string[] {
+/** XPath bodies of the key's quarantined selectors in one place: frame '' for the page, or
+ * the selector of an iframe for that iframe. A selector quarantined inside an iframe says
+ * nothing about an element that looks the same on the page, and the other way round. */
+export function quarantinedBodies(store: SelectorStore, key: string, frame = ''): string[] {
   const out: string[] = [];
-  for (const selector of store.quarantined(key, '')) {
+  for (const selector of store.quarantined(key, frame)) {
     try {
       if (classify(selector) === XPATH) out.push(xpathForms(selector)[0]);
     } catch {
@@ -95,11 +105,15 @@ function quarantinedBodies(store: SelectorStore, key: string): string[] {
 /** Check the proposal and save the first of its XPaths that passes the whole gate as a
  * heal of key. Returns [saved xpath, 'ok'], or [null, the last reason] for a re-prompt.
  * positional false refuses an XPath with a position in it (the model read a page that was
- * cut to fit the prompt). */
+ * cut to fit the prompt). frame is the selector of the iframe the heal runs in, when it runs
+ * in one (html and driver are then the iframe's): the XPath is saved with it as its
+ * frameXPath and its 'xpath=' prefix written out, and only the quarantines made in that
+ * iframe block it. */
 export async function apply(store: SelectorStore, key: string, proposal: Partial<Proposal>, html: string,
-                            meta: KeyMeta, driver: PlaywrightDriver, positional = true): Promise<[string | null, string]> {
+                            meta: KeyMeta, driver: HealDriver, positional = true,
+                            frame: string | null = null): Promise<[string | null, string]> {
   const proposed = [proposal.xpath, ...(Array.isArray(proposal.fallbacks) ? proposal.fallbacks : [])];
-  const bad = quarantinedBodies(store, key);
+  const bad = quarantinedBodies(store, key, frame ?? '');
   let reason = 'no candidates in proposal';
   for (const candidate of proposed) {
     if (!candidate) continue;
@@ -107,12 +121,13 @@ export async function apply(store: SelectorStore, key: string, proposal: Partial
       reason = 'proposal is not a string';
       continue;
     }
-    const [body, xpath] = xpathForms(candidate);
+    const [body, stored] = xpathForms(candidate);
+    const xpath = frame ? frameSpelling(stored) : stored;
     if (!positional && hasPosition(body)) {
       reason = POSITIONAL;
       continue;
     }
-    const retired = RETIRED[store.status(key, xpath) ?? ''];
+    const retired = RETIRED[(xpath === null ? null : store.status(key, xpath)) ?? ''];
     if (retired) {
       reason = retired;
       continue;
@@ -120,7 +135,7 @@ export async function apply(store: SelectorStore, key: string, proposal: Partial
     const result = await validateStatic(driver, body, html, meta.expectedRole, bad);
     reason = result.reason === 'quarantined' ? SAME_ELEMENT : result.reason;
     if (!result.ok) continue;
-    if (classify(xpath) !== XPATH) {
+    if (xpath === null || classify(xpath) !== XPATH) {
       reason = 'not an XPath expression';
       continue;
     }
@@ -130,8 +145,8 @@ export async function apply(store: SelectorStore, key: string, proposal: Partial
       continue;
     }
     // frameXPath '' puts a candidate with the same text, saved inside an iframe before, on
-    // the page, where this heal was checked.
-    store.addCandidate(key, xpath, { source: 'heal', frameXPath: '' });
+    // the page, where this heal was checked; an iframe's selector moves one to that iframe.
+    store.addCandidate(key, xpath, { source: 'heal', frameXPath: frame ?? '' });
     return [xpath, result.reason];
   }
   return [null, reason];

@@ -18,7 +18,7 @@
 // the one place that normalizes it, here as in Python.
 
 import { ratio as sequenceRatio } from './difflib';
-import { isDigits, pyLen, pySlice, pyStrip, pySum, urlsplit } from './py';
+import { isDigitChar, isDigits, pyLen, pySlice, pyStrip, pySum, urlsplit } from './py';
 
 /** Version of the stored shape. A fingerprint with another version is ignored. */
 export const VERSION = 1;
@@ -107,13 +107,14 @@ export function stableClasses(value: unknown): string[] {
   return out.slice(0, 8);
 }
 
-/** True for an id that a framework generated (:r3:, mui-generated-8842, ember123). */
+/** True for an id that a framework generated (:r3:, mui-generated-8842, ember123). A part
+ * mixes letters and digits as Python's str.isdigit() and str.isalpha() read them. */
 export function generatedId(value: unknown): boolean {
   if (typeof value !== 'string' || !value) return true;
   if (value.includes(':') || /\p{Nd}{3,}/u.test(value)) return true;
   return value.split(/[-_.]+/).some((part) => {
     const chars = Array.from(part);
-    return chars.length >= 5 && chars.some((c) => /\p{Nd}/u.test(c)) && chars.some((c) => /\p{L}/u.test(c));
+    return chars.length >= 5 && chars.some(isDigitChar) && chars.some((c) => /\p{L}/u.test(c));
   });
 }
 

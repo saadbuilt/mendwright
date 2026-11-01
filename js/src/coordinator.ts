@@ -8,13 +8,20 @@
 // returns false. The fingerprint tier needs no provider and does not count toward the rate
 // limit. A model heal is tried at most twice per attempt: a refused proposal goes back to
 // the model with the reason, once. A heal is confirmed or quarantined later by its canary.
+//
+// A heal of a key last found inside an iframe runs inside that iframe (a HealScope, see
+// scope.ts): the capture, the inventory, the fingerprint tier, the model's tools and the gate
+// all read the iframe's document through the scope's driver, and what is applied is saved
+// with the iframe's selector. The scope is passed along, never set on the coordinator, so two
+// heals that run at once never read each other's document. A key's own selector followed into
+// an iframe is recorded here too (recordFrame), as a heal with source 'frame'.
 
 import { buildBundle, redact } from './capture';
 import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
 import { AttentionRequired } from './errors';
 import { fmt, valid as validFingerprint } from './fingerprint';
 import { flowChangeMessage } from './flow';
-import { apply, validateStatic } from './gate';
+import { apply, quarantinedBodies, validateStatic } from './gate';
 import type { JournalLike } from './journal';
 import type { Guardrails } from './limits';
 import { log, type LogLevel, type LogSink } from './log';
@@ -22,11 +29,16 @@ import { MAX_PROMPT_PART, type Bundle, type Proposal } from './prompt';
 import { pyRepr } from './py';
 import { providerName, type HealProvider, type ProviderTools } from './providers/base';
 import { NOT_HERE_HINT } from './providers/errors';
+import type { HealDriver, HealScope } from './scope';
 import { hasPosition } from './selectors';
 import type { KeyMeta, SelectorStore } from './store';
 import { findMatch } from './tier';
 
 export const FINGERPRINT_PROVIDER = 'fingerprint';
+/** The provider and source of a key's own selector that matched only inside an iframe and is
+ * looked up there from now on (see Healer.followIntoFrame): no model and no new selector, only
+ * a new place. */
+export const FRAME_PROVIDER = 'frame';
 export const DISABLED_REASON = 'healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not repaired. '
   + 'Unset MENDWRIGHT_DISABLE to let mendwright heal again.';
 export const GUARD_REASON = 'a transaction guard is currently blocking heals (a payment or registration submission '
@@ -47,10 +59,11 @@ export interface HealRecord {
   source: string;
 }
 
-/** Why a key is not healed where it was last found, and the code of that decline. */
+/** Why a key is not healed where it was last found, inside an open shadow root, and the code
+ * of that decline. */
 export interface Refusal {
   reason: string;
-  code: 'frame' | 'shadow';
+  code: 'shadow';
 }
 
 export interface FlowContext {
@@ -165,10 +178,11 @@ export class HealCoordinator {
     return this.disabled ? 'disabled' : 'no_provider';
   }
 
-  /** The code of a heal refused in a place this package does not heal in (code), an iframe
-   * or a shadow root: 'disabled' under MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run,
+  /** @internal The code of a heal refused for where the key's element is (code): a key last
+   * found inside a shadow root ('shadow'), or one found only inside an iframe it was not
+   * followed into ('frame'). 'disabled' under MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run,
    * declines on purpose, as the Python package gives them. */
-  private placeCode(code: DeclineCode): DeclineCode {
+  placeCode(code: DeclineCode): DeclineCode {
     return this.disabled ? 'disabled' : this.dryRun ? 'dry_run' : code;
   }
 
@@ -187,21 +201,23 @@ export class HealCoordinator {
     return flowChangeMessage(key, seen[0], here, this.entry);
   }
 
-  private tools(): ProviderTools {
-    const driver = this.driver;
+  private tools(driver: HealDriver): ProviderTools {
     return { lib: (name, arg) => driver.lib(name, arg) };
   }
 
   /** Heal key and save a checked selector. Returns the saved XPath, or false with the
    * reason in healReasons. refusal, when given, declines every heal after the checks for a
-   * key marked destructive and the page guard: the key was last found inside an iframe or
-   * an open shadow root, where this package does not heal. */
+   * key marked destructive and the page guard: the key was last found inside an open shadow
+   * root, where this package does not heal. scope, when given, is where the heal runs instead
+   * of the page: inside the iframe the key was last found in (see scope.ts). */
   async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
-                refusal: Refusal | null = null): Promise<string | false> {
+                refusal: Refusal | null = null, scope: HealScope | null = null): Promise<string | false> {
     if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
     const moved = this.flowChange(key, context);
     if (moved) return this.decline(key, moved, 'warning', null, 'page_guard');
     if (refusal) return this.decline(key, refusal.reason, 'warning', null, this.placeCode(refusal.code));
+    const driver: HealDriver = scope ? scope.driver : this.driver;
+    const frame = scope ? scope.frame : null;
     const role = meta.expectedRole;
     const roleUnknown = !role || role === 'unknown';
     const unavailableRaw = (this.provider as { unavailableReason?: unknown }).unavailableReason;
@@ -224,8 +240,8 @@ export class HealCoordinator {
       'warning', summary ? "'" + key + "' has no selector yet, and " + summary : null, this.unavailableCode());
     }
     if (this.fingerprint && source !== 'intent') {
-      html = await this.driver.content();
-      const [applied, note, asked] = await this.fingerprintTier(key, meta, broken, html, started);
+      html = await driver.content();
+      const [applied, note, asked] = await this.fingerprintTier(key, meta, broken, html, started, scope);
       requested = asked;
       if (applied !== null) return applied;
       if (unavailable) {
@@ -241,14 +257,14 @@ export class HealCoordinator {
     }
     const tag = source !== 'model' ? source : null;
     if (!requested) this.journal.event('heal.requested', { key });
-    if (html === null) html = await this.driver.content();
+    if (html === null) html = await driver.content();
     const wants = (this.provider as HealProvider).wantsFingerprint === true;
     // The model reads a cleaned, redacted copy of the page; the gate checks the page as captured.
     // A page that cannot be cleaned is not sent at all: as captured, it has its scripts and
     // styles, and the state a script keeps inline (fail closed).
     let read: unknown;
     try {
-      read = await this.driver.lib<string>('cleanHtml', redact(html));
+      read = await driver.lib<string>('cleanHtml', redact(html));
     } catch (error) {
       read = error;
     }
@@ -260,12 +276,12 @@ export class HealCoordinator {
     // A model that reads a prompt sees at most MAX_PROMPT_PART characters of the page. When
     // the end was cut off, positions there no longer match the live page.
     const cut = !wants && [...cleaned].length > MAX_PROMPT_PART;
-    let bundle: Bundle = buildBundle(key, meta, broken, await this.driver.inventory(), cleaned, context, wants);
+    let bundle: Bundle = buildBundle(key, meta, broken, await driver.inventory(), cleaned, context, wants);
     let reason = 'no proposal';
     for (let attempt = 0; attempt < 2; attempt++) {
       let proposal: Proposal | null = null;
       try {
-        proposal = await this.provider.propose(bundle, this.tools());
+        proposal = await this.provider.propose(bundle, this.tools(driver));
       } catch (error) {
         const detail = (error as Error)?.message ?? String(error);
         this.journal.event('heal.rejected', { key, reason: 'no proposal', error: detail });
@@ -290,7 +306,8 @@ export class HealCoordinator {
         let ok = false;
         for (const xpath of [proposal.xpath, ...(proposal.fallbacks ?? [])]) {
           if (!xpath || (cut && hasPosition(xpath))) continue;
-          if ((await validateStatic(this.driver, xpath, html, meta.expectedRole, this.store.quarantined(key, ''))).ok) {
+          if ((await validateStatic(driver, xpath, html, meta.expectedRole, quarantinedBodies(this.store, key, frame ?? '')))
+            .ok) {
             ok = true;
             break;
           }
@@ -299,7 +316,7 @@ export class HealCoordinator {
         return this.decline(key, "dry-run mode is on, so the proposal for '" + key + "' was checked but not applied. "
           + 'Turn off dryRun to let mendwright apply and retry.', 'info', null, 'dry_run');
       }
-      const [applied, why] = await apply(this.store, key, proposal, html, meta, this.driver, !cut);
+      const [applied, why] = await apply(this.store, key, proposal, html, meta, driver, !cut, frame);
       reason = why;
       if (applied) {
         this.recordApplied(key, broken, applied, started, providerName(this.provider), this.providerModel(), source);
@@ -315,25 +332,30 @@ export class HealCoordinator {
   }
 
   /** The first tier: [applied xpath, or false when dry run declined it, or null to go on to
-   * the model; why it did not heal; whether heal.requested was journaled]. */
-  private async fingerprintTier(key: string, meta: KeyMeta, broken: string[], html: string,
-                                started: number): Promise<[string | false | null, string, boolean]> {
+   * the model; why it did not heal; whether heal.requested was journaled]. scope, when given,
+   * is the iframe whose elements it scores and whose selector it saves the heal with. */
+  private async fingerprintTier(key: string, meta: KeyMeta, broken: string[], html: string, started: number,
+                                scope: HealScope | null): Promise<[string | false | null, string, boolean]> {
+    const driver: HealDriver = scope ? scope.driver : this.driver;
+    const frame = scope ? scope.frame : null;
     const stored = meta.fingerprint;
     if (!validFingerprint(stored)) return [null, noFingerprint(key), false];
     this.journal.event('heal.requested', { key });
-    const match = await findMatch(stored, meta.expectedRole, this.driver);
+    const match = await findMatch(stored, meta.expectedRole, driver);
     if (!match.xpath) {
       return [null, "the fingerprint match for '" + key + "' was not confident: " + match.reason, true];
     }
     const reasoning = 'fingerprint score ' + fmt(match.score) + ', next best ' + fmt(match.runnerUp);
     this.journal.event('heal.proposed', { key, xpath: match.xpath, reasoning, source: FINGERPRINT_PROVIDER });
     if (this.dryRun) {
-      const ok = (await validateStatic(this.driver, match.xpath, html, meta.expectedRole, this.store.quarantined(key, ''))).ok;
+      const ok = (await validateStatic(driver, match.xpath, html, meta.expectedRole,
+        quarantinedBodies(this.store, key, frame ?? ''))).ok;
       this.emit('info', '[heal dry-run] key=' + key + ' proposed=' + match.xpath + ' (fingerprint) valid=' + ok + ' (not applied)');
       return [this.decline(key, "dry-run mode is on, so the fingerprint match for '" + key + "' was checked but not "
         + 'applied. Turn off dryRun to let mendwright apply and retry.', 'info', null, 'dry_run'), '', true];
     }
-    const [applied, reason] = await apply(this.store, key, { xpath: match.xpath, fallbacks: [], reasoning }, html, meta, this.driver);
+    const [applied, reason] = await apply(this.store, key, { xpath: match.xpath, fallbacks: [], reasoning }, html, meta,
+      driver, true, frame);
     if (applied) {
       this.recordApplied(key, broken, applied, started, FINGERPRINT_PROVIDER, null, FINGERPRINT_PROVIDER);
       return [applied, '', true];
@@ -359,6 +381,18 @@ export class HealCoordinator {
     this.emit('warning', 'healed ' + pyRepr(key) + ': ' + was + ' -> ' + applied + timing);
   }
 
+  /** Journal, remember and log that the key's own selector old matched only inside the iframe
+   * frame, and is saved there as alt from now on (the Python package's record_frame). It counts
+   * as a heal with source 'frame': strict mode fails on it, and the canary checks it. */
+  recordFrame(key: string, old: string, alt: string, frame: string): void {
+    this.journal.event('heal.applied', { key, xpath: alt, old: [old], provider: FRAME_PROVIDER, model: null,
+                                         latency_ms: 0, source: FRAME_PROVIDER, frame });
+    this.healReasons.delete(key);
+    this.heals.push({ key, old: [old], new: alt, confirmed: null, source: FRAME_PROVIDER });
+    this.emit('warning', 'found ' + pyRepr(key) + ' inside the iframe ' + frame + ': ' + old + ' matches nothing on the '
+      + 'page, so it is looked up in that iframe from now on');
+  }
+
   private providerModel(): string | null {
     const model = (this.provider as { model?: unknown }).model;
     return typeof model === 'string' && model ? model : null;
@@ -369,12 +403,13 @@ export class HealCoordinator {
     return typeof error === 'string' && error.trim() ? error.trim() : '';
   }
 
-  /** The canary: report a heal's outcome, and quarantine a heal whose check failed. A
-   * fingerprint heal is not reported to the provider, which did not propose it. by says what
-   * decided it ('test', 'expect', 'confirm' or 'action'). */
+  /** The canary: report a heal's outcome, and quarantine a heal whose check failed. A heal
+   * from the fingerprint tier, or a key followed into an iframe, is not reported to the
+   * provider, which did not propose it. by says what decided it ('test', 'expect', 'confirm'
+   * or 'action'). */
   confirm(key: string, xpath: string, success: boolean, options: { reason?: string; by?: string; test?: string } = {}): void {
     const heal = [...this.heals].reverse().find((h) => h.key === key && h.new === xpath && h.confirmed === null);
-    if (!heal || heal.source !== FINGERPRINT_PROVIDER) {
+    if (!heal || (heal.source !== FINGERPRINT_PROVIDER && heal.source !== FRAME_PROVIDER)) {
       try {
         this.provider.reportOutcome?.(key, xpath, success);
       } catch {
@@ -405,13 +440,14 @@ export class HealCoordinator {
 }
 
 /** Resolve; when every candidate missed, heal once and resolve again in the same call.
- * Re-raises the miss with the reason when nothing was healed. */
+ * Re-raises the miss with the reason when nothing was healed. refusal and scope are
+ * tryHeal()'s. */
 export async function resolveWithHeal<T>(resolveFn: () => Promise<T>, coordinator: HealCoordinator, key: string,
                                          context: FlowContext, missed: AttentionRequired,
-                                         refusal: Refusal | null = null): Promise<T> {
+                                         refusal: Refusal | null = null, scope: HealScope | null = null): Promise<T> {
   const store = coordinator.store;
   const broken = store.candidates(key).map((c) => c.xpath);
-  const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context, refusal);
+  const applied = await coordinator.tryHeal(key, store.metaOf(key), broken, context, refusal, scope);
   if (!applied) {
     const reason = coordinator.explain(key);
     if (reason) throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);

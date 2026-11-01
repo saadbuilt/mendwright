@@ -4,6 +4,10 @@
 // an iframe has one) or the shadow hosts of a CSS selector saved inside an open shadow root
 // (see shadow.ts). A selector the browser cannot parse raises InvalidSelector at once.
 //
+// For iframes one level down (see frames.ts) it finds the frames a selector matches in
+// (frameMatches) and gives a driver on the Frame of one iframe (framed), which a heal inside
+// that iframe reads through.
+//
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
 
 import type { ElementHandle, Frame, JSHandle, Locator, Page } from '@playwright/test';
@@ -13,6 +17,7 @@ import { POPUP_CONTROLS_JS, POPUP_CONTROL_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, PO
 import { InvalidSelector } from './errors';
 import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
 import { clickMayHaveRun } from './flow';
+import { frameOptions, frameSelector, type FrameMatch } from './frames';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
@@ -220,6 +225,24 @@ async function alive(handle: JSHandle): Promise<boolean> {
   }
 }
 
+// The attributes of an <iframe> or <frame> element that frames.frameSelector() builds from
+// (the Python package's FRAME_ATTRS_JS), read from the element's handle.
+const FRAME_ATTRS = (e: Element) => ({ tag: e.tagName.toLowerCase(), id: e.id || '',
+  name: e.getAttribute('name') || '', title: e.getAttribute('title') || '', src: e.getAttribute('src') || '' });
+
+/** A frame's name and url, '' for one that cannot be read (the Python package's frame_info). */
+function frameInfo(frame: Frame): { name: string; url: string } {
+  const read = (get: () => unknown) => {
+    try {
+      const value = get();
+      return typeof value === 'string' ? value : '';
+    } catch {
+      return '';
+    }
+  };
+  return { name: read(() => frame.name()), url: read(() => frame.url()) };
+}
+
 export class PlaywrightDriver {
   readonly page: PageLike;
 
@@ -305,6 +328,109 @@ export class PlaywrightDriver {
   /** True when mendwright was opened on a Page, whose url() is the top-level address. */
   topLevel(): boolean {
     return typeof (this.page as Page).mainFrame === 'function';
+  }
+
+  // --- iframes one level down (see frames.ts) -----------------------------------------------
+
+  /** The frames inside the Page or Frame this driver wraps, at any depth, without its own
+   * (the Python package's child_frames). [] on any error. */
+  childFrames(): Frame[] {
+    try {
+      if (this.topLevel()) return (this.page as Page).frames().filter((frame) => frame.parentFrame() !== null);
+      const out: Frame[] = [];
+      const todo = [...(this.page as Frame).childFrames()];
+      while (todo.length) {
+        const frame = todo.shift() as Frame;
+        out.push(frame);
+        todo.push(...frame.childFrames());
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  /** True when frame sits directly in the Page (in its main frame) or Frame this driver
+   * wraps, not inside another iframe (the Python package's is_direct_child). */
+  private isDirectChild(frame: Frame): boolean {
+    try {
+      const parent = frame.parentFrame();
+      if (this.topLevel()) return parent !== null && parent.parentFrame() === null;
+      return parent === this.page;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The frames inside this page or frame (any depth) in which selector matches at least one
+   * element (see frames.FrameMatch): how many it matches there, whether the frame sits inside
+   * another iframe, and, for one that does not, a CSS selector for its iframe element here
+   * (frames.frameSelector), or null when nothing tells it apart (the Python package's
+   * frame_matches). Throws InvalidSelector for a selector that can never run; any other error
+   * skips that frame. */
+  async frameMatches(selector: string): Promise<FrameMatch[]> {
+    const target = playwrightSelector(selector);
+    const found: FrameMatch[] = [];
+    for (const frame of this.childFrames()) {
+      let count: number;
+      try {
+        count = await frame.locator(target).count();
+      } catch {
+        continue;
+      }
+      if (count <= 0) continue;
+      const match: FrameMatch = { ...frameInfo(frame), count, nested: !this.isDirectChild(frame), selector: null };
+      if (!match.nested) {
+        try {
+          match.selector = await this.frameSelectorOf(frame);
+        } catch {
+          // nothing tells it apart
+        }
+      }
+      found.push(match);
+    }
+    return found;
+  }
+
+  /** frames.frameSelector() for the iframe element of frame, with the count of each selector
+   * it may try read here first. A count that throws leaves that selector out. */
+  private async frameSelectorOf(frame: Frame): Promise<string | null> {
+    const handle = await frame.frameElement();
+    let attrs: unknown;
+    try {
+      attrs = await handle.evaluate(FRAME_ATTRS);
+    } finally {
+      await handle.dispose().catch(() => undefined);
+    }
+    const counts = new Map<string, number>();
+    for (const option of frameOptions(attrs)) {
+      try {
+        counts.set(option, await this.count(option));
+      } catch {
+        // as a count that raised in the Python package's frame_selector()
+      }
+    }
+    return frameSelector(attrs, (option) => counts.get(option));
+  }
+
+  /** A driver for the document inside the one iframe that selector, an iframe's selector such
+   * as a frameXPath, matches in this page or frame, or null when it matches none or several,
+   * or that element has no document (the Python package's framed()). */
+  async framed(selector: string): Promise<PlaywrightDriver | null> {
+    let frame: Frame | null;
+    try {
+      const loc = this.locator(selector);
+      if ((await loc.count()) !== 1) return null;
+      const handle = await loc.elementHandle({ timeout: 2000 });
+      try {
+        frame = await handle.contentFrame();
+      } finally {
+        await handle.dispose().catch(() => undefined);
+      }
+    } catch {
+      return null;
+    }
+    return frame ? new PlaywrightDriver(frame) : null;
   }
 
   async content(): Promise<string> {

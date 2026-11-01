@@ -20,6 +20,11 @@
 // and saves it as the key's shadowHosts, as the Python package does. A key last found inside
 // a shadow root is never healed by this package, so a look-alike on the page around its host
 // is never picked; a heal the Python package saved inside one runs strictly there.
+//
+// Iframes one level down (see frames.ts and scope.ts): a key whose own selector matches
+// nothing on the page but one element inside one iframe is followed there, with no model call
+// (followIntoFrame), and a key last found inside an iframe that is on the page now heals inside
+// it, never on the page around it.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'node:path';
@@ -44,6 +49,8 @@ import {
   nothingMatchedMessage, pagePath, pageUrl, runFailedMessage, runPlainMessage, runRemovesMessage, severalMessage,
   skipMessage, stepText, undismissedMessage, unhandledMessage,
 } from './flow';
+import { frameCandidates, frameMessage, framePlan, type FrameMatch } from './frames';
+import { liveReason } from './gate';
 import {
   COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, functionName, makeInterruption, nthTargets,
   type CookieChoice, type InterruptOptions, type Interruption, type InterruptionEvent, type RunFunction,
@@ -56,8 +63,9 @@ import { autoProvider } from './providers/detect';
 import { pyLen, pyRepr, pySlice } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
+import { healPlace, type HealScope } from './scope';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
-import { chainHosts, hostsOf, placeText, runTarget, type Target } from './shadow';
+import { placeText, runTarget, type Target } from './shadow';
 import {
   StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
   type Step, type StepFunction, type StepOptions,
@@ -89,7 +97,9 @@ const ABSENT_ANSWERS: ReadonlyMap<string, boolean> = new Map([['isVisible', fals
 
 /** One heal a healer applied: the key, the selectors that had stopped matching, the new
  * XPath, the canary result (null while unconfirmed), and where it came from: 'fingerprint'
- * (no model call), 'model' or 'intent'. */
+ * (no model call), 'model', 'intent', or 'frame' for a key whose own selector matched only
+ * inside an iframe and is looked up there from now on (no model call; old is that selector,
+ * and new the selector saved in the iframe). */
 export interface HealEvent {
   key: string;
   old: string[];
@@ -788,7 +798,9 @@ export class Healer {
           this.coordinator.journal.event('flow.skip', { key, reason: skip });
           return { native: null, healed: null, hosts: null };
         }
-        native = await this.heal(key, error, attempt);
+        // Its own selector may match inside an iframe now; only then is anything healed.
+        const followed = await this.followIntoFrame(key, error, attempt);
+        native = followed ?? (await this.heal(key, error, attempt));
       }
       this.checkHealedTarget(key);
       await this.learn(key, plan.roles);
@@ -881,35 +893,123 @@ export class Healer {
     return { url, page, lastPage: meta.lastPage, pages: this.stepPages(key, meta, page) };
   }
 
+  /** Heal key through the coordinator after its lookup missed (missed), then retry the
+   * lookup (the Python package's Healer._heal), where healScope() says. */
   private async heal(key: string, missed: AttentionRequired, attempt: () => Promise<Locator>): Promise<Locator> {
-    // A key last found inside an iframe (a heal the Python package saved there) is healed
-    // inside that iframe by the Python package. This one does not heal inside an iframe, and
-    // the page around it may hold an element that looks the same, so it does not look.
-    const found = this.store.candidates(key).filter((c) => c.lastSucceededAt);
-    const latest = found.length
-      ? found.reduce((a, b) => (String(b.lastSucceededAt) > String(a.lastSucceededAt) ? b : a)) : null;
-    // The same for a key last found inside an open shadow root: where the heal that matched
-    // last runs (or the hosts its chain names, when the Python package 0.9.0 dropped its
-    // shadowHosts), else the key's shadowHosts. Neither the page's HTML nor its elements hold
-    // what a shadow root contains, so a heal here could only find something outside it.
-    // Both are refused after the checks for a key marked destructive and the page guard.
-    let refusal: Refusal | null = null;
-    if (latest && latest.frameXPath) {
-      refusal = { code: 'frame', reason: "'" + key + "' was last found inside the iframe " + latest.frameXPath
-        + ', and mendwright for TypeScript does not heal inside an iframe yet, so it did not look for the element on '
-        + 'the page around it. Fix the selector by hand, or let the Python package heal it.' };
-    } else {
-      let hosts = hostsOf(latest);
-      if (!hosts.length) hosts = chainHosts(latest);
-      if (!hosts.length) hosts = this.store.shadowHosts(key);
-      if (hosts.length) {
-        refusal = { code: 'shadow', reason: "'" + key + "' was last found inside " + placeText(hosts) + ', and '
-          + 'mendwright for TypeScript does not heal inside a shadow root yet, so it did not look for the element on the '
-          + 'page around it, where an element that looks the same could be. Fix the selector by hand, or let the Python '
-          + 'package heal it.' };
-      }
+    const context = this.flowContext(key);
+    const [refusal, scope] = await this.healScope(key);
+    return resolveWithHeal(() => attempt(), this.coordinator, key, context, missed, refusal, scope);
+  }
+
+  /** Where a heal of key runs (the Python package's Healer._heal_scope), as [refusal, scope]:
+   * - A key whose element was last found inside an open shadow root (where the heal that
+   *   matched last runs, or the hosts its chain names when the Python package 0.9.0 dropped
+   *   its shadowHosts, else the key's shadowHosts) is refused, inside an iframe too. Neither
+   *   the page's HTML nor its elements hold what a shadow root contains, so a heal here could
+   *   only find something outside it. The refusal comes after the checks for a key marked
+   *   destructive and the page guard.
+   * - A key whose latest match was inside an iframe heals inside that iframe while it is on
+   *   the page (its selector matches one iframe element with a document): the scope reads the
+   *   iframe's document only, so an element that looks the same on the page around it is
+   *   never picked.
+   * - Otherwise, the iframe gone too, the key heals on the page, as the Python package's does. */
+  private async healScope(key: string): Promise<[Refusal | null, HealScope | null]> {
+    const { frame, hosts } = healPlace(this.store, key);
+    if (hosts.length) {
+      return [{ code: 'shadow', reason: "'" + key + "' was last found inside " + placeText(hosts) + ', and '
+        + 'mendwright for TypeScript does not heal inside a shadow root yet, so it did not look for the element on the '
+        + 'page around it, where an element that looks the same could be. Fix the selector by hand, or let the Python '
+        + 'package heal it.' }, null];
     }
-    return resolveWithHeal(() => attempt(), this.coordinator, key, this.flowContext(key), missed, refusal);
+    if (!frame) return [null, null];
+    const driver = await this.driver.framed(frame);
+    return [null, driver ? { kind: 'frame', frame, driver } : null];
+  }
+
+  // --- following a key's own selector into an iframe (see frames.ts) ------------------------
+
+  /** After key missed on the page: when one of its own selectors that are looked up in the
+   * page itself matches one element inside one iframe directly in the page, look for it there
+   * from now on, and return the retried lookup (the Python package's
+   * Healer._follow_into_frame). No model is asked: the selector is the key's own, and only its
+   * place changed. It counts as a heal with source 'frame'. Returns null when none of its
+   * selectors matches in an iframe.
+   *
+   * Throws AttentionRequired, the miss with why it was not followed, in dry run, under
+   * MENDWRIGHT_DISABLE=1 or while a guard blocks heals, for a key marked destructive, a match
+   * in several iframes or several elements there, an iframe inside another iframe, an iframe
+   * nothing tells apart from the others, a Playwright engine selector, a lookup quarantined or
+   * superseded before, a page the key was never found on (the page guard), and an element that
+   * fails the live check. */
+  private async followIntoFrame(key: string, missed: AttentionRequired,
+                                attempt: () => Promise<Locator>): Promise<Locator | null> {
+    const matches: [string, FrameMatch[]][] = [];
+    for (const selector of frameCandidates(this.store, key)) {
+      let frames: FrameMatch[];
+      try {
+        frames = await this.driver.frameMatches(selector);
+      } catch {
+        continue;
+      }
+      if (frames.length) matches.push([selector, frames]);
+    }
+    if (!matches.length) return null;
+    const [selector, frames, frame, alt] = this.pickFrame(key, missed, matches);
+    this.frameGuard(key, missed);
+    const why = await this.frameFollow(key, selector, frame, alt);
+    if (why) this.frameStop(key, missed, selector, frames, why);
+    return attempt();
+  }
+
+  /** From the key's selectors that match inside an iframe ([selector, frames]), the first one
+   * that can be followed, as [selector, frames, the iframe's selector, the selector to save]
+   * (see frames.framePlan). Throws the AttentionRequired of the first refusal when none can. */
+  private pickFrame(key: string, missed: AttentionRequired,
+                    matches: [string, FrameMatch[]][]): [string, FrameMatch[], string, string] {
+    const coordinator = this.coordinator;
+    const rules = {
+      disabled: coordinator.disabled, dryRun: coordinator.dryRun, destructive: this.store.metaOf(key).destructive,
+      status: (selector: string) => this.store.status(key, selector),
+    };
+    let refused: [string, FrameMatch[], string | null] | null = null;
+    for (const [selector, frames] of matches) {
+      const [frame, alt] = framePlan(key, selector, frames, rules);
+      if (frame !== null) return [selector, frames, frame, alt as string];
+      if (refused === null) refused = [selector, frames, alt];
+    }
+    const [selector, frames, why] = refused as [string, FrameMatch[], string | null];
+    return this.frameStop(key, missed, selector, frames, why);
+  }
+
+  /** Throw as the page guard does when key was never found on this page. */
+  private frameGuard(key: string, missed: AttentionRequired): void {
+    const moved = this.coordinator.flowChange(key, this.flowContext(key));
+    if (!moved) return;
+    this.coordinator.decline(key, moved, 'warning', null, 'page_guard');
+    throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + moved);
+  }
+
+  /** Check the guard, then alt inside the iframe frame on the live page (exactly one visible
+   * element of the key's role), then save alt there, record it as a heal and wait for its
+   * canary. '' when key was followed, else why not. */
+  private async frameFollow(key: string, selector: string, frame: string, alt: string): Promise<string> {
+    if (!this.coordinator.guard()) return 'a transaction guard is currently blocking heals';
+    const reason = await liveReason(this.driver, alt, this.store.metaOf(key), frame);
+    if (reason) return "its element there failed mendwright's checks (" + reason + ')';
+    this.store.addCandidate(key, alt, { source: 'heal', frameXPath: frame });
+    this.coordinator.recordFrame(key, selector, alt, frame);
+    this.coordinator.pending.set(key, alt);
+    return '';
+  }
+
+  /** Record and throw the AttentionRequired for a key found only inside an iframe that
+   * mendwright did not follow it into: a heal.declined with the code 'frame' ('dry_run' and
+   * 'disabled' on purpose), and the miss with why (frames.frameMessage). */
+  private frameStop(key: string, missed: AttentionRequired, selector: string, frames: FrameMatch[],
+                    why: string | null): never {
+    const reason = frameMessage(key, selector, frames, why);
+    this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('frame'));
+    throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
   }
 
   /** Where the candidate that just matched runs (see shadow.runTarget), or null when it

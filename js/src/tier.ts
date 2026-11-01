@@ -1,11 +1,12 @@
 // fingerprint.find() of the Python package, on the live page: look for the element a stored
 // fingerprint describes among the elements that have the key's role, and answer with an
-// XPath only when the match is confident.
+// XPath only when the match is confident. For a heal inside an iframe, driver is on the
+// iframe's Frame (see scope.ts), so the elements scored are the iframe's.
 
-import type { PlaywrightDriver } from './driver';
 import {
   MARGIN, THRESHOLD, containerIds, fmt, fromRaw, score, valid, type Fingerprint,
 } from './fingerprint';
+import type { HealDriver } from './scope';
 
 export interface Match {
   /** Set only when the match is confident. */
@@ -24,7 +25,7 @@ interface Scored {
 
 /** True when xpath reaches one visible element on the live page, false when not, null when
  * the page could not be read. */
-async function liveVisible(driver: PlaywrightDriver, xpath: string): Promise<boolean | null> {
+async function liveVisible(driver: HealDriver, xpath: string): Promise<boolean | null> {
   try {
     return (await driver.count(xpath)) === 1 && (await driver.isVisible(xpath));
   } catch {
@@ -32,7 +33,7 @@ async function liveVisible(driver: PlaywrightDriver, xpath: string): Promise<boo
   }
 }
 
-export async function findMatch(fp: Fingerprint | null, role: string, driver: PlaywrightDriver,
+export async function findMatch(fp: Fingerprint | null, role: string, driver: HealDriver,
                                 options: { threshold?: number; margin?: number } = {}): Promise<Match> {
   const threshold = options.threshold ?? THRESHOLD;
   const margin = options.margin ?? MARGIN;
