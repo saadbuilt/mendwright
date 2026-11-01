@@ -16,7 +16,9 @@ mendwright.backends) for a local disk, for every process of one host.
   of an object takes its lock, so two that race cannot both create it.
 - A lock that stays held past lock_timeout seconds, or a disk that keeps refusing a read or a
   write, raises Unavailable; a permission the OS refuses raises Denied. No write is retried
-  after a Conflict: the caller merges and tries again.
+  after a Conflict: the caller merges and tries again. Windows refuses a replace while any
+  reader holds the file, so put() tries it again, every 20 ms at most, for up to lock_timeout
+  seconds.
 """
 
 from __future__ import annotations
@@ -31,8 +33,8 @@ from . import Conflict, Denied, Read, Unavailable
 
 __all__ = ['FileBackend']
 
-# How often a read or a replace that Windows refuses for a moment (another process holds the
-# file) is tried, as SelectorStore does.
+# How often a read that Windows refuses for a moment (a writer is replacing the file) is tried,
+# as SelectorStore does.
 _TRIES = 8
 
 
@@ -175,17 +177,20 @@ class FileBackend:
         try:
             with os.fdopen(fd, 'wb') as fh:
                 fh.write(body)
-            delay = 0.01
-            for attempt in range(_TRIES):
+            # On Windows the replace is refused while any reader holds the file, and readers
+            # that keep reading leave only short gaps: try often, for up to lock_timeout
+            # seconds of sleep in all.
+            waited, delay = 0.0, 0.001
+            while True:
                 try:
                     os.replace(tmp, str(path))
                     return
                 except PermissionError as exc:
-                    # On Windows a reader that holds the file refuses the replace for a moment.
-                    if attempt == _TRIES - 1:
+                    if waited >= self.lock_timeout:
                         raise Unavailable(self._said('write', name, exc)) from None
                     self._sleep(delay)
-                    delay = min(delay * 2, 0.2)
+                    waited += delay
+                    delay = min(delay * 2, 0.02)
         except OSError as exc:
             raise Unavailable(self._said('write', name, exc)) from None
         finally:

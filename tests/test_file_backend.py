@@ -142,3 +142,85 @@ def test_a_lock_held_by_another_writer_is_unavailable(tmp_path):
     with pytest.raises(Unavailable, match='held by another writer'):
         backend.put('o', b'two')
     assert backend.get('o').body == b'one'
+
+
+def test_a_replace_the_os_refuses_for_a_while_is_tried_again(tmp_path, monkeypatch):
+    # Windows refuses the replace while a reader holds the file; readers that keep reading
+    # leave only short gaps, so a write keeps trying, more often than a read does.
+    slept = []
+    backend = FileBackend(tmp_path, sleep=slept.append)
+    backend.put('o', b'one')
+    real, refusals = os.replace, [30]
+
+    def replace(src, dst):
+        if refusals[0]:
+            refusals[0] -= 1
+            raise PermissionError(13, 'Access is denied')
+        return real(src, dst)
+
+    monkeypatch.setattr(os, 'replace', replace)
+    backend.put('o', b'two')
+    assert backend.get('o').body == b'two'
+    assert len(slept) == 30 and max(slept) <= 0.02 and sum(slept) < backend.lock_timeout
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_a_replace_the_os_keeps_refusing_is_unavailable_after_lock_timeout(tmp_path,
+                                                                          monkeypatch):
+    slept = []
+    backend = FileBackend(tmp_path, sleep=slept.append)
+    backend.put('o', b'one')
+
+    def replace(src, dst):
+        raise PermissionError(13, 'Access is denied')
+
+    monkeypatch.setattr(os, 'replace', replace)
+    with pytest.raises(Unavailable, match='could not write o'):
+        backend.put('o', b'two')
+    assert backend.lock_timeout <= sum(slept) < backend.lock_timeout + 0.02
+    monkeypatch.undo()
+    assert backend.get('o').body == b'one'
+    assert not list(tmp_path.glob('*.tmp')) and not list(tmp_path.glob('*.lock'))
+
+
+def test_readers_that_keep_reading_see_whole_bodies_and_never_stop_a_write(tmp_path):
+    backend = FileBackend(tmp_path)
+    small, large = b's' * 200_000, b'L' * 300_001
+    backend.put('keys/big.json', small)
+    writing_done, start = threading.Event(), threading.Barrier(4)
+    failures, lengths = [], []
+
+    def write():
+        try:
+            start.wait()
+            for i in range(20):
+                backend.put('keys/big.json', large if i % 2 == 0 else small)
+        except Exception as exc:  # noqa: BLE001 - reported below
+            failures.append(exc)
+        finally:
+            writing_done.set()
+
+    def read():
+        reader = FileBackend(tmp_path)
+        try:
+            start.wait()
+            while True:
+                last = writing_done.is_set()
+                body = reader.get('keys/big.json').body
+                if body not in (small, large):
+                    failures.append('a read of %d bytes is neither body' % len(body))
+                lengths.append(len(body))
+                if last:
+                    return
+        except Exception as exc:  # noqa: BLE001 - reported below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=write)] + [threading.Thread(target=read)
+                                                    for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert not any(thread.is_alive() for thread in threads)
+    assert failures == []
+    assert backend.get('keys/big.json').body == small and len(lengths) >= 3
