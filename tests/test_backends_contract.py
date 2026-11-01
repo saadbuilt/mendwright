@@ -70,7 +70,8 @@ def aws_offline(monkeypatch, tmp_path):
 def moto_s3(monkeypatch, tmp_path):
     pytest.importorskip(
         'boto3', minversion=BOTO3,
-        reason='boto3 ' + BOTO3 + ' or later runs the S3 tests: pip install "mendwright[s3]" (the test extra has it)')
+        reason='boto3 ' + BOTO3 + ' or later runs the S3 tests: pip install "mendwright[s3]" '
+               '(the test extra has it)')
     moto = pytest.importorskip(
         'moto', minversion=MOTO,
         reason='moto ' + MOTO + ' or later runs the S3 tests offline: pip install "moto[s3]>=' + MOTO

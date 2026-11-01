@@ -68,7 +68,8 @@ def aws_offline(monkeypatch, tmp_path):
 def need_boto3():
     return pytest.importorskip(
         'boto3', minversion=BOTO3,
-        reason='boto3 ' + BOTO3 + ' or later runs the S3 tests: pip install "mendwright[s3]" (the test extra has it)')
+        reason='boto3 ' + BOTO3 + ' or later runs the S3 tests: pip install "mendwright[s3]" '
+               '(the test extra has it)')
 
 
 def need_moto():
