@@ -6,27 +6,24 @@ PATH is the mendwright checkout the installed package was built from: its git re
 recorded, and the installed __init__.py must be byte for byte the checkout's. The local model
 must be in Ollama (mendwright model install), and Playwright's Chromium installed.
 
-Every page is the made-up shop (pages.json, the steps pages of capture_steps.json, and
-the two popups below over the redesign), in black and white: each page is drawn once in
-Chromium and every color is set to black or white (see BW_JS), and the runs and the video
-use those pages, which the JSON keeps. They are served at https://northwind.example by
-page.route(), so nothing reaches the network and the store saves the page's address.
-Each run gets the store it needs in a temporary folder:
+The pages are the made-up shop of pages.json, today's checkout and its redesign, each with
+an order summary beside the form (in the same grid as the form; the form's own markup and
+the elements around it are pages.json's), and the redesign with a popup: a promotion that
+covers the email field, and a dialog that asks to confirm the email address once the terms
+are accepted. Each page is drawn once in Chromium in black and white (see BW_JS), and the
+runs and the video use those pages, which the JSON keeps. They are served at
+https://northwind.example by page.route(), so nothing reaches the network and the store
+saves the page's address.
 
-  A_plain_v1             plain Playwright on today's page
-  B_plain_banner         plain Playwright on today's page with a cookie banner: the click times out
-  C_mendwright_banner    mendwright.open(page, cookies="reject") on the banner page, a fresh store
   M_mendwright_v1        mendwright.open(page) on today's page, a fresh store: it remembers
-  D_plain_v2             plain Playwright on the redesign: the click times out
-  D_mendwright_v2        mendwright on the redesign, with M's store: three repairs
+  D_mendwright_v2        on the redesign, with M's store: three repairs
   E_mendwright_v2_again  the same again, with D's store: the saved repairs
-  popups                 mendwright.open(page, dismiss=True), a fresh store each, on the redesign
-                         with an offer (Get my code / No thanks) and then with a question
-                         (Keep cart / No thanks) over the email field; neither closes on Escape
-  steps                  heal.step() and heal.run_steps() on today's, the switched and the extra flow
+  popups.offer           OFFER_SCRIPT on the redesign with the promotion, with D's store
+  popups.confirm         CONFIRM_SCRIPT on the redesign with the confirm dialog, with D's store
 
-The script is the one the main cut shows (D.script); each step's time and the log lines it
-wrote, with when, are kept. Nothing here edits a result: the JSON is what the runs did.
+The main script is the one the main cut shows (D.script); each step's time and the log
+lines it wrote, with when, are kept. The two popup scripts are run as written (exec), and the
+JSON keeps their text. Nothing here edits a result: the JSON is what the runs did.
 Before the runs, Ollama is asked to load the model (it keeps it loaded between heals), so
 the model's time in a log line is its answer, not Ollama reading 1 GB from disk.
 """
@@ -36,8 +33,8 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import traceback
@@ -53,8 +50,27 @@ VIEWPORT = [1080, 736]
 MODEL = 'mendwright-selector'
 # the main cut's script, step by step
 SCRIPT = [('click', '#email'), ('type', 'ada@example.com'), ('check', '#accept-terms'), ('click', '#continue')]
-# the steps act: (name, when, kwargs) and what each step does
-STEPS = [('shipping', '#ship-name', {}), ('payment', '#card-number', {}), ('review', 'text="Place order"', {'last': True})]
+
+# The popup beats' scripts, run as written. The page the main script has is `page`.
+OFFER_SCRIPT = '''heal = mendwright.open(
+    page, dismiss=True)
+heal.page.click("#email")
+'''
+CONFIRM_SCRIPT = '''heal = mendwright.open(page)
+
+def confirm_email(page):
+    page.fill("#confirm-email", "ada@example.com")
+    page.click("#confirm-email-ok")
+
+heal.interrupt("confirm_email",
+    "#confirm-email-dialog",
+    run=confirm_email)
+page = heal.page
+page.click("#email")
+page.keyboard.type("ada@example.com")
+page.check("#accept-terms")
+page.click("#continue")
+'''
 
 
 def load(name):
@@ -62,33 +78,77 @@ def load(name):
         return json.load(f)
 
 
-# Two popups nobody registered, over the redesign's email field. Neither closes on Escape,
-# and both have a "No thanks". The offer reads as a promotion (% off): mendwright may decline
-# it with "No thanks", and never clicks "Get my code". The question has a Keep button, so it
-# asks something: there "No thanks" would be an answer (throw the cart away), and mendwright
-# presses Escape and nothing more. The page notes each button clicked in window.mwClicked.
+# ---------- the pages ----------
+# An order summary for each version of the checkout, in its own style. It goes in the grid of
+# the form's container, as a sibling of the form card, so the form and its ancestors are the
+# same as in pages.json (the fingerprint reads up to 4 ancestors).
+SUMMARY_V1 = '''<style>.wrap{display:grid;grid-template-columns:470px 280px;column-gap:28px;align-items:start}
+.wrap h1,.wrap .sub,.wrap .card{grid-column:1}
+.sum{grid-column:2;grid-row:3;background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:20px 22px}
+.sum h2{font-size:16px;margin:0 0 14px}
+.item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}
+.thumb{width:48px;height:48px;border:1px solid #d8d2c4;border-radius:8px;flex:none}
+.item .mt{color:#57606a;font-size:13.5px;margin-top:2px} .item .pr{margin-left:auto;font-weight:600}
+.ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#3d434b}
+.tot{border-top:1px solid #e3ddd0;padding-top:12px;margin:12px 0 0;font-weight:700;color:#1f2328}
+.top{display:flex;justify-content:space-between;align-items:center} .top span{font-size:14px;font-weight:400;letter-spacing:0}</style>'''
+ASIDE_V1 = '''<aside class="sum"><h2>Order summary</h2>
+  <div class="item"><div class="thumb"></div><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
+  <div class="ln"><span>Subtotal</span><span>$129.00</span></div>
+  <div class="ln"><span>Shipping</span><span>Free</span></div>
+  <div class="ln tot"><span>Total</span><span>$129.00</span></div>
+</aside>'''
+SUMMARY_V2 = '''<style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}
+.x8k2 h2,.x8k2 .f9a1{grid-column:1}
+.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}
+.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}
+.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}
+.s4m .thumb{width:48px;height:48px;border:1px solid #e6e8ee;border-radius:10px;flex:none}
+.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}
+.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}
+.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style>'''
+ASIDE_V2 = '''<aside class="s4m"><h3>Your order</h3>
+  <div class="item"><div class="thumb"></div><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
+  <div class="ln"><span>Subtotal</span><span>$129.00</span></div>
+  <div class="ln"><span>Shipping</span><span>Free</span></div>
+  <div class="ln tot"><span>Total</span><span>$129.00</span></div>
+</aside>'''
+
+# Two popups over the redesign. Neither closes on Escape. The promotion covers the page when
+# it loads; it has an email field, Subscribe and No thanks. The confirm dialog opens when the
+# terms are accepted, over the Continue button; Confirm closes it when its email is the one in
+# the form. The page notes what was clicked: window.mwClicked, mwConfirmed and mwContinued.
+_OVERLAY = 'position:fixed;inset:0;background:rgba(22,24,29,.5);display:flex;align-items:center;justify-content:center'
+_CARD = 'background:#fff;border-radius:14px;padding:26px 28px;width:420px;box-shadow:0 20px 60px rgba(0,0,0,.25)'
+_FIELD = 'width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin:0 0 12px'
+_PRIMARY = 'width:100%;padding:13px;border:0;border-radius:8px;font-size:16px;font-weight:600;background:#16181d;color:#fff'
 _NOTE = "(window.mwClicked = window.mwClicked || []).push(this.textContent.trim())"
-_OVERLAY = 'position:fixed;inset:0;background:rgba(18,16,40,.52);display:flex;align-items:center;justify-content:center'
-_CARD = 'background:#fff;border-radius:18px;padding:28px 30px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,.28)'
-_BTN = 'width:100%;padding:13px;border:0;border-radius:10px;font-size:16px;font-weight:600'
-POPUPS = {
-    'offer': ('<div id="offer" role="dialog" aria-modal="true" aria-labelledby="offer-t" style="%s">'
-              '<div class="pop-card" style="%s">'
-              '<div id="offer-t" style="font-size:25px;font-weight:700;margin:0 0 8px">Get 15%% off your first order</div>'
-              '<div style="color:#57606a;font-size:15px;line-height:1.45;margin-bottom:16px">Enter your email and we will send you a one-time code.</div>'
-              '<input type="email" placeholder="Your email" style="width:100%%;padding:12px;border:1px solid #d0d7de;border-radius:9px;font-size:16px;margin-bottom:12px">'
-              '<button type="button" class="pop-yes" onclick="%s" style="%s;background:#3b2a86;color:#fff">Get my code</button>'
-              '<button type="button" class="pop-no" onclick="%s;document.getElementById(\'offer\').remove()" style="%s;margin-top:8px;background:none;color:#57606a;font-weight:400">No thanks</button>'
-              '</div></div>') % (_OVERLAY, _CARD, _NOTE, _BTN, _NOTE, _BTN),
-    'question': ('<div id="ask" role="dialog" aria-modal="true" aria-labelledby="ask-t" style="%s">'
-                 '<div class="pop-card" style="%s">'
-                 '<div id="ask-t" style="font-size:25px;font-weight:700;margin:0 0 8px">Restore your saved cart?</div>'
-                 '<div style="color:#57606a;font-size:15px;line-height:1.45;margin-bottom:18px">You left 2 items in your cart last time.</div>'
-                 '<div style="display:flex;gap:10px">'
-                 '<button type="button" class="ask-keep" onclick="%s;document.getElementById(\'ask\').remove()" style="%s;background:#3b2a86;color:#fff">Keep cart</button>'
-                 '<button type="button" class="ask-no" onclick="%s;document.getElementById(\'ask\').remove()" style="%s;background:#fff;color:#3b2a86;border:1px solid #d0d7de">No thanks</button>'
-                 '</div></div></div>') % (_OVERLAY, _CARD, _NOTE, _BTN, _NOTE, _BTN),
-}
+OFFER = ('<div id="offer" role="dialog" aria-modal="true" aria-labelledby="offer-t" style="%s">'
+         '<div class="pop-card" style="%s">'
+         '<div style="font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:#6e7781;font-weight:600">Northwind newsletter</div>'
+         '<div id="offer-t" style="font-size:23px;font-weight:700;margin:6px 0 8px">Get 15%% off your first order</div>'
+         '<div style="color:#57606a;font-size:15px;line-height:1.45;margin:0 0 16px">Sign up for early access to sales and new arrivals.</div>'
+         '<input type="email" placeholder="Email address" style="%s">'
+         '<button type="button" class="pop-yes" onclick="%s" style="%s">Subscribe</button>'
+         '<button type="button" class="pop-no" onclick="%s;document.getElementById(\'offer\').remove()" '
+         'style="width:100%%;margin-top:6px;padding:10px;border:0;background:none;color:#57606a;font-size:15px">No thanks</button>'
+         '</div></div>') % (_OVERLAY, _CARD, _FIELD, _NOTE, _PRIMARY, _NOTE)
+CONFIRM = ('<div id="confirm-email-dialog" role="dialog" aria-modal="true" aria-labelledby="ce-t" style="%s;display:none">'
+           '<div class="pop-card" style="%s">'
+           '<div id="ce-t" style="font-size:22px;font-weight:700;margin:0 0 8px">Confirm your email address</div>'
+           '<div style="color:#57606a;font-size:15px;line-height:1.45;margin:0 0 16px">We send your receipt and delivery updates to this address.</div>'
+           '<label for="confirm-email" style="display:block;font-size:14px;color:#57606a;margin:0 0 7px">Email address</label>'
+           '<input id="confirm-email" type="email" placeholder="name@domain.com" style="%s">'
+           '<button type="button" id="confirm-email-ok" style="%s">Confirm</button>'
+           '</div></div>'
+           '<script>(() => {'
+           'const box = document.getElementById("opt-91c4"), dlg = document.getElementById("confirm-email-dialog");'
+           'box.addEventListener("change", () => { if (box.checked) dlg.style.display = "flex"; });'
+           'document.getElementById("confirm-email-ok").addEventListener("click", () => {'
+           'const a = document.getElementById("confirm-email").value, b = document.querySelector("input[name=email]").value;'
+           'if (a && a === b) { window.mwConfirmed = a; dlg.remove(); } });'
+           'document.querySelector(".btn-x82hd").addEventListener("click", () => { window.mwContinued = true; });'
+           '})();</script>') % (_OVERLAY, _CARD, _FIELD, _PRIMARY)
 
 # Black and white: every element's background is set to black or white (a see-through one
 # keeps its alpha), its text to white on black and to black or grey on white, its borders to
@@ -101,6 +161,7 @@ BW_JS = r"""() => {
   const set = (e, k, v) => e.style.setProperty(k, v, 'important');
   const dark = new Map();
   for (const e of document.body.querySelectorAll('*')) {
+    if (e.tagName === 'SCRIPT' || e.tagName === 'STYLE') continue;
     const s = getComputedStyle(e), bg = parse(s.backgroundColor), fg = parse(s.color);
     let d = dark.get(e.parentElement) || false;
     if (bg && bg.a > 0) {
@@ -126,35 +187,38 @@ BW_JS = r"""() => {
 
 
 def black_and_white(p, pages):
-    """pages ({name: html}, nested dicts too) in black and white, drawn in Chromium once each."""
+    """pages ({name: html}) in black and white, drawn in Chromium once each."""
     browser = p.chromium.launch()
     page = browser.new_page(viewport={'width': VIEWPORT[0], 'height': VIEWPORT[1]})
-
-    def bw(x):
-        if isinstance(x, dict):
-            return {k: bw(v) for k, v in x.items()}
-        page.set_content(x)
-        return page.evaluate(BW_JS)
-    out = bw(pages)
+    out = {}
+    for name, html in pages.items():
+        page.set_content(html)
+        out[name] = page.evaluate(BW_JS)
     browser.close()
     return out
 
 
+def _insert(html, before, extra):
+    assert html.count(before) == 1, before
+    return html.replace(before, extra + before)
+
+
 def shop_pages(p):
-    """Today's page with and without its cookie banner, the redesign (pages.json), and the
-    redesign with each popup over it, in black and white."""
+    """Today's checkout and the redesign (pages.json, without the cookie banner), each with
+    its order summary, and the redesign with each popup, in black and white."""
     raw = load('pages.json')
-    v2 = raw['v2']
-    pages = {'v1_banner': raw['v1'], 'v2': v2}
-    for name, popup in POPUPS.items():
-        assert v2.count('</body>') == 1
-        pages[name] = v2.replace('</body>', popup + '</body>')
-    pages = black_and_white(p, pages)
-    banner = pages['v1_banner']
-    i = banner.index('<div id="cc-wrap"')
-    pages['v1'] = banner[:i] + '</body></html>'
-    assert 'cc-wrap' not in pages['v1'] and banner.endswith('</body></html>')
-    return pages
+    v1 = raw['v1']
+    v1 = v1[:v1.index('<div id="cc-wrap"')].rstrip() + '\n</body></html>'       # no cookie banner
+    v1 = _insert(v1, '</head>', SUMMARY_V1)
+    v1 = v1.replace('<div class="top">Northwind Outfitters</div>',
+                    '<div class="top">Northwind Outfitters<span>Secure checkout</span></div>')
+    # the summary goes right after the form card, inside the card's container
+    end = '</div></div>\n</body>'
+    assert v1.count(end) == 1 and raw['v2'].count(end) == 1
+    v1 = v1.replace(end, '</div>' + ASIDE_V1 + '</div>\n</body>')
+    v2 = _insert(raw['v2'], '</head>', SUMMARY_V2).replace(end, '</div>' + ASIDE_V2 + '</div>\n</body>')
+    pages = {'v1': v1, 'v2': v2, 'offer': _insert(v2, '</body>', OFFER), 'confirm': _insert(v2, '</body>', CONFIRM)}
+    return black_and_white(p, pages)
 
 
 class Lines(logging.Handler):
@@ -206,8 +270,8 @@ def error_line(e):
     return traceback.format_exception_only(type(e), e)[-1].strip().split('\n')[0]
 
 
-def run_script(page, *, plain_level=False, stop=True):
-    """The main cut's script on page (mendwright's or the plain one), step by step."""
+def run_script(page):
+    """The main cut's script on mendwright's page, step by step; a failed step stops it."""
     steps = []
     for verb, arg in SCRIPT:
         n = len(LOG.lines)
@@ -224,10 +288,10 @@ def run_script(page, *, plain_level=False, stop=True):
         t1 = time.perf_counter()
         rec['seconds'] = round(t1 - t0, 3)
         got = LOG.lines[n:]
-        rec['log'] = [(lv + ' ' + m) if plain_level else m for _, lv, m in got]
+        rec['log'] = [m for _, _, m in got]
         rec['log_at'] = [round(t - t0, 3) for t, _, _ in got]
         steps.append(rec)
-        if not rec['ok'] and stop:
+        if not rec['ok']:
             break
     return steps
 
@@ -280,26 +344,6 @@ def model_info():
 def main_runs(p, tmp, pages):
     out = {}
     url = ORIGIN + '/checkout'
-    # A: plain Playwright, today's page
-    b, page = browser_page(p, {'/checkout': pages['v1']})
-    page.goto(url)
-    out['A_plain_v1'] = run_script(page)
-    b.close()
-    # B: plain Playwright, the banner takes the click
-    b, page = browser_page(p, {'/checkout': pages['v1_banner']})
-    page.goto(url)
-    out['B_plain_banner'] = run_script(page)
-    out['B_banner_up_after'] = page.locator('#cc-wrap').count() > 0
-    b.close()
-    # C: mendwright rejects the banner
-    b, page = browser_page(p, {'/checkout': pages['v1_banner']})
-    page.goto(url)
-    heal = mendwright.open(page, cookies='reject', store_path=os.path.join(tmp, 'C', '.mendwright', 'overrides.json'))
-    out['C_mendwright_banner'] = run_script(heal.page)
-    out['C_seconds'] = total(out['C_mendwright_banner'])
-    out['C_banner_up_after'] = page.locator('#cc-wrap').count() > 0
-    out['C_heals'] = heals_of(heal)
-    b.close()
     # M: today's page, a fresh store
     store = os.path.join(tmp, 'main', '.mendwright', 'overrides.json')
     b, page = browser_page(p, {'/checkout': pages['v1']})
@@ -311,12 +355,7 @@ def main_runs(p, tmp, pages):
     sel = store_of(store)
     out['M_fingerprints'] = {k: bool(sel.get(k, {}).get('fingerprint')) for _, k in SCRIPT if k.startswith('#')}
     b.close()
-    # D: plain Playwright on the redesign
-    b, page = browser_page(p, {'/checkout': pages['v2']})
-    page.goto(url)
-    out['D_plain_v2'] = run_script(page)
-    b.close()
-    # D: mendwright on the redesign, with M's store
+    # D: the redesign, with M's store
     b, page = browser_page(p, {'/checkout': pages['v2']})
     page.goto(url)
     heal = mendwright.open(page, store_path=store)
@@ -349,76 +388,40 @@ def main_runs(p, tmp, pages):
     out['E_journal'] = journal_of(store)[j0:]
     out['E_winners'] = winners(store_of(store))
     b.close()
-    return out
+    return out, os.path.dirname(store)
 
 
-def popup_runs(p, tmp, pages):
-    """The offer, then the question: the same two lines on each, a fresh store each.
-        heal = mendwright.open(page, dismiss=True)
-        heal.page.click("input[name=email]")"""
-    out = {'open_kwargs': {'dismiss': True}, 'click': 'input[name=email]', 'click_kwargs': {}}
-    for name, root in (('offer', '#offer'), ('question', '#ask')):
-        store = os.path.join(tmp, 'popup-' + name, '.mendwright', 'overrides.json')
+def popup_runs(p, tmp, pages, saved):
+    """Each popup script, run as written on its page, with a copy of the store the main runs
+    saved (so "#email" and the others resolve through their saved repairs)."""
+    out = {'offer': {'script': OFFER_SCRIPT}, 'confirm': {'script': CONFIRM_SCRIPT}}
+    for name, root in (('offer', '#offer'), ('confirm', '#confirm-email-dialog')):
+        folder = os.path.join(tmp, 'popup-' + name)
+        shutil.copytree(saved, os.path.join(folder, '.mendwright'))
         b, page = browser_page(p, {'/checkout': pages[name]})
         page.goto(ORIGIN + '/checkout')
-        fresh = not os.path.exists(store)
-        heal = mendwright.open(page, dismiss=True, store_path=store)
+        cwd = os.getcwd()
+        os.chdir(folder)                         # mendwright.open() uses ./.mendwright here
         n = len(LOG.lines)
         t0 = time.perf_counter()
-        rec = {'name': name, 'store_fresh': fresh}
+        rec = out[name]
+        scope = {'mendwright': mendwright, 'page': page}
         try:
-            heal.page.click('input[name=email]')
+            exec(compile(rec['script'], name + '.py', 'exec'), scope)
             rec['ok'] = True
         except Exception as e:
             rec.update(ok=False, error_type=type(e).__name__, error=str(e), error_line=error_line(e))
+        finally:
+            os.chdir(cwd)
         t1 = time.perf_counter()
         got = LOG.lines[n:]
         rec.update(seconds=round(t1 - t0, 3), log=[lv + ' ' + m for _, lv, m in got], log_at=[round(t - t0, 3) for t, _, _ in got],
-                   popup_up_after=page.locator(root).count() > 0,
-                   clicked=page.evaluate('() => window.mwClicked || []'),
-                   handled=[str(x) for x in heal.handled_interruptions])
-        out[name] = rec
-        b.close()
-    return out
-
-
-def steps_runs(p, tmp):
-    st = load('capture_steps.json')
-    out = {'pages': black_and_white(p, st['pages']), 'open_kwargs': {}, 'steps': [[n, w, k] for n, w, k in STEPS]}
-    for flow in ('today', 'switched', 'extra'):
-        b, page = browser_page(p, out['pages'][flow])
-        visited = []
-        page.on('framenavigated', lambda fr: fr == page.main_frame and visited.append(fr.url[len(ORIGIN):]))
-        heal = mendwright.open(page, store_path=os.path.join(tmp, 'steps-' + flow, '.mendwright', 'overrides.json'))
-
-        def shipping(pg):
-            pg.fill('#ship-name', 'Ada Lovelace')
-            pg.click('#next')
-
-        def payment(pg):
-            pg.fill('#card-number', '4242 4242 4242 4242')
-            pg.click('#next')
-
-        def review(pg):
-            pg.click('text="Place order"')
-
-        for (name, when, kw), fn in zip(STEPS, (shipping, payment, review)):
-            heal.step(name, when, fn, **kw)
-        heal.page.goto(ORIGIN + '/checkout')
-        n = len(LOG.lines)
-        t0 = time.perf_counter()
-        rec = {'flow': flow}
-        try:
-            rec['ran'] = heal.run_steps()
-            rec['ok'] = True
-        except Exception as e:
-            rec.update(ok=False, error_type=type(e).__name__, error=str(e), error_line=error_line(e))
-        t1 = time.perf_counter()
-        got = LOG.lines[n:]
-        rec.update(seconds=round(t1 - t0, 3), timeout_ms=heal.timeout_ms, log=[lv + ' ' + m for _, lv, m in got],
-                   log_at=[round(t - t0, 3) for t, _, _ in got], visited=visited, final_url=page.url,
-                   done=page.url.endswith('/checkout/done'))
-        out[flow] = rec
+                   popup_up_after=page.locator(root).count() > 0 and page.locator(root).is_visible(),
+                   page=page.evaluate('() => ({clicked: window.mwClicked || [], confirmed: window.mwConfirmed || null, '
+                                      'continued: window.mwContinued === true, '
+                                      'email: document.querySelector("input[name=email]").value, '
+                                      'terms: document.getElementById("opt-91c4").checked})'),
+                   heals=heals_of(scope['heal']), handled=[str(x) for x in scope['heal'].handled_interruptions])
         b.close()
     return out
 
@@ -449,10 +452,10 @@ def main():
     warm_model()
     with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
         pages = shop_pages(p)
-        data['pages'] = {k: pages[k] for k in ('v1_banner', 'v2', 'offer', 'question')}
-        data.update(main_runs(p, tmp, pages))
-        data['popups'] = popup_runs(p, tmp, pages)
-        data['steps'] = steps_runs(p, tmp)
+        data['pages'] = pages
+        runs, saved = main_runs(p, tmp, pages)
+        data.update(runs)
+        data['popups'] = popup_runs(p, tmp, pages, saved)
     write(a.out, data)
 
 
