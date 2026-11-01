@@ -742,8 +742,6 @@ _MD_LINK = re.compile(r'\]\(([^)\s]+)\)')
 _HTML_URL = re.compile(r'(?:src|srcset|href)="([^"]+)"')
 _REPO_URL = re.compile(r'^https://(?:github\.com/saadbuilt/mendwright/(?:blob|tree)/main/'
                        r'|raw\.githubusercontent\.com/saadbuilt/mendwright/main/)(.+)$')
-# Produced from a terminal recording of `mendwright demo`, outside this test suite.
-_RECORDED = set()  # assets produced by another step; none outstanding
 
 
 def _targets(text):
@@ -765,7 +763,7 @@ def test_readme_links_into_the_repo_point_at_files_on_main():
             assert m, 'link into the repo that is not on the main branch: ' + target
             paths.append(m.group(1))
     assert paths
-    missing = [p for p in paths if not (ROOT / p).exists() and p not in _RECORDED]
+    missing = [p for p in paths if not (ROOT / p).exists()]
     assert missing == []
 
 

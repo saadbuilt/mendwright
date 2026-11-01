@@ -1,6 +1,7 @@
 """The `mendwright` command (also `python -m mendwright`).
 
-    mendwright demo      watch a broken selector get healed, offline
+    mendwright demo      watch your model repair a selector a redesign broke (--scripted:
+                         a canned reply, offline)
     mendwright doctor    check the install, browser libraries, provider and store
     mendwright report    list the selectors and heals in an override store (text, md, json, html)
     mendwright fix       write healed selectors back into your code (a diff, or --apply)
@@ -12,10 +13,11 @@
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
-Nothing here imports a browser library or calls a model, except `mendwright demo --live`,
-which asks the provider from the environment. `mendwright check` launches a headless
-Playwright browser (see mendwright.drift_session), and calls no model either. `mendwright
-notify` makes one POST, to the URL in MENDWRIGHT_WEBHOOK_URL, and never prints that URL.
+Nothing here imports a browser library or calls a model, except `mendwright demo`, which
+asks the provider from the environment (not with --scripted). `mendwright check` launches
+a headless Playwright browser (see mendwright.drift_session), and calls no model either.
+`mendwright notify` makes one POST, to the URL in MENDWRIGHT_WEBHOOK_URL, and never prints
+that URL.
 """
 
 from __future__ import annotations
@@ -364,7 +366,8 @@ def _doctor_text(d):
         else:
             lines.append('  none configured, so a broken selector is reported but not repaired.')
         lines.append(_wrap('Why: ' + p['reason']))
-        lines.append('  `mendwright demo` works without one (it uses a scripted reply).')
+        lines.append('  `mendwright demo --scripted` works without one (it uses a scripted '
+                     'reply).')
     if p['env_set']:
         lines.append('  provider variables set: ' + ', '.join(p['env_set']) + ' (values not shown)')
     if p['disabled']:
@@ -1714,7 +1717,7 @@ def cmd_model_install(args):
 
 def cmd_demo(args):
     from .demo import run
-    return run(browser=args.browser, keep=args.keep, slow=args.slow, live=args.live)
+    return run(browser=args.browser, keep=args.keep, scripted=args.scripted)
 
 
 # --- wiring ----------------------------------------------------------------------------
@@ -1732,24 +1735,25 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', metavar='<command>')
 
     demo = sub.add_parser(
-        'demo', help='watch a broken selector get healed (offline, no key needed)',
-        description='A redesign breaks two selectors on a checkout page. mendwright heals the '
-                    'checkbox and refuses to heal the pay button. Runs offline with a stand-in '
-                    'page and a scripted model reply (no API call); --live asks the model '
-                    'provider from the environment instead. Writes only to a temp folder, '
-                    'which is removed afterwards.')
+        'demo', help='watch your model repair a selector a redesign broke',
+        description='A redesign breaks two selectors on a checkout page. mendwright asks the '
+                    'model provider from your environment (the one mendwright doctor shows) '
+                    'to repair the checkbox, checks the repair on the page, and refuses to '
+                    'repair the pay button, which is marked destructive. It prints '
+                    "mendwright's own log lines from the run. Only the demo page is sent. "
+                    '--scripted uses a canned reply instead, with no model call. Writes only '
+                    'to a temp folder, which is removed afterwards.')
     demo.add_argument('--browser', nargs='?', const='chromium', choices=BROWSERS,
                       metavar='{chromium,firefox,webkit}',
                       help='run the same story in a real headless Playwright browser '
                            '(default: chromium). Needs Playwright and that browser installed.')
     demo.add_argument('--keep', action='store_true',
                       help='keep the temp store and journal, and print where they are')
-    demo.add_argument('--slow', action='store_true',
-                      help='pause between lines, for recording a terminal session')
-    demo.add_argument('--live', action='store_true',
-                      help='ask the model provider from the environment (the one '
-                           'mendwright doctor shows) instead of the scripted reply. Makes a '
-                           'real API call and sends the demo page to that provider.')
+    demo.add_argument('--scripted', action='store_true',
+                      help='use a canned model reply instead of your provider: no model '
+                           'call, no key needed')
+    # The model from the environment is the default now; --live stays for old scripts.
+    demo.add_argument('--live', action='store_true', help=argparse.SUPPRESS)
     demo.set_defaults(handler=cmd_demo)
 
     doctor = sub.add_parser(

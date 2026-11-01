@@ -7,6 +7,15 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+### Changed
+
+- `mendwright demo` asks the model provider from your environment, the one `mendwright doctor` shows, so a real model makes the repair. Only the demo page is sent. With no provider it exits 1 and says how to set one up, with `mendwright doctor` or `mendwright model install` for the local model, or to run `mendwright demo --scripted`, the old offline run with a canned reply and no model call. `--live` is still accepted and changes nothing. `mendwright doctor` names `mendwright demo --scripted` when no provider is set, and CI and the release workflow run `mendwright demo --scripted` on the installed wheel.
+- `mendwright demo` prints mendwright's own log lines from the run, the WARNING and INFO lines your script logs through the `mendwright` logger, in place of the coloured step-by-step display: a line about the demo, the provider and its model, the lines for the cookie banner handled, the checkbox repaired and the pay button refused, and a one-line summary. No colours, on a terminal or not. `mendwright.demo.story()` prints nothing and no longer takes `say=` or `style=`, and `mendwright.demo.run()` takes `scripted=` in place of `live=`, `slow=`, `color=` and `sleep=`.
+
+### Removed
+
+- `mendwright demo --slow`, which paused between lines for recording the old display, and `docs/assets/demo.svg`, the terminal recording of that display, with `docs/charts/build_demo_svg.py`, which built it.
+
 ## [0.10.1] - 2026-11-01
 
 ### Changed

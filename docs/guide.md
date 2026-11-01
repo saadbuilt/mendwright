@@ -2236,17 +2236,28 @@ pytest shows the lines in the captured output of a failed test.
 ## Command line
 
 `mendwright` (or `python -m mendwright`) has seven commands, `demo`, `doctor`, `report`, `fix`, `lists`, `model` (see [Local model](#local-model)) and `check`, plus `--version`.
+If your shell can't find `mendwright`, because pip put it in a Scripts folder that isn't on PATH (as the Microsoft Store Python on Windows does), `python -m mendwright` runs every command the same way, such as `python -m mendwright demo`.
 
 ### mendwright demo
 
-Runs a scripted heal on a stand-in checkout page, offline, and exits 0 when the cookie banner is handled, the checkbox heals and the pay button is refused.
+A redesign breaks two selectors on a stand-in checkout page, and a cookie banner now opens first and covers the form. The demo asks the provider from your environment, the one `mendwright doctor` shows, to repair the checkbox. mendwright checks the repair on the page and refuses to repair the pay button, which is marked `destructive=True`. Only the demo page is sent.
+It prints a line about the demo, the provider, mendwright's own log lines from the run (the ones your script logs, see [Logging](#logging)) and a summary. With `--scripted`:
 
+```text
+mendwright demo: a checkout page is redesigned and two selectors break.
+Provider: ScriptedProvider, a canned reply (--scripted): no model call, nothing sent.
+WARNING mendwright: handled interruption 'cookies' before 'accept_terms'
+WARNING mendwright: healed 'accept_terms': #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (ScriptedProvider, 0.0s)
+WARNING mendwright: did not heal 'pay': 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
+Done: 1 repaired (checked on the live page and confirmed by the retried step), 1 refused, 1 interruption handled, 1 model call.
+```
+
+- `--scripted` uses a canned reply instead of your provider: no model call, no key, nothing sent. CI runs the demo this way.
 - `--browser [chromium|firefox|webkit]` runs it in a real headless Playwright browser.
-- `--live` asks the model from your environment instead of the scripted reply. Only the demo page is sent.
 - `--keep` keeps the temporary store and prints its path.
-- `--slow` pauses between lines, for recording.
 
-It writes only to a temporary folder. Without `--live` it ignores `MENDWRIGHT_*` settings and needs no key.
+It exits 0 when the cookie banner is handled, the checkbox is repaired and the pay button is refused, and 1 otherwise. With no provider set up, it exits 1 and says how to set one up ([Providers](#providers), or `mendwright model install` for the [local model](#local-model)) or to run `--scripted`.
+It writes only to a temporary folder, and ignores `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_DRY_RUN`, `MENDWRIGHT_DISABLE` and `MENDWRIGHT_FINGERPRINT`; the provider variables choose the model as they do for `mendwright.open()`. `--live`, from when the scripted reply was the default, is still accepted and changes nothing.
 
 ### mendwright doctor
 
@@ -2263,7 +2274,7 @@ Model provider
   uses another header (mendwright gateway); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama is
   not on http://127.0.0.1:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one of:
   anthropic, openai, gemini, gateway, ollama, or pass provider=... to mendwright.open().
-  `mendwright demo` works without one (it uses a scripted reply).
+  `mendwright demo --scripted` works without one (it uses a scripted reply).
 
 Fingerprint healing (no model)
   on: each time a selector matches, mendwright records what the element looks like, and
