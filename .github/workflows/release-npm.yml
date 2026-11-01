@@ -4,10 +4,12 @@ name: Release npm
 # workflow), as release.yml does for PyPI.
 # With publish left off: build and test js/, and pack it. This is a rehearsal and never
 # uploads anything.
-# With publish on: the same, then upload the packed file to npm once a reviewer approves the
-# `npm` environment. Uploads use npm's trusted publishing (OIDC), so no npm token is stored,
+# With publish on: the same, then stage the packed file on npm once a reviewer approves the
+# `npm` environment. Staging uses npm's trusted publishing (OIDC), so no npm token is stored,
 # and the package gets npm provenance: a signed statement that this workflow built it from
-# this commit. See docs/RELEASING.md.
+# this commit. A staged version is not installable until a maintainer approves it on
+# npmjs.com with two-factor authentication, so this workflow alone can never publish. See
+# docs/RELEASING.md.
 on:
   workflow_dispatch:
     inputs:
@@ -112,5 +114,7 @@ jobs:
       - name: Install npm 11
         run: npm install -g npm@11.19.1
 
-      - name: Publish with provenance
-        run: npm publish ./mendwright-*.tgz --provenance --access public
+      # The trusted publisher allows staging only: a maintainer approves the staged version
+      # on npmjs.com (or with npm stage approve) before anyone can install it.
+      - name: Stage with provenance
+        run: npm stage publish ./mendwright-*.tgz --provenance --access public

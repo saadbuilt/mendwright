@@ -127,11 +127,11 @@ The TypeScript package in `js/` goes to npm from `.github/workflows/release-npm.
 The Python sdist and wheel never hold `js/`: the wheel has only the `mendwright` package, and `MANIFEST.in` prunes `js` last (`tests/test_package_files.py` checks both).
 
 - With publish off, it builds and tests `js/` and packs it, and uploads nothing. Use this as a rehearsal.
-- With publish on, it does the same, then publishes the packed file once you approve the `npm` environment. The package gets npm provenance: a signed statement, shown on its npm page, that this workflow built it from this commit.
+- With publish on, it does the same, then stages the packed file on npm once you approve the `npm` environment. A staged version can't be installed until you approve it on npmjs.com with your security key, so the workflow alone can never publish. The package gets npm provenance: a signed statement, shown on its npm page, that this workflow built it from this commit.
 
 The name `mendwright` is reserved on npm with a 0.0.1 placeholder. Before the first upload from the workflow:
 
-1. On npmjs.com, open the settings of the package `mendwright`, and add a trusted publisher: GitHub Actions, owner `saadbuilt`, repository `mendwright`, workflow `release-npm.yml`, environment `npm`.
+1. On npmjs.com, open the settings of the package `mendwright`, and add a trusted publisher: GitHub Actions, owner `saadbuilt`, repository `mendwright`, workflow `release-npm.yml`, environment `npm`, with Allow npm publish and Allow npm dist-tag left off, so it can only stage.
 2. In the repository's Settings, Environments, create `npm` with Required reviewers, as for `pypi`.
 
 Each release:
@@ -139,5 +139,6 @@ Each release:
 1. Set the version in `js/package.json` and in `version` in `js/src/index.ts` (the unit suite checks they match), and date its section in `js/CHANGELOG.md`.
 2. In `js/`, run `npm install` (so `package-lock.json` carries the version), `npm test` and `npm run test:browser`.
 3. Merge to `main`. Run Release npm from `main` with publish on, and approve `npm` when the publish job asks.
+4. On npmjs.com, open the staged version of `mendwright`, check it is the one the run built, and approve it with your security key. Only then can it be installed.
 
 npm never takes the same version twice, so if anything goes wrong after an upload, the fix is a new version number. The workflow stops before building if the version is on npm already.
