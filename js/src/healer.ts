@@ -338,7 +338,9 @@ export class Healer {
 
   /** The page to use in place of your own, so steps heal without changing them:
    * page.locator(selector) and the page methods that take a selector go through
-   * heal.locator(selector, selector). Everything else is the real page's. */
+   * heal.locator(selector, selector). Everything else is the real page's, except that with
+   * open({ dismiss: true }) the locators it does not heal (getBy*, chained ones, ...) come back
+   * guarded: the real Locator, with the interruption and popup checks before its actions. */
   get page(): Page {
     if (!this.pageProxy) this.pageProxy = healingPage(this);
     return this.pageProxy as Page;
