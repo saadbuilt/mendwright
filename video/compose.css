@@ -71,8 +71,9 @@ body{font-family:Inter,"Inter Variable","Segoe UI Variable Display","Segoe UI",s
 #br .url{position:absolute;left:50%;top:8px;transform:translateX(-50%);height:30px;width:460px;border-radius:9px;
   border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;gap:8px;
   font-size:20px;color:rgba(255,255,255,.6);white-space:nowrap}
-#wide{background:#000;visibility:hidden}
-#wide .content{position:absolute;left:0;top:56px;right:0;bottom:0;overflow:hidden}
+/* a page that takes the whole stage (the pull request): no panel, head or border around it */
+#wide{position:absolute;visibility:hidden}
+#wide .content{position:absolute;left:0;top:0;right:0;bottom:0;overflow:hidden}
 #wide .pgw{transform-origin:0 0}
 #br .ctl{position:absolute;left:50%;top:8px;transform:translateX(-50%);height:30px;display:flex;align-items:center;
   font-size:20px;font-weight:600;color:var(--ink3);white-space:nowrap;visibility:hidden}

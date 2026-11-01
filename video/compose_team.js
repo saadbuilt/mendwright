@@ -45,15 +45,17 @@ function prPage() {
     if (!code.trim()) continue;       // the hunk's blank first line: left out, its number counted
     rows.push(`<div class="dl ${k === '-' ? 'del' : k === '+' ? 'add' : 'ctx'}"><span class="no">${on}</span><span class="no">${nn}</span><span class="sg">${k === ' ' ? '' : k}</span><span class="cd">${esc(code)}</span></div>`);
   }
-  const css = `body{background:#fff;color:#000}
-.card{position:absolute;left:22px;top:22px;width:790px;background:#fff;border:1px solid #b5b5b5;border-radius:12px;padding:20px 22px 22px}
-h1{font-size:25px;line-height:32px;margin:0;font-weight:700;letter-spacing:-.01em}
-.ok{margin-top:10px;font-size:17px;line-height:24px;font-weight:600} .ok i{font-style:normal;color:${PGC.green}}
-.diff{margin-top:18px;border:1px solid #b5b5b5;border-radius:10px;overflow:hidden}
-.fn{border-bottom:1px solid #b5b5b5;padding:8px 14px;font:600 16px/22px ${MONO}}
-.dl{display:flex;font:16.5px/28px ${MONO};white-space:pre;overflow:hidden}
-.no{width:26px;flex:none;text-align:right;color:#6b6b6b;font-size:13px;padding-right:4px}
-.sg{width:18px;flex:none;text-align:center;font-weight:700}
+  // on the stage at 1:1, the card centred by the page's own layout (reveal() moves .card)
+  const css = `html,body{height:100%;background:transparent}
+body{display:flex;align-items:center;justify-content:center;color:#000}
+.card{width:1440px;background:#fff;border-radius:22px;padding:34px 40px 40px}
+h1{font-size:42px;line-height:52px;margin:0;font-weight:700;letter-spacing:-.015em}
+.ok{margin-top:12px;font-size:27px;line-height:36px;font-weight:600} .ok i{font-style:normal;color:${PGC.green}}
+.diff{margin-top:26px;border:1.5px solid #b5b5b5;border-radius:14px;overflow:hidden}
+.fn{border-bottom:1.5px solid #b5b5b5;padding:12px 22px;font:600 24px/36px ${MONO}}
+.dl{display:flex;font:28px/48px ${MONO};white-space:pre;overflow:hidden}
+.no{width:46px;flex:none;text-align:right;color:#6b6b6b;font-size:20px;padding-right:6px}
+.sg{width:34px;flex:none;text-align:center;font-weight:700}
 .del{color:${PGC.red}} .add{color:${PGC.green}} .ctx{color:#000}`;
   return builtPage(css, `<div class="card"><div class="head"><h1>${esc(TM.title)}</h1>
 <div class="ok"><i>✓</i> Each one confirmed by a passing test</div></div>
@@ -61,17 +63,18 @@ h1{font-size:25px;line-height:32px;margin:0;font-weight:700;letter-spacing:-.01e
 }
 
 window.pullRequestBeat = function pullRequestBeat(t0) {
-  const t1 = t0 + 5.6;
+  const t1 = t0 + 5.9;
   if (TM.n !== D.D_heals.length) throw new Error('PR: the pull request does not write back every repair');
-  frame({ id: 'pr', html: prPage(), t: [t0, t1], cam: { x: 0, y: 0 }, fit: '.card, .dl' });
-  reload(t0); chrome(t0, 'Pull request'); chrome(t1, null);
-  focus(t0, 'page');
-  run({ t0, t1, cmd: [t0 + .1, '$ ' + TM.fixCmd] });
-  // the card comes in whole, title and diff, as the page loads; then the caption names it
-  reveal({ at: 'pr:.card', t: t0, what: TM.title + ', and the diff of ' + TM.diffFile, result: true });
-  cap(t0 + 1.2, t0 + 5.4, 'Confirmed repairs come back as a pull request.');
-  beat(t0 + 1.2, 'P1 the pull request');
-  beat(t0 + 3.6, 'P2 three selectors written back');
+  // the pull request takes the stage, centred: the editor, the run and the browser fade out
+  // completely, then the card comes in (0.3 s on), and the panels stay out while the stage
+  // gives way to the end card at t1
+  frame({ id: 'pr', html: prPage(), t: [t0, t1 + 1.5], panel: 'wide', cam: { x: 0, y: 0 }, fit: '.card, .dl' });
+  widePanel(t0, t1 + 1.5);
+  // the card comes in whole, title and diff; then the caption names it
+  reveal({ at: 'pr:.card', t: t0 + .3, what: TM.title + ', and the diff of ' + TM.diffFile, result: true });
+  cap(t0 + 1.5, t0 + 5.7, 'Confirmed repairs come back as a pull request.');
+  beat(t0 + 1.1, 'P1 the pull request');
+  beat(t0 + 3.9, 'P2 three selectors written back');
   return t1;
 };
 

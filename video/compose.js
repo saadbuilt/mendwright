@@ -97,10 +97,11 @@ br.id = 'br';
 const content = $('.content', br), ov = $('#ov', br), prog = $('#prog', br), urlEl = $('.url .u', br);
 const urlBox = $('.url', br), navEl = $('.nav', br), ctl = $('.ctl', br), edT = $('.t', ed);
 const VEIL = { code: $('.veil', ed), run: $('.veil', term), page: $('.veil', br) };
-// a terminal as wide as the stage (the check beat): the other panels step back while it shows
-const WC = { x: 40, y: 56 + LAYOUT.HEAD, w: 1840, h: 874 - LAYOUT.HEAD };
-const wide = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="dot" style="background:rgba(255,255,255,.3)"></span><span class="t">Terminal</span></div><div class="content"></div>`, stage,
-  `left:${WC.x}px;top:56px;width:${WC.w}px;height:874px`);
+// a page that takes the whole stage (the pull request): no panel around it; the editor, the
+// run and the browser fade out completely while it shows
+const WC = { x: 40, y: 56, w: 1840, h: 874 };
+const wide = el('div', '', `<div class="content"></div>`, stage,
+  `left:${WC.x}px;top:${WC.y}px;width:${WC.w}px;height:${WC.h}px`);
 wide.id = 'wide';
 const wideC = $('.content', wide);
 const ann = el('div', '', `<svg width="1920" height="1080"></svg>`, stage); ann.id = 'ann';
@@ -1171,10 +1172,11 @@ function render(vt) {
   stage.style.visibility = sp < .002 ? 'hidden' : 'visible';
   band.style.opacity = clamp(sp).toFixed(3);
   if (sp >= .002) {
-    let wp = 0;
-    for (const [a, b] of TL.wide) wp = Math.max(wp, pres(t, a, b, .45, .35));
+    // a page that takes the stage: the panels fade out completely first, then it comes in
+    let wp = 0, wo = 0;
+    for (const [a, b] of TL.wide) { wo = Math.max(wo, pres(t, a, b, .3, .35)); wp = Math.max(wp, pres(t, a + .3, b, .45, .35)); }
     mat(wide, wp, { dy: 0, s0: .985, blur: 10 });
-    for (const p of [ed, term, br]) p.style.opacity = (1 - clamp(wp)).toFixed(3);
+    for (const p of [ed, term, br]) p.style.opacity = (1 - clamp(wo)).toFixed(3);
     drawFocus(t);
     drawEditor(t);
     drawRuns(t);
