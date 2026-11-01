@@ -6,12 +6,17 @@
 //
 // It also handles registered interruptions (heal.interrupt(), and the cookies preset),
 // optional steps, and the page guard: a key is not healed on a page it was never found on.
+// An interruption that needs a form is answered by its run function, which gets heal.page:
+// its own calls run in an async context marked as inside it (RUN_CONTEXT), so they never
+// handle its own interruption, dismiss no popup and skip the healer's mutex, which the step
+// that called it holds while it waits.
 //
 // Open shadow roots (see shadow.ts): each fingerprint read also reads where the element is,
 // and saves it as the key's shadowHosts, as the Python package does. A key last found inside
 // a shadow root is never healed by this package, so a look-alike on the page around its host
 // is never picked; a heal the Python package saved inside one runs strictly there.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'node:path';
 
 import type { Frame, Locator, Page } from '@playwright/test';
@@ -30,13 +35,13 @@ import {
 import { AttentionRequired, InterruptionLoop, InvalidSelector } from './errors';
 import {
   DISMISS_KEY, MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, absentMessage, alertMessage, consentMessage,
-  dismissLoopMessage, dismissedMessage, handledMessage, isInterceptionError, loopMessage, lostMessage,
-  nothingMatchedMessage, pagePath, pageUrl, severalMessage, skipMessage, stepText, undismissedMessage,
-  unhandledMessage,
+  dismissLoopMessage, dismissedMessage, errorType, handledMessage, isInterceptionError, loopMessage, lostMessage,
+  nothingMatchedMessage, pagePath, pageUrl, runFailedMessage, runPlainMessage, runRemovesMessage, severalMessage,
+  skipMessage, stepText, undismissedMessage, unhandledMessage,
 } from './flow';
 import {
-  COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, makeInterruption, nthTargets,
-  type CookieChoice, type Interruption, type InterruptionEvent,
+  COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, functionName, makeInterruption, nthTargets,
+  type CookieChoice, type InterruptOptions, type Interruption, type InterruptionEvent, type RunFunction,
 } from './interruptions';
 import { Journal, runId, runIdProblem, type JournalLike } from './journal';
 import { sharedLimiter, type Guardrails } from './limits';
@@ -202,6 +207,35 @@ class Mutex {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** One call of a run function of heal.interrupt(), while it runs (Python's _Run): the
+ * healer, the interruption's key, and done, which settles when the call ends. */
+interface RunRecord {
+  readonly healer: Healer;
+  readonly key: string;
+  readonly done: Promise<void>;
+}
+
+// The run functions of heal.interrupt() that the code running now is inside, outermost first
+// (Python's _IN_RUN). An async context rather than a field, so that a step awaited next to
+// the step that called a run function, in a Promise.all, is told apart from the function's
+// own calls. Healer.runs has the same records, from every context.
+const RUN_CONTEXT = new AsyncLocalStorage<readonly RunRecord[]>();
+
+// What run functions threw (Python marks such an error _mendwright_run): it is thrown as it
+// is, and an AttentionRequired is never taken for a miss of the step the interruption was
+// handled for. A WeakSet, since an error may be frozen.
+const RAISED_BY_RUN = new WeakSet<object>();
+
+function raisedByRun(error: unknown): boolean {
+  return error !== null && (typeof error === 'object' || typeof error === 'function') && RAISED_BY_RUN.has(error);
+}
+
+/** Whether value is what await waits for: an object or function with a then method. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null && (typeof value === 'object' || typeof value === 'function')
+    && typeof (value as { then?: unknown }).then === 'function';
+}
+
 /** What a healer's locate() gives a HealLocator: the real Locator (null for a skipped step),
  * the heal it was found through, and the CSS of the shadow hosts it runs inside, if any. */
 interface Located {
@@ -330,9 +364,12 @@ export class Healer {
   private readonly roleChecked = new Set<string>();
   private readonly fingerprinted = new Set<string>();
   private readonly severalSeen = new Set<string>();
+  // Lookups, and the interruptions steps handle, take turns (see turn()).
   private readonly mutex = new Mutex();
   // Popups are dismissed one at a time: two actions awaited together never click the same one.
   private readonly popupMutex = new Mutex();
+  // The run functions of heal.interrupt() that run now, in any context (see awaitRuns()).
+  private readonly runs: RunRecord[] = [];
   private pageProxy: Page | Frame | null = null;
   /** @internal open({ dismiss: true }): dismiss popups nobody registered (see dismiss()). */
   dismissOn = false;
@@ -390,10 +427,19 @@ export class Healer {
   /** Register a step that can show up at any point, such as a cookie banner: when it is in
    * the way of a step, mendwright performs its action (a click by default) first. A later
    * heal.locator(key) of the same key is skipped when its element is not there. null removes
-   * it. */
-  interrupt(key: string, selector: string | string[] | null,
-            options: { action?: string; args?: unknown[]; role?: string } = {}): void {
+   * it.
+   *
+   * run, in place of action and args, is an async function that answers an interruption that
+   * needs a form, such as a session-expired sign-in: it gets heal.page, so its own selectors
+   * heal as usual, and selector only shows that the interruption is there. mendwright awaits
+   * it, then waits for the element to go away as after an action. Its own calls never handle
+   * its own interruption, so it is never called from inside itself, but they handle the
+   * others, and no popup is dismissed while it runs. What it throws is thrown as it is.
+   * Throws TypeError or InvalidSelector at once for arguments that can never work: run with
+   * action or args, a run that is not a function, and interrupt(key, null, { run }). */
+  interrupt(key: string, selector: string | string[] | null, options: InterruptOptions = {}): void {
     if (selector === null) {
+      if (options.run !== undefined && options.run !== null) throw new TypeError(runRemovesMessage(key));
       this.interruptions.delete(key);
       return;
     }
@@ -438,11 +484,92 @@ export class Healer {
     return presentNow(this.store, this.driver, key);
   }
 
+  // --- run functions of heal.interrupt() --------------------------------------------------
+
+  /** The records of this healer's run functions that the code running now is inside, and
+   * that still run: a callback a run function left behind, such as a timer, runs in its
+   * context after it ended, and is not inside it then. */
+  private ownRuns(): RunRecord[] {
+    const mine = RUN_CONTEXT.getStore() ?? [];
+    return mine.filter((run) => run.healer === this && this.runs.includes(run));
+  }
+
+  /** The run functions of this healer that run now in a context other than the code
+   * running now. */
+  private runsElsewhere(): RunRecord[] {
+    const mine = RUN_CONTEXT.getStore() ?? [];
+    return this.runs.filter((run) => !mine.includes(run));
+  }
+
+  /** fn under the healer's mutex, so that steps take turns, or at once inside a run function
+   * of this healer (Python's AsyncHealer._turn): the step that called the function holds the
+   * mutex while it waits for it, so the function's own calls would wait for that step
+   * forever. A step in another context still takes the mutex, and waits. */
+  private turn<T>(fn: () => Promise<T>): Promise<T> {
+    return this.ownRuns().length ? fn() : this.mutex.run(fn);
+  }
+
+  /** The registered interruptions other than before itself, and other than those whose run
+   * function the code running now is inside (Python's _others): the actions of a run
+   * function do not handle its own interruption, which it is filling in, but they do handle
+   * another one, such as a cookie banner over its form. */
+  private others(before: string): Interruption[] {
+    const mine = new Set(this.ownRuns().map((run) => run.key));
+    return [...this.interruptions.values()].filter((item) => item.key !== before && !mine.has(item.key));
+  }
+
+  /** Wait for the run functions of this healer that run in another context (Python's
+   * _await_runs): a step must not act on the page while one fills in its form, nor call it a
+   * second time. It waits with no limit, as the step that called the function does. */
+  private async awaitRuns(): Promise<void> {
+    for (let elsewhere = this.runsElsewhere(); elsewhere.length; elsewhere = this.runsElsewhere()) {
+      await Promise.all(elsewhere.map((run) => run.done));
+    }
+  }
+
+  /** Call interruption item's run function with heal.page and wait for the promise it
+   * returns (Python's _run_function). While it runs, its own calls run in an async context
+   * marked as inside it (RUN_CONTEXT, and this.runs for every context): they do not handle
+   * item again, dismiss no popup and skip the healer's mutex (see turn()), and the other
+   * registered interruptions are still handled before their actions. A step in another
+   * context waits for it (see awaitRuns()). What it throws, and the TypeError for a function
+   * that returned something that is not a promise, gets one WARNING and a flow.interrupt
+   * event with outcome 'failed', and is thrown as it is, marked (RAISED_BY_RUN): the step it
+   * was handled for does not take an AttentionRequired from it for a miss of its own. */
+  private async runFunction(item: Interruption, target: string, before: string, fn: string): Promise<void> {
+    const run = item.run as RunFunction;
+    let finish!: () => void;
+    const record: RunRecord = { healer: this, key: item.key, done: new Promise<void>((resolve) => (finish = resolve)) };
+    this.runs.push(record);
+    try {
+      await RUN_CONTEXT.run([...(RUN_CONTEXT.getStore() ?? []), record], async () => {
+        const result = run(this.page);
+        if (!isThenable(result)) throw new TypeError(runPlainMessage(item.key, fn, result));
+        await result;
+      });
+    } catch (error) {
+      try {
+        this.coordinator.emit('warning', runFailedMessage(item.key, before, fn, error));
+        this.coordinator.journal.event('flow.interrupt', {
+          key: item.key, before, action: item.action, selector: target, function: fn, outcome: 'failed',
+          error: errorType(error),
+        });
+      } catch {
+        // an error whose name or message cannot be read is still thrown as it is
+      }
+      if (error !== null && (typeof error === 'object' || typeof error === 'function')) RAISED_BY_RUN.add(error);
+      throw error;
+    } finally {
+      this.runs.splice(this.runs.indexOf(record), 1);
+      finish();
+    }
+  }
+
   // --- resolution --------------------------------------------------------------------------
 
   /** @internal */
   locate(key: string, plan: Plan): Promise<Located> {
-    return this.mutex.run(async () => {
+    return this.turn(async () => {
       this.prime(key, plan);
       const firstWait = this.interruptions.has(key) && this.handled.has(key) ? 0 : plan.timeoutMs;
       const attempt = (wait: number = plan.timeoutMs) => resolve(this.store, this.driver, key,
@@ -451,7 +578,10 @@ export class Healer {
       try {
         native = await this.resolveStep(key, () => attempt(firstWait), plan);
       } catch (error) {
-        if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired)) throw error;
+        // What a run function threw is its own, not a miss of this step: nothing is healed or skipped.
+        if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired) || raisedByRun(error)) {
+          throw error;
+        }
         const skip = this.interruptions.has(key) ? (this.handled.has(key) ? 'interruption handled' : 'interruption absent')
           : plan.optional ? 'optional' : null;
         if (skip) {
@@ -732,17 +862,27 @@ export class Healer {
     return Boolean(described) && item.roles.includes(described!.role);
   }
 
-  /** Handle each registered interruption (other than before itself) that the page shows
-   * now. True when one was handled. */
+  /** Handle each registered interruption that the page shows now, other than before itself
+   * and one whose run function this is inside (see others()). True when one was handled.
+   * Throws InterruptionLoop when the step's budget is used up and one is still there, and
+   * what a run function threw. A run function of this healer that runs in another context
+   * is waited for first, and again when one started there while an interruption was looked
+   * at, so that the look and the action come with no wait between them: a run function is
+   * never called a second time while it runs, and nothing acts next to it. */
   private async handleInterruptions(before: string, budget: Budget, timeoutMs: number, pollMs: number): Promise<boolean> {
+    await this.awaitRuns();
     let handled = false;
-    for (const [key, item] of [...this.interruptions]) {
-      if (key === before) continue;
-      const target = await this.interruptionTarget(item);
+    for (const item of this.others(before)) {
+      let target = await this.interruptionTarget(item);
+      while (target !== null && this.runsElsewhere().length) {
+        await this.awaitRuns();
+        target = await this.interruptionTarget(item);
+      }
       if (target === null) continue;
       if (budget.used >= MAX_INTERRUPTIONS_PER_STEP) {
         this.coordinator.journal.event('flow.stop', { key: item.key, code: 'interruption_loop', before });
-        throw new InterruptionLoop(loopMessage(before, item.key, budget.used));
+        const fn = item.run ? functionName(item.run) : null;
+        throw new InterruptionLoop(loopMessage(before, item.key, budget.used, fn));
       }
       budget.used += 1;
       if (await this.runInterruption(item, target, before, timeoutMs, pollMs)) {
@@ -753,18 +893,29 @@ export class Healer {
     return handled;
   }
 
+  /** Perform the interruption's action on target, or call its run function (see
+   * runFunction()), wait for it to go away, and record it. False (with a WARNING) when the
+   * action failed in the browser; what a run function threw is thrown. One still there after
+   * its run function returned counts as handled all the same, so the step's budget stops it. */
   private async runInterruption(item: Interruption, target: string, before: string, timeoutMs: number,
                                 pollMs: number): Promise<boolean> {
-    const loc = this.driver.locator(target) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-    const positional = ['fill', 'type', 'press', 'pressSequentially', 'selectOption', 'setChecked', 'setInputFiles', 'dragTo']
-      .includes(item.action) ? 1 : 0;
-    const args = item.args.length === positional ? [...item.args, { timeout: Math.max(timeoutMs, 1000) }] : [...item.args];
-    try {
-      await loc[item.action](...args);
-    } catch (error) {
-      if (isUsageError(error)) throw error;
-      this.coordinator.emit('warning', unhandledMessage(item.key, before, error));
-      return false;
+    let fn: string | null = null;
+    if (item.run) {
+      fn = functionName(item.run);
+      await this.runFunction(item, target, before, fn);
+    } else {
+      const loc = this.driver.locator(target) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+      const positional = ['fill', 'type', 'press', 'pressSequentially', 'selectOption', 'setChecked', 'setInputFiles',
+        'dragTo'].includes(item.action) ? 1 : 0;
+      const args = item.args.length === positional ? [...item.args, { timeout: Math.max(timeoutMs, 1000) }]
+        : [...item.args];
+      try {
+        await loc[item.action](...args);
+      } catch (error) {
+        if (isUsageError(error)) throw error;
+        this.coordinator.emit('warning', unhandledMessage(item.key, before, error));
+        return false;
+      }
     }
     // Wait, up to SETTLE_MS or the step's timeout, for it to go away (a banner that fades out).
     const limit = Math.min(Math.max(timeoutMs, 0), SETTLE_MS);
@@ -774,25 +925,31 @@ export class Healer {
     }
     if (!this.handled.has(item.key)) this.handled.set(item.key, before);
     this.interruptLog.push({ key: item.key, before, popup: null, how: null, label: null });
-    this.coordinator.emit('warning', handledMessage(item.key, before));
+    this.coordinator.emit('warning', handledMessage(item.key, before, fn));
     this.coordinator.journal.event('flow.interrupt', {
       key: item.key, before, action: item.action, preset: item.preset, selector: item.preset ? null : target,
+      function: fn,
     });
     return true;
   }
 
-  /** @internal Handle what the page shows before an action or the first read of key. */
+  /** @internal Handle what the page shows before an action or the first read of key. The
+   * interruptions are handled under the healer's mutex (see turn()), as a lookup's are: two
+   * steps awaited together never handle one at once. */
   async beforeAction(key: string, timeoutMs: number, pollMs: number): Promise<Budget> {
     const budget = newBudget();
-    if (this.interruptions.size) await this.handleInterruptions(key, budget, timeoutMs, pollMs);
+    if (this.others(key).length) await this.turn(() => this.handleInterruptions(key, budget, timeoutMs, pollMs));
     return budget;
   }
 
   /** @internal After an action on key failed because something covered native's element:
-   * handle the registered interruptions the page shows, else, with dismiss: true, dismiss a
-   * popup over the element. True when one was handled or dismissed. */
+   * handle the registered interruptions the page shows (under the mutex, as beforeAction()
+   * does), else, with dismiss: true, dismiss a popup over the element. True when one was
+   * handled or dismissed. */
   async unblock(key: string, native: Locator, budget: Budget, timeoutMs: number, pollMs: number): Promise<boolean> {
-    if (this.interruptions.size && (await this.handleInterruptions(key, budget, timeoutMs, pollMs))) return true;
+    if (this.others(key).length && (await this.turn(() => this.handleInterruptions(key, budget, timeoutMs, pollMs)))) {
+      return true;
+    }
     return this.dismiss(key, native, budget, timeoutMs, pollMs);
   }
 
@@ -864,12 +1021,13 @@ export class Healer {
    * accept, agree or allow. Each popup counts once against the budget, whatever was tried on
    * it, and InterruptionLoop is thrown when the budget is used up and one is still in the way
    * (one that comes back each time, say). A popup that could not be dismissed is named in one
-   * WARNING and not looked at again in this step (budget.gaveUp). */
+   * WARNING and not looked at again in this step (budget.gaveUp). Nothing is dismissed while
+   * a run function of heal.interrupt() runs, in this context or another (this.runs): it may
+   * be filling in the very popup. That is looked at before the look at the element and again
+   * once the lock is held, since a run function may have started while the look waited. */
   private async dismiss(before: string, native: Locator | null, budget: Budget, timeoutMs: number,
                         pollMs: number): Promise<boolean> {
-    // The Python package also returns here while a run function of heal.interrupt() runs,
-    // which may be filling in the very popup. This package has no run functions yet.
-    if (!this.dismissOn || native === null || budget.gaveUp) return false;
+    if (!this.dismissOn || native === null || budget.gaveUp || this.runs.length) return false;
     const seen = await driverPopupProbe(this.driver, native, null, true);
     if (popupOf(parseProbe(seen)) === null) return false;
     return this.popupMutex.run(() => this.dismissPopups(before, native, budget, timeoutMs, pollMs));
@@ -880,7 +1038,7 @@ export class Healer {
     const driver = this.driver;
     let dismissed = false;
     let again = false;
-    if (await this.interruptionLeft(budget)) return false;
+    if (this.runs.length || (await this.interruptionLeft(budget))) return false;
     let probe = parseProbe(await driverPopupProbe(driver, native, null, true));
     for (;;) {
       const popup = popupOf(probe);
@@ -1086,7 +1244,7 @@ export class Healer {
 
   /** @internal */
   reportNothingMatched(key: string): void {
-    const others = [...this.interruptions.values()].filter((item) => item.key !== key);
+    const others = this.others(key);
     if (!others.length) return;
     this.coordinator.emit('warning', nothingMatchedMessage(key, others.filter((i) => !i.preset).map((i) => i.key),
       others.some((i) => i.preset)));

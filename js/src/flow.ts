@@ -3,7 +3,7 @@
 // read, and the texts mendwright logs or raises for interruptions, skipped steps and the
 // page guard. Both packages write and compare the same values.
 
-import { hostname, isDigits, port, pyRepr, urlsplit } from './py';
+import { hostname, isDigits, port, pyLen, pyRepr, pySlice, pyStrip, urlsplit } from './py';
 
 /** How many interruptions one step handles before it stops. */
 export const MAX_INTERRUPTIONS_PER_STEP = 3;
@@ -106,8 +106,81 @@ export function flowChangeMessage(key: string, last: string, here: string, entry
     + 'to ' + entry + '.';
 }
 
-export function handledMessage(key: string, before: string): string {
-  return 'handled interruption ' + pyRepr(key) + ' before ' + pyRepr(before);
+/** The WARNING for an interruption mendwright handled. fn names the run function of
+ * heal.interrupt() that handled it, if any. */
+export function handledMessage(key: string, before: string, fn?: string | null): string {
+  return 'handled interruption ' + pyRepr(key) + ' before ' + pyRepr(before) + (fn ? ' with ' + fn + '()' : '');
+}
+
+// What Python's str.splitlines() splits at. Only the first line is used, so \r\n needs no
+// case of its own.
+const LINE_BREAK = /[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]/;
+
+/** The type name of what was thrown, as Python's type(error).__name__ gives it: the error's
+ * name (TypeError, AttentionRequired), else the name of its class, else 'Error'. */
+export function errorType(error: unknown): string {
+  if (error !== null && error !== undefined) {
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === 'string' && name) return name;
+    const kind = (Object(error) as { constructor?: { name?: unknown } }).constructor?.name;
+    if (typeof kind === 'string' && kind) return kind;
+  }
+  return 'Error';
+}
+
+/** The first line of what error says, at most 200 characters: Python's
+ * (str(error).strip().splitlines() or [type(error).__name__])[0][:200]. */
+function firstLine(error: unknown): string {
+  const text = pyStrip(String((error as Error)?.message ?? error));
+  return pySlice(text ? text.split(LINE_BREAK)[0] : errorType(error), 200);
+}
+
+/** A value as a message about a run function shows it, in TypeScript: undefined, null, 3,
+ * true, a string as Python's repr() quotes it (cut after 60 characters), [1, 2], { a: 1 },
+ * <function>, and an instance of a class by its class, as <Locator>. What is nested deeper
+ * than three arrays or objects is shown as ... */
+export function valueText(value: unknown, depth = 0): string {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (typeof value === 'string') {
+    const text = pyRepr(value);
+    return pyLen(text) <= 60 ? text : pySlice(text, 57) + '...';
+  }
+  if (typeof value === 'function') return '<function>';
+  if (typeof value !== 'object') return String(value);
+  const proto = Object.getPrototypeOf(value);
+  const plain = proto === Object.prototype || proto === null;
+  if ((Array.isArray(value) || plain) && depth >= 3) return '...';
+  if (Array.isArray(value)) return '[' + value.map((v) => valueText(v, depth + 1)).join(', ') + ']';
+  if (plain) {
+    const parts = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined)
+      .map(([k, v]) => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : pyRepr(k)) + ': ' + valueText(v, depth + 1));
+    return parts.length ? '{ ' + parts.join(', ') + ' }' : '{}';
+  }
+  const kind = (value as { constructor?: { name?: unknown } }).constructor?.name;
+  return '<' + (typeof kind === 'string' && kind ? kind : 'object') + '>';
+}
+
+/** The WARNING for the run function of interruption key, named fn, that threw error while
+ * mendwright handled it before before. The error is then thrown as it is. */
+export function runFailedMessage(key: string, before: string, fn: string, error: unknown): string {
+  return fn + '(), the run function of interruption ' + pyRepr(key) + ', raised an error while mendwright handled it '
+    + 'before ' + pyRepr(before) + ' (' + errorType(error) + ': ' + firstLine(error) + '). The error is raised as it '
+    + 'is.';
+}
+
+/** The TypeError text for a run function, named fn, that returned result, which is not a
+ * promise: mendwright waits for the promise it returns before it goes on. */
+export function runPlainMessage(key: string, fn: string, result: unknown): string {
+  return 'mendwright: ' + fn + '(), the run function of interruption ' + pyRepr(key) + ', returned ' + valueText(result)
+    + ", not a promise. heal.page's calls return promises, and a function that makes them without await does not "
+    + 'wait for them, so mendwright cannot either: make it an async function and await them, or return the promise.';
+}
+
+/** The TypeError text for heal.interrupt(key, null, { run }). */
+export function runRemovesMessage(key: unknown): string {
+  return 'mendwright: heal.interrupt(' + pyRepr(key) + ', null) removes an interruption. To register one with run, '
+    + "pass the selector of what shows it, such as '#session-expired'.";
 }
 
 export function unhandledMessage(key: string, before: string, error: unknown): string {
@@ -117,10 +190,22 @@ export function unhandledMessage(key: string, before: string, error: unknown): s
     + 'to heal.interrupt(' + pyRepr(key) + ', ...).';
 }
 
-export function loopMessage(before: string, key: string, count: number): string {
+/** The InterruptionLoop text. fn names the run function of heal.interrupt() that handled
+ * key, if any. */
+export function loopMessage(before: string, key: string, count: number, fn?: string | null): string {
   return 'mendwright: ' + count + ' interruptions were handled for ' + pyRepr(before) + ' and '
     + pyRepr(key) + ' is still on the page, so mendwright stopped instead of handling it again. '
-    + 'Check that the action registered with heal.interrupt(' + pyRepr(key) + ', ...) really closes '
+    + checkCloses(key, fn);
+}
+
+/** What loopMessage() tells you to check: the action of interruption key, or its run
+ * function. */
+function checkCloses(key: string, fn?: string | null): string {
+  if (fn) {
+    return 'Check that ' + fn + '(), the run function registered with heal.interrupt(' + pyRepr(key) + ', ...), '
+      + 'really closes it.';
+  }
+  return 'Check that the action registered with heal.interrupt(' + pyRepr(key) + ', ...) really closes '
     + "it, for example with action: 'press', args: ['Escape'], or a selector for its close button.";
 }
 

@@ -208,6 +208,27 @@ In the journal, a refused read writes a `heal.canary` with `success: false` and 
 
 `heal.interrupt(key, selector, { action, args })` registers a step of your own that can show up at any point, such as a newsletter modal. mendwright looks for these only when a step needs help: when a lookup misses, before an action of `heal.locator()` or `page` while the page shows one, and when such an action failed because something covered its element, after which the action is tried once more. At most 3 are handled for one step.
 
+### Interruptions that need a form
+
+```ts
+heal.interrupt('session_expired', '#session-expired', {
+  run: async function relogin(page) {
+    await page.fill('#relogin-user', 'ada@example.com');
+    await page.fill('#relogin-password', process.env.SHOP_PASSWORD!);
+    await page.click('#relogin-submit');
+  },
+});
+```
+
+Some interruptions take more than one click: a session-expired popup that asks you to sign in again, a form for your address or postcode, a confirmation with two fields. Pass the function that answers it as `run`, in place of `action` and `args`. mendwright calls it at the same moments as any interruption, when `selector` matches one visible element: when a lookup misses, before an action or the first read, and after an action was intercepted. It gets `heal.page`, so its own selectors heal as usual. The selector only shows that the interruption is there, so it can be the popup itself.
+
+- `run` is an async function, which mendwright awaits, or a function that returns a promise. One that returns anything else throws `TypeError` when the interruption is handled. `run` with `action` or `args`, a `run` that isn't a function and `heal.interrupt(key, null, { run })` throw `TypeError` at once, before anything touches the page.
+- Its own actions never handle its own interruption, which is still on the page while it fills it in, so it is never called from inside itself. They do handle the other registered interruptions, such as a cookie banner that opens over its form. With `dismiss: true`, no popup is dismissed while it runs, by its own actions or by any other step.
+- The step that called it waits for it. Another step of the same healer, such as one awaited next to it in `Promise.all()`, waits for it too before it looks up its element or handles an interruption, so the function is never called a second time while it runs. The function's own lookups and actions don't wait: the step they would wait for is the one waiting for them.
+- After it returns, mendwright waits for the element to go away, as after an action, and logs `handled interruption 'session_expired' before 'search' with relogin()`. The `flow.interrupt` journal event has `action: 'run'` and `function: 'relogin'`, the function's name. A function written in place, as in `{ run: async (page) => ... }`, takes its name from the option, so mendwright calls it `<anonymous>`, as the Python package calls a lambda `<lambda>`. An interruption still on the page after its function returned counts as handled all the same, so a step handles it at most 3 times and then throws `InterruptionLoop`, whose message names the function.
+- What it throws is thrown as it is, the same object, after one WARNING and a `flow.interrupt` event with `outcome: 'failed'` and the error's name in `error`. The step that called it stops there. An `AttentionRequired` from it isn't taken for a miss of that step, so nothing is healed or skipped.
+- A promise can't be cancelled, so nothing stops the function once it has started: a test that times out while it runs leaves it running.
+
 ## Popups nobody registered
 
 ```ts
@@ -287,7 +308,6 @@ And, compared with the Python package's `heal.locator()` and `heal.interrupt()`:
 
 - An iframe is not followed into: a selector that matches only inside an iframe is not looked up there, and no heal is made inside one. A heal the Python package saved inside an iframe is used, but a key last found inside an iframe is not healed when it breaks (after the checks for a key marked destructive and the page guard, which decline it first).
 - No heal is made inside an open shadow root. Each time a key's selector matches, where its element is gets saved as the key's `shadowHosts`, as the Python package saves it, and a key last found inside a shadow root is not healed when it breaks, so an element that looks the same on the page around its host is never picked. A heal the Python package saved inside a shadow root runs as the Python package runs it: its CSS through its hosts, and only a match inside that shadow root counts, never one in the host's light DOM, a shadow root inside it or another host. That is checked when the key is looked up and again right before each action and read of the `HealLocator`, except that `isVisible()` and `isHidden()` answer `false` and `true` at once when the Locator matches nothing at all, as Playwright's do; what you run on its `native` Locator yourself isn't checked. When the Python package 0.9.0 has written the store, which drops every `shadowHosts`, the key's and each heal's, a heal's chain still names its hosts, so that key is still not healed; a key that only your own selector found inside a shadow root has nothing left to say so until it matches again. Don't share a store with the Python package 0.9.0.
-- `run` functions for interruptions that need a form.
 - Interruptions are not registered with `page.addLocatorHandler()`, so they are handled before the steps mendwright routes only, not before a `getBy*` or chained locator's actions unless `dismiss: true` guards them.
 - Gemini, Bedrock, LiteLLM and the gateway as providers, and seed files.
 - A page whose cleaned HTML is longer than 60,000 characters is cut at the end for a hosted model, instead of having unrelated parts left out, so the element can be cut off. A heal of such a page can't use a position such as `[2]`.

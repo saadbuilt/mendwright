@@ -624,7 +624,8 @@ export const CHECKS: ReadonlyMap<string, (text: string) => boolean> = new Map([
 
 // --- expectValue -------------------------------------------------------------------------------
 
-const IDENTIFIER = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
+/** A name a message may write as name(): a JavaScript identifier. */
+export const IDENTIFIER = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
 function isRegExp(value: unknown): value is RegExp {
   return Object.prototype.toString.call(value) === '[object RegExp]';

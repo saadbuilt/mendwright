@@ -100,4 +100,8 @@ test('the public API', () => {
   }
   assert.equal(api.DISMISS_KEY, '<popup>');
   assert.equal(api.parseMoney('1.299,00 €'), '1299.00');
+  // Types, which the build of this test checks: heal.interrupt()'s options and its run function.
+  const run: api.RunFunction = async () => undefined;
+  const options: api.InterruptOptions = { run, role: 'dialog' };
+  assert.equal(options.run, run);
 });

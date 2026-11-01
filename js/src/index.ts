@@ -27,7 +27,7 @@ export { RateLimiter } from './limits';
 export type { Guardrails } from './limits';
 export { setLogSink } from './log';
 export type { LogLevel, LogSink } from './log';
-export type { Interruption, InterruptionEvent, CookieChoice } from './interruptions';
+export type { Interruption, InterruptionEvent, CookieChoice, InterruptOptions, RunFunction } from './interruptions';
 export { DISMISS_KEY } from './flow';
 export { parseMoney, parseNumber } from './values';
 export type { ExpectValue, ValueName } from './values';

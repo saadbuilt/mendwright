@@ -7,6 +7,8 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import { beforeEach, describe, test } from 'node:test';
 
+import type { Page } from '@playwright/test';
+
 import { DISMISS_KEY, alertMessage, consentMessage, dismissLoopMessage, dismissedMessage, lostMessage,
   undismissedMessage } from '../../src/flow';
 import { expectControl, expectOf, parseProbe, popupOf } from '../../src/dismiss';
@@ -877,5 +879,98 @@ describe('every way to an element', () => {
     await Promise.all([heal.locator('email', '#email').fill('ada@example.com'), heal.locator('go', '#go').click()]);
     assert.deepEqual(clicked(w), ['nl-no', 'go']);
     assert.equal(heal.handledInterruptions.length, 1);
+  });
+});
+
+describe('run functions of heal.interrupt()', () => {
+  /** A session-expired popup below the form, not fixed; z is its data-z. */
+  const relogin = (z = 0) => '<div id="relogin" role="dialog" aria-label="Session expired" data-rect="0 300 1000 200"'
+    + (z ? ' data-z="' + z + '"' : '') + '><p data-rect="10 310 300 20">Your session expired.</p>'
+    + '<input id="user" data-rect="10 340 200 30"><button id="signin" type="button" data-rect="10 380 100 30" '
+    + 'data-click-removes="#relogin">Sign in</button></div>';
+  /** The newsletter modal over the window from y on: from 250 it covers the popup's Sign in
+   * button and not the form; from 50, Go too, and not the email field. */
+  const lower = (y: number) => '<div id="nl" class="nl" role="dialog" aria-modal="true" style="position: fixed" '
+    + 'data-rect="0 ' + y + ' 1000 ' + (800 - y) + '" data-z="10"><div class="panel" data-rect="300 400 400 300">'
+    + '<p>Get 10% off your first order.</p>' + SIGN_UP + NO_THANKS + '</div></div>';
+
+  test('no popup is dismissed while a run function fills in its own', async () => {
+    const w = page(relogin(), lower(250));
+    const heal = w.open({ dismiss: true });
+    const calls = spy(heal);
+    const runs: unknown[] = [];
+    heal.interrupt('relogin', '#relogin', {
+      run: async function signIn(p: Page) {
+        runs.push(p);
+        await p.click('#signin');   // the modal is over it
+      },
+    });
+
+    await assert.rejects(heal.locator('email', '#email').fill('x'), intercepted);
+
+    // The function's click failed with the browser's own error: nothing was looked at or
+    // dismissed for it, and the step stopped there.
+    assert.equal(runs.length, 1);
+    assert.equal(calls.popupProbe, 0);
+    assert.ok(!gone(w, 'nl') && !gone(w, 'relogin'));
+    assert.deepEqual(clicked(w), []);
+    assert.equal(escapes(w), 0);
+    assert.deepEqual(heal.handledInterruptions, []);
+    assert.deepEqual(events(w).map((e) => [e.event, e.outcome]), [['flow.interrupt', 'failed']]);
+    // One WARNING, for the function: the click's own does not name the interruption it is filling in.
+    assert.equal(warnings(w).length, 1);
+    assert.ok(warnings(w)[0].startsWith("signIn(), the run function of interruption 'relogin', raised an error"));
+  });
+
+  test('nor once a run function started while the element was looked at', async () => {
+    // The modal covers Go. While mendwright looks at what covers it, the session popup opens
+    // above the modal, and another step calls its run function: the modal is left alone until
+    // the function is done, and dismissed after it.
+    const w = page(lower(50));
+    const heal = w.open({ dismiss: true });
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => (started = resolve));
+    heal.interrupt('relogin', '#relogin', {
+      run: async function signIn(p: Page) {
+        started();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await p.click('#signin');
+        w.page.calls.push(['run', 'signIn() returned']);
+      },
+    });
+    // What happened on the page, in order: the keys pressed and the elements clicked.
+    const press = w.page.keyboard.press;
+    w.page.keyboard.press = async (key: string) => {
+      w.page.calls.push(['key', key]);
+      return press(key);
+    };
+    const clickOn = w.page.clickOn.bind(w.page);
+    w.page.clickOn = (el: Element) => {
+      w.page.calls.push(['click', el.id]);
+      clickOn(el);
+    };
+    const driver = heal.driver as unknown as { popupProbe: (...args: unknown[]) => Promise<unknown> };
+    const probe = driver.popupProbe.bind(driver);
+    let other: Promise<void> | null = null;
+    driver.popupProbe = async (...args: unknown[]) => {
+      const seen = await probe(...args);
+      if (!other) {
+        add(w, relogin(20));
+        other = heal.locator('email', '#email').fill('ada@example.com');
+        await running;
+      }
+      return seen;
+    };
+
+    await heal.locator('go', '#go').click();
+    await other;
+
+    const order = w.page.calls.filter(([what]) => ['key', 'click', 'run'].includes(what))
+      .map(([what, on]) => what + ' ' + on);
+    const returned = order.indexOf('run signIn() returned');
+    assert.ok(returned > 0, order.join(', '));
+    assert.deepEqual(order.slice(0, returned), ['click signin'], order.join(', '));   // nothing else before it returned
+    assert.ok(order.includes('click nl-no') && order.at(-1) === 'click go', order.join(', '));
+    assert.ok(gone(w, 'nl') && gone(w, 'relogin'));
   });
 });
