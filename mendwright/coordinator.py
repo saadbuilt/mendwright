@@ -541,7 +541,8 @@ class HealCoordinator:
             return self._decline(selector_key,
                 "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
                 "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
-                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...).",
+                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...) "
+                "or MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR.",
                 code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:

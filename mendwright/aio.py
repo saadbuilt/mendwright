@@ -75,6 +75,7 @@ from .fingerprint import valid as valid_fingerprint
 from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
 from .facade import _dismiss_choice, _get_by_choice, get_by_modes, get_by_setting, suggest_setting
+from .facade import RATE_GLOBAL_DEFAULT, RATE_PER_KEY_DEFAULT, _RateDefault
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
@@ -444,7 +445,8 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                guard: Callable[[], Any] | None = None, dry_run: bool | None = None,
                destructive_keys: Iterable[str] = frozenset(),
                guardrails: Guardrails | None = None, journal: Any = None,
-               rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
+               rate_per_key_per_hour: int | None | _RateDefault = RATE_PER_KEY_DEFAULT,
+               rate_global_per_hour: int | None | _RateDefault = RATE_GLOBAL_DEFAULT,
                timeout_ms: int | None = None, cookies: str | None = None,
                heal_across_pages: bool = False, fingerprint: bool | None = None,
                dismiss: bool = False, expect_values: dict | None = None,
@@ -455,7 +457,8 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
     MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT,
-    MENDWRIGHT_HEAL_GET_BY, MENDWRIGHT_SUGGEST_GET_BY) and defaults as mendwright.open(),
+    MENDWRIGHT_HEAL_GET_BY, MENDWRIGHT_SUGGEST_GET_BY, MENDWRIGHT_RATE_PER_KEY_PER_HOUR,
+    MENDWRIGHT_RATE_GLOBAL_PER_HOUR) and defaults as mendwright.open(),
     cookies=, heal_across_pages=, fingerprint=, dismiss=, expect_values=, heal_get_by= (True or
     'model') and suggest_get_by= included.
     guard may be a plain or an async callable; it runs on the event loop. The provider stays

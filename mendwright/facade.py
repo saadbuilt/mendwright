@@ -334,6 +334,46 @@ def _env_timeout():
     return value
 
 
+class _RateDefault:
+    """The default of one of open()'s two rates: its environment variable when that is set,
+    else the built-in number. A rate passed to open(), None included, wins over both."""
+
+    __slots__ = ('var', 'value', 'param')
+
+    def __init__(self, var, value, param):
+        self.var, self.value, self.param = var, value, param
+
+    def __repr__(self):
+        return self.var + ' or ' + str(self.value)
+
+
+RATE_PER_KEY_DEFAULT = _RateDefault('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 3, 'rate_per_key_per_hour')
+RATE_GLOBAL_DEFAULT = _RateDefault('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 60, 'rate_global_per_hour')
+RATE_DEFAULTS = (RATE_PER_KEY_DEFAULT, RATE_GLOBAL_DEFAULT)
+
+
+def rate_setting(rate):
+    """One of open()'s two rates: the one passed (a whole number, or None for no limit),
+    else its environment variable (a whole number, or none), else 3 or 60. Raises ValueError
+    for a variable that is neither, as MENDWRIGHT_TIMEOUT_MS does."""
+    if not isinstance(rate, _RateDefault):
+        return rate
+    raw = os.environ.get(rate.var)
+    if raw is None or not raw.strip():
+        return rate.value
+    if raw.strip().lower() == 'none':
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError('mendwright: ' + rate.var + ' must be a whole number of heal attempts '
+                         'per hour, or none for no limit, got ' + repr(raw) + '. Fix it, or pass '
+                         + rate.param + '= to mendwright.open().')
+    return value
+
+
 def _shared_limiter(store_path, per_key, per_hour):
     key = (os.path.normcase(os.path.abspath(store_path)), per_key, per_hour)
     with _LIMITERS_LOCK:
@@ -355,7 +395,8 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          store_path: str | os.PathLike | None = None, guard: Callable[[], bool] | None = None,
          dry_run: bool | None = None, destructive_keys: Iterable[str] = frozenset(),
          guardrails: Guardrails | None = None, journal: Any = None,
-         rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
+         rate_per_key_per_hour: int | None | _RateDefault = RATE_PER_KEY_DEFAULT,
+         rate_global_per_hour: int | None | _RateDefault = RATE_GLOBAL_DEFAULT,
          timeout_ms: int | None = None, cookies: str | None = None,
          heal_across_pages: bool = False, fingerprint: bool | None = None,
          dismiss: bool = False, expect_values: dict | None = None,
@@ -433,7 +474,10 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
 
     Heals are written to journal.jsonl next to the store. A direct in-process provider
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
-    by every Healer on the same store file in this process.
+    by every Healer on the same store file in this process: rate_per_key_per_hour and
+    rate_global_per_hour, else MENDWRIGHT_RATE_PER_KEY_PER_HOUR and
+    MENDWRIGHT_RATE_GLOBAL_PER_HOUR, else 3 and 60. None (or none in the variable) removes
+    a limit.
     """
     from .proxies import unwrap
     page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
@@ -501,6 +545,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         timeout_ms = _env_timeout()
     if timeout_ms is None:
         timeout_ms = DEFAULT_TIMEOUT_MS
+    rate_per_key_per_hour = rate_setting(rate_per_key_per_hour)
+    rate_global_per_hour = rate_setting(rate_global_per_hour)
     if dry_run is None:
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
     off_by = _fingerprint_off_by(fingerprint)

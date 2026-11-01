@@ -49,8 +49,8 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `dry_run` | `MENDWRIGHT_DRY_RUN`, else off | Ask for heals and check each proposal against the captured HTML only (no live-page check), but save nothing and raise `AttentionRequired` |
 | `destructive_keys` | none | Keys that are never healed. Nothing can unmark them later. |
 | `guard` | always allows | A callable. While it returns False, heals are declined, for example while a payment is in flight. |
-| `rate_per_key_per_hour` | 3 | Heal attempts per key per hour for a direct provider (rejected and dry-run attempts count, and each attempt makes up to 2 model calls). `None` removes the limit. |
-| `rate_global_per_hour` | 60 | Heal attempts per hour across all keys for a direct provider. `None` removes the limit. |
+| `rate_per_key_per_hour` | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR`, else 3 | Heal attempts per key per hour for a direct provider (rejected and dry-run attempts count, and each attempt makes up to 2 model calls). `None` removes the limit. |
+| `rate_global_per_hour` | `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`, else 60 | Heal attempts per hour across all keys for a direct provider. `None` removes the limit. |
 | `guardrails` | built from the two rates | A `mendwright.limits.Guardrails`, for example with a `SpendCap(max_calls=...)` added |
 | `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
 | `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
@@ -133,6 +133,8 @@ An unconfirmed heal stays active and is used on later runs.
 |---|---|
 | `MENDWRIGHT_STORE` | Store path, the default for `store_path` |
 | `MENDWRIGHT_TIMEOUT_MS` | Default `timeout_ms`, in whole milliseconds |
+| `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` | Default `rate_per_key_per_hour`: a whole number, or `none` for no limit. `0` lets no model attempt through, while fingerprint heals still happen |
+| `MENDWRIGHT_RATE_GLOBAL_PER_HOUR` | Default `rate_global_per_hour`, in the same form |
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
 | `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=`. The fingerprint tier is off too. |
 | `MENDWRIGHT_FINGERPRINT` | `0` turns the fingerprint tier off, the default for `fingerprint=` |
@@ -2740,7 +2742,7 @@ The first line names the key. The line after `->` says why there was no heal:
 | asks no model to heal a get_by_* call | With `heal_get_by=True`, the fingerprint found no confident match for the call's element, or its pick failed a check. Change the call by hand to the element's new role or words, or pass `heal_get_by="model"` to let a model look for it (see [A model for calls](#a-model-for-calls)). |
 | the call has not matched one element in this store, and only a get_by_role() call says what kind of element it finds | With `heal_get_by="model"`, a call that never matched names no kind of element to check a model's pick against, so no model was asked. Run the step once while the call matches. |
 | Playwright does not give it the ARIA role | The element the fingerprint found no longer has the call's role, or level. Change the call by hand. |
-| rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` |
+| rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` (or `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` and `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`) |
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
 | turned off by MENDWRIGHT_DISABLE=1 | Unset it, or drop `--mendwright-disable` |
 | a transaction guard is currently blocking heals | Your `guard=` returned False. Run the step again once it allows heals. |
