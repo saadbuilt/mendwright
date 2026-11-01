@@ -7,6 +7,8 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-01
+
 ### Changed
 
 - The README is rewritten: what mendwright does and how to try it come first, then why a repair can be trusted and where it can't, the benchmark with its caveats, and short answers to the usual questions (determinism, cost, speed, `data-testid`, removing it). The guide says that `mendwright check` clicks a consent banner with `--cookies`.
@@ -148,7 +150,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/saadbuilt/mendwright/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/saadbuilt/mendwright/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/saadbuilt/mendwright/compare/v0.7.0...v0.8.0
