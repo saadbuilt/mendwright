@@ -1231,6 +1231,17 @@ def test_the_pull_request_shows_the_suggested_call_next_to_each_place_that_makes
         world.bare, 'show', 'mendwright/fix/main:tests/test_login.py')
 
 
+def test_with_only_a_call_healed_no_pull_request_opens_and_the_summary_has_the_suggestion(world):
+    call = 'get_by_role("button", name="Sign in")'
+    entry = heal(call, "//button[@id='login']", role='button')
+    entry['candidates'][-1]['getBy'] = 'get_by_role("button", name="Log in", exact=True)'
+    world.upload({call: entry}, confirmed(call, "//button[@id='login']"))
+    world.run()
+    assert world.result() == 'nothing' and world.api.pulls == {}
+    assert '  - Suggested call: `get_by_role("button", name="Log in", exact=True)`' in (
+        world.summary())
+
+
 def test_a_changed_left_alone_patches_the_body_only(world):
     world.run()
     first = world.remote_sha('mendwright/fix/main')

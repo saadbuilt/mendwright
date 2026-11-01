@@ -490,7 +490,7 @@ It is saved as `getBy` on the heal's row in `overrides.json` and as `get_by` on 
 None is saved when none passes (two buttons named "Log in"), for a heal inside an iframe or a shadow root, and on Selenium; the heal is saved either way.
 mendwright never runs a twin: your code's call and the heal do. It says what matched once, when the heal was made, so check it before you write it, and prefer one that says what your test means.
 
-`mendwright fix` shows it next to each place that makes the call (above), in `--format json` as `suggested_call` and `call_sites` (see [mendwright fix](#mendwright-fix-1)), and in `--format md`, which the [GitHub Action](#open-a-pull-request-with-the-fixes) puts in its pull request, as a list of those places under the call.
+`mendwright fix` shows it next to each place that makes the call (above), in `--format json` as `suggested_call` and `call_sites` (see [mendwright fix](#mendwright-fix)), and in `--format md`, which the [GitHub Action](#open-a-pull-request-with-the-fixes) puts in its pull request and its job summary, as a list of those places under the call. When a call is all that healed, there is nothing to write back and no pull request opens: the job summary shows the suggestion.
 It shows only a call in mendwright's own spelling: anything else in that field was written by something else, and is left out.
 
 With `suggest_get_by=True` in `mendwright.open()` (or `MENDWRIGHT_SUGGEST_GET_BY=1`), every heal on Playwright gets a twin, not only those of calls, and `mendwright fix` shows it under the healed selector it writes back, as `or the call  get_by_role(...)`, in JSON as `suggested_call`, and in the Markdown table next to the new selector.
@@ -503,6 +503,8 @@ A store that mendwright 0.10.0 rewrites keeps the heal and drops `getBy`; `mendw
 
 Each action or healed read of a call looks at the call first, in one round trip, two when it matches one element, then scrolls it into view: three more than Playwright's own call, as for `heal.page.locator(selector)`. The first lookup of a call on a healer also reads the element's role and fingerprint. Registered interruptions and `dismiss=True` add their usual checks before an action.
 On a page of 2,000 elements, `heal.page.get_by_role("button", name="Continue").click()` took about 50 ms more than Playwright's own call in Chromium (the median of 50 clicks: about 80 ms against 34 ms), since Playwright's role engine reads the page for each query. Firefox and camoufox were close to that, patchright took about 70 ms more, and WebKit about 210 ms more.
+
+When a heal of a call is made, looking for its suggested call costs one more read and two round trips per call tried (see [Suggested calls](#suggested-calls)): a median of 16 ms in Chromium on the same page.
 
 ### Limits
 

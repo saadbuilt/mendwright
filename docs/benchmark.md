@@ -192,6 +192,8 @@ Options:
 | `--repeat N` | run every case N times. Repeats count as separate attempts in the totals. |
 | `--browser chromium` | use headless Playwright instead of StandInPage (also `firefox` or `webkit`) |
 | `--no-fingerprint` | turn the fingerprint tier off, to measure the provider alone. The results file name gets `-nofp`. |
+| `--calls` | run the call cases of `benchmarks/calls/` instead (needs `--browser`, see [get_by calls](#get_by-calls)). The results file name gets `-calls`. |
+| `--cold` | with `--calls`: skip the first page, so each call never matched before the redesign. The results file name gets `-cold`. |
 | `--out FILE` | where to write the results. The default is `benchmarks/results/<provider>-<model>-<page>-<date>.json`. |
 
 The results file holds the date, mendwright and Python versions, the provider class, model id and endpoint, the page mode, a hash of the cases, a summary and one record per case.
