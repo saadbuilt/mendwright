@@ -222,16 +222,14 @@ function twoCandidates() {
   return note.note;
 }
 
-// ---------- B0: the hook. Frame 0 is the poster (GitHub doesn't autoplay a README video), so it
-// reads on its own: what mendwright is, and a broken selector with the one found again, both on
-// screen from the first frame. The first seconds only emphasize: the broken row, then the repair.
+// ---------- B0: the hook (also the poster frame) ----------
 function hookCard(t0, t1) {
   if (D.D_heals[0].source !== 'fingerprint') throw new Error('the hook says "from memory, no AI": D_heals[0] is not a fingerprint repair');
   if (D.D_heals[0].key !== SCRIPT[0][1] || D.D_heals[0].new !== XP.email) throw new Error('the hook shows the repair of ' + SCRIPT[0][1] + ' that the run made');
   TL.title = { t0, t1 };
   beat(t0, 'B0 poster');
-  beat(t0 + 1.0, 'B0 the broken selector');
-  beat(t0 + 2.2, 'B0 found again from memory');
+  beat(t0 + 1.4, 'B0 selector swaps');
+  beat(t0 + 2.9, 'B0 found from memory');
 }
 // ---------- B8: the end card ----------
 function endCard(t0, t1) { TL.end = { t0, t1 }; beat(t0 + 3.6, 'B8 end card'); }
@@ -1045,16 +1043,16 @@ function drawCaps(t) {
 // ---------- cards ----------
 let TC = {};
 function buildTitle() {
-  const call = sel => `<span class="k-obj">page</span><span class="k-p">.</span><span class="k-fn">click</span><span class="k-p">(</span><span class="sel">${esc(JSON.stringify(sel))}<i class="strike"></i></span><span class="k-p">)</span>`;
+  const T_OLD = JSON.stringify(SCRIPT[0][1]), T_NEU = JSON.stringify(XP.email);
   const e = el('div', 'card', `<div class="wm"><b>mendwright</b></div><div class="tsub">Playwright &amp; Selenium selectors that repair themselves.</div>
-    <div class="ba">
-      <div class="bar old"><span class="lb">your selector</span><span class="tc mono">${call(SCRIPT[0][1])}</span><span class="nt"><i style="color:${C.red}">✕</i>no match after a redesign</span></div>
-      <div class="bar neu"><span class="lb">what mendwright used</span><span class="tc mono">${call(XP.email)}</span><span class="nt"><i style="color:${C.green}">✓</i>found from memory · no AI</span></div>
-    </div>`, document.body);
-  const [ro, rn] = e.querySelectorAll('.bar');
-  TC = { e, ro: [...ro.children], rn: [...rn.children], nSel: $('.sel', rn), strike: $('.strike', ro), oMk: $('.nt i', ro), nMk: $('.nt i', rn) };
-  $('.strike', rn).remove();
+    <div class="tcode mono"><span class="k-obj">page</span><span class="k-p">.</span><span class="k-fn">click</span><span class="k-p">(</span><span class="old">${esc(T_OLD)}</span><span class="neu">${esc(T_NEU)}</span><span class="k-p">)</span><span class="ok">✓</span></div>
+    <div class="tnote"><div>after a redesign: no match</div><div>◆ found from memory · no AI</div></div>`, document.body);
+  TC = { e, wm: e.children[0], sub: e.children[1], code: e.children[2], note: e.children[3], old: $('.old', e), neu: $('.neu', e), ok: $('.ok', e),
+    n1: e.children[3].children[0], n2: e.children[3].children[1], lo: T_OLD.length, ln: T_NEU.length };
 }
+// The old selector is underlined in red, struck through and shrinks away; the healed XPath
+// types in, the ✓ springs in, and the note turns from the break to the repair. Red marks the
+// break, green the ✓; the code and the notes are white.
 function drawTitle(t) {
   const { t0, t1 } = TL.title;
   const out = clamp(spring(t - (t1 - .4), .3));
@@ -1063,15 +1061,18 @@ function drawTitle(t) {
   TC.e.style.opacity = (1 - out).toFixed(3);
   TC.e.style.filter = out > .01 ? `blur(${(out * 16).toFixed(2)}px)` : 'none';
   TC.e.style.transform = `scale(${lerp(1, .97, out).toFixed(4)})`;
-  // everything is on screen at frame 0; the first seconds only emphasize, one row at a time
-  const pulse = (a, b) => Math.sin(Math.PI * lin(t, a, b));
-  const po = pulse(t0 + .5, t0 + 1.5), pn = pulse(t0 + 1.7, t0 + 2.7);
-  for (const c of TC.ro) c.style.background = `rgba(255,255,255,${(.12 * po).toFixed(3)})`;
-  for (const c of TC.rn) c.style.background = `rgba(255,255,255,${(.12 * pn).toFixed(3)})`;
-  TC.oMk.style.transform = `scale(${(1 + .3 * po).toFixed(3)})`;
-  TC.nMk.style.transform = `scale(${(1 + .3 * pn).toFixed(3)})`;
-  TC.strike.style.width = (100 * clamp(spring(t - (t0 + .7), .35))).toFixed(1) + '%';
-  TC.nSel.style.textShadow = pn > .01 ? `0 0 ${(18 * pn).toFixed(1)}px rgba(255,255,255,${(.7 * pn).toFixed(2)})` : 'none';
+  const cw = CW * 40 / 24;
+  const strike = clamp(spring(t - (t0 + .8), .25)), gone = clamp(spring(t - (t0 + 1.1), .3));
+  TC.old.style.textDecoration = strike > .5 ? `line-through 3px ${C.red}` : `underline wavy ${C.red}`;
+  TC.old.style.textDecorationThickness = strike > .5 ? '3px' : '2px';
+  TC.old.style.width = (TC.lo * cw * (1 - gone)).toFixed(1) + 'px';
+  TC.old.style.opacity = (1 - gone).toFixed(3);
+  TC.neu.style.width = (Math.round(TC.ln * lin(t, t0 + 1.2, t0 + 1.7)) * cw).toFixed(1) + 'px';
+  TC.ok.style.opacity = clamp(spring(t - (t0 + 1.9), .3)).toFixed(3);
+  TC.ok.style.transform = `scale(${lerp(.3, 1, spring(t - (t0 + 1.9), .36, .55)).toFixed(3)})`;
+  const sw = clamp(spring(t - (t0 + 2.2), .4));
+  TC.n1.style.opacity = (1 - sw).toFixed(3); TC.n2.style.opacity = sw.toFixed(3);
+  TC.n2.style.transform = `translateY(${((1 - sw) * 8).toFixed(2)}px)`;
 }
 let EC = {};
 function buildEnd() {
