@@ -1219,8 +1219,9 @@ A 0.9.0 process that writes the store, for any key, such as a branch still on 0.
 ### A selector that matches only inside a shadow root
 
 When none of a key's selectors matches anything on the page or in an iframe, and one of them matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call.
-A CSS selector is looked up there as it is. An XPath is evaluated in each shadow root's HTML, and its element is looked up through a CSS form of it.
-It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
+
+- A CSS selector is looked up there as it is. An XPath is evaluated in each shadow root's HTML, and its element is looked up through a CSS form of it.
+- It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
 
 It does this only for a key that mendwright has no record of, or one last found in that same shadow root.
 A key last found on the page, in an iframe or in another shadow root heals where it was last found, as any key does (see [When the selector breaks](#when-the-selector-breaks)), and so does a key one of whose selectors still matches something on the page, such as two elements or a hidden one.
@@ -2374,9 +2375,11 @@ The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, never from an option, since a 
 ## Checking for drift before a run
 
 `mendwright check` opens the page where each key in the store was last found, in a headless Playwright browser, on a site you name, and looks at the key's saved selectors there the way a run does.
-It never clicks, types or presses anything, except a consent banner with `--cookies`, saves nothing and asks no model.
-Each key gets one result: it still resolves, it resolves only through a saved heal, it resolves to an element of another role, a run would heal it from memory, a run would need a model, a run would refuse it, or it couldn't be checked, with the reason.
 It exits 1 when a key broke, so a CI job can fail before the nightly run starts.
+
+It never clicks, types or presses anything, except a consent banner with `--cookies`, saves nothing and asks no model.
+
+Each key gets one result: it still resolves, it resolves only through a saved heal, it resolves to an element of another role, a run would heal it from memory, a run would need a model, a run would refuse it, or it couldn't be checked, with the reason.
 
 ```text
 $ mendwright check --base-url https://shop.example
@@ -2439,15 +2442,18 @@ Every page is loaded once, and its keys wait for their elements up to `--timeout
 - `--base-url http://127.0.0.1:8000` loads every page from that origin, whatever origin was recorded, for a test app that starts on a new port each run. It also builds the address of a key saved before 0.9.0 from its `lastPage`. When the store has pages on more than one host, it says so on stderr, since those may be different sites.
 
 An origin is `scheme://host[:port]` with `http` or `https`, and nothing after it. One recorded origin can be loaded from one site only: naming it twice with two sites is a usage error.
+
 The store is a file from a cache or a commit, so `mendwright check` never loads a site the store alone points to: a store from somewhere else can't send your browser, with the session of your storage state file, to another host, a local file or a cloud metadata address.
+
 With neither flag it exits 2 and lists the sites the store has pages on.
 
 ### Where the addresses come from
 
-From 0.9.0 on, each time a key's element is found, the store saves the page's address as `lastUrl`, next to `lastPage`: scheme, host, port and path, without user info, query or fragment. Parts of the path that look like a record id, a token (a JWT, a reset link's code), an email address, percent-encoded text or a name longer than 64 characters are saved as `*`, so the file holds no link that still works for someone's account.
-`https://shop.example/Orders/10482/?tab=2` is saved as `https://shop.example/Orders/*/`.
-A healer opened on a Playwright `Frame`, or on a Selenium driver switched into a frame, saves no address, and neither does a `file://`, `about:` or `data:` page.
-The site root's address is saved only for a key found on no other page, so a header link found on `/signup` and on the home page is checked on `/signup`.
+From 0.9.0 on, each time a key's element is found, the store saves the page's address as `lastUrl`, next to `lastPage`: scheme, host, port and path, without user info, query or fragment.
+
+- Parts of the path that look like a record id, a token (a JWT, a reset link's code), an email address, percent-encoded text or a name longer than 64 characters are saved as `*`, so the file holds no link that still works for someone's account. `https://shop.example/Orders/10482/?tab=2` is saved as `https://shop.example/Orders/*/`.
+- A healer opened on a Playwright `Frame`, or on a Selenium driver switched into a frame, saves no address, and neither does a `file://`, `about:` or `data:` page.
+- The site root's address is saved only for a key found on no other page, so a header link found on `/signup` and on the home page is checked on `/signup`.
 
 A page whose address has a `*` can't be loaded as it is. Give it an address that exists with `--url`:
 
@@ -2456,9 +2462,20 @@ mendwright check --origin https://shop.example --url '/orders/*=https://shop.exa
 ```
 
 `--url PAGE=URL` wins over the saved address and over `--base-url`. Its `URL` must be on a site the check loads (with `--origin https://shop.example=https://staging.shop.example`, on staging), and may have a query, which the reports print as `?...`.
-A key saved before 0.9.0 has only its path: `--base-url` loads it from the stored `lastPage`, which is lower case. It does so only for a path as mendwright saves one. A `lastPage` that holds anything else, such as user info, a port or a query (`@169.254.169.254/latest/`), is `not checked`, so it can't make the address name another host. A server that tells paths apart by case answers 404, which is reported as such. Run your tests once with 0.9.0 and the address is saved.
 
-Some sites change state on a GET. `mendwright check` doesn't load a page whose path reads as an action, as `dismiss=True` doesn't click a button by its words: one whose path has a word `logout`, `logoff`, `signout`, `signoff`, `unsubscribe`, `optout`, `delete`, `remove`, `cancel`, `confirm`, `verify`, `activate`, `deactivate`, `reset`, `approve`, `accept`, `decline`, `reject`, `revoke`, `disconnect`, `unlink`, `leave`, `purge`, `destroy`, `empty`, `clear` or `close`, or the words `log out`, `log off`, `sign out`, `sign off` or `opt out` in a row. Words are split on `/`, `-`, `_`, `.`, `+` and `~` and compared whole, so `/order-confirmation` and `/blog/clearance-sale` load, and `/account/close-account`, `/cart/empty` and `/account/sign-out` don't. So does `/products/close-up-lens`, which is no action: pass `--load-page '/products/*'` for pages like it. A `--url` value is never refused.
+A key saved before 0.9.0 has only its path. Run your tests once with 0.9.0 and the address is saved. Until then:
+
+- `--base-url` loads it from the stored `lastPage`, which is lower case. It does so only for a path as mendwright saves one.
+- A `lastPage` that holds anything else, such as user info, a port or a query (`@169.254.169.254/latest/`), is `not checked`, so it can't make the address name another host.
+- A server that tells paths apart by case answers 404, which is reported as such.
+
+Some sites change state on a GET. `mendwright check` doesn't load a page whose path reads as an action, as `dismiss=True` doesn't click a button by its words. That is a path with:
+
+- a word `logout`, `logoff`, `signout`, `signoff`, `unsubscribe`, `optout`, `delete`, `remove`, `cancel`, `confirm`, `verify`, `activate`, `deactivate`, `reset`, `approve`, `accept`, `decline`, `reject`, `revoke`, `disconnect`, `unlink`, `leave`, `purge`, `destroy`, `empty`, `clear` or `close`
+- or the words `log out`, `log off`, `sign out`, `sign off` or `opt out` in a row
+
+Words are split on `/`, `-`, `_`, `.`, `+` and `~` and compared whole. So `/order-confirmation` and `/blog/clearance-sale` load, and `/account/close-account`, `/cart/empty` and `/account/sign-out` don't.
+`/products/close-up-lens` doesn't load either, though it is no action: pass `--load-page '/products/*'` for pages like it. A `--url` value is never refused.
 
 ### What each result means
 
@@ -2511,7 +2528,10 @@ Make that sign-in for `mendwright check` alone, with its own state file, not the
 
 `mendwright check` asks whether an element is visible, not whether it is on top, so a banner over an element changes no result.
 When a key of a page misses and the [`cookies=` preset](#cookie-banners) finds a banner, the page gets a note. Nothing is clicked.
-A banner that hides the whole page until it is answered needs `--cookies reject` (or `accept`): the preset closes it before the keys are looked at, and again when keys miss, for a banner a consent script shows a moment after the page loaded, as a run does after a miss. Each time, `handled interruption 'cookie_banner' before '<check>'` is logged. That is the only click `mendwright check` makes. No Playwright overlay handler is registered, and interruptions registered in your code are unknown to it.
+A banner that hides the whole page until it is answered needs `--cookies reject` (or `accept`). The preset closes it before the keys are looked at, and again when keys miss, for a banner a consent script shows a moment after the page loaded, as a run does after a miss.
+
+- Each time, `handled interruption 'cookie_banner' before '<check>'` is logged. That is the only click `mendwright check` makes.
+- No Playwright overlay handler is registered, and interruptions registered in your code are unknown to it.
 
 ### Iframes, lists, steps and optional keys
 
@@ -2580,7 +2600,9 @@ def test_checkout_selectors(page, heal):
     assert report.ok, report.text()
 ```
 
-- `heal.drift()` checks the keys found on this page before, and `heal.drift(["email", "pay"])` those keys wherever they were found: a key never found on this page gets the page guard's refusal, as in a run, unless `heal_across_pages=True`. The site root has no page, so there `heal.drift()` checks the keys whose saved address is a root of the same host, whatever its port, for a test app that starts on a new port each run. That address is saved only for a key found on no other page (see [Where the addresses come from](#where-the-addresses-come-from)), so a header link found on `/signup` and on the home page is checked by `heal.drift()` on `/signup`, and on the home page by name.
+- `heal.drift()` checks the keys found on this page before, and `heal.drift(["email", "pay"])` those keys wherever they were found. A key never found on this page gets the page guard's refusal, as in a run, unless `heal_across_pages=True`.
+- The site root has no page, so there `heal.drift()` checks the keys whose saved address is a root of the same host, whatever its port, for a test app that starts on a new port each run.
+  That address is saved only for a key found on no other page (see [Where the addresses come from](#where-the-addresses-come-from)). So a header link found on `/signup` and on the home page is checked by `heal.drift()` on `/signup`, and on the home page by name.
 - `timeout_ms=` (the healer's by default) is one wait for the whole page.
 - It returns a `DriftReport` from `mendwright.drift`: `ok` (at least one key, none broken, none unchecked; `False` for a page where no key was found), `broken`, `unchecked`, `failed(fail_on=..., strict=...)`, `text()` and `as_dict()`. Each of its `keys` is a `KeyDrift` with the `verdict`, `reason`, `used` selector, `heal` and the `probes` of each selector.
 - It uses the healer's store, provider, fingerprint setting, `destructive_keys`, guard, `heal_across_pages` and dry-run setting. A key registered with `heal.interrupt()` is `optional` when it misses.
@@ -2608,7 +2630,7 @@ The CI logs of a public repository are public. Use `--format md` into the job su
 - A list key whose list never had two items, or was used with the fingerprint tier off, is looked at as one element. Leave it out with `--skip-key`.
 - A store written by Selenium holds only XPath and CSS, which Playwright runs, but with Playwright's visibility rules: Selenium counts `opacity: 0` as hidden and Playwright doesn't. For Selenium's rules, call `heal.drift()` from a Selenium test.
 - A process of mendwright 0.8.0 that writes a shared store (pytest-xdist workers on mixed versions) drops `lastUrl`. Until a 0.9.0 run saves it again, those keys are `not checked` unless you pass `--base-url`.
-- A healer opened on a Playwright `Frame` saves the frame's path as the key's page, and no address. With `--base-url`, and with `--origin` for a key found on the site root before (the store can't tell it from a key two test processes saved at once, one on the root and one on another page), `mendwright check` loads that path on the site you name: a page that may not exist there, or another one. Leave such keys out with `--skip-key`.
+- A healer opened on a Playwright `Frame` saves the frame's path as the key's page, and no address. `mendwright check` then loads that path on the site you name: a page that may not exist there, or another one. It does so with `--base-url`, and with `--origin` for a key found on the site root before (the store can't tell it from a key two test processes saved at once, one on the root and one on another page). Leave such keys out with `--skip-key`.
 - Playwright dismisses JavaScript dialogs (`alert`, `confirm`, `prompt`) when no handler is set, and `mendwright check` sets none.
 - The run's rate limit, a guard that blocks at that moment, and interruptions registered in code are unknown to it.
 - What it costs, measured on a Windows laptop against a local server: 50 keys on 10 pages, none broken, took 2.2 to 2.6 s in headless Chromium with `--workers 1`, and 3.5 to 4 s with `--workers 3`, since each worker starts its own browser. Workers pay off on pages that are slow to load, not on fast local ones. A real site adds its own load time to each page, and a page where a key misses waits up to `--timeout-ms` (10 s by default), once for the page. Each worker's browser takes the memory of one browser.
@@ -2687,15 +2709,18 @@ Store (where mendwright.open() saves heals)
   C:\work\shop is writable
 ```
 
-`--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
-Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as [`mendwright notify`](#mendwright-notify) names the webhook, its scheme and host, when `mendwright notify` takes the URL, and else as why not, such as `(set, not a URL mendwright notify takes: it does not start with https://)`, never its value.
-With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
+- `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
+- Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems.
+- `MENDWRIGHT_WEBHOOK_URL` shows as [`mendwright notify`](#mendwright-notify) names the webhook, its scheme and host, when `mendwright notify` takes the URL. Else it shows why not, such as `(set, not a URL mendwright notify takes: it does not start with https://)`, never its value.
+- With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
 
 ### mendwright report
 
 Lists each key in a store with its selectors, and the heal counts from the journal.
-`--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`). `--format` is `text`, `md`, `json` or `html`. In `md`, each key and selector is in a code span, with control and bidirectional characters written out as `\uXXXX`, and an empty one shows as (empty).
-`--out FILE` writes the report to a file instead of stdout, creating the folder if it is missing, and prints `Wrote <path>`.
+
+- `--store PATH` picks the file (default `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json`).
+- `--format` is `text`, `md`, `json` or `html`. In `md`, each key and selector is in a code span, with control and bidirectional characters written out as `\uXXXX`, and an empty one shows as (empty).
+- `--out FILE` writes the report to a file instead of stdout, creating the folder if it is missing, and prints `Wrote <path>`.
 
 ```text
 Store: C:\work\shop\.mendwright\overrides.json
@@ -2715,7 +2740,13 @@ Last applied heals, newest first:
     #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox']
 ```
 
-A list heal that `heal.locator_all(..., nonempty=True)` proposed shows its status `proposed`, with `list of 3 under 'Shopping cart'; check it with: mendwright lists` under it, and an accepted one `list, accepted DATE; write it with: mendwright fix --apply`, or, when the key's selectors come from a seed file, `list, accepted DATE; its selectors come from a seed file, which mendwright fix doesn't change, so put it there in place of .cart-item`. The counts end with `, N held` when the journal has `heal.held` events. In `--format md`, a line under the table says how many list heals wait. `--format json` gives such a candidate `list`, `proposal` and `accepted`, and the counts a `held`.
+List heals that `heal.locator_all(..., nonempty=True)` found:
+
+- A proposed one shows its status `proposed`, with `list of 3 under 'Shopping cart'; check it with: mendwright lists` under it.
+- An accepted one shows `list, accepted DATE; write it with: mendwright fix --apply`, or, when the key's selectors come from a seed file, `list, accepted DATE; its selectors come from a seed file, which mendwright fix doesn't change, so put it there in place of .cart-item`.
+- The counts end with `, N held` when the journal has `heal.held` events.
+- In `--format md`, a line under the table says how many list heals wait.
+- `--format json` gives such a candidate `list`, `proposal` and `accepted`, and the counts a `held`.
 
 `--format html` makes one page you can open in a browser or keep as a CI artifact:
 
@@ -2930,7 +2961,9 @@ mendwright notify [--store PATH] [--run ID | --since TIME | --all]
                   [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
 ```
 
-Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, leaves out a line that is not an event it can read, takes a `heal.declined` code that is not one of its own as `other`, and makes one POST, with one retry.
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)).
+
+It reads only the journal, line by line, leaves out a line that is not an event it can read, and takes a `heal.declined` code that is not one of its own as `other`. It makes one POST, with one retry.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -2949,7 +2982,11 @@ Sums up the events of one run in `journal.jsonl` and posts it to the webhook in 
 | `--dry-run` | off | Print the payload and send nothing. `MENDWRIGHT_WEBHOOK_URL` is not read. |
 | `--fail-on-error` | off | Exit 1 when nothing could be sent, for any reason but `--when`. |
 
-`--run`, `--since` and `--all` go one at a time. With none of them, the run is `MENDWRIGHT_RUN_ID`, or on GitHub Actions this run, `gh-<GITHUB_RUN_ID>` (its highest attempt). mendwright never falls back to the newest run in the journal, which would report an old run as this one. A run id that matches no event is a run in which mendwright recorded nothing, and its summary says `nothing changed`. A journal whose events have no run id at all (written before 0.10.0, or without `MENDWRIGHT_RUN_ID` off GitHub Actions) is refused, not taken for an empty run.
+`--run`, `--since` and `--all` go one at a time. With none of them, the run is `MENDWRIGHT_RUN_ID`, or on GitHub Actions this run, `gh-<GITHUB_RUN_ID>` (its highest attempt).
+
+- mendwright never falls back to the newest run in the journal, which would report an old run as this one.
+- A run id that matches no event is a run in which mendwright recorded nothing, and its summary says `nothing changed`.
+- A journal whose events have no run id at all (written before 0.10.0, or without `MENDWRIGHT_RUN_ID` off GitHub Actions) is refused, not taken for an empty run.
 
 What it counts, from the events of the run only:
 
@@ -2972,6 +3009,7 @@ What it counts, from the events of the run only:
 | `no_step`, `step_cap` | `flow.stop` | `run_steps() stopped: no registered step showed`, `run_steps() stopped: it ran more steps than it allows` |
 
 The message names at most 10 keys on a line, then `and N more`, cuts each key to 80 characters, and stays under 3,000 characters. For Slack, `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;`, so a key can't mention `@channel` or a person, and a backtick in a key is written as `'`.
+
 The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr_url`, `tests`, `changed`, `repaired` (`total`, `fingerprint`, `model`, `frame`, `shadow`, `confirmed`, `not_confirmed`, `quarantined`, `keys`, `more_keys`), `handled` (`cookie_banners`, `popups`, `interruptions`), `needs_human` (each with `key`, `code`, `about`, the subject, and `text`, the words after it), `more_needs_human`, `not_repaired_on_purpose` (`dry_run`, `disabled`), `text` (the message, without Slack's escapes) and `sent_at`. Lists are cut to keep it under 16 KiB. With `--detail counts`, `keys` is empty and no entry has a `key`.
 
 | Situation | Output | Exit |
@@ -2988,7 +3026,14 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 | No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
 | Bad arguments | argparse's message | 2 |
 
-Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host, with a label of the host that looks random (12 characters or more with a letter and a digit, or 20 or more) as `***`, since for some receivers, such as AWS Lambda function URLs (`https://***.lambda-url.us-east-1.on.aws`) and Pipedream, the host is the key. Of an error body it shows only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL, and leaves any other body out, since a receiver can quote its key in it. The URL, its path, its query, its user info, each path segment and query value of 8 characters or more, and such a label of the host are written as `***` wherever they would show, in any case, as they are and percent-decoded, percent-encoded and JSON-escaped. HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
+Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`.
+HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds. Any other answer is not.
+
+A webhook URL can be a secret, so the messages hide it:
+
+- They name the webhook by its scheme and host, with a label of the host that looks random (12 characters or more with a letter and a digit, or 20 or more) as `***`, since for some receivers, such as AWS Lambda function URLs (`https://***.lambda-url.us-east-1.on.aws`) and Pipedream, the host is the key.
+- Of an error body they show only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL. They leave any other body out, since a receiver can quote its key in it.
+- The URL, its path, its query, its user info, each path segment and query value of 8 characters or more, and such a label of the host are written as `***` wherever they would show, in any case, as they are and percent-decoded, percent-encoded and JSON-escaped.
 
 ## Low-level API
 
@@ -3019,7 +3064,10 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve(store, page, key)` returns the native locator or element, or raises `AttentionRequired`.
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
-- These paths skip what the facade adds: the code-first selector order and role learning, and iframes and shadow roots: `HealCoordinator` heals in the page it was given, never inside an iframe or a shadow root. A key last found inside an iframe is looked for on that page. A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`, or `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), because only the page around its host could be searched. Use `mendwright.open()` for those. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
+- These paths skip what the facade adds: the code-first selector order and role learning, and iframes and shadow roots. Use `mendwright.open()` for those.
+  - `HealCoordinator` heals in the page it was given, never inside an iframe or a shadow root. A key last found inside an iframe is looked for on that page.
+  - A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`, or `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), because only the page around its host could be searched.
+- A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
 
 ## Troubleshooting
@@ -3067,6 +3115,7 @@ To remove it by hand, delete the candidate from `overrides.json`. `mendwright re
 
 `InvalidSelector` is a `ValueError`. It is raised at once, without waiting out the timeout or asking a model, for an empty selector, a broken XPath or a Playwright selector on Selenium, which are caught before any browser call, and for CSS the browser rejects, which is caught on the first probe.
 It isn't an `AttentionRequired`, so no model is asked.
+
 One that says `is a get_by_* call, not a selector` got a string written as a `get_by_*` call, such as `'get_by_role("button", name="Go")'`, as a selector of `heal.locator()`, `heal.locator_all()`, `heal.interrupt()` or `heal.step(when=...)`. Call `heal.page.get_by_role(...)` on `mendwright.open(page, heal_get_by=True)` instead, or pass an XPath, CSS or Playwright selector (see [get_by locators](#get_by-locators)).
 
 ### TypeError
