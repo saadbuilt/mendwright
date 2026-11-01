@@ -798,6 +798,11 @@ class HealCoordinator:
                     "dry-run mode is on, so the proposal for '" + selector_key + "' was checked "
                     "but not applied. Turn off dry_run to let mendwright apply and retry.",
                     level=logging.INFO, code='dry_run')
+            # Another worker may have saved a heal while the model answered: use it (after
+            # the live check) instead of saving a second one.
+            adopted = self._look_again(selector_key, broken_candidates)
+            if adopted:
+                return adopted
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath,
@@ -906,6 +911,11 @@ class HealCoordinator:
                 "checked but not applied. Turn off dry_run to let mendwright apply and retry.",
                 level=logging.INFO, code='dry_run'), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
+        # Another worker may have saved its heal while this one scored the page: use that
+        # one (after the live check) instead of saving a second copy.
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted, '', True
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
                                 frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts,
                                 twin=self._wants_twin(selector_key))

@@ -159,6 +159,31 @@ def test_the_heal_path_looks_again_before_asking_a_model(tmp_path, make_page, st
     assert b.pending() == {KEY: HEALED}
 
 
+def test_a_heal_saved_while_the_model_answers_is_adopted_not_saved_twice(tmp_path, make_page,
+                                                                        stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    _pa, a = _open(make_page, tmp_path, stub_provider(HEALED))
+
+    class Racing:
+        """A model that answers after another worker saved its heal of the key."""
+        calls = 0
+
+        def propose(self, bundle):
+            Racing.calls += 1
+            a.locator(KEY, CODE).check()
+            return {'xpath': "//label[span]/input[@type='checkbox']", 'fallbacks': [],
+                    'reasoning': 'slow'}
+
+        def report_outcome(self, key, xpath, success):
+            pass
+    pb, b = _open(make_page, tmp_path, Racing())
+    b.locator(KEY, CODE).check()
+    assert Racing.calls == 1 and pb.actions[-1][:2] == ('xpath=' + HEALED, 'check')
+    assert b.pending() == {KEY: HEALED} and b.heals == []
+    assert len(_journal(tmp_path, 'heal.applied')) == 1        # A's, and no second heal
+    assert [c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']] == [CODE, HEALED]
+
+
 def _fingerprint():
     from mendwright.fingerprint import of_element
     import lxml.html
