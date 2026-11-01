@@ -50,8 +50,10 @@ mendwright = "mendwright.pytest_plugin"
 # The core needs only lxml. Providers import their SDK lazily and fall back to urllib,
 # and drivers use whichever browser library the caller already has.
 # cssselect lets the tests check generated CSS with an independent engine.
-test = ["pytest>=7", "cssselect"]
-dev = ["pytest>=7", "cssselect", "ruff", "build", "twine"]
+# moto runs the S3 store tests offline: 5.1.22 is the first with IfMatch on delete_object.
+# Without it they are skipped. boto3 is held to the s3 extra's floor, which moto doesn't need.
+test = ["pytest>=7", "cssselect", "moto[s3]>=5.1.22", "boto3>=1.35.69"]
+dev = ["pytest>=7", "cssselect", "moto[s3]>=5.1.22", "boto3>=1.35.69", "ruff", "build", "twine"]
 playwright = ["playwright>=1.40"]
 selenium = ["selenium>=4.10"]
 anthropic = ["anthropic>=0.39"]
