@@ -39,12 +39,13 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from .. import __version__
 from . import BackendError, Conflict, Denied, Read, Unavailable
 from ._common import (DEFAULT_TIMEOUT, MAX_BODY, TOKEN_ENV, TOKEN_FILE_ENV, check_name,
-                      check_put, check_version, is_loopback, refuse_secrets, token_from_env)
+                      check_put, check_version, is_loopback, refuse_secrets, split_url,
+                      token_from_env)
 
 __all__ = ['HttpBackend']
 
@@ -64,11 +65,7 @@ def folder_url(url) -> tuple[str, bool]:
     ValueError for a URL HttpBackend cannot use, without quoting the URL."""
     if not isinstance(url, str):
         raise TypeError('HttpBackend takes the store URL as a str, not ' + type(url).__name__)
-    try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
-        raise ValueError('the store URL is not a valid URL (check its host and port)') from None
+    parts, port = split_url(url)
     refuse_secrets(url, parts)
     scheme = parts.scheme.lower()
     host = parts.hostname
@@ -164,7 +161,8 @@ class HttpBackend:
 
     def _send(self, method, name, *, body=None, headers=None):
         """(status, headers, body) for any HTTP answer. A failure to get one raises Unavailable;
-        an error answer's body is never read."""
+        an error answer's body is never read. Errors are raised outside the except clauses,
+        so none has a __context__ that could quote what a server sent."""
         request = urllib.request.Request(self._base + quote(name, safe='/'), data=body, method=method)
         request.add_header('User-Agent', USER_AGENT)
         request.add_header('Accept-Encoding', 'identity')
@@ -175,41 +173,48 @@ class HttpBackend:
         if self._token:
             request.add_unredirected_header('Authorization', 'Bearer ' + self._token)
         started = time.monotonic()
+        failure = None
         try:
             response = self._opener.open(request, timeout=self._timeout)
         except urllib.error.HTTPError as exc:
             status, answer, data = exc.code, exc.headers, b''
             exc.close()
         except urllib.error.URLError as exc:
-            raise self._unreachable(name, exc.reason) from None
+            failure = exc.reason
         except (OSError, http.client.HTTPException) as exc:
-            raise self._unreachable(name, exc) from None
+            failure = exc
         else:
             with response:
                 status, answer = response.status, response.headers
                 data = self._read(name, response) if method == 'GET' else b''
+        if failure is not None:
+            raise self._unreachable(name, failure)
         logger.debug('%s %s%s: HTTP %s in %.0f ms', method, self._base, name, status,
                      (time.monotonic() - started) * 1000)
         return status, answer, data
 
     def _read(self, name, response):
-        length = (response.headers.get('Content-Length') or '').strip()
         try:
-            if length.isdigit():
-                if int(length) > self._max_body:
-                    raise self._too_big(name)
-                return response.read()     # raises IncompleteRead when the body is cut short
-            chunks, size = [], 0
-            while True:
-                chunk = response.read(_CHUNK)
-                if not chunk:
-                    return b''.join(chunks)
-                size += len(chunk)
-                if size > self._max_body:
-                    raise self._too_big(name)
-                chunks.append(chunk)
+            return self._read_body(name, response)
         except (OSError, http.client.HTTPException) as exc:
-            raise self._unreachable(name, exc) from None
+            failure = exc
+        raise self._unreachable(name, failure)
+
+    def _read_body(self, name, response):
+        length = (response.headers.get('Content-Length') or '').strip()
+        if length.isdigit():
+            if int(length) > self._max_body:
+                raise self._too_big(name)
+            return response.read()     # raises IncompleteRead when the body is cut short
+        chunks, size = [], 0
+        while True:
+            chunk = response.read(_CHUNK)
+            if not chunk:
+                return b''.join(chunks)
+            size += len(chunk)
+            if size > self._max_body:
+                raise self._too_big(name)
+            chunks.append(chunk)
 
     # --- answers ----------------------------------------------------------------------------
 

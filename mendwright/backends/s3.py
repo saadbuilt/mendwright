@@ -41,11 +41,11 @@ except ImportError as exc:
         'pip install "mendwright[s3]"') from exc
 
 import logging
-import re
 
 from .. import __version__
 from . import BackendError, Conflict, Denied, Read, Unavailable
-from ._common import MAX_BODY, check_name, check_put, check_version
+from ._common import (MAX_BODY, check_bucket, check_name, check_prefix, check_put,
+                      check_version)
 
 __all__ = ['S3Backend']
 
@@ -54,9 +54,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_READ_TIMEOUT = 10.0
 _CHUNK = 64 * 1024
-
-_BUCKET = re.compile(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]')
-_PREFIX = re.compile(r"[A-Za-z0-9!_.*'()-]+")    # S3's safe characters, per segment
 
 _DENIED_CODES = frozenset([
     'AccessDenied', 'AllAccessDisabled', 'AccountProblem', 'InvalidAccessKeyId',
@@ -77,28 +74,12 @@ _CREDENTIAL_ERRORS = frozenset([
 ])
 
 
-def check_bucket(bucket) -> str:
-    if not isinstance(bucket, str):
-        raise TypeError('S3Backend takes the bucket name as a str, not ' + type(bucket).__name__)
-    if not _BUCKET.fullmatch(bucket) or '..' in bucket:
-        raise ValueError(repr(bucket[:80]) + ' is not an S3 bucket name: 3 to 63 lower-case '
-                         'letters, digits, dots and hyphens, starting and ending with a letter '
-                         'or a digit')
-    return bucket
-
-
-def check_prefix(prefix) -> str:
-    """The prefix as a key prefix: '' or segments ending in '/'."""
-    if not isinstance(prefix, str):
-        raise TypeError('S3Backend takes the prefix as a str, not ' + type(prefix).__name__)
-    prefix = prefix.strip('/')
-    if not prefix:
-        return ''
-    segments = prefix.split('/')
-    if len(prefix) > 512 or not all(_PREFIX.fullmatch(s) and s not in ('.', '..') for s in segments):
-        raise ValueError(repr(prefix[:80]) + " is not a store prefix: use letters, digits and "
-                         "!_.*'()- in segments joined by '/'")
-    return prefix + '/'
+def _attempt(action):
+    """(action(), None), or (None, the error) when botocore raised one, or OSError did."""
+    try:
+        return action(), None
+    except (BotoCoreError, ClientError, OSError) as exc:
+        return None, exc
 
 
 def _code(exc):
@@ -126,13 +107,12 @@ class S3Backend:
         config = Config(connect_timeout=connect_timeout, read_timeout=read_timeout,
                         retries={'total_max_attempts': 1, 'mode': 'standard'},
                         user_agent_extra='mendwright/' + __version__)
-        try:
-            # A session of its own: boto3's default session is not safe to share between
-            # threads that create clients.
-            self._client = boto3.Session().client('s3', config=config)
-        except BotoCoreError as exc:
+        # A session of its own: boto3's default session is not safe to share between threads
+        # that make clients.
+        self._client, error = _attempt(lambda: boto3.Session().client('s3', config=config))
+        if error is not None:
             raise Denied(self._place + ': boto3 could not set up an S3 client ('
-                         + type(exc).__name__ + '): check AWS_PROFILE and the AWS config file') from None
+                         + type(error).__name__ + '): check AWS_PROFILE and the AWS config file')
         _check_conditional_support(self._client)
 
     def describe(self):
@@ -142,6 +122,10 @@ class S3Backend:
         return 'S3Backend(' + repr(self._place) + ')'
 
     # --- the contract ---------------------------------------------------------------------
+    #
+    # botocore's errors are returned by _attempt, not raised, and mapped after it: an error
+    # raised inside an except clause would keep botocore's as its __context__, with S3's own
+    # text in it.
 
     def get(self, name, *, if_none_match=None):
         check_name(name)
@@ -149,39 +133,24 @@ class S3Backend:
         request = {'Bucket': self.bucket, 'Key': self.prefix + name}
         if if_none_match is not None:
             request['IfNoneMatch'] = if_none_match
-        try:
-            response = self._client.get_object(**request)
-        except ClientError as exc:
-            code, status, headers = _code(exc)
+        response, error = _attempt(lambda: self._client.get_object(**request))
+        if isinstance(error, ClientError):
+            code, status, headers = _code(error)
             if (status == 304 or code in ('304', 'NotModified')) and if_none_match is not None:
                 etag = (headers.get('etag') or '').strip()
                 return Read(None, etag or if_none_match, True)
             if code == 'NoSuchKey':
                 return Read(None, None, False)
-            raise self._error(exc, 'GetObject', name) from None
-        except BotoCoreError as exc:
-            raise self._failure(exc, name) from None
-        stream = response['Body']
-        try:
-            version = response.get('ETag')
-            if not version:
-                raise BackendError(self._at(name) + ': S3 sent no ETag')
-            if (response.get('ContentLength') or 0) > self._max_body:
-                raise self._too_big(name)
-            chunks, size = [], 0
-            while True:
-                chunk = stream.read(_CHUNK)     # at the end, botocore checks the length
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > self._max_body:
-                    raise self._too_big(name)
-                chunks.append(chunk)
-            body = b''.join(chunks)
-        except (BotoCoreError, OSError) as exc:
-            raise self._failure(exc, name) from None
-        finally:
-            stream.close()
+            raise self._error(error, 'GetObject', name)
+        if error is not None:
+            raise self._failure(error, name)
+        version = response.get('ETag')
+        if not version:
+            response['Body'].close()
+            raise BackendError(self._at(name) + ': S3 sent no ETag')
+        body, error = _attempt(lambda: self._read(name, response))
+        if error is not None:
+            raise self._failure(error, name)
         if version == if_none_match:
             return Read(None, version, True)
         return Read(body, version, False)
@@ -195,19 +164,16 @@ class S3Backend:
             request['IfMatch'] = if_match
         if create_only:
             request['IfNoneMatch'] = '*'
-        try:
-            response = self._client.put_object(**request)
-        except ClientError as exc:
-            code, status, _ = _code(exc)
-            if code == 'NoSuchBucket':
-                raise self._error(exc, 'PutObject', name) from None
+        response, error = _attempt(lambda: self._client.put_object(**request))
+        if isinstance(error, ClientError):
+            code, status, _ = _code(error)
             if code in _CONFLICT_CODES or status in (409, 412):
-                raise self._conflict(name, if_match, create_only, code) from None
+                raise self._conflict(name, if_match, create_only, code)
             if code == 'NoSuchKey' and if_match is not None:
-                raise Conflict(self._at(name) + ' no longer exists (NoSuchKey)') from None
-            raise self._error(exc, 'PutObject', name) from None
-        except BotoCoreError as exc:
-            raise self._failure(exc, name) from None
+                raise Conflict(self._at(name) + ' no longer exists (NoSuchKey)')
+            raise self._error(error, 'PutObject', name)
+        if error is not None:
+            raise self._failure(error, name)
         version = response.get('ETag')
         if not version:
             raise BackendError(self._at(name) + ': S3 sent no ETag for the write')
@@ -219,26 +185,42 @@ class S3Backend:
         request = {'Bucket': self.bucket, 'Key': self.prefix + name}
         if if_match is not None:
             request['IfMatch'] = if_match
-        try:
-            self._client.delete_object(**request)
-        except ClientError as exc:
-            code, status, _ = _code(exc)
+        _, error = _attempt(lambda: self._client.delete_object(**request))
+        if isinstance(error, ClientError):
+            code, status, _ = _code(error)
             if code == 'NoSuchBucket':
-                raise self._error(exc, 'DeleteObject', name) from None
+                raise self._error(error, 'DeleteObject', name)
             if code == 'NoSuchKey':
                 return None
             if code == 'PreconditionFailed' or status == 412:
-                raise self._conflict(name, if_match, False, code) from None
+                raise self._conflict(name, if_match, False, code)
             if code in _CONFLICT_CODES or status == 409:
                 # S3 answers 409 when another write or delete finished first. One read tells
                 # them apart; it is not a retried write.
                 if self.get(name).version is None:
                     return None
-                raise self._conflict(name, if_match, False, code) from None
-            raise self._error(exc, 'DeleteObject', name) from None
-        except BotoCoreError as exc:
-            raise self._failure(exc, name) from None
+                raise self._conflict(name, if_match, False, code)
+            raise self._error(error, 'DeleteObject', name)
+        if error is not None:
+            raise self._failure(error, name)
         return None
+
+    def _read(self, name, response):
+        stream = response['Body']
+        try:
+            if (response.get('ContentLength') or 0) > self._max_body:
+                raise self._too_big(name)
+            chunks, size = [], 0
+            while True:
+                chunk = stream.read(_CHUNK)     # at the end, botocore checks the length
+                if not chunk:
+                    return b''.join(chunks)
+                size += len(chunk)
+                if size > self._max_body:
+                    raise self._too_big(name)
+                chunks.append(chunk)
+        finally:
+            stream.close()
 
     # --- errors -----------------------------------------------------------------------------
 

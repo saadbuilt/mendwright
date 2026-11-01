@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from . import Denied
 
@@ -31,6 +31,8 @@ MAX_NAME = 512
 MAX_DEPTH = 8
 MAX_VERSION = 1024
 _SEGMENT = re.compile(r'[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9_-])?')
+_BUCKET = re.compile(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]')
+_PREFIX = re.compile(r"[A-Za-z0-9!_.*'()-]+")    # S3's safe characters, per segment
 _DEVICES = frozenset(['con', 'prn', 'aux', 'nul'] + ['com%d' % n for n in range(10)]
                      + ['lpt%d' % n for n in range(10)])
 
@@ -67,6 +69,30 @@ def check_name(name) -> str:
     return name
 
 
+def check_bucket(bucket) -> str:
+    if not isinstance(bucket, str):
+        raise TypeError('an S3 bucket name is a str, not ' + type(bucket).__name__)
+    if not _BUCKET.fullmatch(bucket) or '..' in bucket:
+        raise ValueError(repr(bucket[:80]) + ' is not an S3 bucket name: 3 to 63 lower-case '
+                         'letters, digits, dots and hyphens, starting and ending with a letter '
+                         'or a digit')
+    return bucket
+
+
+def check_prefix(prefix) -> str:
+    """The prefix as S3 keys start with it: '' or segments, each ending in '/'."""
+    if not isinstance(prefix, str):
+        raise TypeError('an S3 prefix is a str, not ' + type(prefix).__name__)
+    prefix = prefix.strip('/')
+    if not prefix:
+        return ''
+    segments = prefix.split('/')
+    if len(prefix) > MAX_NAME or not all(_PREFIX.fullmatch(s) and s not in ('.', '..') for s in segments):
+        raise ValueError(repr(prefix[:80]) + " is not a store prefix: use letters, digits and "
+                         "!_.*'()- in segments joined by '/'")
+    return prefix + '/'
+
+
 def check_put(body, if_match, create_only) -> bytes:
     """The checks MemoryBackend makes, with its messages, then the version's."""
     if if_match is not None and create_only:
@@ -99,24 +125,44 @@ def token_problem(token) -> str | None:
     return None
 
 
+def split_url(url):
+    """(urlsplit(url), its port). Raises ValueError without quoting the URL. The error is
+    raised outside the except clause, so it has no __context__ that could quote it."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port       # a port that is not a number raises here
+    except ValueError:
+        parts = None
+    if parts is None:
+        raise ValueError('the store URL is not a valid URL (check its host and port)')
+    return parts, port
+
+
 def read_token_file(path, source) -> str:
     """The token in the file at path, without the whitespace around it. Raises Denied, whose
-    message names source and the path, never the file's content."""
+    message names source and the path, never the file's content. Errors are raised outside
+    the except clauses, so none has a __context__ that could hold the file's bytes."""
     where = source + ' (' + os.fspath(path) + ')'
+    problem = data = None
     try:
         with open(path, 'rb') as fh:
             data = fh.read(MAX_TOKEN_FILE + 1)
     except FileNotFoundError:
-        raise Denied(where + ': the token file does not exist') from None
+        problem = 'the token file does not exist'
     except OSError as exc:
-        raise Denied(where + ': the token file cannot be read (' + type(exc).__name__ + ')') from None
-    if len(data) > MAX_TOKEN_FILE:
-        raise Denied(where + ': the token file is larger than a token')
-    try:
-        # PowerShell 5 writes UTF-16 with > and Out-File; Notepad may add a UTF-8 BOM.
-        text = data.decode('utf-16') if data[:2] in (b'\xff\xfe', b'\xfe\xff') else data.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        raise Denied(where + ': the token file is not UTF-8 text') from None
+        problem = 'the token file cannot be read (' + type(exc).__name__ + ')'
+    if problem is None and len(data) > MAX_TOKEN_FILE:
+        problem = 'the token file is larger than a token'
+    text = None
+    if problem is None:
+        try:
+            # PowerShell 5 writes UTF-16 with > and Out-File; Notepad may add a UTF-8 BOM.
+            utf16 = data[:2] in (b'\xff\xfe', b'\xfe\xff')
+            text = data.decode('utf-16') if utf16 else data.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            problem = 'the token file is not UTF-8 text'
+    if problem is not None:
+        raise Denied(where + ': ' + problem)
     token = text.strip()
     problem = token_problem(token)
     if problem:

@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlsplit
 
 from . import OVERRIDES, MemoryBackend
-from ._common import refuse_secrets
+from ._common import check_bucket, check_prefix, refuse_secrets, split_url
 
 __all__ = ['backend_for']
 
@@ -44,11 +43,7 @@ def backend_for(url):
         if url[found.end():]:
             raise ValueError('a memory store URL is memory: with nothing after it')
         return MemoryBackend()
-    try:
-        parts = urlsplit(url)
-        port = parts.port       # a port that is not a number raises here
-    except ValueError:
-        raise ValueError('the store URL is not a valid URL (check its host and port)') from None
+    parts, port = split_url(url)
     refuse_secrets(url, parts)
     if scheme == 's3':
         bucket, prefix = _s3_place(parts, port)
@@ -87,4 +82,5 @@ def _s3_place(parts, port):
     path = _folder(parts.path)
     if '//' in path:
         raise ValueError('the S3 prefix in the store URL has an empty segment (//)')
-    return parts.netloc, path
+    # Checked here too, so a bad URL is refused also where boto3 is not installed.
+    return check_bucket(parts.netloc), check_prefix(path)
