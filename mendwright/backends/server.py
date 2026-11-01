@@ -403,14 +403,18 @@ class StoreServer:
         return None if hmac.compare_digest(given, self._token) else 'wrong token'
 
     def file_of(self, name):
-        """The file for an object's name, or None when it would be outside the folder (for
-        example through a link someone made inside it)."""
-        path = os.path.join(self.root, *name.split('/'))
+        """The file for an object's name, or None when it would be outside the folder, for
+        example through a link someone made inside it. Only the file's folder is resolved:
+        the server never replaces or removes a folder, while on Windows a file being deleted
+        resolves to somewhere under C:\\$Extend\\$Deleted."""
+        *folders, leaf = name.split('/')
+        folder = os.path.join(self.root, *folders)
         try:
-            inside = os.path.commonpath([self.root, os.path.realpath(path)]) == self.root
+            inside = os.path.commonpath([self.root, os.path.realpath(folder)]) == self.root
         except ValueError:      # another drive
             return None
-        return path if inside else None
+        path = os.path.join(folder, leaf)
+        return path if inside and not os.path.islink(path) else None
 
     def lock_for(self, name):
         return self._locks[hash(name) % _STRIPES]
