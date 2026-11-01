@@ -407,9 +407,26 @@ describe('the texts mendwright logs, raises and journals', () => {
     assert.equal(quoted(null), 'null');
     assert.equal(quoted('x'.repeat(100)), "'" + 'x'.repeat(VALUE_LIMIT - 4) + '...');
     assert.equal(quoted('x'.repeat(100)).length, VALUE_LIMIT);
+    // The spaces a browser puts in a price are written as Python's repr() writes them.
+    const BS = String.fromCharCode(92);
+    assert.equal(quoted('1' + NNBSP + '299,00' + NBSP + '€'), "'1" + BS + 'u202f299,00' + BS + "xa0€'");
     const money = expectation('money') as Expectation;
     assert.equal(refusalReason('innerText', [], money), 'expect_value: innerText() is not money');
     assert.equal(refusalReason('getAttribute', ['content', {}], money), "expect_value: getAttribute('content') is not money");
+  });
+
+  test("a value is quoted as the Python package's quoted() quotes it", { skip }, () => {
+    const ch = (code: number) => String.fromCodePoint(code);
+    const values = ['4.5', "it's", 'say "hi"', 'both \' and "', 'back' + ch(92) + 'slash', 'tab' + TAB + 'and' + ch(10) + 'line',
+      '1' + NNBSP + '299,00' + NBSP + '€', 'soft' + ch(0xad) + 'hyphen', 'zero' + ch(0x200b) + 'width', 'next' + ch(0x85) + 'line',
+      'line' + ch(0x2028) + 'sep', 'private' + ch(0xe000), 'tag' + ch(0xe0001), 'smile' + ch(0x1f600), ch(0x7f) + ch(0x9f),
+      'ideographic' + ch(0x3000) + 'space', 'lone' + String.fromCharCode(0xd800), 'x'.repeat(76) + NBSP + 'tail',
+      'x'.repeat(79) + ch(0x202f), '', 'ü' + ch(0x301) + 'é', THIN + MINUS + '12'];
+    const py = runPython<string[]>(`
+import json, sys
+from mendwright.values import quoted
+print(json.dumps([quoted(v) for v in json.load(sys.stdin)]))`, values);
+    assert.deepEqual(values.map(quoted), py);
   });
 
   test("the refusal is the Python package's, in TypeScript idiom", { skip }, () => {
@@ -425,6 +442,7 @@ describe('the texts mendwright logs, raises and journals', () => {
       ["it's", '//p', 'inner_text', [], 'x'.repeat(120), 'email'],
       ['p', '//p', 'inner_text', [], "it's \"quoted\"\nand cut", 'percent'],
       ['n', '//p', 'inner_text', [], 'Free', 'number'],
+      ['price', "//span[@class='amount']", 'inner_text', [], '1' + NNBSP + '299,00' + NBSP + '€', 'integer'],
     ];
     const py = runPython<{ messages: string[]; reasons: string[] }>(`
 import json, sys

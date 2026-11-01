@@ -730,10 +730,32 @@ export function readText(verb: string, args: readonly unknown[]): string {
   return verb + '(' + args.filter((a) => typeof a === 'string').map(pyRepr).join(', ') + ')';
 }
 
+// The characters str.isprintable() is false for, which repr() writes as an escape: control and
+// format characters, surrogates, private use, unassigned, and separators but the space.
+const UNPRINTABLE = /^[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]$/u;
+const BACKSLASH = '\\';
+
+/** repr() of a string, as Python writes it: pyRepr(), with the characters it leaves as they
+ * are that Python escapes, such as a non-breaking or a narrow space in a price, written as
+ * Python writes them (\xa0, \u202f, \U000e0001). */
+function reprText(value: string): string {
+  let out = '';
+  for (const ch of pyRepr(value)) {
+    if (ch === ' ' || !UNPRINTABLE.test(ch)) {
+      out += ch;
+      continue;
+    }
+    const code = ch.codePointAt(0) as number;
+    const [mark, width] = code < 0x100 ? ['x', 2] : code < 0x10000 ? ['u', 4] : ['U', 8];
+    out += BACKSLASH + mark + code.toString(16).padStart(width, '0');
+  }
+  return out;
+}
+
 /** A value as a message quotes it, cut to VALUE_LIMIT characters: a string as Python's repr()
  * writes it, and null as null. */
 export function quoted(value: unknown): string {
-  const text = typeof value === 'string' ? pyRepr(value) : value === null || value === undefined ? 'null' : String(value);
+  const text = typeof value === 'string' ? reprText(value) : value === null || value === undefined ? 'null' : String(value);
   return pyLen(text) <= VALUE_LIMIT ? text : pySlice(text, VALUE_LIMIT - 3) + '...';
 }
 
