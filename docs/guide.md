@@ -833,18 +833,14 @@ LiteLLM needs the litellm package (`pip install "mendwright[litellm]"`), or an `
 The other extras are `[anthropic]`, `[openai]`, `[gemini]` and `[all]`. `[all]` installs every provider SDK and no browser library.
 
 Any object with `propose(bundle)` and `report_outcome(key, xpath, success)` works as a provider. [CONTRIBUTING.md](../CONTRIBUTING.md) describes the contract.
-On a page longer than 60,000 characters, a provider gets the bundle with the page fitted to the prompt (`mendwright.fit` says how), and while parts of the page are left out to fit, a proposal with a position in it is refused. A provider that reads the whole page itself sets `wants_full_html = True` to get it unchanged, as `LocalModelProvider` does.
+On a page longer than 60,000 characters, a provider gets the bundle with the page fitted to the prompt (`mendwright.fit` says how). While parts of the page are left out to fit, a proposal with a position in it is refused. A provider that reads the whole page itself sets `wants_full_html = True` to get it unchanged, as `LocalModelProvider` does.
 
 ### Local model
 
 `LocalModelProvider` asks mendwright's own selector model, which runs in Ollama on your machine, so the page never leaves it.
 It is Qwen2.5-1.5B-Instruct fine-tuned for one task, and it doesn't read the page or write XPath.
-mendwright lists at most 40 elements of the step's role from the captured page, one short line each (tag, text, label, id, name, test id, aria-label, link path, the row or heading it sits under, its landmark, whether it is hidden).
-The model gets that list and the step: the key, the role, the old selectors, the expected text and `intent=` if set, the fingerprint mendwright saved when the selector last matched, and the page path now and where the element was last found.
-It answers with the number of the element the step meant, or says that none fits and why.
-mendwright then builds the XPath for that element itself, from its id, test id, name, aria-label, label, text or the row or heading around it, never from its position, and checks it like any other heal.
 
-`mendwright model install` downloads the model file (about 1 GB, once) from the GitHub release this version of mendwright was tested with, checks its SHA-256, writes an Ollama Modelfile next to it and runs `ollama create mendwright-selector`. It needs [Ollama](https://ollama.com/download). `--dir` picks where the file is kept (default: a mendwright folder in your user cache), `--name` the Ollama name, `--skip-create` only downloads, and `--force` downloads again. To build the model yourself, [training/README.md](../training/README.md) has the recipe and its accuracy. Then:
+`mendwright model install` downloads the model file (about 1 GB, once) from the GitHub release this version of mendwright was tested with, checks its SHA-256, writes an Ollama Modelfile next to it and runs `ollama create mendwright-selector`. It needs [Ollama](https://ollama.com/download):
 
 ```bash
 mendwright model install
@@ -852,13 +848,30 @@ export MENDWRIGHT_LOCAL_MODEL=mendwright-selector   # or the --name you gave it
 mendwright doctor                                    # LocalModelProvider (mendwright selector model in Ollama)
 ```
 
-In code, `LocalModelProvider(model="mendwright-selector", base_url="http://127.0.0.1:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST` and then `http://127.0.0.1:11434`. `localhost` is read as `127.0.0.1`, because on Windows a request to `localhost` tries IPv6 first and waits about 2 seconds before Ollama answers on IPv4.
+- `--dir` picks where the file is kept (default: a mendwright folder in your user cache).
+- `--name` picks the Ollama name.
+- `--skip-create` only downloads.
+- `--force` downloads again.
+
+To build the model yourself, [training/README.md](../training/README.md) has the recipe and its accuracy.
+
+In code, `LocalModelProvider(model="mendwright-selector", base_url="http://127.0.0.1:11434")`. Both arguments are optional: the model falls back to `MENDWRIGHT_LOCAL_MODEL` and then `mendwright-selector`, and the host to `OLLAMA_HOST` and then `http://127.0.0.1:11434`.
+`localhost` is read as `127.0.0.1`, because on Windows a request to `localhost` tries IPv6 first and waits about 2 seconds before Ollama answers on IPv4.
+
+How a heal with it runs:
+
+1. mendwright lists at most 40 elements of the step's role from the captured page, one short line each (tag, text, label, id, name, test id, aria-label, link path, the row or heading it sits under, its landmark, whether it is hidden).
+2. The model gets that list and the step: the key, the role, the old selectors, the expected text and `intent=` if set, the fingerprint mendwright saved when the selector last matched, and the page path now and where the element was last found.
+3. It answers with the number of the element the step meant, or says that none fits and why.
+4. mendwright then builds the XPath for that element itself, from its id, test id, name, aria-label, label, text or the row or heading around it, never from its position, and checks it like any other heal.
 
 Three things differ from the other providers:
 
 - It is the only provider that gets the key's fingerprint. A model on your own machine needs it to compare, and the fingerprint never goes to a hosted model or a gateway.
-- When the model says no element fits, the heal is declined with `the local model says no element on this page fits:` and the reason (the element isn't on the page, several fit equally, or the step seems to have moved to another page). When mendwright's checks refuse the element it picked because it isn't visible or isn't unique on the live page, the model is asked once more without that element. After any other refusal it doesn't guess again.
-- It declines a pick the model isn't sure of. The provider asks Ollama for the probabilities of the reply's tokens, and a pick under 0.8 is declined with `the local model was not sure which element the step meant`, the element it picked and the confidence. On held-out test pages this cut wrong picks from 1.2% to 0.14% of broken selectors, for one point fewer correct ones. `min_confidence=` or `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes the threshold, and 0 turns it off. An Ollama that returns no probabilities skips the check.
+- When the model says no element fits, the heal is declined with `the local model says no element on this page fits:` and the reason (the element isn't on the page, several fit equally, or the step seems to have moved to another page).
+  When mendwright's checks refuse the element it picked because it isn't visible or isn't unique on the live page, the model is asked once more without that element. After any other refusal it doesn't guess again.
+- It declines a pick the model isn't sure of. The provider asks Ollama for the probabilities of the reply's tokens, and a pick under 0.8 is declined with `the local model was not sure which element the step meant`, the element it picked and the confidence.
+  On held-out test pages this cut wrong picks from 1.2% to 0.14% of broken selectors, for one point fewer correct ones. `min_confidence=` or `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` changes the threshold, and 0 turns it off. An Ollama that returns no probabilities skips the check.
 
 ### Direct or gateway
 
@@ -867,10 +880,10 @@ That suits your own machine, your CI and servers you run.
 
 A tool you hand to other people is different: every copy would carry your key, and anyone with a copy can read it.
 [examples/heal_gateway.mjs](../examples/heal_gateway.mjs) is a Cloudflare Worker that keeps the key on the server.
-The client sends it the same redacted page bundle a direct provider gets, with the shared client key (the worker's `HEAL_KEY` secret) in the `X-Heal-Key` header.
-The worker allows 3 `/heal` requests per selector key and 60 requests in all per hour, keeps an audit trail in KV, and records outcomes from `/heal/outcome`.
-Outcome reports count toward the 60, and a re-prompt after a rejected proposal is a second `/heal` request.
-Its reply is treated like any model reply, so every local check still runs on the client.
+
+- The client sends it the same redacted page bundle a direct provider gets, with the shared client key (the worker's `HEAL_KEY` secret) in the `X-Heal-Key` header.
+- The worker allows 3 `/heal` requests per selector key and 60 requests in all per hour, keeps an audit trail in KV, and records outcomes from `/heal/outcome`. Outcome reports count toward the 60, and a re-prompt after a rejected proposal is a second `/heal` request.
+- Its reply is treated like any model reply, so every local check still runs on the client.
 
 Setup, from [examples/wrangler.toml](../examples/wrangler.toml):
 
@@ -983,11 +996,12 @@ Update the selector in your code to the new one, or run without --mendwright-str
 
 For a `get_by_*` call, the message ends with `For a get_by_* call, run mendwright fix to see the healed selector and where the call is; it does not change the call itself.`
 
-Strict mode only fires on the run that makes the heal.
 It fails tests that needed a heal, and nothing else: a handled interruption (`flow.interrupt`), a dismissed popup (`flow.dismiss`) or steps that came in another order (`flow.step`, see [Steps in any order](#steps-in-any-order)) don't fail a test.
+Strict mode also covers reruns from pytest-rerunfailures: a rerun that passes only because of a heal fails too.
+
+Strict mode only fires on the run that makes the heal.
 On the next run with the same store, the saved heal resolves as a fallback, no heal happens, and the test passes.
 For a strict CI job, give each run a fresh store (see [CI](#ci)).
-Strict mode also covers reruns from pytest-rerunfailures: a rerun that passes only because of a heal fails too.
 
 ### pytest-xdist and async tests
 
@@ -1015,14 +1029,18 @@ print(await heal.present("newsletter"))
 - `heal.locator()` is a plain call that returns at once. Argument errors still raise there.
 - The element is resolved, and healed if needed, when you await an action, a method such as `inner_text()`, or the proxy itself.
 - A `heal.locator(...)` that is never awaited does nothing.
-- `proxy.native` raises `RuntimeError` until the proxy has been awaited.
+- `proxy.native` and `proxy.present` raise `RuntimeError` until the proxy has been awaited.
 - `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
-- `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer. `interrupt()` is a plain call; the action is awaited when the interruption is handled, and so is a `run=` function, an async function here (or a plain one that returns an awaitable), with no time limit, and it is cancelled with the step it runs for. Playwright's overlay handler for it is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls. `proxy.present` raises `RuntimeError` until the proxy has been awaited.
+- `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer.
+- `interrupt()` is a plain call. The action is awaited when the interruption is handled, and so is a `run=` function: an async function here (or a plain one that returns an awaitable), with no time limit, and it is cancelled with the step it runs for.
+- Playwright's overlay handler for an interruption is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls.
 - Actions awaited together, for example with `asyncio.gather()`, look for interruptions one at a time, so two of them never click the same banner.
-- `heal.step()` is a plain call, and `await heal.run_steps()` runs the steps (see [Steps in any order](#steps-in-any-order)). A step's function is an async function, which is awaited, or a plain one that returns an awaitable, such as `lambda page: page.click("#place")`. `heal.page`'s calls are coroutines here, so a plain function that makes them without `await` would do nothing on the page: `run_steps()` raises `TypeError` for a function that returns anything else, and the journal records the step as failed.
+- `heal.step()` is a plain call, and `await heal.run_steps()` runs the steps (see [Steps in any order](#steps-in-any-order)). A step's function is an async function, which is awaited, or a plain one that returns an awaitable, such as `lambda page: page.click("#place")`.
+  `heal.page`'s calls are coroutines here, so a plain function that makes them without `await` would do nothing on the page. So `run_steps()` raises `TypeError` for a function that returns anything else, and the journal records the step as failed.
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
+
 Calls on one `AsyncHealer` take turns, except those of a `run=` function, which go ahead while the step that called it waits. `asyncio.gather()` over several of its locators is safe, but they resolve one after another.
 Use one `AsyncHealer` per event loop.
 
@@ -1080,12 +1098,30 @@ register_driver(detect=lambda obj: hasattr(obj, "my_find"), make=MyDriver)
 
 ## Iframes
 
-mendwright opened on the page works with iframes one level down, on Playwright (sync and async) and Selenium.
+mendwright opened on the page works with iframes one level down, on Playwright (sync and async) and Selenium. For anything deeper, open mendwright on the frame itself, as below.
 
-- **A selector that matches only inside an iframe.** When a key's selector matches nothing on the page but matches exactly one element inside one iframe, mendwright looks for it there from now on, with no model call. It saves the selector with its `xpath=` or `css=` prefix written out and the iframe's selector as `frameXPath`, for example `iframe[id="consent-frame"]`, built from the iframe's id, name or title, or from its `src` up to the query (the query itself is never saved). An iframe with none of these isn't followed: a bare `iframe` could match another iframe on a later page. It goes through the live check like a heal, logs `found 'terms' inside the iframe ...`, and counts as a heal with source `frame`, so strict mode fails on it and the canary checks it.
-- **A key last found inside an iframe.** When its selector breaks, the heal runs in that iframe: the fingerprint tier and the model get the iframe's HTML, the checks run in the iframe, and the new selector is saved with the same `frameXPath` and its `xpath=` prefix written out, so it never shares a row in the store with the same XPath on the page. A fingerprint read while the key matched inside the iframe is used there.
+**A selector that matches only inside an iframe.** When a key's selector matches nothing on the page but matches exactly one element inside one iframe, mendwright looks for it there from now on, with no model call.
 
-mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the same lookup was quarantined before, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), and on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)).
+- It saves the selector with its `xpath=` or `css=` prefix written out, and the iframe's selector as `frameXPath`, for example `iframe[id="consent-frame"]`.
+- The iframe's selector is built from the iframe's id, name or title, or from its `src` up to the query (the query itself is never saved). An iframe with none of these isn't followed: a bare `iframe` could match another iframe on a later page.
+- It goes through the live check like a heal, logs `found 'terms' inside the iframe ...`, and counts as a heal with source `frame`, so strict mode fails on it and the canary checks it.
+
+**A key last found inside an iframe.** When its selector breaks, the heal runs in that iframe:
+
+- The fingerprint tier and the model get the iframe's HTML, and the checks run in the iframe. A fingerprint read while the key matched inside the iframe is used there.
+- The new selector is saved with the same `frameXPath` and its `xpath=` prefix written out, so it never shares a row in the store with the same XPath on the page.
+
+mendwright does not follow a key into an iframe, and says why in the `AttentionRequired`:
+
+- in dry run, under `MENDWRIGHT_DISABLE=1`, or while a `guard=` blocks heals
+- when the key is marked destructive
+- when the same lookup was quarantined before
+- when its selector matches in more than one iframe, or more than one element there
+- when the iframe is inside another iframe
+- when nothing tells the iframe apart from the others on the page
+- for a Playwright engine selector (`text=`, `role=`)
+- on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page))
+
 On Selenium, mendwright looks only one level down from the page, so a match deeper than that isn't seen at all, and the key heals on the page as before. For those, and for anything deeper than one level, open mendwright on the frame itself.
 
 Playwright:
@@ -1159,16 +1195,26 @@ No matching element for: save (tried 1 candidate(s)).
 mendwright looks it up strictly, through the hosts as above, and its CSS counts only what matches inside that shadow root: never in the host's light DOM, a shadow root inside it, or another host with the same tag.
 
 - On Selenium, one `execute_script()` finds the hosts and runs `querySelectorAll()` in the shadow root. The `WebElement` it returns works as any other, also after the call.
-- On Playwright, `proxy.native` is the chain's `Locator`, whose CSS pierces, and Playwright looks it up again for each action and read. When mendwright looks the key up, it checks that every element the `Locator` matches is in that shadow root; when one isn't, the selector matches nothing. Right before each action and each read of the proxy (`inner_text()`, `is_visible()` and the other reads that look at the page, and each element of `heal.locator_all()`), it checks again that the `Locator` matches one element and that it is in that shadow root, waiting for that up to the step's timeout. When the page changed after the lookup and it never is, the action or read doesn't run: it raises `AttentionRequired`, and the heal stays as it was. When the `Locator` matches nothing at all, inside the shadow root or outside it, as after a Close button's click removed its dialog, `is_visible()` and `is_hidden()` don't wait: they answer `False` and `True` at once, as Playwright's do and as they do for a key on the page, so `click(expect=lambda: el.is_hidden())` confirms the heal. A match outside the shadow root, or several matches, still raises. What you run on `proxy.native` yourself, such as `expect(proxy.native)`, isn't checked, and neither is the moment inside an action when Playwright looks the `Locator` up itself.
+- On Playwright, `proxy.native` is the chain's `Locator`, whose CSS pierces, and Playwright looks it up again for each action and read. So mendwright checks where its elements are:
+  - When mendwright looks the key up, it checks that every element the `Locator` matches is in that shadow root. When one isn't, the selector matches nothing.
+  - Right before each action and each read of the proxy (`inner_text()`, `is_visible()` and the other reads that look at the page, and each element of `heal.locator_all()`), it checks again that the `Locator` matches one element and that it is in that shadow root, waiting for that up to the step's timeout. When the page changed after the lookup and it never is, the action or read doesn't run: it raises `AttentionRequired`, and the heal stays as it was.
+  - When the `Locator` matches nothing at all, inside the shadow root or outside it, as after a Close button's click removed its dialog, `is_visible()` and `is_hidden()` don't wait. They answer `False` and `True` at once, as Playwright's do and as they do for a key on the page, so `click(expect=lambda: el.is_hidden())` confirms the heal. A match outside the shadow root, or several matches, still raises.
+  - What you run on `proxy.native` yourself, such as `expect(proxy.native)`, isn't checked, and neither is the moment inside an action when Playwright looks the `Locator` up itself.
 
 A driver of your own runs none of these unless it has `shadow_html()` and takes the `ShadowHost` steps of a frame chain (see [CONTRIBUTING.md](../CONTRIBUTING.md)). On any other driver such a heal can't run, as a Playwright engine selector can't on Selenium, and no key last found inside a shadow root is healed.
 
 The text of the heal is the chain so that a mendwright that knows nothing of `shadowHosts` (0.9.0 and before) runs it as Playwright does, inside the host, and refuses it on Selenium, instead of running the bare CSS on the whole page.
 
-A 0.9.0 process that writes the store, for any key, such as a branch still on 0.9.0 that restores the same CI cache, drops every `shadowHosts` in it: each key's and each heal's.
-mendwright reads a heal's hosts back from its chain when it reads the store, since 0.9.0 never saves a heal whose text is a chain of shadow hosts and a CSS selector, so such a heal still runs, and its key still heals, only inside its shadow root, and `mendwright fix` still writes the chain.
-The key's own `shadowHosts` can't be read back. A key whose element a selector in your code found inside a shadow root (on Playwright, whose CSS pierces) and that has no heal there heals on the page after that, as 0.9.0 heals it, until a 0.10.0 run finds its element again and saves where it is.
 Keep every process that writes a shared store on 0.10.0.
+
+<details><summary>Details: a store that a 0.9.0 process writes too</summary>
+
+A 0.9.0 process that writes the store, for any key, such as a branch still on 0.9.0 that restores the same CI cache, drops every `shadowHosts` in it: each key's and each heal's.
+
+- mendwright reads a heal's hosts back from its chain when it reads the store, since 0.9.0 never saves a heal whose text is a chain of shadow hosts and a CSS selector. So such a heal still runs, and its key still heals, only inside its shadow root, and `mendwright fix` still writes the chain.
+- The key's own `shadowHosts` can't be read back. A key whose element a selector in your code found inside a shadow root (on Playwright, whose CSS pierces) and that has no heal there heals on the page after that, as 0.9.0 heals it, until a 0.10.0 run finds its element again and saves where it is.
+
+</details>
 
 ### A selector that matches only inside a shadow root
 
@@ -1181,7 +1227,17 @@ A key last found on the page, in an iframe or in another shadow root heals where
 
 Playwright's CSS reaches into open shadow roots by itself, so there only an XPath is followed: what a CSS selector matches inside a shadow root, it matches on the page too. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
 
-mendwright does not follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the selector matches in more than one shadow root or more than one element there, when a host on the way can't be told apart, when the same lookup was quarantined before, for an XPath whose element no CSS selector tells apart, on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)), and when the element fails the live check.
+mendwright does not follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model:
+
+- in dry run, under `MENDWRIGHT_DISABLE=1`, or while a `guard=` blocks heals
+- when the key is marked destructive
+- when the selector matches in more than one shadow root, or more than one element there
+- when a host on the way can't be told apart
+- when the same lookup was quarantined before
+- for an XPath whose element no CSS selector tells apart
+- on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page))
+- when the element fails the live check
+
 A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not looked for in shadow roots: Playwright's engines reach into open ones by themselves.
 
 ### Limits
@@ -1195,11 +1251,20 @@ A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not lo
 
 ### mendwright fix, check and report
 
-`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a method of a Playwright page or frame (`page.locator()`, `page.click()` and the other methods that take a selector, called on a name or attribute `page`, `frame` or `main_frame`, such as `heal.page.fill()` or `self.page.click()`) in a Python file that doesn't import Selenium.
-Everywhere else, such as `heal.locator()`, which can run on Selenium, a page object's own `click()`, a `Locator` (`app.locator("#save")`, where the chain, which starts with the host, finds nothing inside `app`), `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright from the page or frame (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`); the heal stays in the store and keeps working.
+`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a method of a Playwright page or frame in a Python file that doesn't import Selenium. Those methods are `page.locator()`, `page.click()` and the other methods that take a selector, called on a name or attribute `page`, `frame` or `main_frame`, such as `heal.page.fill()` or `self.page.click()`.
 
-`mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
+Everywhere else it lists the place, with the chain to write by hand where the code runs on Playwright from the page or frame (`shadow_call`). Examples are `heal.locator()`, which can run on Selenium, a page object's own `click()`, a `Locator` (`app.locator("#save")`, where the chain, which starts with the host, finds nothing inside `app`), `find_element()`, a constant or another kind of file.
+
+Selenium's `find_element()` can't reach into a shadow root. So the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`). The heal stays in the store and keeps working.
+
+`mendwright check` and `heal.drift()` decide as a run does:
+
+- a key last found inside a shadow root is healed there in the preview
+- one whose shadow root can't be entered is `refused`
+- a selector a run would follow into a shadow root is `would heal`, with detail `shadow`
+
 `mendwright report` shows the shadow root each selector runs in.
+
 In the [journal](#journaljsonl), a heal or a follow refused for a key in a shadow root is a `heal.declined` with the code `shadow` (`dry_run` and `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), which [`mendwright notify`](#mendwright-notify) words as `` `save` is inside a shadow root, where mendwright could not repair it ``.
 
 The real-browser tests in `tests/browser/test_browser_shadow.py` cover these on every engine, with a look-alike outside the host and nested shadow roots.
