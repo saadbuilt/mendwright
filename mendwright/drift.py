@@ -50,11 +50,13 @@ from .drivers.base import driver_describe, driver_framed
 from .facade import (HealScope, _frame_message, _shadow_message, heal_place, latest_success,
                      shadow_unreachable)
 from .flow import InterruptionLoop, _is_id, page_path, page_url
-from .gate import live_reason
+from .gate import live_reason, reuse_reason
 from .journal import _BaseJournal
 from .lists import valid as _valid_list
-from .resolver import _require_visible, _split_runnable
-from .roles import GATE_ROLES
+from .resolver import _require_visible, _split_runnable, from_code, reuse_meta
+# Roles a wrong-role verdict is about: a control a run acts on. Another tag on a key read
+# from (a span that became a div) is reported, not counted.
+from .roles import CONTROL_ROLES as _CONTROL_ROLES
 from .selectors import InvalidSelector
 from .shadow import driver_shadowed, hosts_of, place_text, run_target, shadow_text
 
@@ -75,10 +77,6 @@ LABELS = {
     'skipped': 'not checked',
 }
 FAIL_ON = ('drift', 'unhealable')
-
-# Roles a wrong-role verdict is about: a control a run acts on. Another tag on a key read
-# from (a span that became a div) is reported, not counted.
-_CONTROL_ROLES = frozenset(GATE_ROLES) | {'textarea'}
 
 # The reasoning the fingerprint tier journals with heal.proposed (see
 # HealCoordinator._fingerprint_tier), which the preview reads its score from.
@@ -439,6 +437,11 @@ class _Key:
         # written ('several', 'hidden' or 'rejected'), with no lookup and no heal.
         self.through = None
         self.result = None      # the KeyDrift, once decided
+        # What a run's reuse check compares a saved row's element with (resolver.Reuse), and
+        # whether every row that could run was refused by it: a run gives up at once then.
+        self.reuse_meta = reuse_meta(store, key)
+        self.parsed = getby.parse(key)
+        self.gave_up = False
 
     def _cannot_run(self, index, error):
         reason = getattr(error, 'reason', None) or str(error)
@@ -512,14 +515,21 @@ def _look(driver, k):
             except Exception:
                 visible = False
             probe['visible'] = visible
-            if visible:
-                probe['result'] = 'one visible element'
-                resolved = index
-            elif not k.require_visible:
-                probe['result'] = 'one hidden checkbox'      # resolves, as in a run
-                resolved = index
-            else:
+            if not visible and k.require_visible:
                 probe['result'] = 'one hidden element'
+                continue
+            refused = (reuse_reason(driver, selector, k.reuse_meta, chain, call=k.parsed)
+                       if not from_code(k.rows[index]) else '')
+            if refused:
+                # A heal or a seed row whose element fails the live check here: a run leaves
+                # it out and goes on, and gives up at once when no row is left.
+                probe['result'] = 'fails the live check: ' + refused
+                k.runnable.remove(index)
+                k.gave_up = not k.runnable
+                continue
+            # A hidden checkbox resolves, as in a run.
+            probe['result'] = 'one visible element' if visible else 'one hidden checkbox'
+            resolved = index
     k.used = resolved
 
 
@@ -660,12 +670,14 @@ def probe_page(core, keys, *, driver=None, frames=None, timeout_ms=None, poll_ms
     def poll():
         started = clock()
         while True:
-            waiting = [k for k in work if k.result is None and not k.resolved and not k.through]
+            waiting = [k for k in work if k.result is None and not k.resolved and not k.through
+                       and not k.gave_up]
             for k in waiting:
                 _look(driver, k)
-                if not k.runnable and not k.resolved and not k.through:
+                if not k.runnable and not k.resolved and not k.through and not k.gave_up:
                     _unrunnable(k, store, dry_run)
-            waiting = [k for k in work if k.result is None and not k.resolved and not k.through]
+            waiting = [k for k in work if k.result is None and not k.resolved and not k.through
+                       and not k.gave_up]
             if not waiting or (clock() - started) * 1000.0 >= timeout_ms:
                 return waiting
             sleep(poll_ms)
@@ -806,8 +818,9 @@ def _resolved(driver, store, k, canaries, who, dry_run):
             _decide(k, 'wrong-role', None, used + ' matches ' + ('one hidden element' if hidden
                     else 'one visible element') + ', but it is ' + _article(live) + ", and '"
                     + k.key + "' is " + _article(expected) + '. A run acts on it all the same: '
-                    'mendwright compares roles only for heals. Check the selector in your '
-                    'code.', store, dry_run, used=used, live_role=live)
+                    'mendwright compares roles only for selectors a heal or a seed file saved. '
+                    'Check the selector in your code.', store, dry_run, used=used,
+                    live_role=live)
             return
         note = (' Its tag changed from ' + expected + ' to ' + live + ", which isn't "
                 'counted: neither is a control.')

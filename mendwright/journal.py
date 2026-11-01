@@ -2,10 +2,11 @@
 (heal.requested / proposed / rejected / applied / canary / quarantine, heal.declined when a
 heal was not tried or did not apply, heal.held for a list found for heal.locator_all(...,
 nonempty=True) and saved for a person to check, not used, heal.accepted when a person
-accepted one with mendwright lists accept, and for flow changes flow.interrupt / dismiss /
-skip / page_guard / step / stop), recording the provider, model, latency and token counts
-when they are known. Writing is best-effort and never raises, so a bad path or a full disk
-cannot break a heal in progress.
+accepted one with mendwright lists accept, heal.refused when a selector a heal or a seed file
+saved matched an element that failed the live check where a lookup would use it, and for flow
+changes flow.interrupt / dismiss / skip / page_guard / step / stop), recording the provider,
+model, latency and token counts when they are known. Writing is best-effort and never raises, so a
+bad path or a full disk cannot break a heal in progress.
 
 Every line carries a run id in ``run`` when one is known (see run_id): MENDWRIGHT_RUN_ID,
 or on GitHub Actions gh-<run id>.<attempt>. mendwright notify picks a run's events by it.
@@ -44,6 +45,7 @@ FLOW_PAGE_GUARD = 'flow.page_guard'   # a heal was declined: the page is not one
 FLOW_STEP = 'flow.step'               # run_steps() ran a step, or one failed or never showed
 DECLINED = 'heal.declined'            # a heal was not tried or did not apply, with a code
 FLOW_STOP = 'flow.stop'               # mendwright raised because a flow cannot go on
+REFUSED = 'heal.refused'              # a saved heal or seed row failed the live check where used
 
 # Default journal location, relative to the process cwd (like the override store's path).
 DEFAULT_PATH = '.mendwright/journal.jsonl'
@@ -199,6 +201,9 @@ class _BaseJournal:
 
     def stopped(self, key=None, **f):
         return self.event(FLOW_STOP, key=key, **f)
+
+    def refused(self, key=None, **f):
+        return self.event(REFUSED, key=key, **f)
 
 
 class NullJournal(_BaseJournal):

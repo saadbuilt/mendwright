@@ -525,7 +525,7 @@ def absent_message(key):
 _JOURNAL_HELPERS = {'flow.interrupt': 'interrupted', 'flow.skip': 'skipped',
                     'flow.page_guard': 'page_guard', 'flow.dismiss': 'dismissed',
                     'flow.step': 'stepped', 'flow.stop': 'stopped',
-                    'heal.declined': 'declined'}
+                    'heal.declined': 'declined', 'heal.refused': 'refused'}
 
 
 def journal_event(journal, name, key, **fields):

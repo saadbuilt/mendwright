@@ -1120,6 +1120,10 @@ class Healer:
         # _get_by_locator). The calls that are never keys, logged once each (_note_get_by).
         self._heal_get_by = False
         self._get_by_noted: set = set()
+        # Saved selectors a lookup did not use because their element failed the reuse check
+        # (see _refused_reuse): (key, page, selector) journaled, and (key, page) logged.
+        self._refusals: set = set()
+        self._refusals_logged: set = set()
         _register(self)
 
     @property
@@ -1204,16 +1208,18 @@ class Healer:
     def _peek_visible(self, key):
         """For heal.page's is_visible(): True when the first of key's stored selectors that
         matches one element shows it visible right now. Like Playwright's is_visible(): no
-        wait, no heal, no scrolling, and nothing recorded in the store."""
-        from .resolver import _match_handle, _require_visible, _split_runnable
+        wait, no heal, no scrolling, and nothing recorded in the store. A selector the code did
+        not pass counts only when its element passes the reuse check (resolver.Reuse)."""
+        from .resolver import Reuse, _match_handle, _require_visible, _split_runnable
         require_visible = _require_visible(self.store, key)
         runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
+        reuse = Reuse(self.store, key)
         for candidate in runnable:
             try:
                 native = _match_handle(self._driver, candidate, require_visible)
             except Exception:
                 continue
-            if native is not None:
+            if native is not None and reuse.check(self._driver, candidate) == '':
                 try:
                     return bool(driver_act_on(self._driver, native, 'is_visible'))
                 except Exception:
@@ -1376,7 +1382,8 @@ class Healer:
             # (see ActionProxy._before_read). A run= function called inside the handler
             # would have only the scroll's timeout.
             with self._overlays.handling():
-                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
+                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms,
+                               refused=self._refused_reuse)
 
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -1468,7 +1475,8 @@ class Healer:
                 # Playwright's overlay handlers stay out of the lookup, as in locator().
                 with self._overlays.handling():
                     return resolve_get_by(self.store, self._driver, key, timeout_ms=wait,
-                                          poll_ms=poll_ms, first=first.pop() if first else None)
+                                          poll_ms=poll_ms, first=first.pop() if first else None,
+                                          refused=self._refused_reuse)
 
             try:
                 try:
@@ -2884,6 +2892,26 @@ class Healer:
             framed = callable(inside) and bool(inside())
             self.coordinator._emit(logging.WARNING,
                                    nothing_matched_message(key, mine, preset, framed))
+
+    def _refused_reuse(self, key, candidate, reason, url=None):
+        """A lookup did not use candidate, a selector a heal or a seed file saved, because the
+        element it matches on this page failed the reuse check (resolver.Reuse): journal
+        heal.refused once per key, page and selector, and log one WARNING per key and page.
+        Nothing is quarantined: the selector may be right on other pages. url is the page's
+        address, read here when it is not given (the async healer reads it itself)."""
+        from .resolver import refused_message
+        page = page_path(self._url() if url is None else url)
+        xpath = candidate.get('xpath')
+        if (key, page, xpath) in self._refusals:
+            return
+        self._refusals.add((key, page, xpath))
+        coordinator = self.coordinator
+        journal_event(coordinator.journal, 'heal.refused', key, xpath=xpath,
+                      source=candidate.get('source'), reason=reason, page=page)
+        if (key, page) in self._refusals_logged:
+            return
+        self._refusals_logged.add((key, page))
+        coordinator._emit(logging.WARNING, refused_message(key, candidate, page, reason))
 
     def _url(self):
         try:

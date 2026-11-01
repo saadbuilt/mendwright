@@ -22,6 +22,10 @@ from .validation import ARIA_ROLE_ATTRS, GATE_ROLE_ATTRS, _role_of
 
 # The roles validation._role_of returns for the controls it knows.
 GATE_ROLES = ('button', 'checkbox', 'radio', 'link', 'input', 'combobox')
+# The roles of the controls a run acts on. A selector found on an element of one of them for
+# a key of another (or the other way round) is the wrong element; another tag on a key that
+# is only read (a span that became a div) is not counted (see gate.reuse_reason and drift).
+CONTROL_ROLES = frozenset(GATE_ROLES) | {'textarea'}
 # The role="..." values _role_of takes from the attribute as they are. ARIA widget roles
 # in ARIA_ROLE_ATTRS map to a gate role; any other role attribute falls back to the tag.
 _ROLE_ATTRS = GATE_ROLE_ATTRS
