@@ -3,6 +3,8 @@
 The [README](../README.md) gets you to a first heal.
 This page covers the rest: settings, providers, the pytest plugin, async and Selenium details, the files mendwright writes, CI, the command line and troubleshooting.
 
+Start here: [No changes per step](#no-changes-per-step) to heal a suite you already have, the [pytest plugin](#pytest-plugin), [Flow changes](#flow-changes) for banners, popups and steps in another order, [Open a pull request with the fixes](#open-a-pull-request-with-the-fixes) for CI, and [Troubleshooting](#troubleshooting).
+
 Contents:
 
 - [Configuration](#configuration)
@@ -83,7 +85,13 @@ heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
 | `expect_value` | What a read of the element must return when it was found through a heal: `"money"`, `"number"`, `"integer"`, `"percent"`, `"date"`, `"email"` or `"url"`, a compiled regular expression, or a callable. A value that fails quarantines the heal, and the read raises `AttentionRequired`. See [Checking what a read returns](#checking-what-a-read-returns). |
 
 It returns an `ActionProxy` once the element is found, healed or not, or a proxy with `.present` False for a step that was skipped.
-It raises `AttentionRequired` when the element can't be found or healed, `InvalidSelector` or `TypeError` for a selector that can never work (or an `intent=` that is not a non-empty string), and `ValueError` for an unknown role or for `intent=` with no selector and no role. An `expect_value=` that is none of those raises `TypeError` or `ValueError` before anything touches the page.
+
+It raises:
+
+- `AttentionRequired` when the element can't be found or healed
+- `InvalidSelector` or `TypeError` for a selector that can never work (or an `intent=` that is not a non-empty string)
+- `ValueError` for an unknown role, or for `intent=` with no selector and no role
+- `TypeError` or `ValueError` for an `expect_value=` that is none of those, before anything touches the page
 
 Other `Healer` members:
 
@@ -98,11 +106,7 @@ Other `Healer` members:
 
 ### Actions and confirmation
 
-The proxy runs these actions through the driver: `click`, `dblclick`, `fill`, `type`, `press`, `press_sequentially`, `check`, `uncheck`, `set_checked`, `select_option`, `hover`, `tap`, `clear`, `focus`, `set_input_files`, `drag_to`, `send_keys` and `submit`.
-Keyword arguments pass through, and the return value is what the native call returned.
-Anything else, such as `inner_text()`, `get_attribute()` or `is_checked()`, goes to the native object unchanged. On Playwright, the proxy's first read (`text_content()`, `inner_text()`, `inner_html()`, `get_attribute()`, `input_value()`, `is_visible()`, `is_hidden()`, `is_checked()`, `is_enabled()`, `is_disabled()` or `is_editable()`) first handles the registered interruptions the page shows, as an action does, unless one of its actions came first. Its later reads don't look again (see [Interruptions](#interruptions)). With `expect_value=`, a read of an element found through a heal is checked first (see [Checking what a read returns](#checking-what-a-read-returns)).
-`proxy.native` is the Playwright `Locator` or Selenium `WebElement` itself, for APIs that check the type.
-`proxy.present` is False for a skipped step; its actions then do nothing and return `None`:
+The proxy that `heal.locator()` returns runs your actions through the driver. A new heal starts unconfirmed, and checks such as `expect=` confirm it:
 
 ```python
 from playwright.sync_api import expect
@@ -112,19 +116,35 @@ terms.check(expect=terms.is_checked)
 expect(terms.native).to_be_checked()
 ```
 
-A new heal starts unconfirmed. It is confirmed when:
+The proxy runs these actions through the driver: `click`, `dblclick`, `fill`, `type`, `press`, `press_sequentially`, `check`, `uncheck`, `set_checked`, `select_option`, `hover`, `tap`, `clear`, `focus`, `set_input_files`, `drag_to`, `send_keys` and `submit`.
+Keyword arguments pass through, and the return value is what the native call returned.
+
+- Anything else, such as `inner_text()`, `get_attribute()` or `is_checked()`, goes to the native object unchanged.
+- `proxy.native` is the Playwright `Locator` or Selenium `WebElement` itself, for APIs that check the type.
+- `proxy.present` is False for a skipped step. Its actions then do nothing and return `None`.
+- On Playwright, the proxy's first read (`text_content()`, `inner_text()`, `inner_html()`, `get_attribute()`, `input_value()`, `is_visible()`, `is_hidden()`, `is_checked()`, `is_enabled()`, `is_disabled()` or `is_editable()`) first handles the registered interruptions the page shows, as an action does, unless one of its actions came first. Its later reads don't look again (see [Interruptions](#interruptions)).
+- With `expect_value=`, a read of an element found through a heal is checked first (see [Checking what a read returns](#checking-what-a-read-returns)).
+
+An unconfirmed heal stays active and is used on later runs. It is confirmed when:
 
 - the `expect=` callable on an action returns something truthy
 - a read returns a value that passes `expect_value=`
 - you call `proxy.confirm(True)` or `heal.confirm_all(True)`
 - the pytest plugin sees the test pass
 
-It is quarantined when the action raises in the browser, when `expect=` returns something falsy or raises, when a read returns a value that fails `expect_value=`, or when you call `confirm(False)`.
-A quarantined selector stays in the file with status `quarantined`. It isn't tried again, and a later proposal for that key is rejected if it reaches the same element, even through a different XPath. That counts only in the same place: a selector quarantined inside an iframe doesn't block an element that looks the same on the page, and the other way round. (The exact same selector text stays refused in any iframe, because the store keeps one row per text.)
+Confirming writes a `heal.canary` line to the journal and calls the provider's `report_outcome()`. The gateway uses that to record outcomes.
+
+A heal is quarantined when:
+
+- the action raises in the browser
+- `expect=` returns something falsy or raises
+- a read returns a value that fails `expect_value=`
+- you call `confirm(False)`
+
 `AttributeError`, `TypeError` and `ValueError` from a wrong verb or argument quarantine nothing.
 
-Confirming writes a `heal.canary` line to the journal and calls the provider's `report_outcome()`. The gateway uses that to record outcomes.
-An unconfirmed heal stays active and is used on later runs.
+A quarantined selector stays in the file with status `quarantined`. It isn't tried again, and a later proposal for that key is rejected if it reaches the same element, even through a different XPath.
+That counts only in the same place: a selector quarantined inside an iframe doesn't block an element that looks the same on the page, and the other way round. The exact same selector text stays refused in any iframe, though, because the store keeps one row per text.
 
 ### Environment variables
 
@@ -156,16 +176,20 @@ Each time a key's selector matches, it saves a fingerprint of the element in `ov
 
 ### What a fingerprint holds
 
+A fingerprint is what mendwright saves about an element when its selector matches:
+
 - the tag, and the attributes that tend to survive a redesign: `id`, `name`, `type`, `role`, the test ids (`data-testid`, `data-test`, `data-qa`), `aria-label`, `placeholder`, `title`, `alt`, `autocomplete`, and the path of `href` (no host, query or fragment)
 - the class names that don't look generated. `css-1x2y3`, `Header_link__a1B2c` and state words such as `active` are left out.
 - the visible text, or for a form field the text of its label, with spaces collapsed, cut to 80 characters, and runs of 12 to 19 digits replaced by `#`
 - the tag, id, classes and role of up to 4 ancestors
 
 It never reads an input's value.
-It is read in one round trip after the selector matches, once per key and selector per Healer, and the store file is written only when the fingerprint changed.
-The same read says where the element is: the shadow hosts around it, when it is inside an open shadow root (see [Shadow DOM](#shadow-dom)).
-It isn't recorded for a key marked destructive, a skipped step, or a heal made in this run that isn't confirmed yet. A match inside an iframe is read inside the iframe.
-In a later run it is refreshed through whichever selector matches, so after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
+
+- It is read in one round trip after the selector matches, once per key and selector per Healer. The store file is written only when the fingerprint changed.
+- The same read says where the element is: the shadow hosts around it, when it is inside an open shadow root (see [Shadow DOM](#shadow-dom)).
+- A match inside an iframe is read inside the iframe.
+- It isn't recorded for a key marked destructive, a skipped step, or a heal made in this run that isn't confirmed yet.
+- In a later run it is refreshed through whichever selector matches. So after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
 
 ### When it heals
 
@@ -178,12 +202,17 @@ It heals only when all of these hold:
 - It sits inside every recorded ancestor whose id is still on the page. A Save button that left its form, while the form is still there, is not taken.
 - A unique XPath without positions can be built for it.
 
-That XPath then goes through the same checks as a model's proposal (see [How it works](../README.md#how-it-works)): one match of the step's role in the captured HTML, not quarantined, and one visible match on the live page that still has the role.
+That XPath then goes through the same checks as a model's proposal (see [How it works](../README.md#how-it-works)):
+
+- one match of the step's role in the captured HTML
+- not quarantined
+- one visible match on the live page that still has the role
 
 Everything that stops a heal before a model call stops it before the fingerprint too: a key marked destructive, a page where the key was never found (the page guard), an unknown role, and a `guard=` that returns False.
-Interruptions registered with `heal.interrupt()` are handled first.
-Dry run checks the match and applies nothing.
-A fingerprint heal doesn't count toward the hourly limit, and it isn't reported to the provider, which didn't propose it.
+
+- Interruptions registered with `heal.interrupt()` are handled first.
+- Dry run checks the match and applies nothing.
+- A fingerprint heal doesn't count toward the hourly limit. It isn't reported to the provider, which didn't propose it.
 
 ### With and without a provider
 
@@ -196,9 +225,11 @@ A fingerprint heal doesn't count toward the hourly limit, and it isn't reported 
 
 A key that never matched has no fingerprint, so a selector that is already broken the first time mendwright sees it needs a model.
 
-`fingerprint=False` in `mendwright.open()` or `MENDWRIGHT_FINGERPRINT=0` turns the tier off, and `MENDWRIGHT_DISABLE=1` turns it off with every other heal.
-`HealCoordinator` in the low-level API leaves it off unless you pass `fingerprint=True`.
-A list of elements, such as the cards of a product grid, has a list fingerprint of its own, recorded in the same way, but a list is never healed: with `nonempty=True`, mendwright looks for a list whose selector broke and proposes the new selector for you to check (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)).
+- `fingerprint=False` in `mendwright.open()` or `MENDWRIGHT_FINGERPRINT=0` turns the tier off.
+- `MENDWRIGHT_DISABLE=1` turns it off with every other heal.
+- `HealCoordinator` in the low-level API leaves it off unless you pass `fingerprint=True`.
+
+A list of elements, such as the cards of a product grid, has a list fingerprint of its own, recorded in the same way. But a list is never healed: with `nonempty=True`, mendwright looks for a list whose selector broke and proposes the new selector for you to check (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)).
 
 ### What you see
 
@@ -222,10 +253,16 @@ With no provider, the message goes on with `and no model provider is configured 
 
 ### How well it works
 
-On the [47-case benchmark](benchmark.md) with no model, the tier healed 20 of 35 broken selectors correctly, healed none onto the wrong element, and declined all 12 cases where no heal was right ([results](../benchmarks/RESULTS.md)).
+On the [47-case benchmark](benchmark.md) with no model, the tier:
+
+- healed 20 of 35 broken selectors correctly
+- healed none onto the wrong element
+- declined all 12 cases where no heal was right ([results](../benchmarks/RESULTS.md))
+
 Those numbers are in-sample: its thresholds were tuned on the same 47 cases.
 Pages written afterwards to probe it did find wrong heals, and the rules were tightened until it declined them.
 Expect it to be wrong now and then on your own pages, and mark pay, submit and delete steps with `destructive=True`.
+
 It misses translated text, an element whose tag changed, look-alike rows and cards, and labels that changed a word. A model can still heal those.
 
 ## No changes per step
@@ -247,15 +284,33 @@ With async Playwright, use `(await mendwright.aio.open(page)).page`. Its shortcu
 
 `page.locator(selector)` and the page methods that take a selector go through `heal.locator(selector, selector)`, so the selector is also the key its heals are saved under.
 
-- The locator actions heal: `click`, `fill`, `check`, `select_option`, `press`, `hover` and the rest of the list in [Actions and confirmation](#actions-and-confirmation). So do the page shortcuts `click`, `dblclick`, `fill`, `check`, `uncheck`, `select_option`, `press`, `type` and `hover`.
-- The reads heal too: `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text`, `get_attribute` and `input_value` on the page. With `mendwright.open(expect_values={selector: check})`, what `inner_text`, `text_content`, `input_value` and `get_attribute` return through a heal is checked (see [Checking what a read returns](#checking-what-a-read-returns)).
+These heal:
+
+- the locator actions: `click`, `fill`, `check`, `select_option`, `press`, `hover` and the rest of the list in [Actions and confirmation](#actions-and-confirmation)
+- the page shortcuts `click`, `dblclick`, `fill`, `check`, `uncheck`, `select_option`, `press`, `type` and `hover`
+- the reads `is_checked`, `text_content`, `inner_text`, `inner_html`, `get_attribute`, `input_value`, `is_enabled`, `is_disabled` and `is_editable` on a locator, and `is_checked`, `text_content`, `inner_text`, `get_attribute` and `input_value` on the page
+
+With `mendwright.open(expect_values={selector: check})`, what `inner_text`, `text_content`, `input_value` and `get_attribute` return through a heal is checked (see [Checking what a read returns](#checking-what-a-read-returns)).
+
+These are not healed, and go to the real page:
+
+- a locator built with options (`has_text=`, `has=`)
+- a chained locator such as `page.locator("form").locator("button")`
+- `.first` and `.nth()`
+- `get_by_role()` and the other `get_by_*` locators, unless you pass `heal_get_by=True` (see [get_by locators](#get_by-locators))
+- `wait_for_selector()`, `query_selector()` and `expect(page.locator(...))`
+- every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on)
+
+From Playwright 1.42, interruptions are still handled before the actions of those locators (`click`, `fill`, `check`, `hover` and so on) and before `expect(...)`, `wait_for_selector()` and `Locator.wait_for()`. They aren't handled before `page.mouse`, `page.keyboard`, `dispatch_event()` or an action with `force=True` (see [Interruptions](#interruptions)).
+With `dismiss=True`, the locators among them come back as guard-only proxies whose actions look for interruptions and popups first (see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about)).
+
+A few more details:
+
 - `locator(selector).all()` gives what Playwright gives, as in 0.7.0. It never waits, heals or saves anything, so a list that matches nothing is `[]` at once, and a loop that waits for toasts to go away works as before. `heal.locator_all()` records a list and raises when it matches nothing (see [Lists](#lists)). With `dismiss=True`, its elements are `GuardedLocator`s.
 - Reads, `set_input_files` and `focus` work on hidden elements in Playwright. For these, a selector that matches a hidden element, or several, goes to the real page as written when no saved heal finds the element. Only a selector that matches nothing is healed. The actions that need one visible element heal any selector that doesn't match one.
 - `is_visible(selector)` answers at once and never heals. For a selector mendwright has saved, it checks the saved selectors, heals included, without scrolling or writing the store.
-- These are not healed and go to the real page: a locator built with options (`has_text=`, `has=`), a chained locator such as `page.locator("form").locator("button")`, `.first` and `.nth()`, `get_by_role()` and the other `get_by_*` locators unless you pass `heal_get_by=True` (see [get_by locators](#get_by-locators)), `wait_for_selector()`, `query_selector()`, `expect(page.locator(...))`, and every other page method (`goto`, `evaluate`, `keyboard`, `frames`, and so on).
-- From Playwright 1.42, interruptions are still handled before the actions of those locators (`click`, `fill`, `check`, `hover` and so on) and before `expect(...)`, `wait_for_selector()` and `Locator.wait_for()`, but not before `page.mouse`, `page.keyboard`, `dispatch_event()` or an action with `force=True`: see [Interruptions](#interruptions). With `dismiss=True`, the locators among them come back as guard-only proxies whose actions look for interruptions and popups first: see [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about).
 - The proxy passes `isinstance()` checks for the page's class, so `expect(page).to_have_title(...)` works. `page.native` is the real page.
-- `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own, so a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
+- `timeout=` becomes the lookup's timeout. `timeout=0`, which means no limit in Playwright, keeps the Healer's own. So a missing element waits `timeout_ms` (10 seconds by default) before it is healed, not Playwright's 30 seconds.
 - `strict=` is dropped, because a mendwright lookup is always strict.
 
 `mendwright.open()` and `mendwright.aio.open()` also take a proxy, and use the real page behind it.
@@ -263,18 +318,27 @@ On a Playwright healer, `heal.driver` is still mendwright's own driver object.
 
 ### Selenium
 
-`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`, and returns the element as a `HealingElement` (around a `FramedElement` inside an iframe).
+`driver.find_element(by, value)` goes through `heal.locator(f"{by}={value}", selector)` for `By.XPATH`, `By.CSS_SELECTOR`, `By.ID` and `By.NAME`. It returns the element as a `HealingElement` (around a `FramedElement` inside an iframe).
 `By.ID` and `By.NAME` become `[id="..."]` and `[name="..."]` CSS selectors, and the key for `find_element(By.ID, "terms")` is `id=terms`.
 
-- A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
-- When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
 - These are not healed: the other `By` values (`LINK_TEXT`, `CLASS_NAME`, `TAG_NAME`, and so on), and `find_element()` or `find_elements()` on a returned element. Their elements come back as `HealingElement`s too. Every other driver method is the real driver's.
+- A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)`, which never waits.
+- When the element can't be found or healed, it raises an `AttentionRequired` that is also Selenium's `NoSuchElementException`, so `except NoSuchElementException` and `WebDriverWait` still work.
+- A selector that matches a hidden element, or several, comes from the real driver as written (the first match, as `find_element` always returned) when no saved heal finds the element. Only a selector that matches nothing is healed.
 - `find_elements()` gives what Selenium gives, as in 0.7.0, with each element a `HealingElement`. It never waits, heals or saves anything, so a list that matches nothing is `[]` at once, and `WebDriverWait` on it works as before. `heal.locator_all()` records a list and raises when it matches nothing (see [Lists](#lists)).
 - With `mendwright.open(expect_values={"by=value": check})`, a `HealingElement`'s `text`, `get_attribute()` and `get_dom_attribute()` are checked when `find_element()` found it through a heal (see [Checking what a read returns](#checking-what-a-read-returns)).
-- A `HealingElement`'s `click()`, `send_keys()`, `clear()` and `submit()` handle a registered [interruption](#interruptions) that covers the element first, as a proxy action does, and try a click that something covered once more after handling one. Otherwise they raise Selenium's own error. With no interruption registered and `dismiss` off, they make no browser call besides the element's own; with `dismiss=True`, one more, to look for a popup. `ActionChains` actions, and the elements that `execute_script()` or `switch_to.active_element` return, are Selenium's own and get no such check.
 - A `HealingElement` passes `isinstance(el, WebElement)`, is equal to the element it wraps (and hashes the same), and works with `driver.execute_script(..., el)`, `ActionChains` and `expected_conditions`. One around a `FramedElement` needs `in_frame()` for those, as before (see [Selenium](#selenium-1)). Everything else is the element's own, and `el.native` is the element.
-- A missing element waits `timeout_ms` before it is healed, where Selenium raises at once unless you set an implicit wait. To check that an element is absent, use `driver.find_elements(...)`, which never waits.
-- When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action. The actions of the elements of the other `By` values and of `find_elements()` confirm and quarantine nothing. A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again. A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
+
+A `HealingElement`'s `click()`, `send_keys()`, `clear()` and `submit()` first handle a registered [interruption](#interruptions) that covers the element, as a proxy action does. After handling one, they try a click that something covered once more. Otherwise they raise Selenium's own error.
+
+- With no interruption registered and `dismiss` off, they make no browser call besides the element's own. With `dismiss=True`, they make one more, to look for a popup.
+- `ActionChains` actions, and the elements that `execute_script()` or `switch_to.active_element` return, are Selenium's own and get no such check.
+
+When an action fails in the browser on an element that `find_element()` looked up through `heal.locator()`, a heal made for it is quarantined, as for a proxy action.
+
+- The actions of the elements of the other `By` values and of `find_elements()` confirm and quarantine nothing.
+- A `StaleElementReferenceException` quarantines nothing either: the page re-rendered the element after it was found, which says nothing about the heal, and a new `find_element()` finds it again.
+- A heal whose actions went through is confirmed by the pytest plugin when the test passes, and `heal.confirm_all(False)` quarantines it.
 
 On a Selenium healer, `heal.page` is still the WebDriver.
 
@@ -458,11 +522,13 @@ The log line is `found 'newsletter' from its intent: //input[@name='news'] (Anth
 
 ## Checking what a read returns
 
-A heal passes the checks when the new element has the step's role and is the one visible match. For a read, that can still be the wrong element: after a redesign, a price selector can heal onto the rating next to the price, and a scraper saves 4.5 as the price. `expect_value=` says what a read must return:
+`expect_value=` says what a read must return, so a heal onto the wrong element can't hand your script the wrong value:
 
 ```python
 price = heal.locator("price", "#price", expect_value="money").inner_text()
 ```
+
+A heal passes the checks when the new element has the step's role and is the one visible match. For a read, that can still be the wrong element: after a redesign, a price selector can heal onto the rating next to the price, and a scraper saves 4.5 as the price.
 
 When the element was found through a selector a heal saved, in this run or an earlier one, mendwright checks the value the read returns:
 
@@ -477,7 +543,12 @@ When the element was found through a selector a heal saved, in this run or an ea
 
 A read through any other selector, such as the one in your code, is never checked: `expect_value=` only ever refuses a heal. A price your own selector reads as "Call for price" comes back as it is.
 
-The reads it checks are `inner_text()`, `text_content()`, `input_value()` and `get_attribute()` on Playwright, sync and async, and `text`, `get_attribute()` and `get_dom_attribute()` on Selenium. Other reads and the actions are as before. The elements of `heal.locator_all()` are never checked, since no list is found through a heal (see [Lists](#lists)).
+The reads it checks:
+
+- `inner_text()`, `text_content()`, `input_value()` and `get_attribute()` on Playwright, sync and async
+- `text`, `get_attribute()` and `get_dom_attribute()` on Selenium
+
+Other reads and the actions are as before. The elements of `heal.locator_all()` are never checked, since no list is found through a heal (see [Lists](#lists)).
 
 | `expect_value=` | Passes for |
 |---|---|
@@ -491,7 +562,17 @@ The reads it checks are `inner_text()`, `text_content()`, `input_value()` and `g
 | `re.compile(...)` | a value the pattern finds a match in, as `re.search()` does. Anchor it with `^` and `$` to match the whole value |
 | a callable | a value it returns something truthy for. It gets the value as a `str`, and one that raises refuses it |
 
-Numbers are read the way most locales write them. Commas, dots, spaces (non-breaking and narrow ones too) and apostrophes group the digits, in threes, or in India in twos before a last group of three (`1,29,999`). When a number has both `.` and `,`, the one that comes last is the decimal point, and a mark that comes more than once groups. A single `.` or `,` followed by exactly three digits, as in `1.299` or `1,299`, is read as a thousands separator, as in a price; `0,299`, `1234.567` and `1 299,500` have a decimal part. In an amount of a currency with three decimals (`KWD`, `BHD`, `OMR`, `JOD`, `TND`), that `.` is the decimal point, as those amounts are written: `KWD 1.250` is 1.250. That `,` could be either (`1,250 TND` is 1.250 in Tunisia and 1250 in English), so `parse_money()` gives `None` for it, though it passes `"money"`. The value is read in its compatibility form, so fullwidth digits and the digits of other scripts count, and spaces around it don't. A value of `None`, such as `get_attribute()` of an attribute the element doesn't have, passes no check, and a callable isn't called for it.
+A value of `None`, such as `get_attribute()` of an attribute the element doesn't have, passes no check, and a callable isn't called for it.
+
+<details><summary>Details: how numbers are read</summary>
+
+- Numbers are read the way most locales write them. Commas, dots, spaces (non-breaking and narrow ones too) and apostrophes group the digits, in threes, or in India in twos before a last group of three (`1,29,999`).
+- When a number has both `.` and `,`, the one that comes last is the decimal point, and a mark that comes more than once groups.
+- A single `.` or `,` followed by exactly three digits, as in `1.299` or `1,299`, is read as a thousands separator, as in a price. `0,299`, `1234.567` and `1 299,500` have a decimal part.
+- In an amount of a currency with three decimals (`KWD`, `BHD`, `OMR`, `JOD`, `TND`), that `.` is the decimal point, as those amounts are written: `KWD 1.250` is 1.250. That `,` could be either (`1,250 TND` is 1.250 in Tunisia and 1250 in English), so `parse_money()` gives `None` for it, though it passes `"money"`.
+- The value is read in its compatibility form, so fullwidth digits and the digits of other scripts count, and spaces around it don't.
+
+</details>
 
 `mendwright.values.parse_money()` and `parse_number()` read the value you got the same way, and give the amount as a `Decimal`, or `None`:
 
@@ -524,17 +605,33 @@ cards = heal.locator_all("cards", ".product-card")    # an ActionProxy for each 
 names = [card.native.locator("h3").inner_text() for card in cards]
 ```
 
-mendwright never uses a list that your own selectors don't match. With `nonempty=True`, it looks for a list whose selector broke and proposes the new selector to you (see [below](#lists-that-always-have-items-nonemptytrue)). An emptied list can't be told from a list whose selector broke: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text, and a heal there gives a loop that deletes the cart's rows the items saved for later. So such a lookup raises `AttentionRequired`, which names both possibilities, and a selector that broke in a redesign is fixed in your code.
+mendwright never uses a list that your own selectors don't match. An emptied list can't be told from a list whose selector broke, so such a lookup raises `AttentionRequired`, which names both possibilities. A selector that broke in a redesign is fixed in your code. With `nonempty=True`, mendwright looks for a list whose selector broke and proposes the new selector to you (see [below](#lists-that-always-have-items-nonemptytrue)).
+
+Why: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text. A heal there gives a loop that deletes the cart's rows the items saved for later.
 
 `heal.page.locator(selector).all()` and `heal.driver.find_elements()` behave as in 0.7.0: they give what the real call gives, and never wait, heal or save anything. A list that matches nothing is `[]` at once, so a loop that waits for toasts or a spinner to go away, or a check that a cart is empty, works as before.
 
-`heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)` gives an `ActionProxy` for each element the list matches, in page order. `selector`, `role` (the items' role), `timeout_ms` and `poll_ms` mean what they mean for `heal.locator()`. `nonempty=` takes `True` or `False` (anything else raises `TypeError`), and `nonempty=True` with `optional=True` raises `ValueError`, before anything touches the page. In `mendwright.aio`, `await heal.locator_all(...)` gives `AsyncActionProxy`s, and those errors raise at the call.
+`heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)` gives an `ActionProxy` for each element the list matches, in page order.
+
+- `selector`, `role` (the items' role), `timeout_ms` and `poll_ms` mean what they mean for `heal.locator()`.
+- `nonempty=` takes `True` or `False`. Anything else raises `TypeError`, and `nonempty=True` with `optional=True` raises `ValueError`, before anything touches the page.
+- In `mendwright.aio`, `await heal.locator_all(...)` gives `AsyncActionProxy`s, and those errors raise at the call.
 
 How a list is looked up:
 
-1. The key's selectors are tried in order, the one in your code first, then the others saved for the key, such as those of a seed file. The first that matches one element or more gives the list, as written. A list is looked for on the page, not inside an iframe. Heals saved under the key are skipped: the key can also be that of `heal.locator()`, of a `heal.page` shortcut (the selector) or of `heal.driver.find_element()` (`by=value`), and a heal of the first card is not a heal of the cards.
-2. Each time one matches two or more elements, mendwright records a list fingerprint, in one round trip, once per Healer and selector: the [fingerprints](#what-a-fingerprint-holds) of three of the items (the first, the middle and the last), the tags inside each of them and of their children (their shape), how many items there were, and their nearest common container (its tag, id, test id, aria-label, classes and role). It tells mendwright that the list had items. Without `role=`, the items' role is saved from the first item. The first lookup of a key saves its selector, its first success, its page and the list fingerprint in one write of `overrides.json`. A list of one element is not recorded: nothing repeats in it.
-3. When none matches and the key has a list fingerprint, mendwright waits up to `timeout_ms`, handles the registered [interruptions](#interruptions) the page shows, and raises `AttentionRequired`, logged as a WARNING too. Unless the call passes `nonempty=True`, it looks for no other list on the page and asks no model, even when one is configured, and saves nothing, so the next run raises again. A list that comes while it waits, such as cards that a slow API sends, is used as it is.
+1. The key's selectors are tried in order, the one in your code first, then the others saved for the key, such as those of a seed file. The first that matches one element or more gives the list, as written.
+   - A list is looked for on the page, not inside an iframe.
+   - Heals saved under the key are skipped. The key can also be that of `heal.locator()`, of a `heal.page` shortcut (the selector) or of `heal.driver.find_element()` (`by=value`), and a heal of the first card is not a heal of the cards.
+2. Each time one matches two or more elements, mendwright records a list fingerprint, in one round trip, once per Healer and selector. It tells mendwright that the list had items. It holds:
+   - the [fingerprints](#what-a-fingerprint-holds) of three of the items (the first, the middle and the last)
+   - the tags inside each of them and of their children (their shape)
+   - how many items there were
+   - their nearest common container (its tag, id, test id, aria-label, classes and role)
+
+   Without `role=`, the items' role is saved from the first item. The first lookup of a key saves its selector, its first success, its page and the list fingerprint in one write of `overrides.json`. A list of one element is not recorded: nothing repeats in it.
+3. When none matches and the key has a list fingerprint, mendwright waits up to `timeout_ms`, handles the registered [interruptions](#interruptions) the page shows, and raises `AttentionRequired`, logged as a WARNING too.
+   - Unless the call passes `nonempty=True`, it looks for no other list on the page and asks no model, even when one is configured. It saves nothing, so the next run raises again.
+   - A list that comes while it waits, such as cards that a slow API sends, is used as it is.
 4. When none matches and the key has no list fingerprint, the list is empty at once, as `Locator.all()` and `find_elements()` give it. So is a list passed `optional=True`.
 
 What a cart's lookup raises once every item of the cart moved to Saved for later, and once a redesign renamed its rows:
@@ -548,7 +645,14 @@ For a list that may be empty at that point, such as a cart after an order, pass 
 
 With `fingerprint=False`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1`, no list fingerprint is recorded, and a list lookup that matches nothing is empty at once, as `Locator.all()` and `find_elements()` give it, even for a list recorded in an earlier run.
 
-The elements' actions handle interruptions and popups as `heal.locator()`'s do, and confirm or quarantine nothing, and so does an element's `confirm()`: no list is found through a heal, and a heal of one element under the same key, such as of `page.inner_text(".card")` next to `heal.locator_all(".card", ".card")`, is not the element's. On Playwright, the first read of an element of `heal.locator_all()` handles interruptions too, once for the whole list (see [Interruptions](#interruptions)). The reads of the elements of `heal.page.locator(selector).all()` handle none. The reads of a list's elements are never checked against `mendwright.open(expect_values=...)`. With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s. List fingerprints are saved in `overrides.json` as `listFingerprint` (see [SECURITY.md](../SECURITY.md) for what they hold).
+The elements of a list:
+
+- Their actions handle interruptions and popups as `heal.locator()`'s do. They confirm or quarantine nothing, and neither does an element's `confirm()`: no list is found through a heal, and a heal of one element under the same key, such as of `page.inner_text(".card")` next to `heal.locator_all(".card", ".card")`, is not the element's.
+- On Playwright, the first read of an element of `heal.locator_all()` handles interruptions too, once for the whole list (see [Interruptions](#interruptions)). The reads of the elements of `heal.page.locator(selector).all()` handle none.
+- The reads of a list's elements are never checked against `mendwright.open(expect_values=...)`.
+- With `dismiss=True`, `heal.page.locator(selector).all()` gives `GuardedLocator`s.
+
+List fingerprints are saved in `overrides.json` as `listFingerprint` (see [SECURITY.md](../SECURITY.md) for what they hold).
 
 ### Lists that always have items (nonempty=True)
 
@@ -563,7 +667,15 @@ Don't pass it for a list that can be empty there. For that, pass `optional=True`
 
 Add it while the list still works. mendwright records where the list sits and its heading the next time the list matches in a call with `nonempty=True`, and keeps recording them for that key after that, in calls with and without it. A list recorded before that, by mendwright 0.8.0 or by calls without `nonempty=True`, can't be looked for, and its lookup says so.
 
-When none of the list's selectors matches, the lookup waits `timeout_ms` and handles interruptions, as any list lookup does, and also when mendwright has no list fingerprint for the key. If the list comes while it waits, it is used. Then mendwright looks for the list on the page: a group of 2 or more elements of the items' role that holds 2 of the 3 items it recorded, isn't under another heading or in another part of the page than the list was, and is visible on the live page. It never uses what it finds. It saves it in `overrides.json` as a proposed list heal, and raises `AttentionRequired`:
+When none of the list's selectors matches, the lookup waits `timeout_ms` and handles interruptions, as any list lookup does, and also when mendwright has no list fingerprint for the key. If the list comes while it waits, it is used.
+
+Then mendwright looks for the list on the page: a group of 2 or more elements of the items' role that:
+
+- holds 2 of the 3 items it recorded
+- isn't under another heading or in another part of the page than the list was
+- is visible on the live page
+
+It never uses what it finds. It saves it in `overrides.json` as a proposed list heal, and raises `AttentionRequired`:
 
 ```text
 No matching element for: cart (tried 1 candidate(s)).
@@ -574,7 +686,9 @@ The commands get `--store "PATH"` when the store is not the default one. A WARNI
 
 What mendwright never does: it never gives you, or acts on, a list it found, in that run or a later one, and not after you accept it either. `heal.locator_all()` gives only what your own selectors match, those in your code or a seed file. A selector mendwright found works only once it is in your code.
 
-Why: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text. Two of the test pages of `tests/test_lists_emptied.py` are the same for an emptied list and a redesign but for one class name (`done` or `task`) and a heading. No rule on the page's markup is right on both, and a list taken from the wrong one gives a loop that deletes the cart's rows the items saved for later. So a person decides, looking at the page. mendwright helps with one more rule: it refuses a group that its selector picks by a word for a state that the list didn't have, in a class, id, name or text: `completed`, `complete`, `done`, `finished`, `archived`, `read`, `seen`, `saved`, `removed`, `deleted`, `cancelled`, `canceled`, `expired`, `inactive`, `closed`, `resolved`, `past`, `empty`, `unavailable` or `soldout`. A list that was about a state itself, such as a "Completed" list or items with class `done`, keeps its word. This says what the words mean, and is no proof: a site whose class names say nothing gets no help from it.
+Why: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text. Two of the test pages of `tests/test_lists_emptied.py` are the same for an emptied list and a redesign but for one class name (`done` or `task`) and a heading. No rule on the page's markup is right on both, and a list taken from the wrong one gives a loop that deletes the cart's rows the items saved for later. So a person decides, looking at the page.
+
+mendwright helps with one more rule: it refuses a group that its selector picks by a word for a state that the list didn't have, in a class, id, name or text: `completed`, `complete`, `done`, `finished`, `archived`, `read`, `seen`, `saved`, `removed`, `deleted`, `cancelled`, `canceled`, `expired`, `inactive`, `closed`, `resolved`, `past`, `empty`, `unavailable` or `soldout`. A list that was about a state itself, such as a "Completed" list or items with class `done`, keeps its word. This says what the words mean, and is no proof: a site whose class names say nothing gets no help from it.
 
 To check and accept a proposal, run `mendwright lists` (see [mendwright lists](#mendwright-lists)). It shows where the list was when it was recorded and where the group it found is, the first items of both, and what is not the same:
 
@@ -594,7 +708,10 @@ cart  (div elements)  id 3f2a9c1d
   reject   mendwright lists reject cart 3f2a9c1d
 ```
 
-Read the `check` lines, and look at the page. If it is the list, `mendwright lists accept cart 3f2a9c1d` accepts it, by the id you looked at: the id changes whenever what `mendwright lists` shows changes, so a proposal that changed since is not accepted. Then `mendwright fix --apply` writes the new selector into your code, as it writes a heal (see [mendwright fix](#mendwright-fix)). If it isn't, `mendwright lists reject cart` quarantines it, and mendwright never proposes it, or another selector for the same elements, again.
+Read the `check` lines, and look at the page.
+
+- If it is the list, `mendwright lists accept cart 3f2a9c1d` accepts it, by the id you looked at. The id changes whenever what `mendwright lists` shows changes, so a proposal that changed since is not accepted. Then `mendwright fix --apply` writes the new selector into your code, as it writes a heal (see [mendwright fix](#mendwright-fix)).
+- If it isn't, `mendwright lists reject cart` quarantines it, and mendwright never proposes it, or another selector for the same elements, again.
 
 After you accept, the lookup still raises until the selector is in your code:
 
@@ -605,9 +722,16 @@ No matching element for: cart (tried 1 candidate(s)).
 
 When the key's selectors come from a seed file, `mendwright fix` can't write it, since it changes only your code: the lookup, `mendwright lists` and `mendwright report` say so, and say to put the new selector in the seed file in place of the old one. A seed file that holds the XPath of a list heal that waits takes it over, as your code does once `mendwright fix` wrote it.
 
-When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty=True`, a proposed list heal is no longer proposed (an INFO line), and an accepted one is quarantined, with a WARNING and a `heal.quarantine` event: the list was not broken, or the key is used on more than one page. A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it. `mendwright fix` writes an accepted list heal only over those selectors, and leaves the key alone, saying why, when your last run passed other selectors for it (another page's, or one you fixed by hand), or when one of its selectors matched after the list heal was found. So `mendwright fix` never writes another list's selector over a selector that works.
+When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty=True`, the list was not broken, or the key is used on more than one page. So:
 
-The selector it replaced matching one element is enough, since a list with one item is not empty: one element that keeps the old class elsewhere on a page, such as in a mini cart, quarantines a list heal you accepted too. mendwright can't tell it from the list, so it fails closed. From then on a lookup with `nonempty=True` refuses that group with `it is a list heal you rejected, or one mendwright quarantined`. If it is the list, change the selector in your code by hand; to have it proposed again instead, delete its row from `overrides.json` (see [Store and journal](#store-and-journal)).
+- a proposed list heal is no longer proposed (an INFO line)
+- an accepted one is quarantined, with a WARNING and a `heal.quarantine` event
+
+A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it.
+`mendwright fix` writes an accepted list heal only over those selectors. It leaves the key alone, saying why, when your last run passed other selectors for it (another page's, or one you fixed by hand), or when one of its selectors matched after the list heal was found. So `mendwright fix` never writes another list's selector over a selector that works.
+
+The selector it replaced matching one element is enough, since a list with one item is not empty. So one element that keeps the old class elsewhere on a page, such as in a mini cart, quarantines a list heal you accepted too. mendwright can't tell it from the list, so it fails closed.
+From then on a lookup with `nonempty=True` refuses that group with `it is a list heal you rejected, or one mendwright quarantined`. If it is the list, change the selector in your code by hand. To have it proposed again instead, delete its row from `overrides.json` (see [Store and journal](#store-and-journal)).
 
 What it refuses, each with its reason in the message:
 
