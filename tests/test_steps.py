@@ -1378,12 +1378,15 @@ def test_set_last_step_keeps_five_and_writes_only_when_the_set_changes(tmp_path)
     for name in ('a', 'b', 'a'):
         store.set_last_step('next', name)
     assert store.meta('next')['steps'] == ['a', 'b']
-    assert len(writes) == 2                                     # 'a' again changed the order only
+    # The first steps are written at once; 'b' waits for the key's next due write
+    # (SOFT_EVERY), and 'a' again changed the order only.
+    assert len(writes) == 1
     for name in 'cdefg':
         store.set_last_step('next', name)
     assert store.meta('next')['steps'] == ['g', 'f', 'e', 'd', 'c']
     store.set_last_step('next', '')
     store.set_last_step('next', None)
+    store.flush()
     assert load_store(None, path).meta('next')['steps'] == ['g', 'f', 'e', 'd', 'c']
 
 

@@ -615,6 +615,39 @@ def _no_mendwright_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_fleet_state():
+    """The process-wide tables of mendwright.fleet and mendwright.store: no test sees the
+    declines another test's model gave, or the soft writes it left waiting (its files are
+    temporary)."""
+    from mendwright import fleet, store
+    yield
+    fleet.DECLINES.clear()
+    store.SOFT.clear()
+
+
+class SoftClock:
+    """The clock of the writes that can wait (mendwright.store.SOFT): advance(seconds) moves
+    it on, so a test sees a soft change written when it is due without waiting for it."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def soft_clock(monkeypatch):
+    from mendwright import store
+    clock = SoftClock()
+    monkeypatch.setattr(store.SOFT, 'clock', clock)
+    return clock
+
+
+@pytest.fixture(autouse=True)
 def _fresh_rate_limiters():
     """open() shares one rate limiter per store file for the whole process. Tests must
     not spend each other's budget."""

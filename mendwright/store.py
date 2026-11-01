@@ -53,7 +53,7 @@ from pathlib import Path
 from . import getby
 from .fingerprint import valid as _valid_fingerprint
 from .flow import page_url
-from .lists import valid as _valid_list_fingerprint
+from .lists import placed as _placed_list, valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
 from .shadow import saved_hosts, text_hosts
@@ -510,6 +510,237 @@ def _pages(value):
     return []
 
 
+# --- writes that can wait -------------------------------------------------------------------
+#
+# A lookup changes the store in small ways that need not reach the file at once: a
+# candidate's lastSucceededAt (the order candidates are tried in, and the first success
+# mendwright report shows), the pages, steps and address a key was found on, and its
+# fingerprints. With many workers on one file, writing each of them at once rewrote the file
+# for every worker (and with dynamic text in an element, on every lookup). What the file does
+# not have yet is still written at once: a first success (unless another worker recorded one
+# already: the store looks at the file first), a key's first pages, steps and address, its
+# first fingerprint. Changes to what it has (the order of the last successes, a new page in
+# the list, a new fingerprint) are "soft": written at most every SOFT_EVERY seconds per key per
+# process, the first of a key in a process at once, with a write of the store as before; a
+# later one stays in the store's memory and goes with the store's next write (a heal, a
+# quarantine, a soft change that is due). Each is also kept in a small table the whole
+# process shares (SOFT): when the process exits (atexit, and multiprocessing's exit hook,
+# which runs where atexit does not), what a store never wrote, because it was dropped first,
+# is written there. That flush edits
+# the file in place under its lock with the merge rules of a write, and writes nothing when the
+# file already holds the change: the first success another worker recorded, a page list it
+# already has. Heals, quarantines, roles, destructive flags, code selectors, list heals and
+# shadow hosts are written at once, as before.
+
+# Seconds between two writes of a key's soft changes by one process.
+SOFT_EVERY = 300.0
+# The metadata a soft change carries (the rest of a key's metadata is written at once).
+SOFT_META = ('lastPage', 'pages', 'steps', 'lastUrl', 'fingerprint', 'listFingerprint')
+
+
+def _changes_order(rows, row, when):
+    """True when giving row lastSucceededAt=when moves it up among the active rows: another
+    active row succeeded at or after row's old time and before when."""
+    old = row.get('lastSucceededAt') or ''
+    for other in rows:
+        if other is row or other.get('status', 'active') != 'active':
+            continue
+        at = other.get('lastSucceededAt') or ''
+        if old <= at < when:
+            return True
+    return False
+
+
+def _apply_soft(data, pending):
+    """Apply soft changes ({key: {'rows': {xpath: lastSucceededAt}, 'meta': {field: value}}})
+    to the parsed override file data, in place, with the merge rules of a write. True when the
+    file must be written: a first success the file does not have, a success that changes the
+    order, pages or steps it does not list, a new fingerprint, a first address. A new order of
+    known pages, a newer success of the row already on top and a new address are written only
+    with such a change, as a store writes them with its next write."""
+    selectors = data.setdefault('selectors', {})
+    changed, carried = False, []
+    for key, delta in pending.items():
+        entry = selectors.get(key)
+        meta = delta.get('meta') or {}
+        if not isinstance(entry, dict):
+            if not meta:
+                continue        # its rows are not in the file (a seed row): nothing to do
+            entry = selectors[key] = {'candidates': []}
+        rows = [c for c in entry.get('candidates') or ()
+                if isinstance(c, dict) and isinstance(c.get('xpath'), str)]
+        for xpath, when in (delta.get('rows') or {}).items():
+            row = next((c for c in rows if c['xpath'] == xpath), None)
+            if row is None or not isinstance(when, str) or not when:
+                continue
+            old = row.get('lastSucceededAt')
+            if not old:
+                row['lastSucceededAt'] = when       # a first success nobody recorded
+                changed = True
+            elif when > old:
+                if _changes_order(rows, row, when):
+                    row['lastSucceededAt'] = when
+                    changed = True
+                else:
+                    carried.append((row, 'lastSucceededAt', when))
+        for field, cap in (('pages', MAX_PAGES), ('steps', MAX_STEPS)):
+            if field not in meta:
+                continue
+            theirs = _pages(entry.get(field))
+            merged = list(dict.fromkeys(_pages(meta[field]) + theirs))[:cap]
+            if set(merged) != set(theirs):
+                entry[field] = merged
+                changed = True
+            elif merged != theirs:
+                carried.append((entry, field, merged))
+        for field in ('fingerprint', 'listFingerprint'):
+            if field in meta and entry.get(field) != meta[field]:
+                entry[field] = copy.deepcopy(meta[field])
+                changed = True
+        for field in ('lastUrl', 'lastPage'):
+            if field not in meta or entry.get(field) == meta[field]:
+                continue
+            if not entry.get(field):
+                entry[field] = meta[field]
+                changed = True
+            else:
+                carried.append((entry, field, meta[field]))
+    if changed:
+        for target, field, value in carried:
+            target[field] = value
+    return changed
+
+
+class SoftWrites:
+    """The soft changes of every store of this process that wait to be written (see the
+    comment above SOFT_EVERY), per store file and key: only the changed rows' times and the
+    key's soft metadata, never a store, so a store can be dropped while its changes wait."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending = {}          # path -> {key: {'rows': {...}, 'meta': {...}}}
+        self._flushed = {}          # (path, key) -> clock() of its last flush
+        self._failed = set()        # paths whose flush failed (logged once)
+        self._hooked = False
+        self.clock = time.monotonic
+
+    def record(self, path, key, rows=None, meta=None):
+        """Keep a soft change of key in the file at path: rows {xpath: lastSucceededAt} (the
+        newest wins) and meta (pages and steps join, the newest of the rest wins)."""
+        with self._lock:
+            entry = self._pending.setdefault(path, {}).setdefault(key, {'rows': {}, 'meta': {}})
+            for xpath, when in (rows or {}).items():
+                if isinstance(when, str) and when > (entry['rows'].get(xpath) or ''):
+                    entry['rows'][xpath] = when
+            for field, value in (meta or {}).items():
+                if field in ('pages', 'steps'):
+                    cap = MAX_PAGES if field == 'pages' else MAX_STEPS
+                    value = list(dict.fromkeys(_pages(value) + _pages(entry['meta'].get(field))))
+                    entry['meta'][field] = value[:cap]
+                else:
+                    entry['meta'][field] = copy.deepcopy(value)
+            if not self._hooked:
+                self._hooked = True
+                self._hook_exit()
+
+    def due(self, path, keys):
+        """True when one of keys of the file at path was not written by this process in the
+        last SOFT_EVERY seconds."""
+        now = self.clock()
+        with self._lock:
+            return any(now - self._flushed[(path, k)] >= SOFT_EVERY
+                       if (path, k) in self._flushed else True for k in keys)
+
+    def written(self, path, keys):
+        """Note that the soft changes of keys of the file at path were just written (by a
+        store's own write): the next ones wait SOFT_EVERY seconds."""
+        now = self.clock()
+        with self._lock:
+            for key in keys:
+                self._flushed[(path, key)] = now
+
+    def waiting(self, path=None):
+        """{path: [keys]} of the soft changes that wait, or the keys of one path."""
+        with self._lock:
+            if path is not None:
+                return sorted(self._pending.get(path, {}))
+            return {p: sorted(keys) for p, keys in self._pending.items()}
+
+    def flush(self, path, *, timeout=None, stale_after=None, sleep=time.sleep):
+        """Write the soft changes that wait for the file at path, under its lock, with the merge
+        rules of a write (see _apply_soft). A file that cannot be read or locked keeps them
+        waiting (one WARNING), and is never replaced by them alone. True when nothing waits
+        any more."""
+        with self._lock:
+            pending = self._pending.pop(path, None)
+            if not pending:
+                return True
+            now = self.clock()
+            for key in pending:
+                self._flushed[(path, key)] = now
+        if not os.path.exists(path):
+            return True     # the store file is gone: soft changes alone never make one
+        try:
+            with _locked(path, timeout=SelectorStore.lock_timeout if timeout is None else timeout,
+                         stale_after=(SelectorStore.lock_stale_after if stale_after is None
+                                      else stale_after), sleep=sleep):
+                data, _native = _read(path, sleep=sleep)
+                if _apply_soft(data, pending):
+                    _atomic_write(path, json.dumps(data, separators=(',', ':')), sleep)
+        except Exception as exc:
+            for key, delta in pending.items():
+                self.record(path, key, delta['rows'], delta['meta'])
+            if path not in self._failed:
+                self._failed.add(path)
+                logger.warning('mendwright could not save the pages, fingerprints and last '
+                               'successes of %d key(s) to %s yet (%s); they wait in memory and '
+                               'are saved later, or when the process exits.', len(pending),
+                               path, type(exc).__name__ + (': ' + str(exc) if str(exc) else ''))
+            return False
+        self._failed.discard(path)
+        return True
+
+    def clear(self):
+        """Forget every soft change that waits and when each key was written: for tests,
+        whose store files are temporary."""
+        with self._lock:
+            self._pending.clear()
+            self._flushed.clear()
+            self._failed.clear()
+
+    def flush_all(self):
+        """flush() every file with soft changes that wait. Runs when the process exits."""
+        with self._lock:
+            paths = list(self._pending)
+        for path in paths:
+            try:
+                self.flush(path)
+            except Exception:
+                pass
+
+    def _hook_exit(self):
+        """Flush at exit: atexit, and multiprocessing's own exit hook, which a child process
+        of multiprocessing runs and atexit does not."""
+        import atexit
+        atexit.register(self.flush_all)
+        try:
+            from multiprocessing import util
+            util.Finalize(None, self.flush_all, exitpriority=20)
+        except Exception:
+            pass
+
+
+# The soft changes of every store of this process.
+SOFT = SoftWrites()
+
+
+def flush_all():
+    """Write every soft change of this process that waits (see SOFT_EVERY) now. It also runs
+    when the process exits; call it before os._exit() or when a long-lived process should save
+    its stores' pages, fingerprints and last successes at a point of your choosing."""
+    SOFT.flush_all()
+
+
 # The statuses of a list heal that waits: for a person to check it, or for mendwright fix.
 LIST_WAITING = ('proposed', 'accepted')
 # How many proposed and accepted list heals a key keeps: an accepted one, then the newest.
@@ -567,6 +798,8 @@ class SelectorStore:
         # Held while a refresh or a write merges the file into memory: two threads may share
         # a store passed to open(store=...).
         self._mutex = threading.RLock()
+        # Keys whose soft changes (see SOFT_EVERY) wait for this store's next write.
+        self._soft_waiting = set()
         self._override_path = Path(_expand(override_path))
         # A key written as a get_by_* call in another spelling marks the call's key too. One
         # written on an object, such as page.get_by_role(...), does not, and is logged.
@@ -841,10 +1074,20 @@ class SelectorStore:
         if action is not None:
             e['action'] = action
         saved = self._meta.get(key, {})
-        if any(saved.get(f) != v for f, v in changed.items()) or any(f in saved for f in cleared):
+        diff = ({f for f, v in changed.items() if saved.get(f) != v}
+                | {f for f in cleared if f in saved})
+        if diff:
             self._meta[key] = {f: v for f, v in dict(saved, **changed).items()
                                if f not in cleared}
-            self._persist_override()
+            if diff <= {'fingerprint', 'listFingerprint'}:
+                # A new fingerprint can wait (see SOFT_EVERY); a first one cannot, and neither
+                # can a list fingerprint that now says where the list sits.
+                first = any(f not in saved for f in diff) or (
+                    'listFingerprint' in diff and not _placed_list(saved.get('listFingerprint'))
+                    and _placed_list(changed['listFingerprint']))
+                self._persist_soft(key, at_once=first)
+            else:
+                self._persist_override()
 
     def set_last_page(self, key, path):
         """Record that key's element was just found on the page ``path`` (a normalized
@@ -864,7 +1107,7 @@ class SelectorStore:
         if saved.get('lastPage') != path or saved.get('pages') != pages:
             self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
             if set(saved.get('pages') or ()) != set(pages):
-                self._persist_override()
+                self._persist_soft(key, at_once=not saved.get('pages'))
 
     def set_last_url(self, key, url):
         """Record the address of the page key's element was just found on: ``url`` as
@@ -880,7 +1123,7 @@ class SelectorStore:
         if saved.get('lastUrl') != url:
             self._meta[key] = dict(saved, lastUrl=url)
             if 'lastUrl' not in saved:
-                self._persist_override()
+                self._persist_soft(key, at_once=True)
 
     def last_url(self, key):
         """The address key's element was last found on (see set_last_url), or None. It is
@@ -912,6 +1155,7 @@ class SelectorStore:
         clone._key_versions = dict(getattr(self, '_key_versions', {}))
         clone._looked = {}
         clone._mutex = threading.RLock()
+        clone._soft_waiting = set()
         clone._batch = threading.local()
         clone._dirty = set()
         clone._last_success = {}
@@ -932,7 +1176,7 @@ class SelectorStore:
         if saved.get('steps') != steps:
             self._meta[key] = dict(saved, steps=list(steps))
             if set(saved.get('steps') or ()) != set(steps):
-                self._persist_override()
+                self._persist_soft(key, at_once=not saved.get('steps'))
 
     def guess_role(self, key, role, *, replace=False):
         """Use role as key's expectedRole for now, without saving it. Only replaces an
@@ -988,6 +1232,12 @@ class SelectorStore:
         c = self._find(key, xpath)
         if c is None:
             return False
+        if c.get('lastSucceededAt') is None and c.get('source') != 'seed':
+            # A first success is written at once, unless another worker already recorded
+            # one: then the file has it, and this one waits like any other (SOFT_EVERY).
+            self.refresh(key)
+            if c.get('status', 'active') != 'active':
+                return False        # another worker quarantined it meanwhile
         # A change in the recency order is worth a write, and so is the first success of a
         # code or heal candidate (else mendwright report says 'last success: never' for a
         # selector that matches on every run). Seed rows are left out: writing one pins it
@@ -1003,7 +1253,11 @@ class SelectorStore:
         c['status'] = 'active'
         self._dirty.add((key, xpath))
         if not was_top or first:
-            self._persist_override()
+            # A new order of the last successes can wait (see SOFT_EVERY); a first one cannot.
+            self._persist_soft(key, {xpath: c['lastSucceededAt']}, at_once=first)
+        elif (key in self._soft_waiting and not getattr(self._batch, 'depth', 0)
+              and SOFT.due(self._soft_path(), (key,))):
+            self._persist_override()      # what waited for this key is due now
         return not was_top
 
     def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
@@ -1215,9 +1469,49 @@ class SelectorStore:
             yield self
         finally:
             state.depth -= 1
-            if not state.depth and getattr(state, 'wanted', False):
-                state.wanted = False
-                self._persist_override()
+            if not state.depth:
+                soft, state.soft = getattr(state, 'soft', set()), set()
+                if getattr(state, 'wanted', False):
+                    state.wanted = False
+                    self._persist_override()
+                elif soft and SOFT.due(self._soft_path(), soft):
+                    self._persist_override()
+
+    def _soft_path(self):
+        """The path SOFT keeps this store's soft changes under: the file's absolute path."""
+        return os.path.abspath(str(self._override_path))
+
+    def _persist_soft(self, key, rows=None, *, at_once=False):
+        """A change of key's last successes, pages, steps, address or fingerprints (see
+        SOFT_EVERY). at_once=True (what the file does not have yet) writes this store now, or at
+        the end of the batch, as any change. Otherwise the store is written when the key's soft
+        changes are due (the first in this process: at once), and else the change waits in
+        memory for the store's next write. rows {xpath: lastSucceededAt} and the key's soft
+        metadata also go to SOFT, which writes them at exit if this store is gone before it
+        wrote them."""
+        if self._read_only:
+            return
+        meta = {f: v for f, v in self._meta.get(key, {}).items() if f in SOFT_META}
+        path = self._soft_path()
+        SOFT.record(path, key, rows, meta)
+        self._soft_waiting.add(key)
+        state = self._batch
+        if getattr(state, 'depth', 0):
+            if at_once:
+                state.wanted = True
+            state.soft = getattr(state, 'soft', set()) | {key}
+            return
+        if at_once or SOFT.due(path, (key,)):
+            self._persist_override()
+
+    def flush(self):
+        """Write now the soft changes that wait (see SOFT_EVERY): this store's own, and those
+        other stores of this process left for its file. True when nothing waits any more."""
+        if self._read_only:
+            return True
+        if self._soft_waiting:
+            self._persist_override()
+        return SOFT.flush(self._soft_path(), sleep=self._sleep)
 
     def _persist_override(self):
         if self._read_only:
@@ -1238,6 +1532,10 @@ class SelectorStore:
                 # Every key in memory is the file now (the lock keeps other writers out).
                 self._version = stat_version(self._override_path)
                 self._key_versions = {}
+            # The soft changes that waited went with this write.
+            if self._soft_waiting:
+                SOFT.written(self._soft_path(), self._soft_waiting)
+                self._soft_waiting = set()
         except Exception as exc:
             self._persist_failed(exc)
 
