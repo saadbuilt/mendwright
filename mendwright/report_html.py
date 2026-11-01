@@ -169,6 +169,9 @@ def _candidate(c, seeded=False):
     skind = {'heal': 'info', 'code': 'plain', 'seed': 'plain'}.get(source, 'plain')
     frame = ('<div class="sub">inside frame ' + _code(c['frame']) + '</div>'
              if c.get('frame') else '')
+    if c.get('shadow'):
+        from .shadow import place_text
+        frame += '<div class="sub">inside ' + h(place_text(c['shadow'])) + '</div>'
     if c.get('css'):
         frame += '<div class="sub">as CSS ' + _code(c['css']) + '</div>'
     if list_note(c, seeded):

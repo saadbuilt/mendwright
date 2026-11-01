@@ -1540,6 +1540,10 @@ def test_a_popup_that_comes_back_each_time_stops_the_step(side, tmp_path, caplog
         side.step('go', '#go', 'click')
 
     assert str(caught.value) == dismiss_loop_message('go', _nl(), 3)
+    # One flow.stop before the raise: the code and the step, none of the popup's text.
+    assert [e for e in _events(tmp_path) if e['event'] == 'flow.stop'] == [
+        {'event': 'flow.stop', 'key': DISMISS_KEY, 'code': 'popup_loop', 'before': 'go'}]
+    assert _events(tmp_path)[-1]['event'] == 'flow.stop'
     assert str(caught.value).startswith(
         "mendwright: 3 interruptions and popups were handled for 'go' and a popup is still in "
         'the way: ' + _nl() + '. It comes back each time it is dismissed, so mendwright '

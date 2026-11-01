@@ -94,7 +94,7 @@ def test_help_lists_the_commands(capsys):
     assert cli.main(["--help"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("usage: mendwright ")
-    for command in ("demo", "doctor", "report", "fix"):
+    for command in ("demo", "doctor", "report", "fix", "notify"):
         assert command in out
 
 
@@ -108,7 +108,7 @@ def test_unknown_command_is_a_usage_error(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix"])
+@pytest.mark.parametrize("command", ["demo", "doctor", "report", "fix", "notify"])
 def test_each_command_has_help(capsys, command):
     assert cli.main([command, "--help"]) == 0
     assert capsys.readouterr().out.startswith("usage: mendwright " + command)
@@ -637,6 +637,58 @@ def test_doctor_never_prints_secrets(capsys, monkeypatch):
     assert "MENDWRIGHT_KEY=(set, value hidden)" in out
     assert ("provider variables set: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MENDWRIGHT_GATEWAY, "
             "MENDWRIGHT_KEY (values not shown)") in out
+
+
+def test_doctor_never_shows_the_webhook_url_past_its_host(capsys, monkeypatch):
+    monkeypatch.setenv("MENDWRIGHT_WEBHOOK_URL",
+                       "https://hooks.slack.com/services/T0/B0/SECRET-path?token=SECRET-q")
+    monkeypatch.setenv("MENDWRIGHT_TIMEOUT_MS", "x https://hooks.slack.com/services/T0/B0/"
+                       "SECRET-path?token=SECRET-q")
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert "SECRET" not in out
+    assert "MENDWRIGHT_WEBHOOK_URL=https://hooks.slack.com" in out
+
+
+@pytest.mark.parametrize("value, shown", [
+    # A token pasted without the rest of the URL is never read as a host.
+    ("Xk9TokenOnlyAbCdEf", "(set, not a URL mendwright notify takes: it does not start with "
+                           "https://)"),
+    ("T0/B0/Xk9TokenOnlyAbCdEf", "(set, not a URL mendwright notify takes: it does not start "
+                                 "with https://)"),
+    ("hooks.slack.com/services/T0/B0/Xk9TokenOnlyAbCdEf",
+     "(set, not a URL mendwright notify takes: it does not start with https://)"),
+    ("http://hooks.example/Xk9TokenOnlyAbCdEf",
+     "(set, not a URL mendwright notify takes: it does not start with https://)"),
+    ("https://Xk9TokenOnlyAbCdEf", "https://***"),
+    (" https://hooks.example/Xk9TokenOnlyAbCdEf\n", "https://hooks.example"),
+])
+def test_doctor_shows_a_webhook_url_only_as_mendwright_notify_names_it(capsys, monkeypatch,
+                                                                     value, shown):
+    monkeypatch.setenv("MENDWRIGHT_WEBHOOK_URL", value)
+    assert cli.main(["doctor"]) == 0
+    assert cli.main(["doctor", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert "xk9tokenonlyabcdef" not in out.lower()
+    assert "MENDWRIGHT_WEBHOOK_URL=" + shown + "\n" in out
+    assert json.dumps(shown) in out
+
+
+def test_doctor_shows_the_auth_header_and_masks_a_secret_pasted_into_it(capsys, monkeypatch):
+    # The header's name is safe to print, although the variable's name holds AUTH.
+    monkeypatch.setenv("MENDWRIGHT_GATEWAY", "https://gw.example.test/heal")
+    monkeypatch.setenv("MENDWRIGHT_KEY", "mw-SECRET-download-key")
+    monkeypatch.setenv("MENDWRIGHT_AUTH_HEADER", "X-Team-Key")
+    assert cli.main(["doctor"]) == 0
+    assert "  MENDWRIGHT_AUTH_HEADER=X-Team-Key" in capsys.readouterr().out.splitlines()
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["env"]["MENDWRIGHT_AUTH_HEADER"] == "X-Team-Key"
+    # The key pasted into it stays hidden.
+    monkeypatch.setenv("MENDWRIGHT_AUTH_HEADER", "mw-SECRET-download-key")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "SECRET" not in out and "  MENDWRIGHT_AUTH_HEADER=***" in out.splitlines()
 
 
 def test_doctor_scrubs_secrets_from_a_provider_error(capsys, monkeypatch):

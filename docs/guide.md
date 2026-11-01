@@ -17,6 +17,7 @@ Contents:
 - [Async Playwright](#async-playwright)
 - [Selenium](#selenium)
 - [Iframes](#iframes)
+- [Shadow DOM](#shadow-dom)
 - [Layout changes](#layout-changes)
 - [Flow changes](#flow-changes)
 - [Selectors](#selectors)
@@ -91,7 +92,7 @@ Other `Healer` members:
 - `heal.present(key)`: True if a stored selector matches one element at the moment of the call. It doesn't wait or heal.
 - `heal.locator_all(key, selector=None, *, role=None, timeout_ms=None, poll_ms=200, optional=False, nonempty=False)`: the elements of a list, such as the cards of a product grid. It gives only what your own selectors match. With `nonempty=True`, a list whose selectors match nothing is looked for and proposed to you. See [Lists](#lists).
 - `heal.page` and `heal.driver`: the page or driver to use in place of yours, so steps heal without changing them. See [No changes per step](#no-changes-per-step).
-- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, or `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)).
+- `heal.heals`: the heals this Healer applied, as `HealEvent(key, old, new, confirmed, source)`. `source` is `"fingerprint"` (no model call), `"model"`, `"intent"` for a key that had no selector and was found from its `intent=`, `"frame"` for a key whose own selector matched only inside an iframe (see [Iframes](#iframes)), or `"shadow"` for one whose own selector matched only inside a shadow root (see [Shadow DOM](#shadow-dom)).
 - `heal.pending()`: `{key: xpath}` for heals that aren't confirmed yet.
 - `heal.confirm_all(True)` or `heal.confirm_all(False)`: confirm or quarantine every pending heal.
 
@@ -141,6 +142,8 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_LOCAL_MIN_CONFIDENCE` | The least probability a pick of the local model needs to be used, from 0 to 1 (default 0.8, 0 turns the check off) |
 | `MENDWRIGHT_KEY` | The client key the gateway checks |
 | `MENDWRIGHT_AUTH_HEADER` | The header that carries it, `X-Heal-Key` by default |
+| `MENDWRIGHT_RUN_ID` | The run id every journal event gets in `run`, for [`mendwright notify`](#mendwright-notify): 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-`, starting with a letter or digit. On GitHub Actions it defaults to `gh-<run id>.<attempt>`. Any other value is ignored, with one WARNING from `open()` |
+| `MENDWRIGHT_WEBHOOK_URL` | The webhook [`mendwright notify`](#mendwright-notify) posts to: `https://`, or `http://` on `localhost`. Never printed |
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
 
 Flags take `1`, `true`, `yes` or `on`, and `0`, `false`, `no`, `off` or empty.
@@ -160,6 +163,7 @@ Each time a key's selector matches, it saves a fingerprint of the element in `ov
 
 It never reads an input's value.
 It is read in one round trip after the selector matches, once per key and selector per Healer, and the store file is written only when the fingerprint changed.
+The same read says where the element is: the shadow hosts around it, when it is inside an open shadow root (see [Shadow DOM](#shadow-dom)).
 It isn't recorded for a key marked destructive, a skipped step, or a heal made in this run that isn't confirmed yet. A match inside an iframe is read inside the iframe.
 In a later run it is refreshed through whichever selector matches, so after a heal it describes the healed element, even one that was never confirmed. Check unconfirmed heals with `mendwright report`.
 
@@ -419,7 +423,7 @@ On a page of 2,000 elements, `heal.page.get_by_role("button", name="Continue").c
 
 ### Limits
 
-- A call whose element is inside a shadow root isn't healed once renamed: the fingerprint tier scores the captured HTML, and `page.content()` leaves shadow trees out.
+- A call whose element is inside an open shadow root heals only inside that shadow root, by the rules of [Shadow DOM](#shadow-dom).
 - A call with no fingerprint in the store isn't healed (see above).
 - `page.set_default_timeout()` isn't read: a missing call waits `timeout_ms`.
 - `get_by_test_id()` uses the test id attribute set with `playwright.selectors.set_test_id_attribute()`, and the key doesn't say which one.
@@ -983,6 +987,99 @@ On Selenium, switch into the frame each time before you use that Healer.
 
 The real-browser tests `test_a_selector_that_matches_only_inside_an_iframe_is_followed_there`, `test_a_key_last_found_in_an_iframe_heals_inside_it` and `test_the_iframe_workaround` cover these on every engine, including that the captured HTML is the iframe's.
 
+## Shadow DOM
+
+mendwright works with elements inside open shadow roots, at any depth, on Playwright (sync and async) and Selenium.
+XPath doesn't reach into a shadow root on either library, and neither `page.content()` nor Selenium's `page_source` holds what one contains.
+So mendwright handles an element inside a shadow root by its place, as it handles one inside an iframe.
+
+Closed shadow roots are out of reach: the browser gives a script no handle on one, so mendwright never enters one to follow or heal a key. patchright's CSS finds elements inside closed shadow roots too; mendwright records where such an element is, and refuses to heal it.
+
+### Where the element is
+
+Each time a key's selector matches, the fingerprint read also reads the shadow hosts around the element, outermost first, and saves them as the key's `shadowHosts` in `overrides.json`.
+Each host is saved as a CSS selector that matches it and nothing else in the document or shadow root it sits in:
+
+- its tag with a test id, an id or a name that no other element of its tag there has, in that order, such as `my-app[id="root"]`. A value that looks generated is skipped.
+- else its tag alone, for a custom element (a tag with a `-`) that is the only one of its tag there, such as `settings-panel`.
+- else `null`: nothing tells the host apart, and the key is never healed.
+
+On Playwright, a CSS selector in your code finds an element inside an open shadow root by itself, because Playwright's CSS pierces them. When the element is found on the page itself, `shadowHosts` is removed.
+With the fingerprint tier off, nothing is read after a match, so mendwright doesn't know an element was inside a shadow root, and a model heal looks for it on the page, as for any key it has no record of.
+
+### When the selector breaks
+
+A key whose element was last found inside a shadow root heals only inside that shadow root:
+
+- mendwright enters it through the saved hosts. Each must match exactly one element in the document or shadow root before it, and that element must have an open shadow root. When one doesn't (the host is gone, there are two, or its shadow root is closed now), the heal is refused. It never falls back to the page.
+- The fingerprint tier and the model get that shadow root's HTML and the interactive elements in it, and nothing from the page around it. The HTML is what the shadow root holds: not the host, not the light DOM slotted into it, not the shadow roots inside it.
+- The XPath they find is checked in that HTML as any heal is: one match of the key's role, not quarantined there.
+- XPath can't run inside a shadow root, so mendwright then builds a CSS selector for the same element, from a test id, an id, other attributes or class names (see [Selectors](#selectors)). An element that only its text tells apart has none, and the heal is refused.
+- The CSS goes through the live check inside the shadow root: one element there, with the key's role, visible.
+
+The heal is saved as the Playwright selector chain of the hosts and the CSS, with the hosts as its `shadowHosts`:
+
+```text
+mendwright: healed 'save' inside the shadow root of my-app[id="root"]: #save -> my-app[id="root"] >> [data-testid="save"] (fingerprint, 0.0s)
+```
+
+A refusal says why, for example:
+
+```text
+No matching element for: save (tried 1 candidate(s)).
+  -> 'save' was last found inside the shadow root of my-app[id="root"], and mendwright cannot enter that shadow root now: one of its hosts (my-app[id="root"]) is not on the page, matches more than one element, or has a closed shadow root. mendwright heals the key only inside that shadow root, never on the page outside it, so it did not heal it. Fix the selector in your code.
+```
+
+### How a heal inside a shadow root runs
+
+mendwright looks it up strictly, through the hosts as above, and its CSS counts only what matches inside that shadow root: never in the host's light DOM, a shadow root inside it, or another host with the same tag.
+
+- On Selenium, one `execute_script()` finds the hosts and runs `querySelectorAll()` in the shadow root. The `WebElement` it returns works as any other, also after the call.
+- On Playwright, `proxy.native` is the chain's `Locator`, whose CSS pierces, and Playwright looks it up again for each action and read. When mendwright looks the key up, it checks that every element the `Locator` matches is in that shadow root; when one isn't, the selector matches nothing. Right before each action and each read of the proxy (`inner_text()`, `is_visible()` and the other reads that look at the page, and each element of `heal.locator_all()`), it checks again that the `Locator` matches one element and that it is in that shadow root, waiting for that up to the step's timeout. When the page changed after the lookup and it never is, the action or read doesn't run: it raises `AttentionRequired`, and the heal stays as it was. When the `Locator` matches nothing at all, inside the shadow root or outside it, as after a Close button's click removed its dialog, `is_visible()` and `is_hidden()` don't wait: they answer `False` and `True` at once, as Playwright's do and as they do for a key on the page, so `click(expect=lambda: el.is_hidden())` confirms the heal. A match outside the shadow root, or several matches, still raises. What you run on `proxy.native` yourself, such as `expect(proxy.native)`, isn't checked, and neither is the moment inside an action when Playwright looks the `Locator` up itself.
+
+A driver of your own runs none of these unless it has `shadow_html()` and takes the `ShadowHost` steps of a frame chain (see [CONTRIBUTING.md](../CONTRIBUTING.md)). On any other driver such a heal can't run, as a Playwright engine selector can't on Selenium, and no key last found inside a shadow root is healed.
+
+The text of the heal is the chain so that a mendwright that knows nothing of `shadowHosts` (0.9.0 and before) runs it as Playwright does, inside the host, and refuses it on Selenium, instead of running the bare CSS on the whole page.
+
+A 0.9.0 process that writes the store, for any key, such as a branch still on 0.9.0 that restores the same CI cache, drops every `shadowHosts` in it: each key's and each heal's.
+mendwright reads a heal's hosts back from its chain when it reads the store, since 0.9.0 never saves a heal whose text is a chain of shadow hosts and a CSS selector, so such a heal still runs, and its key still heals, only inside its shadow root, and `mendwright fix` still writes the chain.
+The key's own `shadowHosts` can't be read back. A key whose element a selector in your code found inside a shadow root (on Playwright, whose CSS pierces) and that has no heal there heals on the page after that, as 0.9.0 heals it, until a 0.10.0 run finds its element again and saves where it is.
+Keep every process that writes a shared store on 0.10.0.
+
+### A selector that matches only inside a shadow root
+
+When none of a key's selectors matches anything on the page or in an iframe, and one of them matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call.
+A CSS selector is looked up there as it is. An XPath is evaluated in each shadow root's HTML, and its element is looked up through a CSS form of it.
+It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so strict mode fails on it and the canary checks it.
+
+It does this only for a key that mendwright has no record of, or one last found in that same shadow root.
+A key last found on the page, in an iframe or in another shadow root heals where it was last found, as any key does (see [When the selector breaks](#when-the-selector-breaks)), and so does a key one of whose selectors still matches something on the page, such as two elements or a hidden one.
+
+Playwright's CSS reaches into open shadow roots by itself, so there only an XPath is followed: what a CSS selector matches inside a shadow root, it matches on the page too. On Selenium, whose CSS doesn't, it is how an element inside a shadow root is found at all: `heal.locator("save", "#save")` and `heal.driver.find_element(By.CSS_SELECTOR, "#save")` both find it.
+
+mendwright does not follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard=` blocks heals, when the key is marked destructive, when the selector matches in more than one shadow root or more than one element there, when a host on the way can't be told apart, when the same lookup was quarantined before, for an XPath whose element no CSS selector tells apart, on a page the key was never found on (the [page guard](#steps-that-moved-to-another-page)), and when the element fails the live check.
+A Playwright engine selector (`text=`, `role=`) and a `get_by_*` call are not looked for in shadow roots: Playwright's engines reach into open ones by themselves.
+
+### Limits
+
+- A key found inside a shadow root inside an iframe isn't healed from the page. Open mendwright on that frame (a `Frame` on Playwright, or the driver after `switch_to.frame()` on Selenium), where its shadow roots work as described here.
+- A heal stays in the shadow root the element was last found in. When a redesign moves the element into another shadow root, or onto the page, the heal is refused; fix the selector in your code. A key last found on the page is not followed into a shadow root either: it heals on the page.
+- A quarantine counts in its own place: a selector quarantined inside a shadow root blocks its element there, under any CSS form, and says nothing about the page, and the other way round.
+- `heal.locator_all()` gives what your selectors match, also inside a shadow root, but with `nonempty=True` a list that was inside a shadow root is never looked for: mendwright looks for lists only in the page's own HTML, where it could only find another list.
+- The selectors of `heal.interrupt()` and `heal.step(when=)`, and `get_by_*` calls, run as written; Playwright's CSS and `get_by_*` reach into open shadow roots by themselves.
+- A 0.9.0 process that writes the store drops every `shadowHosts`. A heal's are read back from its chain, but a key that only your own selector found inside a shadow root has no heal to say so, and until it matches again it heals on the page like any other key (see [How a heal inside a shadow root runs](#how-a-heal-inside-a-shadow-root-runs)). Don't share a store with 0.9.0.
+
+### mendwright fix, check and report
+
+`mendwright fix` writes a heal inside a shadow root as its chain, and only where the old selector is passed to a method of a Playwright page or frame (`page.locator()`, `page.click()` and the other methods that take a selector, called on a name or attribute `page`, `frame` or `main_frame`, such as `heal.page.fill()` or `self.page.click()`) in a Python file that doesn't import Selenium.
+Everywhere else, such as `heal.locator()`, which can run on Selenium, a page object's own `click()`, a `Locator` (`app.locator("#save")`, where the chain, which starts with the host, finds nothing inside `app`), `find_element()`, a constant or another kind of file, it lists the place with the chain to write by hand where the code runs on Playwright from the page or frame (`shadow_call`). Selenium's `find_element()` can't reach into a shadow root, so the key of a `heal.driver.find_element()` call with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` is listed (`shadow_driver`), and one with `By.XPATH` where its selector is passed (`shadow_call`); the heal stays in the store and keeps working.
+
+`mendwright check` and `heal.drift()` decide as a run does: a key last found inside a shadow root is healed there in the preview, one whose shadow root can't be entered is `refused`, and a selector a run would follow into a shadow root is `would heal`, with detail `shadow`.
+`mendwright report` shows the shadow root each selector runs in.
+In the [journal](#journaljsonl), a heal or a follow refused for a key in a shadow root is a `heal.declined` with the code `shadow` (`dry_run` and `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), which [`mendwright notify`](#mendwright-notify) words as `` `save` is inside a shadow root, where mendwright could not repair it ``.
+
+The real-browser tests in `tests/browser/test_browser_shadow.py` cover these on every engine, with a look-alike outside the host and nested shadow roots.
+
 ## Layout changes
 
 A heal happens when a stored selector stops matching on the page mendwright was opened on. That makes it a fit for layout changes inside one page: renamed or generated ids and classes, reworded or translated labels, new wrapper elements, elements moved to another region, and form fields in a new order. The benchmark has cases for each of these ([docs/benchmark.md](benchmark.md)).
@@ -1338,6 +1435,7 @@ INFO mendwright: the page guard lets '#ship-name' heal on /checkout/step-b: it w
 | `flow.skip` | `key`, `reason`: `optional`, `interruption handled` or `interruption absent` |
 | `flow.page_guard` | `key`, `last_page`, `page` |
 | `flow.step` | `key` (the step's name), `outcome` (`ran`, `failed` when its function raised, or `missing` for a step that isn't optional and never showed), `error` (the error's type, for `failed`), `position` (1 for the first step that ran), `registered` (its place in the order the steps were registered), `page`, `seconds` |
+| `flow.stop` | Written right before mendwright raises because the flow can't go on. `code`: `interruption_loop` (`key` is the interruption's, with `before`), `popup_loop` (`key` is `<popup>`, with `before`), `step_cap` (`key` is `<next step>`, with `ran`, the number of steps that ran), `step_again` or `step_moved` (`key` is the step's name, with `page`) and `no_step` (`key` is `<next step>`, with `page`). It holds no message text, so no popup text either |
 
 ## Selectors
 
@@ -1365,6 +1463,7 @@ mendwright: the selector for 'x' is not usable: '//input[' is not valid XPath (l
 Passing a Playwright `Locator` instead of a string raises `TypeError`, because a Locator can't be stored.
 
 Heals are XPath, because the gate checks them with lxml. When a key's selector in your code is CSS, mendwright also looks for a CSS selector for the healed element and saves it with the heal as `css`: `#id`, a test id, `tag[attr="value"]`, `tag.class`, two of these together, or one inside a container with an id, test id, name, aria-label or class. It must match that element and nothing else on the captured page, and on the live page it must match one element with the same outer HTML. `mendwright report` shows it, and `mendwright fix` writes it wherever your code has CSS. CSS can't match text, so an element that only its text tells apart has no CSS form, and a Playwright engine selector (`text=`, `role=`) gets the XPath.
+A heal inside a shadow root, where no XPath runs, is saved as CSS (see [Shadow DOM](#shadow-dom)).
 
 ## Roles
 
@@ -1461,7 +1560,7 @@ The real file is a single line; it is wrapped here.
 - `status` is `active`, `quarantined` or `superseded`, or for a list heal that `heal.locator_all(..., nonempty=True)` found, `proposed` or `accepted` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)). Only active candidates are tried.
 - A list heal has `"list": true`, a `proposal` with what `mendwright lists` shows of it (when it was found, on which page, the selectors that matched nothing, where the list was and where the group is, two of their headings, containers and items, and an `id`), and once accepted an `acceptedAt`. A key keeps at most 3 of those that wait, apart from its other inactive candidates: the one you accepted, then the newest proposals, so newer proposals never drop an acceptance.
 - Optional per-key fields: `expectedRole`, `expectedText` and `destructive`, `lastPage` and `pages`, the pages where the key's element was found (see [Steps that moved to another page](#steps-that-moved-to-another-page)), `lastUrl`, the address of the last of them, which [`mendwright check`](#checking-for-drift-before-a-run) loads again (scheme, host, port and path, with record ids, tokens, email addresses and long names as `*`, and no user info, query or fragment), `steps`, the steps of `run_steps()` it was found during, `intent` (see [Describing an element with intent=](#describing-an-element-with-intent)), `fingerprint`, what the element looked like the last time it matched (see [Heals without a model](#heals-without-a-model)), and `listFingerprint`, what the items of a list looked like the last time it matched two or more (see [Lists](#lists)), with a `label` (its heading) and a `place` (short hashes of where it sat) once a call with `nonempty=True` recorded it.
-- A candidate inside an iframe has a `frameXPath` with the frame's selector.
+- A candidate inside an iframe has a `frameXPath` with the frame's selector, and one inside an open shadow root a `shadowHosts` with the selectors of its shadow hosts, outermost first. Its text is the Playwright chain of those hosts and its CSS, such as `my-app[id="root"] >> [data-testid="save"]`. The key's own `shadowHosts` says where its element was the last time it matched (see [Shadow DOM](#shadow-dom)). 0.9.0 drops both when it writes the store; a heal's `shadowHosts` are read back from its chain, and the key's are not (see [How a heal inside a shadow root runs](#how-a-heal-inside-a-shadow-root-runs)).
 - Up to 5 active candidates per key are kept, most recently successful first.
 - The key of a `heal.page.get_by_*()` call is written as the call, and so is its `code` candidate: `"get_by_role(\"button\", name=\"Sign in\")"`, with the inner quotes escaped by JSON (see [get_by locators](#get_by-locators)). A seed file may hold such keys, to mark one destructive, say, and such candidates, which run as calls on Playwright and are dropped with an `InvalidSelector` on Selenium.
 
@@ -1501,10 +1600,35 @@ Every heal step appends one JSON line to `journal.jsonl` next to the store:
 ```
 
 The events are `heal.requested`, `heal.proposed`, `heal.rejected` (with a `reason`), `heal.applied`, `heal.canary` and `heal.quarantine`, `heal.held` for a list that `heal.locator_all(..., nonempty=True)` found and saved for you to check (with its `xpath`, `css`, `id`, `items`, `label`, `differs`, `old` and `page`), and `heal.accepted` when you accepted one with `mendwright lists accept`, and for flow changes `flow.interrupt`, `flow.dismiss`, `flow.skip`, `flow.page_guard` and `flow.step` (see [Log lines and journal events](#log-lines-and-journal-events)).
-`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes). A model heal of a key that had a selector has no `source`.
+`heal.proposed`, `heal.rejected` and `heal.applied` have a `source` of `fingerprint` for a heal from the [fingerprint tier](#heals-without-a-model) (its `provider` is `fingerprint` too) and `intent` for a key found from its [intent=](#describing-an-element-with-intent). `heal.applied` has a `source` and `provider` of `frame`, and a `frame` with the iframe's selector, for a key followed into an [iframe](#iframes), a `source` and `provider` of `shadow` for one followed into a [shadow root](#shadow-dom), and a `shadow` with the shadow hosts for every heal inside a shadow root. A model heal of a key that had a selector has no `source`.
 A `heal.canary` or `heal.quarantine` that [`expect_value=`](#checking-what-a-read-returns) caused has a `reason`, such as `expect_value: inner_text() is not money`.
 The events of a list looked for with `nonempty=True` have `"list": true`. A list heal you rejected, or one quarantined because the selector it replaced matched again, writes a `heal.quarantine` with a `reason` that says which.
-A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
+A `heal.canary` says what confirmed or refused the heal in `by`: `test` when the test that made the heal passed (the pytest plugin, with the test's node id, up to 300 characters, in `test`), `expect` for `expect=` on an action, `expect_value` for [`expect_value=`](#checking-what-a-read-returns) on a read, `confirm` for `confirm()` or `confirm_all()`, `action` for an action that failed, and `destructive` for a heal of a key that was marked destructive after it. A heal saved in an earlier run, of a key marked destructive since, has no canary in this run: its `heal.quarantine` has `by` `destructive`. `mendwright fix` and the [GitHub Action](#open-a-pull-request-with-the-fixes) show it. A canary written before 0.9.0 has neither.
+Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`, such as `gh-11893412207.1`. Without one there is no `run`, as before 0.10.0. [`mendwright notify`](#mendwright-notify) picks the events of one run by it, also in a journal the [cache](#keep-heals-between-runs) keeps from run to run. The TypeScript package in `js/` writes `run`, `heal.declined` and its `flow.stop` the same way, so `mendwright notify` sums up its runs too.
+`heal.declined` says why a heal was not tried or did not apply, one line each time: `key`, `code` and `reason`, the text the log line and the error give, which can quote the page, as `reasoning` can. The codes:
+
+| `code` | Why |
+|---|---|
+| `destructive` | The key is marked destructive |
+| `page_guard` | The page is not one the key was found on (see [Steps that moved to another page](#steps-that-moved-to-another-page)) |
+| `disabled` | `MENDWRIGHT_DISABLE=1` |
+| `no_provider` | No model provider is set up, and the fingerprint did not heal it |
+| `role_unknown` | The key's role is unknown, so a heal could not be checked |
+| `guard` | `guard=` blocked heals |
+| `rate_limit` | The hourly heal limit was reached |
+| `not_here` | The model found no element on this page that fits, or was not sure which (see [When the model finds no element](#when-the-model-finds-no-element)) |
+| `no_proposal` | The provider gave no usable selector |
+| `gate` | No proposed selector passed the checks |
+| `dry_run` | Dry run: checked, not applied |
+| `list_empty` | A list whose selectors all match nothing (see [Lists](#lists)) |
+| `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
+| `list_waits_fix` | A list looked up with `nonempty=True`, whose list heal you accepted with `mendwright lists accept` matches now, but is not yet in your code (`mendwright fix --apply` writes it there) or its seed file |
+| `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
+| `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
+| `shadow` | Its element is inside a [shadow root](#shadow-dom) mendwright could not heal it in or follow it into |
+| `other` | Anything else |
+
+`flow.stop` is in [Log lines and journal events](#log-lines-and-journal-events). `mendwright report` and `mendwright fix` don't read `run`, `heal.declined` or `flow.stop`, and a 0.9.0 `mendwright fix` reading a 0.10.0 journal ignores them.
 The journal holds selectors, reasons, the model's reasoning and timings. It holds no page HTML.
 A failed journal write never breaks a heal.
 
@@ -1625,12 +1749,12 @@ jobs:
       - uses: actions/checkout@<sha>  # v7.0.1
         with:
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.9.0
+      - uses: saadbuilt/mendwright@v0.10.0
         with:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.9.0` can be a SHA too, with a `# v0.9.0` comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.0` can be a SHA too, with a `# v0.10.0` comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -1676,7 +1800,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.9.0
+      - uses: saadbuilt/mendwright@v0.10.0
         with:
           tests-result: ${{ github.event.workflow_run.conclusion }}
 ```
@@ -1771,8 +1895,13 @@ On a public repository it adds a notice: the branch and the pull request are pub
 | `commit-author-name` | `github-actions[bot]` | The author of its commits. |
 | `commit-author-email` | `41898282+github-actions[bot]@users.noreply.github.com` | Also how the action knows its own commits. |
 | `python-version` | `3.12` | Passed to `actions/setup-python`. Empty: the runner's `python3` or `python`, which must be 3.10 to 3.14. |
+| `webhook-url` | empty | A webhook that gets a summary of the run, such as a Slack incoming webhook (see [Alerts](#alerts)). Pass a secret, such as `${{ secrets.SLACK_WEBHOOK_URL }}`. Empty: no alert. |
+| `webhook-format` | `slack` | `slack`, or `json` for any other receiver. |
+| `notify-when` | `changes` | `changes`, `attention` or `always`, as `mendwright notify --when`. |
+| `notify-detail` | `keys` | `keys` names the keys in the alert; `counts` names none. |
+| `journal-run` | empty | The run id of the journal events to summarize. Empty: `gh-<run id>` of the run that tested the code, its newest attempt. Pass it only when your test job sets its own `MENDWRIGHT_RUN_ID`. |
 
-Boolean inputs take `true` or `false` only.
+Boolean inputs take `true` or `false` only. `webhook-format`, `notify-when`, `notify-detail` and `journal-run` are checked before anything else, as the boolean inputs are.
 
 | Output | Value |
 |---|---|
@@ -1781,6 +1910,7 @@ Boolean inputs take `true` or `false` only.
 | `pull-request-url` | That pull request's address |
 | `written` | How many keys were written back (in a dry run, would be) |
 | `left-alone` | How many items are under "Left alone" |
+| `notified` | `true` when the webhook took the summary, `false` when it did not, empty without `webhook-url` |
 
 #### Limits
 
@@ -1791,6 +1921,51 @@ Boolean inputs take `true` or `false` only.
 - Keep the action and the mendwright your tests install on the same version. Dependabot's `pip` and `github-actions` updates do that. The action reads stores and journals of older versions; a canary from before 0.9.0 shows as "a check before mendwright 0.9.0".
 - GitHub Enterprise Server is not tested.
 - What review still has to catch: a store is only as trustworthy as your test job. Anything that can write the test job's files can name a string literal in your code and propose any XPath that compiles in its place. `mendwright fix` refuses values mendwright could not have saved, but an XPath such as `//cdn.example/x.js` is also a protocol-relative URL. Read the pull request as you would read a change from a contributor.
+
+### Alerts
+
+[`mendwright notify`](#mendwright-notify) posts a short summary of one run to a webhook: how many selectors were repaired and how, what was handled on the way, and what needs a human.
+It sends a Slack message, which Slack incoming webhooks take, and so do Mattermost, Rocket.Chat, Google Chat and Discord's Slack-compatible endpoint (`.../slack`). `--format json` sends a JSON document for any other receiver.
+A webhook that fails never fails the job.
+
+```text
+mendwright, saadbuilt/shop: the site changed.
+3 selectors repaired: 2 from fingerprints, 1 by the model. 2 confirmed, 1 not confirmed: `accept_terms`, `email`, `search`.
+Handled: 1 cookie banner, 1 popup.
+1 needs a human: `pay` is marked destructive, so mendwright did not repair it.
+The tests passed.
+Pull request: https://github.com/saadbuilt/shop/pull/12
+Run: https://github.com/saadbuilt/shop/actions/runs/11893412207
+```
+
+With the GitHub Action, pass the webhook as a secret:
+
+```yaml
+      - uses: saadbuilt/mendwright@v0.10.0
+        with:
+          tests-result: ${{ needs.test.result }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+The action sends the alert after it opened or updated the pull request, with a link to it. It sends nothing on `pull_request`, and nothing for a run it skipped or refused. The job summary gets a "This run" section with the same text, and says whether it was sent. The alert's inputs are in [Inputs and outputs](#inputs-and-outputs): `notify-when: attention` sends only when something needs a human or the tests did not pass.
+Only the step that sends the alert gets the URL, and it masks it before it prints anything.
+
+Each journal event of a run on GitHub Actions has the run's id, `gh-<run id>.<attempt>`, so the action finds the events of the run that tested the code, also in a journal the cache keeps from run to run. On other CI, give each run an id of its own with `MENDWRIGHT_RUN_ID`, where the tests run and where `mendwright notify` runs:
+
+```bash
+export MENDWRIGHT_RUN_ID="nightly-$CI_PIPELINE_ID"
+python -m pytest; status=$?
+mendwright notify --tests "$([ $status -eq 0 ] && echo success || echo failure)"
+exit $status
+```
+
+`MENDWRIGHT_WEBHOOK_URL` holds the webhook there, as a masked CI variable.
+
+What an alert holds: counts, codes, mendwright's own phrases, key names, the title (the repository, or `--title`), the links to the run and the pull request, how the tests ended and mendwright's version.
+What it never holds: page HTML, input values, selectors (old or healed), the model's reasoning, the reason text of a heal that did not happen, popup text and button labels, page paths, interruption selectors, test names, store and journal paths, and provider and model names.
+`--detail counts` (`notify-detail: counts` in the action) leaves out the key names too. The keys of `heal.page` and `heal.driver` calls are the selectors in your code, such as `#email`, so use it for a channel people outside the team read.
+
+The URL comes only from `MENDWRIGHT_WEBHOOK_URL`, never from an option, since a command line shows in process lists, shell history and CI logs. It must be `https://` (`http://` only on `localhost`, `127.0.0.1` and `[::1]`). mendwright never prints it, follows no redirect, and tries at most twice.
 
 ## Checking for drift before a run
 
@@ -1888,7 +2063,7 @@ Some sites change state on a GET. `mendwright check` doesn't load a page whose p
 | `ok` | A saved selector matches one visible element of the key's role (a hidden checkbox counts, as in a run). | Nothing. |
 | `ok (heal)` | The selectors from your code miss, and a heal saved earlier matches. A run uses it, with no model call. | Run [`mendwright fix`](#mendwright-fix) to put it in your code (for a `get_by_*` call, it shows the healed selector and where the call is, and leaves the call to you). It says when no passing test confirmed the heal. |
 | `wrong role` | A selector matches one visible element, but it is another control (a button that became a `div`). A run acts on it all the same: mendwright compares roles only for heals. A changed tag on a key you only read from, such as a `span` that became a `div`, is noted on an `ok`. | Check the selector in your code. |
-| `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or [follow it into an iframe](#iframes). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
+| `would heal` | The selectors miss, and a run would heal the key from memory, with the [fingerprint tier](#heals-without-a-model), or follow it into an [iframe](#iframes) or a [shadow root](#shadow-dom). The heal passed every check of a heal on this page, and nothing was saved. | Tonight's run heals it, and `--mendwright-strict` fails on it. Update the selector in your code. |
 | `needs model` | The selectors miss, the fingerprint doesn't find the element with confidence, and a run would ask the model provider it names. | Check that the run has a provider, or fix the selector. |
 | `refused` | A run would stop with `AttentionRequired`: a key marked destructive, a page the key was never found on, an unknown role, a `guard=` that blocks, `MENDWRIGHT_DISABLE=1`, or no provider and no confident fingerprint. The reason is the run's own, the one [Troubleshooting](#attentionrequired) lists. A `get_by_*` call that matches several elements or one hidden element is `refused` too: a run hands it to Playwright, whose action fails. | Fix the selector by hand, or what the reason names. |
 | `list empty?` | A [list](#lists) that had items matches nothing. mendwright can't tell an empty list from a broken one, and never heals a list. | Check the selector, or the page's state. |
@@ -1937,6 +2112,7 @@ A banner that hides the whole page until it is answered needs `--cookies reject`
 ### Iframes, lists, steps and optional keys
 
 - **Iframes.** A selector saved inside an iframe is looked at there. A key whose selector now matches only inside one iframe is `would heal`, by the rules of [Iframes](#iframes), and one a run wouldn't follow is `refused` with the run's reason. A key last found in an iframe is healed there in the preview, as in a run.
+- **Shadow roots.** The same holds for an open shadow root, by the rules of [Shadow DOM](#shadow-dom): a selector saved inside one is looked at there, a key last found inside one is healed there in the preview, or `refused` when that shadow root can't be entered, and a selector a run would follow into one is `would heal` with detail `shadow`.
 - **Lists.** A key used with `heal.locator_all()` whose list had two or more items is looked at as a list: any match is `ok`, with the count then and now, and no match is `list empty?`. It is never `would heal`. A list that never had two items, or one recorded with the fingerprint tier off, is looked at as one element. A `list empty?` key with a [list heal](#lists-that-always-have-items-nonemptytrue) that waits says so: one to check with `mendwright lists`, or one you accepted that waits for `mendwright fix --apply`.
 - **`get_by_*` calls.** The key of a [`heal.page.get_by_*()` call](#get_by-locators) is looked at as a run looks the call up: the call itself first, and its saved heals only while it matches nothing. A call that matches several elements, or one hidden element, is `refused`: a run hands it to Playwright as written, without its heals, and Playwright's action fails on it. A call found only inside an iframe is `refused` too, since a run never follows one there. A heal of a call comes from its fingerprint only, so a call is never `needs model`.
 - **Steps.** `mendwright check` runs no step. A key found during `run_steps()` that misses is `needs steps`.
@@ -2108,6 +2284,7 @@ Store (where mendwright.open() saves heals)
 ```
 
 `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
+Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as [`mendwright notify`](#mendwright-notify) names the webhook, its scheme and host, when `mendwright notify` takes the URL, and else as why not, such as `(set, not a URL mendwright notify takes: it does not start with https://)`, never its value.
 With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
 
 ### mendwright report
@@ -2195,6 +2372,7 @@ Which keys it changes:
 - The key's most recently successful active selector is a heal, and that heal matched at least once.
 - The heal is confirmed: the journal's last `heal.canary` for it is a success. A plain action that worked writes no canary; the pytest plugin writes one when the test that made the heal passes, and so do `expect=` and `confirm(True)`. Rerunning the tests later doesn't confirm an older heal.
 - Never a key marked destructive (in the store, or with `--destructive-key`), a heal inside an iframe, or a key whose selectors came only from a seed file.
+- A heal inside a shadow root only as its Playwright chain, and only where the old selector is passed to a method of a Playwright page or frame in a Python file that doesn't import Selenium (see [Shadow DOM](#shadow-dom)). Everywhere else it is listed with the chain, and never for the key of a `heal.driver.find_element()` call.
 - Never a heal mendwright could not have saved: one whose selector is not an XPath lxml can compile, or whose CSS form is not one mendwright builds (a tag name, `#id`, `.class` and `[attribute="value"]`, with at most one ancestor before it). Something else wrote it into the store, so it is listed with the reason.
 - Never a key whose old selector is a bare word such as `button`, since other strings in your code (a `role=` value, a dict entry) can be the same word.
 - A list heal you accepted with `mendwright lists accept` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)), under the same rules as a heal, and only in place of the selectors it replaced. Its header line says `list heal, accepted DATE`, and it shows where the group is and what is not the same. Never when your last run passed other selectors for the key, such as another page's or one you fixed by hand, or when one of the key's selectors matched after the list heal was found: the reason says to change the selector by hand, or to drop the list heal with `mendwright lists reject KEY`. Never a list heal that waits for you to check it, with any option: it is left alone with the command that accepts it. Never an accepted one next to a newer proposal for the same key, until you accept or reject that one.
@@ -2252,7 +2430,7 @@ A file is written through a temporary file next to it and then replaced, and a f
 ```
 
 - `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where.
-- `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent` or `frame`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
+- `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent`, `frame` or `shadow`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
 - `confirmed_by` describes the `heal.canary` that confirmed the heal: what confirmed it (`by`, see [journal.jsonl](#journaljsonl)) and, for a passing test, its node id (`test`). Both are `null` for a canary written before 0.9.0, and `confirmed_by` is `null` for a heal that is not confirmed, which only `--include-unconfirmed` writes.
 - A list heal you accepted with [`mendwright lists accept`](#mendwright-lists) has `"list": true` and `accepted`, when you accepted it. Its `found_by` is the list fingerprint (`tier` `fingerprint`), at the time of its `heal.held`, else of its proposal, and its `confirmed_by` has `by` `accepted`, at the time of its `heal.accepted`, else `accepted`.
 - `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`.
@@ -2274,12 +2452,14 @@ A file is written through a temporary file next to it and then replaced, and a f
 | `list_key` | a list key whose heal is of one element |
 | `bare_word` | a key whose old selector is a bare word |
 | `driver_by` | a key from a `By` that can't run the healed XPath |
+| `shadow_driver` | a key from `driver.find_element()` with `By.CSS_SELECTOR`, `By.ID` or `By.NAME` whose heal sits inside a shadow root |
 | `unconfirmed` | a key whose heal was never confirmed |
 | `quarantined` | a key whose newest heal was quarantined, or a list heal you rejected |
 | `get_by_call` | the key of a `heal.page.get_by_*()` call, which `mendwright fix` never rewrites |
 | `ambiguous` | a file with a string that belongs to more than one key |
 | `not_python` | a file that couldn't be read as Python |
 | `css_only` | a place that passes the selector where only CSS runs |
+| `shadow_call` | a place that isn't a method of a Playwright page or frame, for a heal inside a shadow root |
 | `no_escape` | a place that needs escapes mendwright doesn't know |
 | `flow_selector` | a place that passes the old selector to `heal.interrupt()` or `heal.step(when=)` |
 | `already_in_code` | a key whose healed selector your code already has |
@@ -2337,6 +2517,75 @@ It exits 0 after a listing, even an empty one, and after an accept or a reject, 
 Loads the page where each key was last found, on a site you name with `--origin` or `--base-url`, in a headless Playwright browser, and says which keys still resolve, which a run would heal and which it would refuse, without acting on the page, saving anything or asking a model. It exits 1 when a key broke and 3 when one couldn't be checked.
 [Checking for drift before a run](#checking-for-drift-before-a-run) has the results, the exit codes and every option.
 
+### mendwright notify
+
+```text
+mendwright notify [--store PATH] [--run ID | --since TIME | --all]
+                  [--format {slack,json}] [--when {changes,attention,always}]
+                  [--detail {keys,counts}] [--title TEXT] [--run-url URL] [--pr-url URL]
+                  [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
+```
+
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)). It reads only the journal, line by line, leaves out a line that is not an event it can read, takes a `heal.declined` code that is not one of its own as `other`, and makes one POST, with one retry.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--store PATH` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | The journal is `journal.jsonl` next to it. The store itself is not read. |
+| `--run ID` | see below | The events whose `run` is `ID`. `gh-<digits>` without an attempt takes its highest attempt. |
+| `--since TIME` | | The events at or after an ISO 8601 time with a time zone, such as `2026-10-16T05:00:00Z`. Lines whose `ts` doesn't parse are left out. |
+| `--all` | | Every event of the journal. |
+| `--format` | `slack` | `slack`: `{"text": "..."}`. `json`: a JSON document of at most 16 KiB. |
+| `--when` | `changes` | `changes`: send when something was repaired or needs a human (handled popups alone don't count). `attention`: only when something needs a human or the tests did not pass. `always`. |
+| `--detail` | `keys` | `counts` names no key. |
+| `--title TEXT` | `GITHUB_REPOSITORY`, else the name of the folder that holds the store's folder | The name the message starts with, cut to 80 characters. |
+| `--run-url URL` | on GitHub Actions, this run's page | `https://`, or `http://` on `localhost`. |
+| `--pr-url URL` | none | The same rule. |
+| `--tests RESULT` | none | How the tests ended: a job result or run conclusion, such as `success` or `failure` (pass `${{ needs.test.result }}`). |
+| `--timeout SECONDS` | `10` | Per attempt, for the whole POST and its answer, 1 to 30. |
+| `--dry-run` | off | Print the payload and send nothing. `MENDWRIGHT_WEBHOOK_URL` is not read. |
+| `--fail-on-error` | off | Exit 1 when nothing could be sent, for any reason but `--when`. |
+
+`--run`, `--since` and `--all` go one at a time. With none of them, the run is `MENDWRIGHT_RUN_ID`, or on GitHub Actions this run, `gh-<GITHUB_RUN_ID>` (its highest attempt). mendwright never falls back to the newest run in the journal, which would report an old run as this one. A run id that matches no event is a run in which mendwright recorded nothing, and its summary says `nothing changed`. A journal whose events have no run id at all (written before 0.10.0, or without `MENDWRIGHT_RUN_ID` off GitHub Actions) is refused, not taken for an empty run.
+
+What it counts, from the events of the run only:
+
+- Repaired: each healed selector (`heal.applied`), from its fingerprint, by the model (`intent=` included), or found inside an iframe or a [shadow root](#shadow-dom) (source `frame` or `shadow`, with no model call). It is confirmed when a canary confirmed it in the run, quarantined when one failed or it was quarantined, else not confirmed.
+- Handled: cookie banners closed by the `cookies=` preset, popups `dismiss=True` closed, and the other interruptions.
+- Needs a human: one line per key, the latest reason winning, in the words below. A key healed later in the run is left out, unless that heal was quarantined too.
+- Not repaired on purpose: keys declined with the code `dry_run` or `disabled`, because of dry run or `MENDWRIGHT_DISABLE=1`. They never need a human.
+
+| Code | From | The alert says |
+|---|---|---|
+| a `heal.declined` code | a heal that did not apply | `` `pay` is marked destructive, so mendwright did not repair it ``, `` `email` was never found on this page before, so the flow may have changed ``, `` `email` could not be repaired: the model found no element on this page that fits ``, and so on for each code of [journal.jsonl](#journaljsonl) |
+| `quarantined` | `heal.quarantine` | `` `email` had a repair that was wrong, so it was quarantined ``, or for a heal of a key marked destructive after it (its canary or its `heal.quarantine` says `by` `destructive`) `` `pay` is marked destructive, so mendwright did not repair it `` |
+| `list_proposed` | `heal.held` | `` `cart` matched nothing as a list, and mendwright found one for you to check with mendwright lists `` |
+| `interruption_loop` | `flow.stop` | `` interruption `cookies` came back each time it was handled `` |
+| `popup_loop` | `flow.stop` | `` a popup in front of `email` came back each time it was dismissed `` |
+| `popup_failed` | `flow.dismiss`, `failed` or `lost` | `` a popup in front of `email` could not be dismissed `` |
+| `run_failed` | `flow.interrupt`, `failed` | `` interruption `session` could not be handled: its run= function raised an error `` |
+| `step_missing` | `flow.step`, `missing` | `` step `gift` never showed, so the site may have dropped it `` |
+| `step_again`, `step_moved` | `flow.stop` | `` step `payment` showed again after it ran ``, `` step `payment` showed on another page than before `` |
+| `no_step`, `step_cap` | `flow.stop` | `run_steps() stopped: no registered step showed`, `run_steps() stopped: it ran more steps than it allows` |
+
+The message names at most 10 keys on a line, then `and N more`, cuts each key to 80 characters, and stays under 3,000 characters. For Slack, `&`, `<` and `>` are written as `&amp;`, `&lt;` and `&gt;`, so a key can't mention `@channel` or a person, and a backtick in a key is written as `'`.
+The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr_url`, `tests`, `changed`, `repaired` (`total`, `fingerprint`, `model`, `frame`, `shadow`, `confirmed`, `not_confirmed`, `quarantined`, `keys`, `more_keys`), `handled` (`cookie_banners`, `popups`, `interruptions`), `needs_human` (each with `key`, `code`, `about`, the subject, and `text`, the words after it), `more_needs_human`, `not_repaired_on_purpose` (`dry_run`, `disabled`), `text` (the message, without Slack's escapes) and `sent_at`. Lists are cut to keep it under 16 KiB. With `--detail counts`, `keys` is empty and no entry has a `key`.
+
+| Situation | Output | Exit |
+|---|---|---|
+| Sent | `mendwright notify: sent the summary of run gh-11893412207.1 to https://hooks.slack.com (HTTP 200).` | 0 |
+| `--dry-run` | the payload | 0 |
+| `--when` says no | `mendwright notify: nothing to send for run gh-11893412207.1: nothing was repaired and nothing needs a human (--when changes).` | 0 |
+| `MENDWRIGHT_WEBHOOK_URL` unset or empty | `mendwright notify: MENDWRIGHT_WEBHOOK_URL is not set, so nothing was sent.` | 0, or 1 with `--fail-on-error` |
+| The URL is refused | `mendwright notify: the webhook URL in MENDWRIGHT_WEBHOOK_URL must start with https:// (http:// only for localhost), so nothing was sent.` | 0 / 1 |
+| An HTTP error | `mendwright notify: the webhook at https://hooks.slack.com answered HTTP 404 (no_service). Nothing was sent. Check the URL in MENDWRIGHT_WEBHOOK_URL.` | 0 / 1 |
+| A redirect | `... answered HTTP 302, a redirect, which mendwright does not follow. ...` | 0 / 1 |
+| The network | `mendwright notify: could not reach the webhook at https://hooks.slack.com (timed out after 10 s, tried 2 times). Nothing was sent.` | 0 / 1 |
+| No journal | `mendwright notify: no journal at <path>, so there is nothing to summarize. Run your tests with mendwright first, or pass --store.` | 0 / 1 |
+| No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
+| Bad arguments | argparse's message | 2 |
+
+Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`. It names the webhook by its scheme and host, with a label of the host that looks random (12 characters or more with a letter and a digit, or 20 or more) as `***`, since for some receivers, such as AWS Lambda function URLs (`https://***.lambda-url.us-east-1.on.aws`) and Pipedream, the host is the key. Of an error body it shows only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL, and leaves any other body out, since a receiver can quote its key in it. The URL, its path, its query, its user info, each path segment and query value of 8 characters or more, and such a label of the host are written as `***` wherever they would show, in any case, as they are and percent-decoded, percent-encoded and JSON-escaped. HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds; any other answer is not.
+
 ## Low-level API
 
 `mendwright.open()` is built from public functions you can call yourself, for example to use a seed file or your own resolution loop:
@@ -2366,7 +2615,7 @@ coordinator.confirm_pending(key, box.is_checked())
 - `resolve(store, page, key)` returns the native locator or element, or raises `AttentionRequired`.
 - `resolve_with_heal(...)` heals once and retries when the resolve function raises.
 - Without `driver=`, `HealCoordinator` checks proposals only against the captured HTML, and the live check happens through the retry.
-- These paths skip what the facade adds: the code-first selector order and role learning. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
+- These paths skip what the facade adds: the code-first selector order and role learning, and iframes and shadow roots: `HealCoordinator` heals in the page it was given, never inside an iframe or a shadow root. A key last found inside an iframe is looked for on that page. A key last found inside an open shadow root is not healed at all (a `heal.declined` with the code `shadow`, or `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`), because only the page around its host could be searched. Use `mendwright.open()` for those. A key marked destructive in the seed file, in `load_store(..., destructive_keys=...)` or by an earlier `destructive=True` is still refused, because `store.meta(key)` carries the flag.
 - `HealCoordinator` writes no journal and has no rate limit unless you pass `journal=` and `guardrails=`, and runs no fingerprint tier unless you pass `fingerprint=True`.
 
 ## Troubleshooting
@@ -2457,6 +2706,10 @@ Each message starts with `mendwright:`. A notice or a warning leaves the job gre
 | is still open: | The job summary says why the action could not tell whether the pull request is still needed. Close it by hand when it isn't. |
 | rate limit stopped the action | Run the workflow again later. |
 | a redirect, which the action does not follow | The repository was probably renamed or moved. Run the workflow from its new place. |
+| the input webhook-format takes | `webhook-format` takes `slack` or `json`, `notify-when` `changes`, `attention` or `always`, and `notify-detail` `keys` or `counts`. |
+| the input journal-run takes a run id | Pass the `MENDWRIGHT_RUN_ID` your test job sets, or leave `journal-run` empty. |
+| no alert was sent | The job summary's "This run" says why: no journal in the artifact, nothing to send for `notify-when`, or the webhook's answer. The job stays green. |
+| mendwright notify: no event in ... has a run id | The test job ran mendwright 0.9.0 or older, which writes no run id. Keep the action and the test job's mendwright on the same version. |
 
 ### Other problems
 

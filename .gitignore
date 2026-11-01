@@ -8,3 +8,11 @@ dist/
 # mendwright's own runtime output: the writable override store and the event journal
 # are created next to a running tool, never committed.
 .mendwright/
+
+# The TypeScript package in js/: its dependencies, its build output, and what Playwright
+# Test writes when the browser tests run.
+js/node_modules/
+js/dist/
+js/build/
+js/test-results/
+js/playwright-report/

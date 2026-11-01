@@ -364,7 +364,8 @@ def test_a_0_8_0_store_loads_and_a_0_9_0_store_loses_only_last_url_there(tmp_pat
         encoding='utf-8')
     store = load_store(None, str(path))
     assert store.last_url('k') is None and store.meta('k')['lastPage'] == '/a'
-    assert set(META_FIELDS) == set(FIELDS_080) | {'lastUrl'}
+    # shadowHosts came after 0.9.0, and a 0.8.0 or 0.9.0 process drops it the same way.
+    assert set(META_FIELDS) == set(FIELDS_080) | {'lastUrl', 'shadowHosts'}
     saved = _meta_fields({'expectedRole': 'button', 'lastPage': '/a', 'pages': ['/a'],
                           'lastUrl': 'https://shop.example/a', 'steps': ['pay']})
     assert {k: v for k, v in saved.items() if k in FIELDS_080} == {

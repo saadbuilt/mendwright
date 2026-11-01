@@ -403,6 +403,16 @@ def _steps_journal(tmp_path):
             for e in _journal(tmp_path) if e['event'] == 'flow.step']
 
 
+def _stops(tmp_path):
+    """The flow.stop events, without ts and event. Each is the last line before the raise."""
+    events = _journal(tmp_path)
+    stops = [{k: v for k, v in e.items() if k not in ('ts', 'event')}
+             for e in events if e['event'] == 'flow.stop']
+    if stops:
+        assert events[-1]['event'] == 'flow.stop'
+    return stops
+
+
 def _lines(caplog, level=None):
     return [r.getMessage() for r in caplog.records
             if r.name == 'mendwright' and (level is None or r.levelno == level)]
@@ -581,6 +591,7 @@ def test_a_step_that_comes_back_stops_the_flow(side, tmp_path, stub_provider):
     assert 'its submit probably failed' in str(caught.value)
     assert sum(1 for _, v, _ in shop.actions if v == 'fill') == 2     # the card once, never twice
     assert [e['key'] for e in _steps_journal(tmp_path)] == ['shipping', 'payment']
+    assert _stops(tmp_path) == [{'key': 'payment', 'code': 'step_again', 'page': '/checkout/b'}]
 
 
 def test_a_page_with_a_step_nobody_registered_stops_the_flow(side, tmp_path, stub_provider):
@@ -600,6 +611,7 @@ def test_a_page_with_a_step_nobody_registered_stops_the_flow(side, tmp_path, stu
             "(//button[.='Place order'])") in message
     assert "Steps that ran: 'shipping'." in message
     assert 'add it with heal.step()' in message
+    assert _stops(tmp_path) == [{'key': WAITING_STEP, 'code': 'no_step', 'page': '/checkout/b'}]
 
 
 def test_a_new_page_that_shows_part_of_a_step_that_ran_is_named_as_a_new_step(side, tmp_path,
@@ -622,6 +634,7 @@ def test_a_new_page_that_shows_part_of_a_step_that_ran_is_named_as_a_new_step(si
     assert 'add it with heal.step()' in message
     assert 'its submit probably failed' not in message
     assert shop.visits == ['a', 'b']
+    assert _stops(tmp_path) == [{'key': 'shipping', 'code': 'step_moved', 'page': '/checkout/b'}]
 
 
 def test_an_optional_step_that_sometimes_shows(side, tmp_path, caplog, stub_provider):
@@ -870,6 +883,8 @@ def test_an_interruption_that_keeps_coming_back_ends_the_wait(side, tmp_path, st
     with pytest.raises(InterruptionLoop):
         side.run(timeout_ms=50)
     assert shop.closes == 3
+    assert _stops(tmp_path) == [{'key': 'promo', 'code': 'interruption_loop',
+                                 'before': WAITING_STEP}]
 
 
 def test_a_flow_that_keeps_growing_stops(side, tmp_path, stub_provider):
@@ -895,6 +910,7 @@ def test_a_flow_that_keeps_growing_stops(side, tmp_path, stub_provider):
         side.run()
     assert str(caught.value) == cap_message(3, 1)
     assert count[0] == 3
+    assert _stops(tmp_path) == [{'key': WAITING_STEP, 'code': 'step_cap', 'ran': 3}]
 
 
 def test_a_step_found_by_its_url(side, tmp_path, stub_provider):

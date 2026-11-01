@@ -870,7 +870,25 @@ def test_an_accepted_list_heal_waits_for_mendwright_fix(tmp_path, make_page, cap
     assert message == NO_MATCH + reason
     assert page.items_reads == reads                                  # no search
     assert "mendwright: 'cart' waits for mendwright fix: " + reason in caplog.text
+    # The journal says why, so mendwright notify names the cause.
+    assert _events(tmp_path, 'heal.declined')[-1] == dict(
+        _events(tmp_path, 'heal.declined')[-1], key='cart', code='list_waits_fix', reason=reason)
     assert again.locator_all('cart', ROWS)                            # once it is in the code
+
+
+def test_an_accepted_list_heal_that_waits_is_what_the_alert_says_needs_a_human(tmp_path,
+                                                                               make_page):
+    from mendwright import runsummary
+    from mendwright.journal import Journal
+    page, heal, pid = _proposed(make_page, tmp_path)
+    edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', pid, now='2026-10-30T08:00:00+00:00')
+    _raised(_open(page, tmp_path, journal=Journal(tmp_path / 'journal.jsonl', run='run-2')))
+    events, _ = runsummary.select(_journal(tmp_path), run='run-2')
+    assert [(e['event'], e['code']) for e in events] == [('heal.declined', 'list_waits_fix')]
+    text = runsummary.message(runsummary.summarize(events), tests='failure')
+    assert text == ('mendwright: the site changed.\n1 needs a human: `cart` matched nothing as a '
+                    'list, and the list heal accepted for it waits for mendwright fix or its seed '
+                    'file.\nThe tests failed.')
 
 
 def test_a_newer_proposal_next_to_an_accepted_one_says_so(tmp_path, make_page):
@@ -1124,7 +1142,10 @@ def test_async_an_accepted_list_heal_waits_for_fix_with_no_search(tmp_path, make
         + ROWS + ', which matches 3 elements now, but mendwright takes a list only from the '
         'selectors in your code. Write it there with: mendwright fix --apply' + _flag(tmp_path)
         + '. If the list can be empty here, remove nonempty=True.')
-    assert sync.items_reads == reads and len(_journal(tmp_path)) == events      # no search
+    # No search: the journal gets only the line that says why.
+    assert sync.items_reads == reads
+    assert [(e['event'], e['code']) for e in _journal(tmp_path)[events:]] == [
+        ('heal.declined', 'list_waits_fix')]
     assert len(heal.coordinator.held) == 1
 
 

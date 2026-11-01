@@ -12,3 +12,8 @@ recursive-include examples/demo *.py *.html *.md
 # The reference gateway and its config: tests/test_gateway_worker.py checks the worker
 # against mendwright/prompt.py.
 include examples/heal_gateway.mjs examples/wrangler.toml
+# js/ is the npm package, released on its own (docs/RELEASING.md), so it is never in the sdist,
+# also when a file finder such as setuptools-scm adds every file git tracks. It comes last, so
+# no line after it adds js/ back. When nothing added it, the build says "no previously-included
+# directories found matching 'js'".
+prune js

@@ -75,8 +75,31 @@ def test_the_token_goes_only_to_the_steps_that_need_it():
     assert TEXT.count('inputs.token') == 4
 
 
+def test_the_webhook_url_goes_only_to_the_notify_step():
+    for name, step in steps().items():
+        env = '\n'.join(block(step, 'env'))
+        if name == 'notify':
+            assert 'MENDWRIGHT_WEBHOOK_URL: ${{ inputs.webhook-url }}' in env
+            assert 'MW_TOKEN' not in step and 'inputs.token' not in step
+        else:
+            assert 'webhook-url' not in step and 'MENDWRIGHT_WEBHOOK_URL' not in step, name
+    assert TEXT.count('inputs.webhook-url') == 2          # its env and its if:
+    assert 'webhook-url' not in TEXT[TEXT.index('\noutputs:'):TEXT.index('\nruns:')]
+
+
+def test_the_notify_step_runs_only_for_a_run_the_guard_let_through_and_never_fails():
+    step = steps()['notify']
+    condition = ' '.join(step[step.index('if: >-') + len('if: >-'):step.index('shell:')].split())
+    assert condition == ("!cancelled() && (steps.guard.outputs.mode == 'fix' || "
+                         "steps.guard.outputs.mode == 'dry-run') && github.event_name != "
+                         "'pull_request' && inputs.webhook-url != ''")
+    run = '\n'.join(block(step, 'run'))
+    assert 'notify || echo "::warning title=mendwright notify::' in run
+    assert 'if [ -n "$MW_VENV_PY" ]; then' in run
+
+
 def test_each_step_runs_the_script_with_python_isolated():
-    for name in ('guard', 'find-artifact', 'fix', 'publish'):
+    for name in ('guard', 'find-artifact', 'fix', 'publish', 'notify'):
         run = '\n'.join(block(steps()[name], 'run'))
         assert '-I "$GITHUB_ACTION_PATH/action/mendwright_action.py" ' + name in run, name
     for step in steps().values():
@@ -174,7 +197,7 @@ def test_the_guide_lists_every_input_and_output():
                                                                TEXT.index('\nruns:')], re.M)
     in_table = re.findall(r'^\| `([\w-]+)` \|', guide, re.M)
     assert sorted(set(in_table)) == sorted(set(inputs) | set(outputs))
-    assert len(inputs) == 17 and len(outputs) == 5
+    assert len(inputs) == 22 and len(outputs) == 6
 
 
 def test_the_guide_uses_the_action_of_this_version():
@@ -201,7 +224,8 @@ def test_action_yml_is_yaml_with_the_steps_in_order():
     data = yaml.safe_load(TEXT)
     assert data['runs']['using'] == 'composite'
     ids = [s.get('id') for s in data['runs']['steps']]
-    assert ids == ['python', 'guard', 'install', 'find-artifact', None, None, 'fix', 'publish']
+    assert ids == ['python', 'guard', 'install', 'find-artifact', None, None, 'fix', 'publish',
+                   'notify']
     for step in data['runs']['steps']:
         if 'run' in step:
             assert step['shell'] == 'bash'

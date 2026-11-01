@@ -1,0 +1,294 @@
+// Open shadow roots, on the fake page (its CSS pierces open shadow roots, as Playwright's
+// does): where a key's element is gets saved as the Python package saves it, a heal the
+// Python package saved inside a shadow root runs only there, and a key last found inside
+// one is never healed on the page around its host, where a look-alike would be found. Each
+// safety rule has a test here that fails without it.
+
+import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import { beforeEach, describe, test } from 'node:test';
+
+import { AttentionRequired, InvalidSelector } from '../../src/errors';
+import { chainHosts, runTarget, savedHosts, splitText, textHosts } from '../../src/shadow';
+import { loadStore } from '../../src/store';
+import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
+import { needsPython, runPython } from '../support/python';
+
+const HOST = 'my-app[id="root"]';
+const CHAIN = HOST + ' >> [data-testid="save"]';
+
+function shadow(inner: string, host = '<my-app id="root">', mode = 'open', light = ''): string {
+  const tag = host.slice(1).split(/[ >]/)[0];
+  return host + '<template shadowrootmode="' + mode + '">' + inner + '</template>' + light + '</' + tag + '>';
+}
+
+function page(body: string): string {
+  return '<html><head><title>t</title></head><body>' + body + '</body></html>';
+}
+
+// Outside the host, on the page, a look-alike with the same test id and the same text.
+const LOOKALIKE = '<button data-testid="save" type="button">Save</button>';
+const SAVE_V1 = '<div class="panel"><button id="save" data-testid="save" type="button">Save</button></div>';
+const SAVE_V2 = '<div class="panel"><button id="save-2" data-testid="save" type="button">Save</button></div>';
+const V1 = page(LOOKALIKE + shadow(SAVE_V1));
+const V2 = page(LOOKALIKE + shadow(SAVE_V2));
+
+/** The store the Python package 0.10.0 leaves after it healed 'save' inside the shadow root. */
+function pythonHealed(storePath: string): void {
+  fs.writeFileSync(storePath, JSON.stringify({ schema: 2, selectors: { save: {
+    expectedRole: 'button', shadowHosts: [HOST], lastPage: '/signup', pages: ['/signup'],
+    candidates: [
+      { xpath: '#save', source: 'code', addedAt: '2026-10-01T00:00:00+00:00',
+        lastSucceededAt: '2026-10-01T00:00:00+00:00', status: 'active' },
+      { xpath: CHAIN, source: 'heal', addedAt: '2026-10-02T00:00:00+00:00',
+        lastSucceededAt: '2026-10-02T00:00:00+00:00', status: 'active', shadowHosts: [HOST] },
+    ] } } }));
+}
+
+function inShadowRoot(el: Element | undefined): boolean {
+  const root = el?.getRootNode() as ShadowRoot | undefined;
+  return !!root && root.nodeType === 11 && !!root.host;
+}
+
+beforeEach(cleanEnv);
+
+describe('where the element is', () => {
+  test('a match inside a shadow root saves its hosts as the key\'s shadowHosts', async () => {
+    const w = world(V1);
+    await w.open().locator('save', '#save', { role: 'button' }).click();
+    assert.ok(inShadowRoot(w.page.clicked[0]));
+    const store = loadStore(w.storePath);
+    assert.deepEqual(store.shadowHosts('save'), [HOST]);
+    assert.equal(store.metaOf('save').fingerprint?.attrs?.id, 'save');
+    assert.equal(JSON.parse(fs.readFileSync(w.storePath, 'utf-8')).selectors.save.fingerprint.shadowHosts, undefined);
+  });
+
+  test('a match on the page removes them again', async () => {
+    const w = world(V1);
+    await w.open().locator('save', '#save', { role: 'button' }).click();
+    w.page.goto(page('<button id="save" type="button">Save</button>'));
+    await w.open().locator('save', '#save', { role: 'button' }).click();
+    assert.deepEqual(loadStore(w.storePath).shadowHosts('save'), []);
+    assert.equal(JSON.parse(fs.readFileSync(w.storePath, 'utf-8')).selectors.save.shadowHosts, undefined);
+  });
+
+  test('hosts are named as the Python package names them, outermost first', async () => {
+    const cases: [string, (string | null)[]][] = [
+      [page(shadow(shadow(SAVE_V1, '<settings-panel>'))), [HOST, 'settings-panel']],
+      [page(shadow(SAVE_V1, '<div data-testid="box">')), ['div[data-testid="box"]']],
+      [page(shadow(SAVE_V1, '<buy-box>')), ['buy-box']],
+      // A generated id is skipped, and a bare tag counts only for a custom element alone there.
+      [page(shadow(SAVE_V1, '<div id="mui-generated-8842">')), [null]],
+      [page(shadow(SAVE_V1, '<buy-box>') + '<buy-box></buy-box>'), [null]],
+      [page(shadow(SAVE_V1, '<div name="a&quot;b">')), ['div[name="a\\"b"]']],
+    ];
+    for (const [html, hosts] of cases) {
+      const w = world(html);
+      await w.open().locator('save', '#save', { role: 'button' }).click();
+      assert.deepEqual(loadStore(w.storePath).shadowHosts('save'), hosts, html);
+    }
+  });
+});
+
+describe('a heal the Python package saved inside a shadow root', () => {
+  test('runs there, through its hosts, and not on the look-alike', async () => {
+    const w = world(V2);
+    pythonHealed(w.storePath);
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await heal.locator('save', '#save', { role: 'button' }).click();
+    assert.equal(w.page.clicked[0].id, 'save-2');
+    assert.ok(inShadowRoot(w.page.clicked[0]));
+    assert.deepEqual(heal.heals, []);
+    assert.equal(model.bundles.length, 0);
+  });
+
+  for (const [name, html] of [
+    ['only the light DOM of the host has it', page(LOOKALIKE + shadow('<p>Nothing to save</p>', undefined, 'open',
+      '<button data-testid="save" type="button">Save</button>'))],
+    ['it is in a shadow root inside that one', page(LOOKALIKE + shadow(shadow(SAVE_V2, '<inner-box>')))],
+    ['two hosts match', page(LOOKALIKE + shadow(SAVE_V2) + shadow(SAVE_V2))],
+    ['the host is gone', page(LOOKALIKE)],
+    ['its shadow root is closed now', page(LOOKALIKE + shadow(SAVE_V2, undefined, 'closed'))],
+  ] as const) {
+    test('matches nothing when ' + name + ', and the key is not healed on the page either', async () => {
+      const w = world(html);
+      pythonHealed(w.storePath);
+      const model = new FakeModel(["//button[@data-testid='save']"]);
+      const heal = w.open({ provider: model });
+      await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+        (error: unknown) => error instanceof AttentionRequired
+          && (error as Error).message.includes("'save' was last found inside the shadow root of " + HOST)
+          && (error as Error).message.includes('does not heal inside a shadow root'));
+      assert.deepEqual(w.page.clicked, []);
+      assert.equal(model.bundles.length, 0);
+      assert.deepEqual(heal.heals, []);
+    });
+  }
+
+  test('never acts outside its shadow root after a re-render that came after the lookup', async () => {
+    const w = world(V2);
+    pythonHealed(w.storePath);
+    const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();
+    // The component re-renders: its button leaves the shadow root, and the page slots one with
+    // the same test id into the host's light DOM, where Playwright's CSS reaches it.
+    w.page.goto(page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE)));
+    await assert.rejects(box.click(), /'save' was found inside the shadow root of my-app\[id="root"\], but when it came to click\(\)/);
+    await assert.rejects(box.innerText(), /when it came to innerText\(\)/);
+    assert.equal(w.page.clicked.length, 0);
+    w.page.goto(V2);
+    await box.click();
+    assert.equal(w.page.clicked[0].id, 'save-2');
+  });
+
+  test('answers isVisible() and isHidden() at once when its element went away, as Playwright does', async () => {
+    // A close button whose click removes its dialog: the element goes away on purpose.
+    const closes = '<div id="dlg"><button id="save-2" data-testid="save" type="button" data-click-removes="#dlg">'
+      + 'Save</button></div>';
+    const w = world(page(LOOKALIKE + shadow(closes)));
+    pythonHealed(w.storePath);
+    const box = await w.open({ timeoutMs: 5000 }).locator('save', '#save', { role: 'button' }).resolve();
+    const other = await w.open().locator('save', '#save', { role: 'button' }).resolve();   // timeoutMs: 100
+    let hidden: unknown;
+    await box.click({ expect: async () => (hidden = await box.isHidden()) });
+    assert.equal(w.page.clicked[0].id, 'save-2');
+    assert.equal(hidden, true);
+    const started = Date.now();
+    assert.equal(await box.isHidden(), true);
+    assert.equal(await box.isVisible(), false);
+    assert.ok(Date.now() - started < 1500, 'answered at once');
+    assert.deepEqual(loadStore(w.storePath).candidates('save').filter((c) => c.xpath === CHAIN).map((c) => c.status),
+      ['active']);
+    // An action still waits for the element, and throws when it never comes back.
+    await assert.rejects(other.click(), (error: unknown) => error instanceof AttentionRequired
+      && /when it came to click\(\)/.test((error as Error).message));
+    assert.equal(w.page.clicked.length, 1);
+  });
+
+  for (const [name, html] of [
+    ['matches outside its shadow root', page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE))],
+    ['matches several elements in it', page(shadow(SAVE_V2 + SAVE_V2))],
+  ] as const) {
+    test('still throws from isVisible() and isHidden() when its Locator ' + name, async () => {
+      const w = world(V2);
+      pythonHealed(w.storePath);
+      const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();
+      w.page.goto(html);
+      await assert.rejects(box.isHidden(), /when it came to isHidden\(\)/);
+      await assert.rejects(box.isVisible(), /when it came to isVisible\(\)/);
+    });
+  }
+
+  test('keeps to its shadow root after the Python package 0.9.0 wrote the store without its shadowHosts', async () => {
+    // 0.9.0 drops every shadowHosts, the key's and the heal's. The button is renamed again,
+    // and the look-alike outside the host keeps the old test id.
+    const w = world(page(LOOKALIKE + shadow('<button id="save-3" data-testid="save-btn" type="button">Save</button>')));
+    pythonHealed(w.storePath);
+    const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+    delete data.selectors.save.shadowHosts;
+    for (const row of data.selectors.save.candidates) delete row.shadowHosts;
+    fs.writeFileSync(w.storePath, JSON.stringify(data));
+    assert.deepEqual(loadStore(w.storePath).candidates('save').map((c) => c.shadowHosts), [[HOST], undefined]);
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+      /'save' was last found inside the shadow root of my-app\[id="root"\]/);
+    assert.deepEqual(w.page.clicked, []);
+    assert.equal(model.bundles.length, 0);
+  });
+
+  test('reads the hosts back from a heal\'s text as the Python package does', { skip: needsPython() }, () => {
+    const texts = [CHAIN, HOST + ' >> settings-panel >> #save', 'div[data-testid="a\\"b"] >> button.primary',
+      'div >> #save', 'my-app[class="x"] >> #save', HOST + ' >> //button', HOST + ' >> xpath=//button',
+      'text=Save >> nth=0', 'css=my-app >> #save', '#save', "//button[@id='save']", 'Foo-bar >> #x'];
+    const python = runPython<string[][]>('import json, sys\nfrom mendwright.shadow import text_hosts\n'
+      + 'print(json.dumps([list(text_hosts(t)) for t in json.load(sys.stdin)]))', texts);
+    assert.deepEqual(texts.map(textHosts), python);
+    assert.deepEqual(python.slice(0, 3), [[HOST], [HOST, 'settings-panel'], ['div[data-testid="a\\"b"]']]);
+  });
+
+  test('one behind a host nothing tells apart, or inside an iframe, cannot run', () => {
+    const base = { xpath: CHAIN, source: 'heal', status: 'active' };
+    assert.throws(() => runTarget({ ...base, shadowHosts: [null] }), InvalidSelector);
+    assert.throws(() => runTarget({ ...base, shadowHosts: [HOST], frameXPath: 'iframe[name="pay"]' }), InvalidSelector);
+    assert.throws(() => runTarget({ ...base, xpath: 'other-app >> #save', shadowHosts: [HOST] }), /not the chain/);
+    assert.throws(() => runTarget({ ...base, xpath: HOST + " >> xpath=//button", shadowHosts: [HOST] }), /not a CSS/);
+    assert.deepEqual(runTarget({ ...base, shadowHosts: [HOST] }), { selector: '[data-testid="save"]', frame: null, hosts: [HOST] });
+    assert.deepEqual(runTarget({ xpath: '#save' }), { selector: '#save', frame: null, hosts: [] });
+    assert.deepEqual(splitText('a[x=" >> "] >> b'), ['a[x=" >> "]', 'b']);
+    assert.deepEqual(savedHosts('x'), [null]);
+  });
+});
+
+describe('a key last found inside a shadow root', () => {
+  test('is never healed on the page around its host, by the fingerprint or a model', async () => {
+    const w = world(V1);
+    await w.open().locator('save', '#save', { role: 'button' }).click();
+    w.page.goto(V2);
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+      /'save' was last found inside the shadow root of my-app\[id="root"\], and mendwright for TypeScript does not heal inside a shadow root yet/);
+    assert.equal(w.page.clicked.length, 1);           // the first run's click, nothing since
+    assert.equal(model.bundles.length, 0);
+    assert.deepEqual(heal.heals, []);
+    assert.ok(!journalOf(w.dir).some((e) => e.event === 'heal.applied' || e.event === 'heal.requested'));
+  });
+
+  test('is declined as shadow, and in dry run and under MENDWRIGHT_DISABLE=1 on purpose, as the Python package says',
+    async () => {
+      const codes = async (options: { dryRun?: boolean }, env: Record<string, string> = {}) => {
+        const w = world(V1);
+        await w.open().locator('save', '#save', { role: 'button' }).click();
+        w.page.goto(V2);
+        Object.assign(process.env, env);
+        await assert.rejects(w.open(options).locator('save', '#save', { role: 'button' }).click(),
+          /does not heal inside a shadow root yet/);
+        cleanEnv();
+        return journalOf(w.dir).filter((e) => e.event === 'heal.declined').map((e) => [e.key, e.code]);
+      };
+      assert.deepEqual(await codes({}), [['save', 'shadow']]);
+      assert.deepEqual(await codes({ dryRun: true }), [['save', 'dry_run']]);
+      assert.deepEqual(await codes({}, { MENDWRIGHT_DISABLE: '1' }), [['save', 'disabled']]);
+    });
+
+  test('is not healed on the page when a 0.9.0 process dropped every shadowHosts', async () => {
+    // 0.9.0 writes back only the fields it knows. The heal's chain still names its host.
+    const w = world(page(LOOKALIKE + shadow(SAVE_V2.replace('"save"', '"save-3"'))));
+    pythonHealed(w.storePath);
+    const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+    delete data.selectors.save.shadowHosts;
+    for (const c of data.selectors.save.candidates) delete c.shadowHosts;
+    fs.writeFileSync(w.storePath, JSON.stringify(data));
+    const model = new FakeModel(["//button[@data-testid='save']"]);
+    const heal = w.open({ provider: model });
+    await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
+      /'save' was last found inside the shadow root of my-app\[id="root"\], and mendwright for TypeScript does not heal inside a shadow root yet/);
+    assert.deepEqual(w.page.clicked, []);
+    assert.equal(model.bundles.length, 0);
+    assert.deepEqual(heal.heals, []);
+  });
+
+  test('a chain names its hosts only in a heal the Python package saved inside a shadow root', () => {
+    assert.deepEqual(chainHosts({ xpath: CHAIN, source: 'heal' }), [HOST]);
+    assert.deepEqual(chainHosts({ xpath: HOST + ' >> settings-panel >> .panel > button', source: 'heal' }),
+      [HOST, 'settings-panel']);
+    for (const c of [
+      { xpath: HOST + ' >> #save', source: 'code' },                      // your code passes it
+      { xpath: HOST + ' >> #save', source: 'heal', shadowHosts: [] },     // on the page now
+      { xpath: HOST + ' >> #save', source: 'heal', frameXPath: 'iframe[id="f"]' },
+      { xpath: 'div >> #save', source: 'heal' },                          // not a host it builds
+      { xpath: HOST + ' >> //button', source: 'heal' },
+      { xpath: HOST + ' >> text=Save', source: 'heal' },
+      { xpath: "//button[@id='save']", source: 'heal' },
+    ]) assert.deepEqual(chainHosts(c), [], JSON.stringify(c));
+  });
+
+  test('a key marked destructive is declined as destructive first', async () => {
+    const w = world(V1);
+    await w.open().locator('save', '#save', { role: 'button' }).click();
+    w.page.goto(V2);
+    await assert.rejects(w.open().locator('save', '#save', { role: 'button', destructive: true }).click(),
+      /marked as a destructive control/);
+  });
+});

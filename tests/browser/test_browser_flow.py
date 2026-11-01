@@ -299,7 +299,8 @@ def test_the_page_guard_across_two_urls(tab, store_file, stub_provider):
     assert 'That looks like a change in the flow, not a renamed element' in str(caught.value)
     assert 'pass heal_across_pages=True to mendwright.open()' in str(caught.value)
     assert provider.bundles == []
-    assert [e['event'] for e in journal_events(store_file)] == ['flow.page_guard']
+    assert [(e['event'], e.get('code')) for e in journal_events(store_file)] == [
+        ('flow.page_guard', None), ('heal.declined', 'page_guard')]
 
     # With the guard off, the same heal goes to the provider.
     across = _open(tab, provider, store_file, heal_across_pages=True)

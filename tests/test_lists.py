@@ -136,7 +136,10 @@ def test_a_grid_whose_card_class_changed_is_not_healed(tmp_path, make_page, stub
         "mendwright: did not heal 'cards': " + MISSING.split('  -> ')[1]]
     assert heal.heals == [] and heal.pending() == {} and provider.bundles == []
     assert [c for c in heal.store.candidates('cards') if c['source'] == 'heal'] == []
-    assert not [e for e in _journal(tmp_path) if e['event'].startswith('heal.')]
+    # Nothing was looked for: the one heal event is the decline, which names why.
+    assert [(e['event'], e['code'], e['reason']) for e in _journal(tmp_path)
+            if e['event'].startswith('heal.')] == [
+        ('heal.declined', 'list_empty', MISSING.split('  -> ')[1])]
     # Fixed in the code, the list is found and recorded for its new selector.
     cards = heal.locator_all('cards', TILE)
     assert len(cards) == 4 and cards[3].inner_text() == 'Tea pot$29.00Add to cart'

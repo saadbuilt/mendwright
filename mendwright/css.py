@@ -102,6 +102,51 @@ def _matches_only(doc, xpath, el):
     return len(hits) == 1 and hits[0] is el
 
 
+_TAG_AT = re.compile(r'-?[A-Za-z_][A-Za-z0-9_-]*')
+_PART_AT = re.compile(r'#(-?[A-Za-z_][A-Za-z0-9_-]*)|\.(-?[A-Za-z_][A-Za-z0-9_-]*)'
+                      r'|\[([A-Za-z_][A-Za-z0-9_:.-]*)="((?:[^"\\\r\n\f]|\\["\\]|\\[0-9a-f]{1,6} )*)"\]')
+_ESCAPE = re.compile(r'\\(["\\])|\\([0-9a-f]{1,6}) ')
+
+
+def _unquote(body):
+    return _ESCAPE.sub(lambda m: m.group(1) or chr(int(m.group(2), 16)), body)
+
+
+def css_xpath(css):
+    """The XPath twin of a CSS selector of the forms css_selectors() builds: compounds of a
+    tag name, #id, .class and [attr="value"] (css_string's quoting), joined by single spaces
+    (the descendant combinator). None for anything else, which mendwright then cannot match
+    in captured HTML (it has no CSS engine of its own)."""
+    if not isinstance(css, str) or not css.strip():
+        return None
+    text, i, steps = css.strip(), 0, []
+    while True:
+        tag = _TAG_AT.match(text, i)
+        name = '*'
+        if tag:
+            name, i = tag.group(0).lower(), tag.end()
+        preds = []
+        while True:
+            part = _PART_AT.match(text, i)
+            if not part:
+                break
+            i = part.end()
+            if part.group(1) is not None:
+                preds.append('@id=' + xpath_literal(part.group(1)))
+            elif part.group(2) is not None:
+                preds.append(_class(part.group(2))[1])
+            else:
+                preds.append('@' + part.group(3) + '=' + xpath_literal(_unquote(part.group(4))))
+        if not tag and not preds:
+            return None
+        steps.append(name + ''.join('[' + p + ']' for p in preds))
+        if i == len(text):
+            return '//' + '//'.join(steps)
+        if text[i] != ' ' or i + 1 == len(text):
+            return None
+        i += 1
+
+
 def css_selectors(el, doc=None, limit=3):
     """Up to ``limit`` CSS selectors that match ``el`` and nothing else in ``doc`` (an lxml
     HTML document), most robust first: the element's own attributes, two of them together,

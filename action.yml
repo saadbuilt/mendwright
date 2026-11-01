@@ -9,8 +9,9 @@ branding:
 
 # The steps pass every input and value through env: and read it as "$VAR", so no ${{ }}
 # expression is ever part of a script. Only guard, find-artifact, the download from another
-# run and publish get the token. See action/mendwright_action.py and the guide's
-# "Open a pull request with the fixes".
+# run and publish get the token, and only notify gets the webhook URL. See
+# action/mendwright_action.py and the guide's "Open a pull request with the fixes" and
+# "Alerts".
 
 inputs:
   artifact:
@@ -72,6 +73,27 @@ inputs:
   python-version:
     description: Passed to actions/setup-python. Empty uses the runner's Python.
     default: '3.12'
+  webhook-url:
+    description: >-
+      A webhook that gets a summary of the run, such as a Slack incoming webhook. Pass a
+      secret. Empty: no alert.
+    default: ''
+  webhook-format:
+    description: slack, or json for any other receiver.
+    default: slack
+  notify-when:
+    description: >-
+      changes (something was repaired or needs a human), attention (something needs a human or
+      the tests did not pass) or always.
+    default: changes
+  notify-detail:
+    description: keys names the keys in the alert; counts names none.
+    default: keys
+  journal-run:
+    description: >-
+      The run id of the journal events to summarize. Empty: gh-<run id> of the run that tested
+      the code, its newest attempt. Pass it only when your test job sets MENDWRIGHT_RUN_ID.
+    default: ''
 
 outputs:
   result:
@@ -91,6 +113,9 @@ outputs:
   left-alone:
     description: How many items mendwright fix left alone.
     value: ${{ steps.publish.outputs.left-alone || steps.fix.outputs.left-alone || steps.guard.outputs.left-alone }}
+  notified:
+    description: true when the webhook took the summary.
+    value: ${{ steps.notify.outputs.notified }}
 
 runs:
   using: composite
@@ -118,6 +143,10 @@ runs:
         MW_IN_LABELS: ${{ inputs.labels }}
         MW_IN_CLOSE_STALE: ${{ inputs.close-stale }}
         MW_IN_TESTS_RESULT: ${{ inputs.tests-result }}
+        MW_IN_WEBHOOK_FORMAT: ${{ inputs.webhook-format }}
+        MW_IN_NOTIFY_WHEN: ${{ inputs.notify-when }}
+        MW_IN_NOTIFY_DETAIL: ${{ inputs.notify-detail }}
+        MW_IN_JOURNAL_RUN: ${{ inputs.journal-run }}
       run: |
         MW_PY="$MW_SETUP_PYTHON"
         if [ -z "$MW_PY" ]; then MW_PY="$(command -v python3 || command -v python)"; fi
@@ -207,3 +236,34 @@ runs:
         MW_IN_COMMIT_AUTHOR_EMAIL: ${{ inputs.commit-author-email }}
       run: |
         "$MW_VENV_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" publish
+
+    # The alert. It runs after a failed step too, but not for a run the guard refused or
+    # skipped, nor on pull_request. Only this step gets the webhook URL, which it masks
+    # first, and whatever happens it does not fail the job.
+    - name: Send the alert
+      id: notify
+      if: >-
+        !cancelled() && (steps.guard.outputs.mode == 'fix' || steps.guard.outputs.mode == 'dry-run')
+        && github.event_name != 'pull_request' && inputs.webhook-url != ''
+      shell: bash
+      env:
+        MW_VENV_PY: ${{ steps.install.outputs.python }}
+        MW_MODE: ${{ steps.guard.outputs.mode }}
+        MW_FOUND: ${{ steps.find-artifact.outputs.found }}
+        MW_ARTIFACT_RUN_ID: ${{ steps.guard.outputs.artifact-run-id }}
+        MW_PR_URL: ${{ steps.publish.outputs.pull-request-url }}
+        MW_IN_ARTIFACT: ${{ inputs.artifact }}
+        MW_IN_STORE: ${{ inputs.store }}
+        MW_IN_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        MW_IN_TESTS_RESULT: ${{ inputs.tests-result }}
+        MW_IN_WEBHOOK_FORMAT: ${{ inputs.webhook-format }}
+        MW_IN_NOTIFY_WHEN: ${{ inputs.notify-when }}
+        MW_IN_NOTIFY_DETAIL: ${{ inputs.notify-detail }}
+        MW_IN_JOURNAL_RUN: ${{ inputs.journal-run }}
+        MENDWRIGHT_WEBHOOK_URL: ${{ inputs.webhook-url }}
+      run: |
+        if [ -n "$MW_VENV_PY" ]; then
+          "$MW_VENV_PY" -I "$GITHUB_ACTION_PATH/action/mendwright_action.py" notify || echo "::warning title=mendwright notify::the alert step failed, so no alert was sent."
+        else
+          echo "::warning title=mendwright notify::lxml was not installed in this job, so no alert was sent."
+        fi

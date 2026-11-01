@@ -121,6 +121,8 @@ _LEAF_JS = '[' + ', '.join("'" + t + "'" for t in sorted(_LEAF)) + ']'
 # Selenium runs it with find_elements()' result. null unless two or more elements matched.
 LIST_JS = r"""(els) => {
   if (!els || els.length < 2) return null;
+  const top = els[0].getRootNode();
+  const shadow = !!top && top.nodeType === 11 && !!top.host;
   const one = """ + _fp.FINGERPRINT_JS + r""";
   const shape = (el) => {
     const out = {};
@@ -152,7 +154,7 @@ LIST_JS = r"""(els) => {
     }
     container = {tag: box.tagName.toLowerCase(), attrs: attrs};
   }
-  return {count: els.length, depth: depth, items: items, container: container};
+  return {count: els.length, depth: depth, items: items, container: container, shadow: shadow};
 }"""
 
 # LIST_JS, plus the list's label and where it sits (see raw_of_elements(place=True)), for
@@ -160,6 +162,8 @@ LIST_JS = r"""(els) => {
 # fingerprint holds them. Also one round trip, and null for fewer than two elements.
 LIST_PLACE_JS = r"""(els) => {
   if (!els || els.length < 2) return null;
+  const top = els[0].getRootNode();
+  const shadow = !!top && top.nodeType === 11 && !!top.host;
   const one = """ + _fp.FINGERPRINT_JS + r""";
   const shape = (el) => {
     const out = {};
@@ -267,7 +271,8 @@ LIST_PLACE_JS = r"""(els) => {
     for (let i = e.children.length - 1; i >= 0; i--) stack.push(e.children[i]);
   }
   const labels = Array.from(said).slice(0, """ + str(PLACE_LABELS) + r""");
-  return {count: els.length, depth: depth, items: items, container: container, label: label,
+  return {count: els.length, depth: depth, items: items, container: container, shadow: shadow,
+          label: label,
           place: {chain: chain, others: others, labels: labels, cut: cut}};
 }"""
 
@@ -556,6 +561,8 @@ def from_raw(raw):
     place = _place(raw.get('place'))
     if place is not None:
         out['place'] = place
+    if raw.get('shadow') is True:
+        out['shadow'] = True        # the items were inside a shadow root (see in_shadow)
     return out
 
 
@@ -625,6 +632,13 @@ def valid(lfp):
             and isinstance(lfp.get('count'), int) and lfp['count'] >= 2
             and isinstance(lfp.get('items'), list) and bool(lfp['items'])
             and all(_fp.valid(item) for item in lfp['items']))
+
+
+def in_shadow(lfp):
+    """True when the items of the list fingerprint lfp were inside an open shadow root when
+    it was recorded (LIST_JS read that): find() looks only in the page's own HTML, so such a
+    list is never looked for (see HealCoordinator.propose_list)."""
+    return isinstance(lfp, dict) and lfp.get('shadow') is True
 
 
 def placed(lfp):

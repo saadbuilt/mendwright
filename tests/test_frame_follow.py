@@ -474,3 +474,33 @@ def test_respelling_leaves_other_rows_alone():
 def test_xpath_compilation_is_cached():
     from mendwright import selectors
     assert hasattr(selectors._compile_xpath, 'cache_info')
+
+
+# --- heal.declined for a key found only inside an iframe ---------------------------------------
+
+def _declines(tmp_path):
+    path = tmp_path / 'journal.jsonl'
+    events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] \
+        if path.exists() else []
+    return [(e['key'], e['code'], e['reason']) for e in events if e['event'] == 'heal.declined']
+
+
+@pytest.mark.parametrize('how, code', [
+    ({'frame': {'nested': True}}, 'frame'),
+    ({'open': {'dry_run': True}}, 'dry_run'),
+    ({'env': 'MENDWRIGHT_DISABLE'}, 'disabled'),
+    ({'last_page': '/checkout'}, 'page_guard'),
+])
+def test_a_key_not_followed_into_an_iframe_is_declined_with_a_code(how, code, tmp_path,
+                                                                   stub_provider, monkeypatch):
+    if 'env' in how:
+        monkeypatch.setenv(how['env'], '1')
+    heal = _open(TwoDocs(INNER, **how.get('frame', {})), tmp_path, stub_provider(None),
+                 **how.get('open', {}))
+    if 'last_page' in how:
+        heal.store.set_last_page('terms', how['last_page'])
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('terms', '#inner-terms', role='checkbox', timeout_ms=0, poll_ms=0)
+    [(key, got, reason)] = _declines(tmp_path)
+    assert (key, got) == ('terms', code)
+    assert reason == heal.coordinator.explain('terms') and reason in str(info.value)
