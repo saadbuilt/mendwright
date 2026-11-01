@@ -57,7 +57,8 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 | `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
 | `expect_values` | none | `{key: check}`: what a read of each key must return when it goes through a heal, as `expect_value=` of `heal.locator()` says, also for the lookups of `heal.page` and `heal.driver`, whose key is the selector (`by=value` on `heal.driver`). See [Checking what a read returns](#checking-what-a-read-returns). |
-| `heal_get_by` | `MENDWRIGHT_HEAL_GET_BY`, else off | `True` looks up and heals `heal.page.get_by_role()` and the other `get_by_*` calls too, from their fingerprints only. On Selenium it does nothing. See [get_by locators](#get_by-locators). |
+| `heal_get_by` | `MENDWRIGHT_HEAL_GET_BY`, else off | `True` looks up and heals `heal.page.get_by_role()` and the other `get_by_*` calls too, from their fingerprints only. `"model"` does the same and asks the model provider when the fingerprint doesn't heal a call. On Selenium it does nothing. See [get_by locators](#get_by-locators). |
+| `suggest_get_by` | `MENDWRIGHT_SUGGEST_GET_BY`, else off | `True` saves every heal on Playwright with a `get_by_*` call that matched the healed element, for [`mendwright fix`](#mendwright-fix) to suggest. A heal of a `get_by_*` call gets one either way. See [Suggested calls](#suggested-calls). |
 
 The two rates are shared by every Healer in one process that uses the same store file and the same two rate values.
 `GatewayProvider` gets no client-side limit, because the gateway meters on its side.
@@ -135,7 +136,8 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_DRY_RUN` | `1` turns dry run on |
 | `MENDWRIGHT_DISABLE` | `1` resolves selectors but never heals or calls a provider, even one passed as `provider=`. The fingerprint tier is off too. |
 | `MENDWRIGHT_FINGERPRINT` | `0` turns the fingerprint tier off, the default for `fingerprint=` |
-| `MENDWRIGHT_HEAL_GET_BY` | `1` heals `heal.page.get_by_*` calls, the default for `heal_get_by=` (see [get_by locators](#get_by-locators)) |
+| `MENDWRIGHT_HEAL_GET_BY` | `1` heals `heal.page.get_by_*` calls from their fingerprints, and `model` lets the model provider heal them too: the default for `heal_get_by=` (see [get_by locators](#get_by-locators)) |
+| `MENDWRIGHT_SUGGEST_GET_BY` | `1` saves every heal with a suggested `get_by_*` call, the default for `suggest_get_by=` (see [Suggested calls](#suggested-calls)) |
 | `MENDWRIGHT_PROVIDER` | `anthropic`, `openai`, `gemini`, `gateway`, `local` or `ollama`: use that provider instead of detecting one |
 | `MENDWRIGHT_GATEWAY` | Gateway URL, which selects `GatewayProvider` |
 | `MENDWRIGHT_LOCAL_MODEL` | The Ollama name of mendwright's local selector model, which selects `LocalModelProvider` |
@@ -147,7 +149,8 @@ An unconfirmed heal stays active and is used on later runs.
 | `MENDWRIGHT_REQUIRE_ENGINES` | Only for this repo's browser tests: comma-separated engine ids that must start, so CI fails instead of skipping |
 
 Flags take `1`, `true`, `yes` or `on`, and `0`, `false`, `no`, `off` or empty.
-Any other value makes `open()` raise `ValueError` (for `MENDWRIGHT_DRY_RUN`, only when `dry_run=` isn't passed, and for `MENDWRIGHT_HEAL_GET_BY`, only when `heal_get_by=` isn't).
+`MENDWRIGHT_HEAL_GET_BY` also takes `model`, in any case.
+Any other value makes `open()` raise `ValueError` (for `MENDWRIGHT_DRY_RUN`, only when `dry_run=` isn't passed, for `MENDWRIGHT_HEAL_GET_BY`, only when `heal_get_by=` isn't, and for `MENDWRIGHT_SUGGEST_GET_BY`, only when `suggest_get_by=` isn't).
 
 ## Heals without a model
 
@@ -287,10 +290,13 @@ page.get_by_role("button", name="Sign in").click()   # healed when the button is
 
 With `heal_get_by=True`, `get_by_role()`, `get_by_text()`, `get_by_label()`, `get_by_placeholder()`, `get_by_alt_text()`, `get_by_title()` and `get_by_test_id()` on `heal.page` are looked up and healed the way `heal.page.locator(selector)` is.
 A call that matches nothing is healed from the fingerprint mendwright recorded when the call last matched, never by a model.
+With `heal_get_by="model"`, the model provider is asked too when the fingerprint doesn't heal the call (see [A model for calls](#a-model-for-calls)).
+Either way, a heal of a call is saved with a call that matched the healed element, which [`mendwright fix`](#suggested-calls) suggests next to each place that makes the call.
 
 ### Turning it on
 
 Pass `heal_get_by=True` to `mendwright.open()` or `mendwright.aio.open()`, set `MENDWRIGHT_HEAL_GET_BY=1` for every healer that doesn't pass it, or run `pytest --mendwright-heal-get-by`, which sets the variable for the run.
+For a model too, pass `heal_get_by="model"`, set `MENDWRIGHT_HEAL_GET_BY=model`, or run `pytest --mendwright-heal-get-by-model`.
 It is off by default. Off, `heal.page.get_by_*` are Playwright's own locators, as in 0.8.0 (with `dismiss=True`, `GuardedLocator`s), and nothing about them is saved.
 On Selenium the argument is accepted and does nothing: `heal.driver` has no `get_by_*`.
 
@@ -351,8 +357,8 @@ They are `get_by_role()` with `checked=`, `disabled=`, `expanded=`, `pressed=` o
 ### When a call heals
 
 - Only when it matches nothing for `timeout_ms`.
-- Only from its fingerprint, which mendwright records each time the call matches one element while the fingerprint tier is on (see [Heals without a model](#heals-without-a-model)). So turn the flag on while the suite passes, and keep the store between CI runs (see [Keep heals between runs](#keep-heals-between-runs)). A call with no fingerprint in the store, one that never matched or matched only with the tier off, is not healed: a call that never matched is more often a mistake in the call than a redesign.
-- Never by a model, a gateway or a local model, even when one is configured, so no page leaves your machine for a call. A call names its element by role and words, and when it breaks those are what changed: a model given the old call could only guess a new name. The fingerprint holds what survives a redesign, such as ids, test ids, names, classes and ancestors, and the tier needs a strong sign of identity before it proposes anything.
+- With `heal_get_by=True`, only from its fingerprint, which mendwright records each time the call matches one element while the fingerprint tier is on (see [Heals without a model](#heals-without-a-model)). So turn the flag on while the suite passes, and keep the store between CI runs (see [Keep heals between runs](#keep-heals-between-runs)). A call with no fingerprint in the store, one that never matched or matched only with the tier off, is not healed: a call that never matched is more often a mistake in the call than a redesign.
+- With `heal_get_by=True`, never by a model, a gateway or a local model, even when one is configured, so no page leaves your machine for a call. A call names its element by role and words, and when it breaks those are what changed. The fingerprint holds what survives a redesign, such as ids, test ids, names, classes and ancestors, and the tier needs a strong sign of identity before it proposes anything. With `heal_get_by="model"`, the model provider is asked when the fingerprint doesn't heal the call (see [A model for calls](#a-model-for-calls)).
 - A call that matches several elements, one hidden element (unless its role is checkbox), or that the browser rejects, such as `level=` on a button, is not broken. Playwright runs it as written and raises its own error: a strict mode violation, its wait and timeout, or the selector error. Nothing is saved and no saved heal is used, also when the call starts to match several elements while mendwright waits.
 - A saved heal answers only while the call matches nothing:
 
@@ -378,12 +384,62 @@ No matching element for: get_by_role("button", name="Sign in") (tried 1 candidat
   -> mendwright heals a get_by_* call only from the fingerprint it records each time the call matches one element, and 'get_by_role("button", name="Sign in")' has none in this store: it has not matched one element here while the fingerprint tier was on. A call that never matched is more often a mistake in the call than a redesign. Check its arguments against the page.
 ```
 
-A fingerprint match that wasn't confident, or failed a check, ends with `mendwright asks no model to heal a get_by_* call: the call names its element by role and words, and those are what changed, so a model could only guess. Change the call by hand.`
+With `heal_get_by=True`, a fingerprint match that wasn't confident, or failed a check, ends with `With heal_get_by=True, mendwright asks no model to heal a get_by_* call: the call names its element by role and words, and those are what changed. Change the call by hand, or pass heal_get_by='model' to mendwright.open() to let the model provider look for the element.`
 
 ### What a heal must pass
 
-A heal of a call goes through the checks of any fingerprint heal: one match of the element's role in the captured HTML, not quarantined, and one visible match on the live page that still has the role. The role is the one mendwright read from the element the call matched, as for a selector without `role=`.
+A heal of a call goes through the checks of any heal, from the fingerprint or a model: one match of the element's role in the captured HTML, not quarantined, and one visible match on the live page that still has the role. The role is the one mendwright read from the element the call matched, as for a selector without `role=`, or for a `get_by_role()` call that never matched, the role it names (see [A model for calls](#a-model-for-calls)).
 For a `get_by_role()` call, Playwright must also give the healed element the call's ARIA role, and the call's `level=` when it has one, by its own matcher on the live page. mendwright's role is mostly the tag, so a `<button role="tab">` that is no longer a tab, or an `<a>` that lost its `href`, would pass it. One that Playwright doesn't give the role is refused with `live element role mismatch: Playwright does not give it the ARIA role 'tab'`, and one it can't be asked about is refused too.
+
+### A model for calls
+
+```python
+page = mendwright.open(page, heal_get_by="model").page    # or MENDWRIGHT_HEAL_GET_BY=model
+page.get_by_role("button", name="Sign in").click()
+```
+
+With `heal_get_by="model"`, a call that matches nothing for `timeout_ms` goes through the same tiers as `heal.locator()`: its fingerprint first, then the model provider (a hosted model, a gateway or the [local model](#local-model)) when the fingerprint match isn't confident, the call has no fingerprint yet, or the fingerprint tier is off.
+`heal_get_by=True` doesn't change: no model is asked for a call.
+
+The model gets:
+
+- the call, as the key and as the selector that broke, such as `get_by_role("button", name="Sign in")`
+- what the call says of its element, as the intent: `the button named "Sign in"`, `the form field labelled "Email"`, `the element with the test id "login"`, or for a regular expression `the button whose name matches the regular expression /sign\s?in/i`. It is used for that heal only, never saved, and an `intent` a seed file gives the key wins.
+- the page, redacted as for any heal, and for `LocalModelProvider` only, the call's fingerprint
+
+A call that never matched has no role in the store, so there is nothing to check a model's pick against.
+For a `get_by_role()` call the role it names stands in: the gate role that ARIA role means, as `role=` takes it (a `textbox` is an input, a `heading` with `level=2` an h2), and Playwright must give the pick the ARIA role too.
+For a role the gate has no word for, such as `tab` or `menuitem`, and for `get_by_text()`, `get_by_label()` and the other methods, no model is asked:
+
+```text
+  -> mendwright does not know what kind of element 'get_by_label("E-mail")' is: the call has not matched one element in this store, and only a get_by_role() call says what kind of element it finds, so what a model picks could not be checked and no model was asked. Run the step once while the call matches, so mendwright reads the element.
+```
+
+Every rule of a heal still holds for a model's pick:
+
+- A key marked destructive is never sent to a model, and nor is a key whose call matches several elements or one hidden one: that call goes to Playwright as written.
+- The page guard declines a call on a page it was never found on. A call that never matched has no page to compare, as a key with only `intent=`.
+- `guard=`, dry run and `MENDWRIGHT_DISABLE=1` work as for any key.
+- A model heal of a call counts toward the hourly limit (`rate_per_key_per_hour`, `rate_global_per_hour`); a fingerprint heal doesn't.
+- A quarantined element is refused, also under another spelling.
+- The pick must match one element of the role in the captured page and one visible element on the live page, and for a `get_by_role()` call Playwright must give it the call's ARIA role and `level=` (see [What a heal must pass](#what-a-heal-must-pass)). A rejected pick gets one re-prompt, as for any key.
+
+A model heal logs `healed 'get_by_role("button", name="Sign in")': get_by_role("button", name="Sign in") -> //button[@id='enter'] (LocalModelProvider, 0.2s)`, and its journal events are those of any model heal.
+With a hosted model or a gateway, the redacted page and the call's arguments leave your machine for each call a model heals (see [SECURITY.md](../SECURITY.md)).
+
+How well it works: on 19 call-shaped cases, the redesigns of the [benchmark](benchmark.md) with the step written as a call (11 where a heal is right, 8 where none is), in headless Chromium with mendwright's local model ([results](../benchmarks/RESULTS.md#get_by-calls)):
+
+| Run | Correct | Wrong | Negatives declined | Wrong on negatives |
+|---|---|---|---|---|
+| `heal_get_by=True`: the fingerprint only | 4/11 | 0 | 8/8 | 0 |
+| `heal_get_by="model"`: the fingerprint, then the local model | 8/11 | 0 | 8/8 | 0 |
+| the local model alone (`fingerprint=False`) | 8/11 | 0 | 8/8 | 0 |
+| the local model, for calls that never matched | 5/11 | 0 | 8/8 | 0 |
+
+Behind the fingerprint, the model healed a renamed link and three translated buttons and links that the fingerprint couldn't tell apart from their neighbours. It missed a filter button whose words became a live count ("Show 5 flights") in every run, and, in one run or another, a checkbox whose label was reworded, a quantity box in a table of look-alike rows, a menu button renamed from "Toggle navigation bar" to "Menu" and a translated link it wasn't sure of; each miss was the model saying no element fits, or a pick under the confidence threshold.
+For calls that never matched, the four calls that aren't `get_by_role()` (two `get_by_label()`, a `get_by_placeholder()` and a `get_by_text()`) were declined before any model call, and the model itself declined the two steps that moved to another page, which the page guard can't see then.
+Every heal of a call was saved with a suggested call, but for the quantity box, whose role and name every row shares, and each suggested call found the right element on the new page.
+These are few cases, one case is 9 points, the calls were written for these pages, and no hosted model was measured: expect wrong heals now and then on your own pages, and mark pay, submit and delete steps with `destructive_keys=`.
 
 ### What stays unhealed
 
@@ -407,14 +463,41 @@ The reads that wait for the element, such as `inner_text()` and `is_checked()`, 
 
 ### mendwright fix and calls
 
-[`mendwright fix`](#mendwright-fix) never rewrites a call, with `--apply` or without. It lists it under "Left alone", with its healed selector and the Python lines that make a call with the same literal arguments:
+[`mendwright fix`](#mendwright-fix) never rewrites a call, with `--apply` or without. It lists it under "Left alone", with its healed selector, the call it suggests (see [Suggested calls](#suggested-calls)) and the Python lines that make a call with the same literal arguments, each with the suggested call next to it:
 
 ```text
 Left alone:
-  get_by_role("button", name="Sign in"): it is a heal.page.get_by_role() call, and mendwright fix does not rewrite calls: from the code it cannot tell whether a call with these arguments runs on heal.page or inside another locator, where it may still find the element it was written for. Its healed selector, confirmed, is //button[@id='login']. Change the call's arguments by hand to the element's new role or words, or replace it with page.locator("//button[@id='login']"). Calls with these arguments: tests/test_login.py:12, tests/test_login.py:40.
+  get_by_role("button", name="Sign in"): it is a heal.page.get_by_role() call, and mendwright fix does not rewrite calls: from the code it cannot tell whether a call with these arguments runs on heal.page or inside another locator, where it may still find the element it was written for. Its healed selector, confirmed, is //button[@id='login']. Suggested call: get_by_role("button", name="Log in", exact=True), which matched the healed element, and nothing else, when the heal was made. Change the call's arguments by hand to the element's new role or words, as in the suggested call, or replace it with page.locator("//button[@id='login']"). Calls with these arguments: tests/test_login.py:12, tests/test_login.py:40.
+    tests/test_login.py:12  ->  get_by_role("button", name="Log in", exact=True)
+    tests/test_login.py:40  ->  get_by_role("button", name="Log in", exact=True)
 ```
 
 From the code it can't tell a call on `heal.page`, which was healed, from one with the same arguments inside another locator, which still finds its own element. The arguments are often variables or constants that other calls share. And an XPath in place of the call swaps the role and words you chose for the most brittle form.
+A heal saved without a suggestion is listed as before, without the lines under it.
+
+### Suggested calls
+
+When a heal of a call is made, mendwright looks for a call that finds the healed element, and saves it with the heal: its get_by twin.
+It reads the element's ARIA role and name as Playwright does, from `aria_snapshot()` (Playwright 1.49 and later), and its label and test id from the captured page, and tries, the call's own method first:
+
+- `get_by_role(role, name=..., exact=True)`, with `level=` when the call has one
+- `get_by_label(label, exact=True)` for a form field with a `<label>` or `aria-label`
+- `get_by_test_id(...)` for an element with `data-testid`, Playwright's default test id attribute
+- for a `get_by_text()`, `get_by_placeholder()`, `get_by_alt_text()` or `get_by_title()` call, the same method with the element's text or attribute, `exact=True`
+
+The first one that matches the healed element, and nothing else, on the live page is saved, at most 3 are tried, and a name, label or text longer than 100 characters isn't used.
+It is saved as `getBy` on the heal's row in `overrides.json` and as `get_by` on its `heal.applied` event in `journal.jsonl`.
+None is saved when none passes (two buttons named "Log in"), for a heal inside an iframe or a shadow root, and on Selenium; the heal is saved either way.
+mendwright never runs a twin: your code's call and the heal do. It says what matched once, when the heal was made, so check it before you write it, and prefer one that says what your test means.
+
+`mendwright fix` shows it next to each place that makes the call (above), in `--format json` as `suggested_call` and `call_sites` (see [mendwright fix](#mendwright-fix-1)), and in `--format md`, which the [GitHub Action](#open-a-pull-request-with-the-fixes) puts in its pull request, as a list of those places under the call.
+It shows only a call in mendwright's own spelling: anything else in that field was written by something else, and is left out.
+
+With `suggest_get_by=True` in `mendwright.open()` (or `MENDWRIGHT_SUGGEST_GET_BY=1`), every heal on Playwright gets a twin, not only those of calls, and `mendwright fix` shows it under the healed selector it writes back, as `or the call  get_by_role(...)`, in JSON as `suggested_call`, and in the Markdown table next to the new selector.
+
+It costs one read of the role and name and two round trips per call tried, when a heal is made, and nothing on a lookup that doesn't heal. On a page of 2,000 elements, finding the twin of a button took a median of 16 ms in Chromium, 13 ms in WebKit, 32 ms in Firefox, 30 ms in camoufox and 47 ms in patchright, with the first call tried passing.
+
+A store that mendwright 0.10.0 rewrites keeps the heal and drops `getBy`; `mendwright fix` then takes the twin from the heal's `heal.applied` event. The TypeScript package keeps `getBy` when it writes the store.
 
 ### What it costs
 
@@ -809,6 +892,7 @@ def mendwright_provider():
 | `--mendwright-disable` | Sets `MENDWRIGHT_DISABLE=1` for the run |
 | `--mendwright-strict` | Fails every test that needed a heal |
 | `--mendwright-heal-get-by` | Sets `MENDWRIGHT_HEAL_GET_BY=1` for the run, so `heal.page.get_by_*` calls heal (see [get_by locators](#get_by-locators)) |
+| `--mendwright-heal-get-by-model` | Sets `MENDWRIGHT_HEAL_GET_BY=model` for the run, so a model may heal those calls too (see [A model for calls](#a-model-for-calls)). It wins over `--mendwright-heal-get-by`. |
 
 The dry-run flag also reaches Healers that tests open themselves, unless that code passes `dry_run=`, and so does the get_by flag, unless it passes `heal_get_by=`. The disable flag reaches all of them, and no argument overrides it.
 
@@ -1623,7 +1707,7 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 | `list_empty` | A list whose selectors all match nothing (see [Lists](#lists)) |
 | `list_not_found` | A list looked up with `nonempty=True`, for which mendwright found nothing it could propose |
 | `list_waits_fix` | A list looked up with `nonempty=True`, whose list heal you accepted with `mendwright lists accept` matches now, but is not yet in your code (`mendwright fix --apply` writes it there) or its seed file |
-| `get_by` | A `get_by_*` call its fingerprint could not heal (no model is asked for one) |
+| `get_by` | A `get_by_*` call its fingerprint could not heal, with `heal_get_by=True` (no model is asked for one). With `heal_get_by="model"` a call's decline has the code of any key's, such as `not_here` or `gate`. |
 | `frame` | Its selector matches only inside an iframe mendwright did not follow it into |
 | `shadow` | Its element is inside a [shadow root](#shadow-dom) mendwright could not heal it in or follow it into |
 | `other` | Anything else |
@@ -1829,14 +1913,16 @@ Check each new selector before you merge. A passing test confirms a heal, but a 
 | `accept_terms` (checkbox) | `#accept-terms` | `input[name="legal-consent"]` | fingerprint (no model) | passing test `tests/test_checkout.py::test_signup` | `tests/test_checkout.py:3` |
 | `search` (textbox) | `#search-box` | `//input[@name='q']` | model: `AnthropicProvider`, `claude-x` | `expect=` on an action | `tests/test_search.py:8` |
 
-#### Left alone (1)
+#### Left alone (2)
 
 - `email`: its heal was never confirmed.
+- `get_by_role("button", name="Sign in")`: is a `heal.page.get_by_*()` call, which mendwright fix never rewrites.
+  - `tests/test_login.py:12`: `get_by_role("button", name="Log in", exact=True)`
 
 From run [#11893412207](https://github.com/saadbuilt/shop/actions/runs/11893412207) on `main` at `3f2a1c9`, with mendwright 0.9.0. Each run rewrites the branch `mendwright/fix/main`. Don't push to it: the action stops updating a branch that has commits it did not make. Comment here instead of editing this description, which the action rewrites.
 ````
 
-Under each item of "Left alone", a Why section quotes the line `mendwright fix` prints. Every key, selector, path and name from the store, the journal or your files is in a code span or a code block, with control and bidirectional characters written out as `\uXXXX`, so nothing in them can mention someone, link an issue or read in another order than it is written. The job summary shows them the same way.
+Under a `get_by_*` call left alone, each place that makes the call is listed with the call mendwright suggests there (see [Suggested calls](#suggested-calls)); the action never changes a call. Under each item of "Left alone", a Why section quotes the line `mendwright fix` prints. Every key, selector, path and name from the store, the journal or your files is in a code span or a code block, with control and bidirectional characters written out as `\uXXXX`, so nothing in them can mention someone, link an issue or read in another order than it is written. The job summary shows them the same way.
 The description ends with a hidden marker that holds what the action needs to know on the next run: a hash of what it writes, the run and commit, and the keys.
 The commit has the same title and one line, `From <run>, tests on <commit>.`, with no key and no selector, and its author and committer are `commit-author-name` and `commit-author-email`, whatever `GIT_AUTHOR_*` and `GIT_COMMITTER_*` variables or `author.*` settings your job has.
 
@@ -2285,7 +2371,7 @@ Store (where mendwright.open() saves heals)
 
 `--json` has a `fingerprint` entry with `enabled` and `source` (`default`, `MENDWRIGHT_FINGERPRINT` or `MENDWRIGHT_DISABLE`).
 Under Store, a line says the run id journal events get here: `run id for the journal: gh-11893412207.1 (from GitHub Actions)`, `... (from MENDWRIGHT_RUN_ID)`, or `none (set MENDWRIGHT_RUN_ID to group a run's events)`. `--json` has it as `run`, with `id` and `source` (`MENDWRIGHT_RUN_ID`, `github` or `null`). A `MENDWRIGHT_RUN_ID` that is not a run id is listed under Problems. `MENDWRIGHT_WEBHOOK_URL` shows as [`mendwright notify`](#mendwright-notify) names the webhook, its scheme and host, when `mendwright notify` takes the URL, and else as why not, such as `(set, not a URL mendwright notify takes: it does not start with https://)`, never its value.
-With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`) and `heals`, which is `enabled` with the fingerprint tier on.
+With `MENDWRIGHT_HEAL_GET_BY=1` the get_by section says `healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that matches nothing is healed from its fingerprint, never by a model.`, or, with the fingerprint tier off, that such a call is routed but reported, not healed. With `MENDWRIGHT_HEAL_GET_BY=model` it says the model provider is asked when the fingerprint doesn't heal the call or the call never matched. `--json` has a `get_by` entry with `enabled`, `source` (`default` or `MENDWRIGHT_HEAL_GET_BY`), `model`, true for `model`, and `heals`, which is `enabled` with the fingerprint tier on or `model`.
 
 ### mendwright report
 
@@ -2378,7 +2464,7 @@ Which keys it changes:
 - A list heal you accepted with `mendwright lists accept` (see [Lists that always have items](#lists-that-always-have-items-nonemptytrue)), under the same rules as a heal, and only in place of the selectors it replaced. Its header line says `list heal, accepted DATE`, and it shows where the group is and what is not the same. Never when your last run passed other selectors for the key, such as another page's or one you fixed by hand, or when one of the key's selectors matched after the list heal was found: the reason says to change the selector by hand, or to drop the list heal with `mendwright lists reject KEY`. Never a list heal that waits for you to check it, with any option: it is left alone with the command that accepts it. Never an accepted one next to a newer proposal for the same key, until you accept or reject that one.
 - Never a key with a list heal saved with `"list": true` by builds of 0.8.0 before its release, which nobody checked: it can be another list that holds the items of an emptied one. For a key that also has a heal of one element (`heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key), the reason gives the selector for each.
 - Never a key that `heal.locator_all()` looks up as a list when its heal is of one element, from `heal.locator()`, a `heal.page` shortcut or `heal.driver.find_element()` under the same key: written into the list call, it would make the list that one element. The reason names the healed selector.
-- Never a `heal.page.get_by_*()` call, whose key is written as the call: it is listed with its healed selector and the lines that make the call (see [mendwright fix and calls](#mendwright-fix-and-calls)). No string equal to a call's text is rewritten either.
+- Never a `heal.page.get_by_*()` call, whose key is written as the call: it is listed with its healed selector, the lines that make the call and, next to each, the call mendwright suggests in its place when the heal was saved with one (see [mendwright fix and calls](#mendwright-fix-and-calls) and [Suggested calls](#suggested-calls)). No string equal to a call's text is rewritten either.
 - Never a key from `heal.driver`'s `find_element(By.ID, ...)` or `By.NAME`, or from `find_element(By.CSS_SELECTOR, ...)` when the heal has no CSS form, since those calls can't run the healed XPath. The reason says what to change the call to.
 - A key whose newest heal was quarantined, and that no selector has matched since, is listed, so a key that drops out of a pull request says why: `email: its newest heal //input[@name='e-mail'] was quarantined (an action on it failed, a check said it was the wrong element, or the key is marked destructive), and no selector has worked for the key since, so there is nothing to write back.`
 
@@ -2412,6 +2498,7 @@ A file is written through a temporary file next to it and then replaced, and a f
     {"key": "accept_terms", "role": "checkbox", "old": ["#accept-terms"],
      "now": ["input[name=\"legal-consent\"]"], "xpath": "//input[@name='legal-consent']",
      "css": "input[name=\"legal-consent\"]", "confirmed": true,
+     "suggested_call": null,
      "found_by": {"tier": "fingerprint", "provider": "fingerprint", "model": null, "at": "2026-10-16T05:01:02+00:00"},
      "confirmed_by": {"by": "test", "test": "tests/test_checkout.py::test_signup", "at": "2026-10-16T05:01:04+00:00"},
      "places": [{"path": "tests/test_checkout.py", "line": 3}]}
@@ -2429,11 +2516,11 @@ A file is written through a temporary file next to it and then replaced, and a f
 }
 ```
 
-- `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where.
+- `written_back` has one entry per key with at least one replacement: `old` is the key's selectors in your code, `now` what replaces them (the heal's CSS form for a CSS selector when it has one), `places` where. `suggested_call` is the heal's get_by twin with [`suggest_get_by=True`](#suggested-calls), else `null`.
 - `found_by` comes from the latest `heal.applied` for the healed selector: `tier` is `fingerprint`, `model`, `intent`, `frame` or `shadow`, with the `provider` and `model` the journal names. It is `null` when the journal has no such event.
 - `confirmed_by` describes the `heal.canary` that confirmed the heal: what confirmed it (`by`, see [journal.jsonl](#journaljsonl)) and, for a passing test, its node id (`test`). Both are `null` for a canary written before 0.9.0, and `confirmed_by` is `null` for a heal that is not confirmed, which only `--include-unconfirmed` writes.
 - A list heal you accepted with [`mendwright lists accept`](#mendwright-lists) has `"list": true` and `accepted`, when you accepted it. Its `found_by` is the list fingerprint (`tier` `fingerprint`), at the time of its `heal.held`, else of its proposal, and its `confirmed_by` has `by` `accepted`, at the time of its `heal.accepted`, else `accepted`.
-- `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`.
+- `left_alone` has one entry per line under "Left alone", in the same order, with the line as `text` and a stable `code`. An entry with the code `get_by_call` also has `suggested_call`, the call mendwright suggests in place of the healed call (a string in mendwright's spelling, or `null` when the heal has none, see [Suggested calls](#suggested-calls)), and `call_sites`, the places that make the call, as `{"path", "line"}`. In the text output each place is printed under the line with the suggested call, and in the Markdown as a list under the item.
 - `plan` is a SHA-256 of what is written where: each replacement's path, old selector, new selector and keys. Line numbers and quoting are left out, so an unrelated edit that moves a line keeps it.
 - `files` says which files were `written`, which only happens with `--apply`.
 
@@ -2648,7 +2735,8 @@ The first line names the key. The line after `->` says why there was no heal:
 | is inside an iframe ... mendwright did not look for it there | The reason says why (a destructive key, several iframes or elements, an iframe inside an iframe, or one nothing tells apart). Open mendwright on the frame (see [Iframes](#iframes)) |
 | does not follow a get_by_* call into an iframe | The call matches only inside an iframe. Open mendwright on that frame with `heal_get_by=True`: `mendwright.open(page.frame(name="..."), heal_get_by=True)`. See [get_by locators](#get_by-locators). |
 | heals a get_by_* call only from the fingerprint it records | The call never matched one element in this store while the fingerprint tier was on. Check its arguments against the page: a typo in the name, or a role such as `"btn"` that no element has. |
-| asks no model to heal a get_by_* call | The fingerprint found no confident match for the call's element, or its pick failed a check. Change the call by hand to the element's new role or words. |
+| asks no model to heal a get_by_* call | With `heal_get_by=True`, the fingerprint found no confident match for the call's element, or its pick failed a check. Change the call by hand to the element's new role or words, or pass `heal_get_by="model"` to let a model look for it (see [A model for calls](#a-model-for-calls)). |
+| the call has not matched one element in this store, and only a get_by_role() call says what kind of element it finds | With `heal_get_by="model"`, a call that never matched names no kind of element to check a model's pick against, so no model was asked. Run the step once while the call matches. |
 | Playwright does not give it the ARIA role | The element the fingerprint found no longer has the call's role, or level. Change the call by hand. |
 | rate/spend cap was reached | Wait for the hourly window, or raise `rate_per_key_per_hour` and `rate_global_per_hour` |
 | dry-run mode is on | Unset `MENDWRIGHT_DRY_RUN`, or drop `dry_run=True` or `--mendwright-dry-run` |
