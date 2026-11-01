@@ -59,6 +59,9 @@ openai = ["openai>=1.0"]
 gemini = ["google-genai"]
 bedrock = ["boto3>=1.34"]
 litellm = ["litellm"]
+# A store in S3 (mendwright.backends.s3). 1.35.69 is the first boto3 whose S3 model has
+# IfMatch on PutObject; IfNoneMatch on PutObject and IfMatch on DeleteObject came earlier.
+s3 = ["boto3>=1.35.69"]
 # All model providers. Browser libraries are left out on purpose: install playwright or
 # selenium yourself, or add the matching extra.
 all = ["anthropic>=0.39", "openai>=1.0", "google-genai", "boto3>=1.34", "litellm"]
