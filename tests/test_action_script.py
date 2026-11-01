@@ -1210,6 +1210,27 @@ def test_a_second_run_with_the_same_store_pushes_nothing_and_patches_nothing(wor
     assert world.steps['publish'][1].rstrip().endswith('mendwright: #12 is up to date.')
 
 
+def test_the_pull_request_shows_the_suggested_call_next_to_each_place_that_makes_it(world):
+    call = 'get_by_role("button", name="Sign in")'
+    twin = 'get_by_role("button", name="Log in", exact=True)'
+    world.write('tests/test_login.py', 'def test_login(heal):\n'
+                '    heal.page.get_by_role("button", name="Sign in").click()\n')
+    world.commit('a login test')
+    world.env['GITHUB_SHA'] = world.head()
+    entry = heal(call, "//button[@id='login']", role='button')
+    entry['candidates'][-1]['getBy'] = twin
+    world.upload({'accept_terms': heal('#accept-terms', TERMS, role='checkbox'), call: entry},
+                 confirmed('accept_terms', TERMS) + confirmed(call, "//button[@id='login']"))
+    world.run()
+    assert world.result() == 'created'
+    body = world.api.pulls[12]['body']
+    assert ('- `' + call + '`: is a `heal.page.get_by_*()` call, which mendwright fix never '
+            'rewrites.\n  - `tests/test_login.py:2`: `' + twin + '`\n') in body
+    # The call itself is never rewritten.
+    assert 'get_by_role("button", name="Sign in")' in git(
+        world.bare, 'show', 'mendwright/fix/main:tests/test_login.py')
+
+
 def test_a_changed_left_alone_patches_the_body_only(world):
     world.run()
     first = world.remote_sha('mendwright/fix/main')
