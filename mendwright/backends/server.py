@@ -174,10 +174,10 @@ class _Handler(BaseHTTPRequestHandler):
     def version_string(self):
         return self.server_version      # no Python version in the Server header
 
-    def parse_request(self):
+    def handle_one_request(self):
         self._name = None               # a kept-alive connection serves several requests
         self._unread = False
-        return super().parse_request()
+        super().handle_one_request()
 
     def do_GET(self):
         self._serve('GET')
