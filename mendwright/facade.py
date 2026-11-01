@@ -499,10 +499,23 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._expect_values = checks
     healer._heal_get_by = heal_get_by
     get_by_modes(coord, heal_get_by, suggest_get_by)
+    coord.look_again = _weak_look(healer, lambda h, key, broken: h._look_again(key, broken))
     if preset is not None:
         healer._interruptions[preset.key] = preset
         healer._watch(preset)
     return healer
+
+
+def _weak_look(healer, look):
+    """The coordinator's look_again for healer (see HealCoordinator._look_again):
+    look(healer, key, broken), through a weak reference, so the coordinator does not keep
+    the healer alive (live_healers() is a weak set)."""
+    ref = weakref.ref(healer)
+
+    def look_again(key, broken):
+        found = ref()
+        return look(found, key, broken) if found is not None else None
+    return look_again
 
 
 def get_by_modes(coordinator, heal_get_by, suggest_get_by):
@@ -1406,6 +1419,7 @@ class Healer:
                     native = self._heal(key, exc, attempt)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
@@ -1497,6 +1511,7 @@ class Healer:
             if native is THROUGH:
                 return self._get_by_through(key, target, timeout, getby.STARTED_TO_MATCH)
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, None)
         self._remember_page(key)
@@ -2892,6 +2907,63 @@ class Healer:
             framed = callable(inside) and bool(inside())
             self.coordinator._emit(logging.WARNING,
                                    nothing_matched_message(key, mine, preset, framed))
+
+    def _look_again(self, key, broken, driver=None, url=None):
+        """The coordinator's look_again (see HealCoordinator._look_again), right after
+        store.refresh() before a heal's fingerprint tier or model call: the first heal of key
+        that another worker saved since this store read the file (store.arrived), that is not
+        among the selectors that just missed, and that matches one element here passing the
+        reuse check, is adopted (HealCoordinator.adopt). Returns its selector, or None.
+        driver is the page's sync driver (the async healer passes its SyncBridge, and url, a
+        callable for the page's address)."""
+        from .resolver import Reuse, _match_handle, _target
+        store, driver = self.store, self._driver if driver is None else driver
+        arrived = getattr(store, 'arrived', None)
+        if not callable(arrived):
+            return None
+        tried = {c.get('xpath') for c in broken or () if isinstance(c, dict)}
+        rows = [c for c in store.candidates(key) if c.get('source') == 'heal'
+                and c.get('xpath') not in tried and arrived(key, c.get('xpath'))]
+        if not rows:
+            return None
+        runnable, _errors = _split_runnable(key, rows, driver)
+        require_visible = _require_visible(store, key)
+
+        def refused(k, candidate, reason):
+            self._refused_reuse(k, candidate, reason, url() if callable(url) else None)
+        reuse = Reuse(store, key, refused)
+        for candidate in runnable:
+            try:
+                if _match_handle(driver, candidate, require_visible) is None:
+                    continue
+            except InvalidSelector:
+                continue
+            verdict = reuse.check(driver, candidate)
+            if verdict:
+                reuse.refuse(candidate, verdict)
+                continue
+            try:
+                driver.scroll_into_view(*_target(candidate))
+            except Exception:
+                pass
+            self.coordinator.adopt(key, candidate['xpath'], old=broken)
+            return candidate['xpath']
+        return None
+
+    def _adopt_winner(self, key):
+        """After a lookup: when the selector that matched is a heal another worker saved after
+        this store read the file (store.arrived), which a refresh during the lookup brought
+        in, adopt it (HealCoordinator.adopt), once: it is this worker's unconfirmed heal from
+        now on."""
+        winner = self.store.last_success(key)
+        if not winner or winner.get('source') != 'heal':
+            return
+        arrived = getattr(self.store, 'arrived', None)
+        try:
+            if callable(arrived) and arrived(key, winner.get('xpath')):
+                self.coordinator.adopt(key, winner['xpath'])
+        except Exception:
+            logger.debug('mendwright: could not adopt the heal of %r', key, exc_info=True)
 
     def _refused_reuse(self, key, candidate, reason, url=None):
         """A lookup did not use candidate, a selector a heal or a seed file saved, because the

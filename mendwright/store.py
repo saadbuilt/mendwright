@@ -175,13 +175,40 @@ def _read_text(path, sleep=None):
     """The file's text, or None when it does not exist. A PermissionError (on Windows,
     another process replacing the file at that moment) is retried with a short backoff
     and raised if it persists. A file that is not UTF-8 raises StoreReadError."""
+    return _read_text_versioned(path, sleep)[0]
+
+
+def file_version(st):
+    """The version of a file from its os.stat() or os.fstat() result: (inode, mtime in
+    nanoseconds, size). Every write of a store file replaces it (a new inode), so a change
+    gives a new version; versions are compared only for equality."""
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def stat_version(path):
+    """The version of the file at path (see file_version), or None when it does not exist.
+    Other OS errors are raised."""
+    try:
+        return file_version(os.stat(str(path)))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _read_text_versioned(path, sleep=None):
+    """(text, version) of the file at path, or (None, None) when it does not exist. The
+    version is read from the open handle the text is read from (os.fstat), so the two
+    always go together: a writer replaces the file, and the handle keeps the old one. Errors
+    as _read_text()."""
     sleep = sleep or time.sleep
     delay = 0.01
     for attempt in range(_READ_TRIES):
         try:
-            return Path(path).read_text(encoding='utf-8-sig')
+            with Path(path).open('rb') as fh:
+                version = file_version(os.fstat(fh.fileno()))
+                raw = fh.read()
+            return raw.decode('utf-8-sig'), version
         except (FileNotFoundError, NotADirectoryError):
-            return None
+            return None, None
         except PermissionError:
             if attempt == _READ_TRIES - 1:
                 raise
@@ -192,7 +219,7 @@ def _read_text(path, sleep=None):
                 'mendwright: ' + str(path) + ' is not UTF-8 text (' + str(exc) + '). Save it '
                 'as UTF-8 (PowerShell 5 writes UTF-16 with > and Out-File), or delete it.'
             ) from None
-    return None  # not reached
+    return None, None  # not reached
 
 
 def _respell_frame_heals(data):
@@ -339,7 +366,56 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
     """(schema-2 data, True if the file itself was schema 2). A missing (or blank) file is
     an empty store. Raises StoreReadError for a file that is not valid JSON or not a
     selector file, and PermissionError when the file stays unreadable."""
-    text = _read_text(path, sleep)
+    return _parse(_read_text(path, sleep), path, destructive_keys)
+
+
+def _read_versioned(path, destructive_keys=frozenset(), *, sleep=None):
+    """_read() and the version of what it read (see file_version): (data, native, version),
+    version None for a missing file."""
+    text, version = _read_text_versioned(path, sleep)
+    data, native = _parse(text, path, destructive_keys)
+    return data, native, version
+
+
+# The override files this process parsed for SelectorStore.refresh(): path -> (version,
+# data), the latest version of each only. One parse per file version per process, however
+# many stores refresh from it: the data is shared, so nothing may change it (refresh() takes
+# a deep copy of the one key it merges).
+_PARSED = {}
+_PARSED_LOCK = threading.Lock()
+# path -> the lock held while that file is read and parsed, so a version is parsed once.
+_PARSING = {}
+
+
+def parsed_override(path, version=None, *, sleep=None):
+    """(data, version) of the override file at path, read and parsed at most once per file
+    version per process: version is what the caller just saw with stat_version(), and the
+    file is read only when this process has not parsed that version yet. The version
+    returned is the one of the content (it can be newer than the one asked for). data is
+    None for a file that is not schema 2 (a schema-1 file is converted by the next write).
+    Raises StoreReadError, and OSError, for a file that cannot be read: never an empty
+    store in its place."""
+    name = os.path.normcase(os.path.abspath(str(path)))
+    with _PARSED_LOCK:
+        hit = _PARSED.get(name)
+        if hit is not None and version is not None and hit[0] == version:
+            return hit[1], hit[0]
+        lock = _PARSING.setdefault(name, threading.Lock())
+    with lock:
+        with _PARSED_LOCK:
+            hit = _PARSED.get(name)
+        if hit is not None and version is not None and hit[0] == version:
+            return hit[1], hit[0]
+        data, native, read = _read_versioned(path, sleep=sleep)
+        if not native:
+            return None, read
+        with _PARSED_LOCK:
+            _PARSED[name] = (read, data)
+        return data, read
+
+
+def _parse(text, path, destructive_keys=frozenset()):
+    """_read() of the text of the file at path (None for a missing file)."""
     if text is None or not text.strip():
         return _empty(), False
     try:
@@ -468,12 +544,29 @@ class SelectorStore:
     lock_timeout = 15.0
     lock_stale_after = 10.0
 
+    # Seconds a lookup lets pass before it looks at the file again for a key it is about to
+    # use through a saved selector, or that keeps missing (see refresh() and resolver.resolve).
+    refresh_every = 1.0
+
     def __init__(self, data, override_path, destructive_keys=frozenset(), seed=None,
-                 override=None, *, read_only=False):
+                 override=None, *, read_only=False, file_version=None):
         self._data = data
         # read_only: changes stay in memory, and the file is never locked, read or written
         # again (see _persist_override).
         self._read_only = bool(read_only)
+        # The version (see file_version) of the override file every key in memory was last
+        # merged with: the file load_store() read, or the one this store last wrote. key ->
+        # the version refresh() last merged that key with, when newer.
+        self._version = file_version
+        self._key_versions = {}
+        # key -> when refresh() last looked at the file for it (self._clock), for max_age.
+        self._looked = {}
+        # (key, xpath) of the heals that came in from the file after this store read it: a
+        # heal another worker saved meanwhile (see arrived()).
+        self._arrived = set()
+        # Held while a refresh or a write merges the file into memory: two threads may share
+        # a store passed to open(store=...).
+        self._mutex = threading.RLock()
         self._override_path = Path(_expand(override_path))
         # A key written as a get_by_* call in another spelling marks the call's key too. One
         # written on an object, such as page.get_by_role(...), does not, and is logged.
@@ -809,12 +902,16 @@ class SelectorStore:
         set_code_candidates() gave and the list heals it took over as code, and starts with no
         batch, no unsaved change and no success recorded in this process."""
         clone = copy.copy(self)
-        for name in ('_data', '_meta', '_base', '_base_place', '_base_meta'):
+        for name in ('_data', '_meta', '_base', '_base_place', '_base_meta', '_base_index'):
             setattr(clone, name, copy.deepcopy(getattr(self, name, {})))
-        for name in ('_locked', '_seed_role', '_seed_text', '_guessed', '_delisted'):
+        for name in ('_locked', '_seed_role', '_seed_text', '_guessed', '_delisted',
+                     '_arrived'):
             setattr(clone, name, set(getattr(self, name, ())))
         clone._preferred = {k: list(v) for k, v in self._preferred.items()}
         clone._seed_state = dict(self._seed_state)
+        clone._key_versions = dict(getattr(self, '_key_versions', {}))
+        clone._looked = {}
+        clone._mutex = threading.RLock()
         clone._batch = threading.local()
         clone._dirty = set()
         clone._last_success = {}
@@ -1130,7 +1227,7 @@ class SelectorStore:
             state.wanted = True     # written when the batch ends (see batch)
             return
         try:
-            with self._locked_file():
+            with self._locked_file(), self._mutex:
                 # A file that became unreadable raises here, so it is never replaced.
                 disk, _native = _read(self._override_path, self._destructive_keys,
                                       sleep=self._sleep)
@@ -1138,8 +1235,65 @@ class SelectorStore:
                 payload = self._payload()
                 self._write(json.dumps(payload, separators=(',', ':')))
                 self._remember_base(payload)
+                # Every key in memory is the file now (the lock keeps other writers out).
+                self._version = stat_version(self._override_path)
+                self._key_versions = {}
         except Exception as exc:
             self._persist_failed(exc)
+
+    # --- reading what other workers saved (read-through) ---------------------------
+    #
+    # A store reads the override file when it loads, and again under the lock each time it
+    # writes. In between, refresh(key) takes in what other workers (threads with stores of
+    # their own, processes, machines sharing the file) saved for one key: their heals, their
+    # quarantines, a destructive flag. A lookup calls it before it uses a selector a heal or
+    # a seed file saved, about once a second while a key keeps missing, and a heal calls it
+    # before its fingerprint tier and before asking a model (see resolver.resolve and
+    # HealCoordinator.try_heal).
+
+    def refresh(self, key, *, max_age=0.0):
+        """Take in what the override file holds for key now, if it changed since this store
+        last read or wrote it, with the merge rules of a write (see _absorb): a quarantine
+        wins, then an acceptance; destructive True wins; the newest lastSucceededAt wins.
+        Returns True when key's candidates or metadata changed in memory.
+
+        Cheap when nothing changed: one stat of the file. When it did, the file is parsed
+        once per version per process however many stores refresh from it (parsed_override),
+        and only key is merged. max_age > 0 skips the look entirely when this store looked for
+        key less than max_age seconds ago. A read-only store, a file that is gone, and one
+        that cannot be read (it is never taken for an empty store) leave memory as it is."""
+        if self._read_only:
+            return False
+        if max_age:
+            now = self._clock()
+            last = self._looked.get(key)
+            if last is not None and now - last < max_age:
+                return False
+            self._looked[key] = now
+        try:
+            version = stat_version(self._override_path)
+            if version is None or version == self._key_versions.get(key, self._version):
+                return False
+            data, version = parsed_override(self._override_path, version, sleep=self._sleep)
+        except Exception:
+            return False        # unreadable now: keep what memory holds
+        if version is None or version == self._key_versions.get(key, self._version):
+            return False
+        entry = (data or {}).get('selectors', {}).get(key) if data is not None else None
+        with self._mutex:
+            changed = False
+            if isinstance(entry, dict):
+                entry = copy.deepcopy(entry)    # the parse is shared by every store
+                changed = self._absorb_key(key, entry)
+                self._remember_key_base(key, entry)
+            self._key_versions[key] = version
+        return changed
+
+    def arrived(self, key, xpath):
+        """True for a heal of key that this store took in from the file after it read it
+        (refresh() or a write's merge): one another worker saved meanwhile, which a lookup
+        here has not checked or used yet (see Healer's adoption)."""
+        return (key, xpath) in self._arrived
 
     def _persist_failed(self, exc):
         detail = type(exc).__name__ + (': ' + str(exc) if str(exc) else '')
@@ -1171,14 +1325,38 @@ class SelectorStore:
         self._base = {}
         self._base_place = {}
         self._base_meta = {}
+        self._base_index = {}
         for key, entry in (data.get('selectors') or {}).items():
-            if not isinstance(entry, dict):
-                continue
-            for c in entry.get('candidates') or ():
-                if isinstance(c, dict) and isinstance(c.get('xpath'), str):
-                    self._base[(key, c['xpath'])] = c.get('status', 'active')
-                    self._base_place[(key, c['xpath'])] = _place(c)
-            self._base_meta[key] = _meta_fields(entry)
+            if isinstance(entry, dict):
+                self._remember_key_base(key, entry)
+
+    def _remember_key_base(self, key, entry):
+        """Record one key's part of the merge base (see _remember_base): what the file holds
+        for key now, in place of what it held before."""
+        index = getattr(self, '_base_index', None)
+        if index is None:
+            index = self._base_index = {}
+        for xpath in index.pop(key, ()):
+            self._base.pop((key, xpath), None)
+            self._base_place.pop((key, xpath), None)
+        xpaths = set()
+        for c in entry.get('candidates') or ():
+            if isinstance(c, dict) and isinstance(c.get('xpath'), str):
+                self._base[(key, c['xpath'])] = c.get('status', 'active')
+                self._base_place[(key, c['xpath'])] = _place(c)
+                xpaths.add(c['xpath'])
+        index[key] = xpaths
+        self._base_meta[key] = _meta_fields(entry)
+
+    def _key_state(self, key):
+        """What refresh() compares to tell whether a merge changed key in memory."""
+        e = self._data['selectors'].get(key)
+        if not isinstance(e, dict):
+            return None
+        rows = [(c.get('xpath'), c.get('source'), c.get('status', 'active'),
+                 c.get('lastSucceededAt')) + _place(c)
+                for c in e.get('candidates', []) if isinstance(c, dict)]
+        return rows, dict(self._meta.get(key, {}))
 
     def _absorb(self, disk):
         """Take in what other processes wrote to the override file since this store last
@@ -1197,45 +1375,53 @@ class SelectorStore:
           list heal this store took over as code (see set_code_candidates).
         New keys and candidates from the file are added."""
         for key, entry in (disk.get('selectors') or {}).items():
-            if not isinstance(entry, dict):
+            if isinstance(entry, dict):
+                self._absorb_key(key, entry)
+
+    def _absorb_key(self, key, entry):
+        """_absorb() for one key and its entry in the file. Returns True when key's
+        candidates or metadata changed in memory. A heal it adds is remembered as arrived."""
+        before = self._key_state(key)
+        mine = self._data['selectors'].get(key)
+        if mine is None:
+            mine = self._entry(key)
+            mine['candidates'] = []
+        for c in entry.get('candidates') or ():
+            if not isinstance(c, dict) or not isinstance(c.get('xpath'), str):
                 continue
-            mine = self._data['selectors'].get(key)
-            if mine is None:
-                mine = self._entry(key)
-                mine['candidates'] = []
-            for c in entry.get('candidates') or ():
-                if not isinstance(c, dict) or not isinstance(c.get('xpath'), str):
-                    continue
-                xpath = c['xpath']
-                local = self._find(key, xpath)
-                if local is None:
-                    mine['candidates'].append(dict(c))
-                    continue
-                local['status'] = _merge_status(local.get('status', 'active'),
-                                                c.get('status', 'active'),
-                                                self._base.get((key, xpath)))
-                newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
-                local['lastSucceededAt'] = newest or None
-                _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
-                if (key, xpath) in self._delisted:
-                    continue                 # taken over as code here: no list heal any more
-                if c.get('list') is True:
-                    local['list'] = True     # another process healed a list with it
-                theirs = evidence_of(c)
-                if theirs is not None:
-                    mine_evidence = evidence_of(local)
-                    if mine_evidence is None or theirs['at'] > mine_evidence['at']:
-                        local['proposal'] = copy.deepcopy(theirs)
-                if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
-                        isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
-                    local['acceptedAt'] = c['acceptedAt']
-            merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
-                                 self._base_meta.get(key, {}))
-            if merged != self._meta.get(key, {}):
-                gone = set(self._meta.get(key, {})) - set(merged)
-                self._meta[key] = merged
-                self._overlay_meta(key, merged)
-                self._drop_meta(key, gone)
+            xpath = c['xpath']
+            local = self._find(key, xpath)
+            if local is None:
+                mine['candidates'].append(dict(c))
+                if c.get('source') == 'heal':
+                    self._arrived.add((key, xpath))
+                continue
+            local['status'] = _merge_status(local.get('status', 'active'),
+                                            c.get('status', 'active'),
+                                            self._base.get((key, xpath)))
+            newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
+            local['lastSucceededAt'] = newest or None
+            _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
+            if (key, xpath) in self._delisted:
+                continue                 # taken over as code here: no list heal any more
+            if c.get('list') is True:
+                local['list'] = True     # another process healed a list with it
+            theirs = evidence_of(c)
+            if theirs is not None:
+                mine_evidence = evidence_of(local)
+                if mine_evidence is None or theirs['at'] > mine_evidence['at']:
+                    local['proposal'] = copy.deepcopy(theirs)
+            if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
+                    isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
+                local['acceptedAt'] = c['acceptedAt']
+        merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
+                             self._base_meta.get(key, {}))
+        if merged != self._meta.get(key, {}):
+            gone = set(self._meta.get(key, {})) - set(merged)
+            self._meta[key] = merged
+            self._overlay_meta(key, merged)
+            self._drop_meta(key, gone)
+        return self._key_state(key) != before
 
     def _payload(self):
         """The override file's content: per key, the candidates worth keeping (see
@@ -1535,8 +1721,9 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
                 'read from ' + os.getcwd() + '). Pass an absolute path, or seed_path=None '
                 'for no seed.')
         seed = _call_keys(_read_schema2(seed_path, destructive_keys), seed_path)
-    override, native = _read(override_path, destructive_keys)
+    override, native, version = _read_versioned(override_path, destructive_keys)
     # Saved metadata is read only from a schema-2 override. A schema-1 file migrated here
     # has inferred metadata, not metadata someone set.
     return SelectorStore(merge(seed, override), override_path, destructive_keys, seed=seed,
-                         override=override if native else None, read_only=read_only)
+                         override=override if native else None, read_only=read_only,
+                         file_version=version if native else None)

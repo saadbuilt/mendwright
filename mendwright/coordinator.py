@@ -73,6 +73,9 @@ FRAME_PROVIDER = 'frame'
 # The source of a key's own selector that matched only inside an open shadow root and is now
 # looked up there, as CSS (see Healer._follow_into_shadow and mendwright.shadow).
 SHADOW_PROVIDER = 'shadow'
+# What an adopted heal is called in the log: a heal another worker saved since this store
+# read the file, used here after the live check (see HealCoordinator.adopt).
+ADOPTED = 'adopted'
 
 
 def _no_fingerprint(selector_key):
@@ -326,6 +329,13 @@ class HealCoordinator:
         # as a proposed list heal, oldest first: {'key', 'xpath', 'id', 'label', 'count'}. None
         # was used; the pytest plugin lists them at the end of a run.
         self.held = []
+        # (key, xpath) of the heals another worker saved that this coordinator adopted (see
+        # adopt): pending like its own, never reported to its provider, not in self.heals.
+        self.adopted = set()
+        # look_again(key, broken_candidates): set by mendwright.open() to look on the page
+        # for a heal another worker saved, after store.refresh() (see _look_again). It
+        # returns the selector it adopted, or None.
+        self.look_again = None
 
     @contextlib.contextmanager
     def scoped(self, driver, frame_xpath, shadow_hosts=None):
@@ -397,6 +407,52 @@ class HealCoordinator:
         self._emit(logging.WARNING, 'found ' + repr(selector_key) + ' inside the iframe '
                    + frame + ': ' + old + ' matches nothing on the page, so it is looked up '
                    'in that iframe from now on')
+
+    def adopt(self, selector_key, xpath, old=None):
+        """Use xpath, a heal another worker saved after this store read the file, as this
+        coordinator's own unconfirmed heal: it waits in pending for the canary (the next
+        action confirms or quarantines it, expect= and confirm() too), so no fingerprint is
+        recorded through it until then, and it is journaled as heal.adopted with the
+        selectors that missed (old), when known. It is not reported to this coordinator's
+        provider, which did not propose it, and not listed in self.heals: the worker that
+        made it lists it. A heal is adopted once per coordinator. Returns True when it was
+        adopted now."""
+        if (selector_key, xpath) in self.adopted:
+            return False
+        self.adopted.add((selector_key, xpath))
+        self.pending[selector_key] = xpath
+        self.heal_reasons.pop(selector_key, None)
+        old = _old_selectors(old) if old else None
+        journal_event(self.journal, 'heal.adopted', selector_key, xpath=xpath, old=old)
+        was = ''
+        if old:
+            was = old[0] + (' (+' + str(len(old) - 1) + ' more)' if len(old) > 1 else '') + ' -> '
+        self._emit(logging.WARNING, 'adopted a heal of ' + repr(selector_key) + ' another worker '
+                   'saved: ' + was + xpath + '. It passed the live check on this page, and the '
+                   'next action confirms it or quarantines it.')
+        return True
+
+    def _look_again(self, selector_key, broken_candidates):
+        """Before the fingerprint tier and before a model call: take in what other workers
+        saved for the key since this store read the file (store.refresh), and look for a heal
+        among it on the page (look_again, which mendwright.open() sets: the live check of a
+        lookup, then adopt()). Returns the selector adopted, or None. A store without
+        refresh(), and a coordinator used on its own, adopt nothing."""
+        refresh = getattr(self.store, 'refresh', None)
+        if callable(refresh):
+            try:
+                refresh(selector_key)
+            except Exception:
+                pass
+        look = self.look_again
+        if not callable(look):
+            return None
+        try:
+            return look(selector_key, broken_candidates) or None
+        except Exception:
+            logger.debug('mendwright: could not look for a heal another worker saved',
+                         exc_info=True)
+            return None
 
     def _emit(self, level, message):
         """Send one diagnostic line to log= when it was given, else to the logger."""
@@ -509,6 +565,10 @@ class HealCoordinator:
                                  code='role_unknown')
         if not self.guard():
             return self._decline(selector_key, GUARD_REASON, code='guard')
+        # Another worker may have saved a heal of this key since this store read the file.
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -526,6 +586,10 @@ class HealCoordinator:
                                                               broken_candidates, html, started)
             if applied is not None:
                 return applied
+            # Before any model call: another worker's heal may have come in meanwhile.
+            adopted = self._look_again(selector_key, broken_candidates)
+            if adopted:
+                return adopted
             if unavailable:
                 # note says why the fingerprint did not heal; the provider's reason says
                 # what to set so a model can try.
@@ -672,6 +736,9 @@ class HealCoordinator:
                                  code='role_unknown')
         if not self.guard():
             return self._decline(selector_key, GUARD_REASON, code='guard')
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted
         applied, note, _requested = self._fingerprint_tier(
             selector_key, meta, broken_candidates, self.html_provider(), self.clock())
         if applied is not None:
@@ -1220,8 +1287,10 @@ class HealCoordinator:
         when given, so mendwright fix can say what confirmed each heal it writes back."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
-        if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER,
-                                                      SHADOW_PROVIDER):
+        if (selector_key, xpath) in getattr(self, 'adopted', ()):
+            pass    # another worker's heal: this provider did not propose it
+        elif heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER,
+                                                        SHADOW_PROVIDER):
             try:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:

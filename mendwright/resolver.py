@@ -163,6 +163,7 @@ class Reuse:
         self.store, self.key, self.refused = store, key, refused
         self.call = getby.parse(key)
         self.reasons = []
+        self.xpaths = set()     # the selectors refused in this lookup
 
     def check(self, driver, candidate):
         if from_code(candidate):
@@ -173,6 +174,7 @@ class Reuse:
 
     def refuse(self, candidate, reason):
         self.reasons.append(reason)
+        self.xpaths.add(candidate.get('xpath'))
         if callable(self.refused):
             try:
                 self.refused(self.key, candidate, reason)
@@ -193,6 +195,55 @@ def refused_message(key, candidate, page, reason):
             'went on without it.')
 
 
+def refresh_key(store, key, max_age=0.0):
+    """store.refresh(key, max_age=max_age) for a store that has it (SelectorStore does): True
+    when what other workers saved for key changed it in memory. Never raises."""
+    method = getattr(store, 'refresh', None)
+    if not callable(method):
+        return False
+    try:
+        return bool(method(key, max_age=max_age))
+    except Exception:
+        return False
+
+
+def refresh_every(store):
+    """How often, in seconds, a lookup looks at the store's file again (see refresh_key)."""
+    every = getattr(store, 'refresh_every', None)
+    return every if isinstance(every, (int, float)) and not isinstance(every, bool) \
+        and every > 0 else 1.0
+
+
+def _gone(store, key, candidate):
+    """True when the store no longer has candidate active: another worker quarantined it (or
+    superseded it) and refresh() took that in."""
+    status = getattr(store, 'status', None)
+    try:
+        return callable(status) and status(key, candidate.get('xpath')) not in (None, 'active')
+    except Exception:
+        return False
+
+
+def _used(store, key, candidate):
+    """Before a lookup uses candidate, a selector a heal or a seed file saved: look at the
+    store's file again for key (at most once per refresh_every seconds), so a quarantine
+    another worker made since reaches this one. True when candidate may still be used."""
+    if from_code(candidate):
+        return True
+    return not (refresh_key(store, key, refresh_every(store)) and _gone(store, key, candidate))
+
+
+def _again(store, key, driver, reuse, keep=None):
+    """(candidates, runnable, errors) after refresh() changed key: its active candidates
+    now, without the ones this lookup refused, those keep() leaves out (resolve_get_by
+    leaves out the call itself), and those that cannot run."""
+    candidates = store.candidates(key)
+    rows = [c for c in candidates if c.get('xpath') not in reuse.xpaths
+            and (keep is None or keep(c))]
+    runnable, errors = _split_runnable(key, rows, driver)
+    return candidates, runnable, errors
+
+
 def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
             monotonic=time.monotonic, sleep=time.sleep, refused=None):
     """The native handle of key's element. Each poll tries key's active candidates in order
@@ -200,7 +251,13 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
     into view, records it with store.record_success() and returns it. A candidate the code
     did not pass must also pass the reuse check (see Reuse); refused(key, candidate, reason)
     is called for one that does not. Raises AttentionRequired at the deadline, or at once when
-    every candidate was refused, and InvalidSelector when none can run."""
+    every candidate was refused, and InvalidSelector when none can run.
+
+    Read-through (a store with refresh(), see SelectorStore.refresh): before it uses a
+    selector a heal or a seed file saved, and after each poll that matched nothing, the
+    lookup looks at the store's file again for key, at most once per store.refresh_every
+    seconds. A heal another worker saved meanwhile is tried at once, without waiting out the
+    timeout, and one another worker quarantined is not used."""
     driver = wrap(page)
     candidates = store.candidates(key)
     if not candidates:
@@ -210,6 +267,7 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
         raise errors[0]
     require_visible = _require_visible(store, key)
     reuse = Reuse(store, key, refused)
+    every = refresh_every(store)
     deadline = monotonic() + timeout_ms / 1000.0
     overlay_tried = False
     while True:
@@ -232,6 +290,11 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
                     raise AttentionRequired(_no_match_message(key, candidates, errors,
                                                               reuse.reasons))
                 continue
+            if not _used(store, key, candidate):
+                runnable.remove(candidate)
+                if not runnable:
+                    break
+                continue
             try:
                 driver.scroll_into_view(*_target(candidate))
             except Exception:
@@ -244,6 +307,14 @@ def resolve(store, page, key, *, on_overlay=None, timeout_ms=20000, poll_ms=200,
             except Exception:
                 pass
             overlay_tried = True
+        if refresh_key(store, key, every):
+            candidates, runnable, errors = _again(store, key, driver, reuse)
+            if runnable:
+                continue        # what another worker saved: try it now
+        if not runnable:
+            if errors and not reuse.reasons:
+                raise errors[0]
+            raise AttentionRequired(_no_match_message(key, candidates, errors, reuse.reasons))
         if monotonic() >= deadline:
             raise AttentionRequired(_no_match_message(key, candidates, errors, reuse.reasons))
         sleep(poll_ms / 1000.0)
@@ -286,7 +357,8 @@ def resolve_get_by(store, page, key, *, timeout_ms, poll_ms=200, first=None,
 
     A saved heal or seed row must also pass the reuse check (see Reuse), the call's ARIA role
     included for a get_by_role() call. One that does not is left out for the rest of the
-    lookup, and refused(key, candidate, reason) is called with it.
+    lookup, and refused(key, candidate, reason) is called with it. The store's file is looked
+    at again as resolve() does (read-through).
 
     first is (count, visible) of the call, already read by the caller, used in the first
     poll instead of asking the page again."""
@@ -328,12 +400,20 @@ def resolve_get_by(store, page, key, *, timeout_ms, poll_ms=200, first=None,
                 runnable.remove(candidate)
                 reuse.refuse(candidate, verdict)
                 continue
+            if not _used(store, key, candidate):
+                runnable.remove(candidate)
+                continue
             try:
                 driver.scroll_into_view(*_target(candidate))
             except Exception:
                 pass
             store.record_success(key, candidate['xpath'])
             return handle
+        if refresh_key(store, key, refresh_every(store)):
+            candidates, runnable, errors = _again(store, key, driver, reuse,
+                                                  keep=lambda c: c.get('xpath') != key)
+            if runnable:
+                continue        # what another worker saved: try it now (the call first)
         if monotonic() >= deadline:
             raise AttentionRequired(_no_match_message(key, candidates, errors, reuse.reasons))
         sleep(poll_ms / 1000.0)
