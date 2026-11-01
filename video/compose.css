@@ -72,6 +72,8 @@ body{font-family:Inter,"Inter Variable","Segoe UI Variable Display","Segoe UI",s
 #br .url{position:absolute;left:50%;top:8px;transform:translateX(-50%);height:30px;width:460px;border-radius:9px;
   background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:8px;
   font-size:20px;color:rgba(238,242,247,.4);white-space:nowrap}
+#br .ctl{position:absolute;left:50%;top:8px;transform:translateX(-50%);height:30px;display:flex;align-items:center;
+  font-size:20px;font-weight:600;color:var(--ink3);white-space:nowrap;visibility:hidden}
 #br .url .lock{width:10px;height:12px;border:2px solid var(--ink3);border-radius:3px;position:relative;top:1px}
 #prog{position:absolute;left:0;top:44px;height:2px;background:linear-gradient(90deg,var(--blue),var(--purple));width:0;z-index:3}
 #br .content{position:absolute;left:0;top:46px;width:1168px;height:828px;overflow:hidden;background:#fff}

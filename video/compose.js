@@ -86,10 +86,11 @@ const code = $('.code', ed), hl = $('#hl', ed), edHead = $('.phead', ed);
 const term = el('div', 'panel', `<div class="phead"><span class="dot" style="background:rgba(255,255,255,.18)"></span><span class="t">Run</span></div><div class="veil"></div>`, stage,
   `left:${TERM.x}px;top:${TERM.y}px;width:${TERM.w}px;height:${TERM.h}px`);
 term.id = 'term';
-const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span><span class="u">northwind.example/checkout</span></div></div><div id="prog"></div><div class="content"><div id="ov"></div></div><div class="veil"></div>`, stage,
+const br = el('div', 'panel', `<div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="nav">‹ ›</span><div class="url"><span class="lock"></span><span class="u">northwind.example/checkout</span></div><div class="ctl"></div></div><div id="prog"></div><div class="content"><div id="ov"></div></div><div class="veil"></div>`, stage,
   `left:${BR.x}px;top:${BR.y}px;width:${BR.w}px;height:${BR.h}px`);
 br.id = 'br';
 const content = $('.content', br), ov = $('#ov', br), prog = $('#prog', br), urlEl = $('.url .u', br);
+const urlBox = $('.url', br), navEl = $('.nav', br), ctl = $('.ctl', br), edT = $('.t', ed);
 const VEIL = { code: $('.veil', ed), run: $('.veil', term), page: $('.veil', br) };
 const ann = el('div', '', `<svg width="1920" height="1080"></svg>`, stage); ann.id = 'ann';
 const annSvg = $('svg', ann);
@@ -132,6 +133,7 @@ const TL = {
   dur: 0, beats: [], code: [], frames: [], runs: [], caps: [], callouts: [], tags: [], boxes: [], clicks: [],
   cur: [], curOn: [], halo: [], focus: [], fills: [], checks: [], press: [], urls: [], badges: [], reloads: [],
   keycaps: [], pstamps: [], montage: [], stageIn: 0, stageOut: 1e9, title: null, end: null, ctitle: null, estrip: null,
+  edTitle: [], chrome: [], reveals: [],
   lead: 0,      // a clip's title holds this long (real s) before the story's clock starts
 };
 const beat = (t, name, real) => TL.beats.push({ t, name, real: !!real });
@@ -153,6 +155,10 @@ const pstamp = o => TL.pstamps.push(o);
 const badge = (t, html, col) => TL.badges.push({ t, html, col });
 const reload = t => TL.reloads.push(t);
 const montage = (a, b) => TL.montage.push([a, b]);
+const edTitle = (t, name) => TL.edTitle.push([t, name]);           // the editor's file name from t on
+const chrome = (t, title) => TL.chrome.push([t, title]);           // the browser shows title instead of its address (null: the address)
+// a part of a page that comes in at t: a new text element on screen, which audit() counts
+const reveal = o => TL.reveals.push(Object.assign({ dy: 10 }, o));
 function codeBlock(o) { const b = Object.assign({ marks: [], hl: [], tok: {} }, o); TL.code.push(b); return b; }
 function frame(o) { const f = Object.assign({ pop: [], reloads: [] }, o); TL.frames.push(f); return f; }
 function run(o) { const r = Object.assign({ receipts: [] }, o); TL.runs.push(r); return r; }
@@ -380,6 +386,7 @@ function mainStory() {
   focus(44.2, 'run');
   beat(43.2, 'B6 saved fixes used');
   beat(46.0, 'B6 next run, no waiting');
+  return blk;
 }
 
 // ---------- the montage (brief mode: one caption, one stamp, focal on the page) ----------
@@ -461,6 +468,7 @@ function buildCode() {
       const ln = el('div', 'ln mono', `<span class="g">${Array.isArray(r.n) ? r.n[0][1] : r.n}</span><span class="c"><span class="cw">${r.html}</span></span><span class="st"></span>`, code);
       const o = { b, r, ln, g: $('.g', ln), cw: $('.cw', ln), st: $('.st', ln), len: ln.querySelector('.cw').textContent.length,
         at: r.at || [[0, i]], toks: [...ln.querySelectorAll('[data-k]')] };
+      if (r.nomark) o.st.style.display = 'none';
       b.rowEls[r.id] = o;
       ROWS.push(o);
     });
@@ -492,10 +500,11 @@ function measure() {
       f.popCard = f.popEl.firstElementChild;
       f.popEl.style.visibility = 'hidden';
     }
-    // the page camera: the form card lands at content (16, 120)
-    const card = f.doc.querySelector('.card, .f9a1');
-    const r = rectOf(card);
-    f.cam = f.cam || { x: r.x - LAYOUT.CARD_AT[0] / Z, y: r.y - LAYOUT.CARD_AT[1] / Z };
+    // the page camera: the form card lands at content (16, 120), unless the frame sets one
+    if (!f.cam) {
+      const r = rectOf(f.doc.querySelector('.card, .f9a1'));
+      f.cam = { x: r.x - LAYOUT.CARD_AT[0] / Z, y: r.y - LAYOUT.CARD_AT[1] / Z };
+    }
     f.pgw.style.transform = `scale(${Z}) translate(${(-f.cam.x).toFixed(2)}px,${(-f.cam.y).toFixed(2)}px)`;
   }
   // the redesign must break all three selectors
@@ -512,6 +521,7 @@ function measure() {
   if (TL.ctitle) buildClipTitle();
   if (TL.estrip) buildEndStrip();
   for (const c of TL.caps) c.e = el('div', 'cap', c.html, document.body);
+  for (const r of TL.reveals) r.n = nodeOf(r.at);
   TL.focus.sort((a, b) => a[0] - b[0]);
   if (!TL.focus.length || TL.focus[0][0] > 0) TL.focus.unshift([0, 'all']);
   checkFits();
@@ -564,6 +574,17 @@ function drawBrowser(t) {
   let u = null;
   for (const [tt, s] of TL.urls) if (t >= tt) u = s;
   if (u != null && urlEl.textContent !== u) urlEl.textContent = u;
+  let ct = null;
+  for (const [tt, s] of TL.chrome) if (t >= tt) ct = s;
+  urlBox.style.visibility = navEl.style.visibility = ct ? 'hidden' : 'inherit';
+  ctl.style.visibility = ct ? 'inherit' : 'hidden';
+  if (ct && ctl.textContent !== ct) ctl.textContent = ct;
+  for (const r of TL.reveals) {
+    const p = clamp(spring(t - r.t, .4));
+    r.n.style.visibility = p <= .002 ? 'hidden' : 'visible';
+    r.n.style.opacity = p.toFixed(3);
+    r.n.style.transform = `translateY(${((1 - p) * r.dy).toFixed(2)}px)`;
+  }
   for (const f of TL.frames) {
     const p = pres(t, f.t[0], f.t[1], .45, .35);
     let fdip = 0;
@@ -631,6 +652,9 @@ function drawBrowser(t) {
 const TOKTXT = { broken: '#ffb0b0', mem: '#9ccbff', ai: '#d4b2ff', saved: '#8ce8b0' };   // a token's text, tinted by its state
 function drawEditor(t) {
   const blk = blockAt(t);
+  let et = 'checkout.py';
+  for (const [tt, name] of TL.edTitle) if (t >= tt) et = name;
+  if (edT.textContent !== et) edT.textContent = et;
   for (const o of ROWS) {
     const b = o.b;
     const p = pres(t, b.t0, b.t1, .4, .3) * (o.r.appear != null ? spring(t - o.r.appear, .3) : 1);
@@ -1067,8 +1091,13 @@ function checkFits() {
     if (r.dg) r.diagram.rowEls.forEach(x => { if (x.e.scrollWidth > x.e.clientWidth + 1 || x.e.getBoundingClientRect().right > TERM.x + TERM.w - 20) PROBLEMS.push('diagram row too wide: ' + x.row.lb); });
     if (r.stampE && r.stampE.getBoundingClientRect().height > 44 * 2 + 1) PROBLEMS.push('stamp takes more than 2 lines: ' + r.stamp.html);
   }
-  for (const o of ROWS) if (o.len > 37) PROBLEMS.push('code row longer than 37 chars: ' + o.ln.textContent);
-  for (const o of ROWS) { const w = o.len * CW; if (58 + w > ED.w - 44) PROBLEMS.push('code row does not fit: ' + o.ln.querySelector('.cw').textContent); }
+  for (const o of ROWS) if (o.len > (o.r.nomark ? 39 : 37)) PROBLEMS.push('code row longer than ' + (o.r.nomark ? 39 : 37) + ' chars: ' + o.ln.textContent);
+  for (const o of ROWS) { const w = o.len * CW; if (58 + w > ED.w - (o.r.nomark ? 16 : 44)) PROBLEMS.push('code row does not fit: ' + o.ln.querySelector('.cw').textContent); }
+  for (const b of TL.code) for (const mk of b.marks) if (b.rowEls[mk[1]].r.nomark) PROBLEMS.push('a mark on a row without one: ' + mk[1]);
+  for (const f of TL.frames) if (f.fit) for (const n of f.doc.querySelectorAll(f.fit)) {
+    fits(toStage(f, rectOf(n)), BRZ, 'page ' + f.id + ' ' + f.fit);
+    if (n.scrollWidth > n.clientWidth + 1) PROBLEMS.push('page ' + f.id + ': a line is too wide in ' + f.fit);
+  }
   for (const c of TL.caps) {
     const txt = c.e.textContent;
     if (txt.length > 48) PROBLEMS.push('caption longer than 48 chars: ' + txt);
@@ -1101,6 +1130,7 @@ window.audit = function audit() {
   }
   for (const s of TL.pstamps) texts.push({ t: s.t[0], kind: 'stamp', what: plain(s.html), result: true });
   for (const k of TL.keycaps) texts.push({ t: k.t[0], kind: 'keycap', what: k.text, partOf: true });
+  for (const r of TL.reveals) texts.push({ t: r.t, kind: 'reveal', what: r.what, result: !!r.result });
   texts.sort((a, b) => a.t - b.t);
   const f = x => x.toFixed(2);
   // at most one new text element per 1.2 s (a keycap shows with its callout)
@@ -1174,14 +1204,17 @@ window.ready = false;
 function cutMain() {
   hookCard(0, 4.2);
   TL.stageIn = 4.2;
-  mainStory();
-  let t = montageCookies(48.4);
+  const blk = mainStory();
+  let t = window.pullRequestBeat(48.4, blk);     // the repairs become a pull request
+  focus(t, 'page');
+  t = montageCookies(t);
   t = montagePopup(t);
   t = window.montageSteps(t);
-  focus(48.4, 'page');
-  endCard(61.4, 69.0);
-  TL.stageOut = 61.4;
-  TL.dur = 69.0;
+  t = window.checkBeat(t);                       // mendwright check before the nightly run
+  t = window.typescriptBeat(t);                  // the same repairs from TypeScript
+  endCard(t, t + 7.6);
+  TL.stageOut = t;
+  TL.dur = t + 7.6;
 }
 window.CUTS = { main: cutMain };
 function defineCut() {
@@ -1200,7 +1233,7 @@ window.addEventListener('load', async () => {
   // every face the cut uses, loaded before anything is measured
   const loads = [];
   for (const w of [400, 500, 600, 650, 700]) loads.push(document.fonts.load(`${w} 32px Inter`), document.fonts.load(`${w} 24px "Cascadia Code"`));
-  for (const f of TL.frames) for (const w of [400, 600, 700]) loads.push(f.ifr.contentDocument.fonts.load(`${w} 16px Inter`));
+  for (const f of TL.frames) for (const w of [400, 600, 700]) loads.push(f.ifr.contentDocument.fonts.load(`${w} 16px Inter`), f.ifr.contentDocument.fonts.load(`${w} 16px "Cascadia Code"`));
   await Promise.all(loads).catch(() => {});
   await document.fonts.ready;
   for (const f of TL.frames) await f.ifr.contentDocument.fonts.ready;

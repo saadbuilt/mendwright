@@ -24,7 +24,8 @@ PACE = float(re.search(r'const PACE = ([0-9.]+);', open(os.path.join(HERE, 'comp
 CODE = (40, 56, 640, 400)
 CROPS = {
     'main': [(15.6, CODE, 'code: three selectors broken (red wavy)'), (30.5, CODE, 'code: #accept-terms from the model (purple)'),
-             (40.8, CODE, 'code: blue / purple / blue repairs'), (46.0, CODE, 'code: all saved (green)')],
+             (40.8, CODE, 'code: blue / purple / blue repairs'), (46.0, CODE, 'code: all saved (green)'),
+             (73.6, CODE, 'code: TypeScript, the import line'), (75.6, CODE, 'code: TypeScript, saved fixes used')],
     'A': [(22.4, CODE, 'code: Selenium + mendwright')],
     'B': [(3.0, CODE, 'code: one script for both popups')],
     'C': [(13.6, CODE, 'code: interrupt line, heal.page tag')],
