@@ -140,10 +140,11 @@ body{font-family:Inter,"Inter Variable","Segoe UI Variable Display","Segoe UI",s
 .ba .sel{position:relative;color:#9ccbff}
 .ba .old .sel{color:#ffb0b0;text-decoration:underline wavy var(--red);text-decoration-thickness:2px;text-underline-offset:9px;text-decoration-skip-ink:none}
 .ba .strike{position:absolute;left:0;top:52%;height:3px;width:0;background:var(--red);border-radius:2px}
-.feat{display:flex;flex-direction:column;gap:20px;margin-top:48px;align-items:flex-start}
+.feat{display:flex;flex-direction:column;gap:16px;margin-top:40px;align-items:flex-start}
 .feat div{font-size:36px;font-weight:500;color:var(--ink);display:flex;gap:18px;align-items:center}
 .feat span.ic{width:44px;height:44px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:24px;font-weight:700}
-.pills{display:flex;gap:20px;margin-top:52px}
+.feat span.ic.tx{font-size:17px;letter-spacing:.02em}
+.pills{display:flex;gap:20px;margin-top:44px}
 .pill{font-size:30px;padding:14px 26px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid var(--line)}
 .pill .p{color:var(--ink3);margin-right:14px}
 .repo{font-size:26px;color:var(--ink2);margin-top:36px;letter-spacing:.01em}

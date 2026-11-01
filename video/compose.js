@@ -221,7 +221,7 @@ function hookCard(t0, t1) {
   beat(t0 + 2.2, 'B0 found again from memory');
 }
 // ---------- B8: the end card ----------
-function endCard(t0, t1) { TL.end = { t0, t1 }; beat(t0 + 3.2, 'B8 end card'); }
+function endCard(t0, t1) { TL.end = { t0, t1 }; beat(t0 + 3.6, 'B8 end card'); }
 // The clip title: on a plate, over the stage with every zone veiled (the cut's first focus
 // key is 'none'). It holds LEAD s longer than the story's t1, so the story starts LEAD late.
 const LEAD = .8;
@@ -1010,9 +1010,11 @@ function buildEnd() {
  <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Repairs from memory first. No AI.</div>
  <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
  <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
+ <div><span class="ic tx" style="background:${C.green}22;color:${C.green}">PR</span>Confirmed fixes come back as a pull request.</div>
  <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners, popups, steps in any order.</div>
+ <div><span class="ic tx" style="background:${C.white}1c;color:#dfe6ee">TS</span>Python and TypeScript share the saved fixes.</div>
 </div>
-<div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>mendwright model install</div></div>
+<div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>npm i mendwright</div></div>
 <div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
   EC = { e, wm: e.children[0], feats: [...e.children[1].children], pills: e.children[2], repo: e.children[3] };
 }
@@ -1021,9 +1023,9 @@ function drawEnd(t) {
   if (t < t0 - .1) { EC.e.style.visibility = 'hidden'; return; }
   EC.e.style.visibility = 'inherit';
   mat(EC.wm, spring(t - t0, .6), { dy: 0, s0: .94, blur: 22 });
-  EC.feats.forEach((r, i) => mat(r, spring(t - (t0 + .5 + i * .4), .5), { dy: 16, blur: 8 }));
-  mat(EC.pills, spring(t - (t0 + 2.3), .5), { dy: 14, blur: 8 });
-  mat(EC.repo, spring(t - (t0 + 2.7), .5), { dy: 10, blur: 6 });
+  EC.feats.forEach((r, i) => mat(r, spring(t - (t0 + .5 + i * .35), .5), { dy: 16, blur: 8 }));
+  mat(EC.pills, spring(t - (t0 + 2.8), .5), { dy: 14, blur: 8 });
+  mat(EC.repo, spring(t - (t0 + 3.2), .5), { dy: 10, blur: 6 });
 }
 let CT = null, ES = null;
 function buildClipTitle() {
