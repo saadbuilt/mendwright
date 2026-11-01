@@ -33,6 +33,7 @@ TOKEN = 'contract-token-0123456789abcdef'
 BUCKET = 'mendwright-contract'
 PREFIX = 'team/store/'
 MOTO = '5.1.22'
+BOTO3 = '1.35.69'
 THREADS = 16
 JOIN = 60           # seconds a race may take before the test fails
 OTHER_VERSION = '"0123456789abcdef0123456789abcdef"'    # a version no object here has
@@ -67,6 +68,9 @@ def aws_offline(monkeypatch, tmp_path):
 
 @contextlib.contextmanager
 def moto_s3(monkeypatch, tmp_path):
+    pytest.importorskip(
+        'boto3', minversion=BOTO3,
+        reason='boto3 ' + BOTO3 + ' or later runs the S3 tests: pip install "mendwright[s3]" (the test extra has it)')
     moto = pytest.importorskip(
         'moto', minversion=MOTO,
         reason='moto ' + MOTO + ' or later runs the S3 tests offline: pip install "moto[s3]>=' + MOTO
