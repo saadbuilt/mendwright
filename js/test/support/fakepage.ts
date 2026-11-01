@@ -57,6 +57,21 @@
 // which loads the page page.site holds for that address (resolved against the current one),
 // as a link does, data-click-goes-after="<ms>" that long after the click, as a slow site does.
 // page.visits lists every address the page showed, in order.
+//
+// Iframes: an <iframe> (or <frame>) has a document of its own, jsdom's, written from its
+// srcdoc, or for a src from the page page.site holds at that address, the first time it is
+// looked at; nested ones too. Each is a FakeFrame, a stand-in for a Playwright Frame:
+// locator(), frameLocator(), content(), evaluate(), evaluateHandle(), name() (its name
+// attribute, else its id, as Playwright's), url() ('about:srcdoc' for a srcdoc), parentFrame(),
+// childFrames(), page() and frameElement(), and no mainFrame(), as a Frame has none. The page
+// answers frames(), childFrames() and parentFrame() (null) as its main frame. A function runs
+// in the window of the frame it is evaluated in. page.frameLocator(selector) looks in the
+// document of the iframe selector matches, each time it is used: none matches nothing, and of
+// several, count() and evaluateAll() take the first and the other calls throw Playwright's
+// strict mode error, as Playwright's do. locator.elementHandle() gives a handle whose
+// contentFrame() is the frame of an iframe. content() of the page holds none of what an
+// iframe's document holds, and an element inside an iframe is visible only while its iframe
+// is.
 
 import { JSDOM } from 'jsdom';
 
@@ -201,18 +216,39 @@ function installLayout(page: FakePage, window: any, width: number, height: numbe
   });
 }
 
+/** A document a locator looks in, and runs functions in: the page's, or a frame's. */
+interface FakeContext {
+  readonly document: Document;
+  run(fn: (...args: unknown[]) => unknown, args: unknown[]): unknown;
+  query(selector: string, scope?: Element | null): Element[];
+}
+
+/** Where a locator looks: strict is false for count() and evaluateAll(), which Playwright
+ * runs in the first of several iframes a frameLocator() matches, where the other calls throw
+ * its strict mode error. */
+type Where = (strict: boolean) => FakeContext | null;
+
 export class FakeLocator {
-  constructor(readonly page: FakePage, readonly selector: string, readonly frame: string | null = null,
+  /** where: the document it looks in, read each time (null: the page's). */
+  constructor(readonly page: FakePage, readonly selector: string, readonly where: Where | null = null,
               readonly parent: FakeLocator | null = null, readonly index: number | null = null) {}
 
-  elements(): Element[] {
+  /** The document this locator looks in now: the page's, or a frame's, or null when the
+   * iframe of its frameLocator() is not there. */
+  context(strict = true): FakeContext | null {
+    return this.where ? this.where(strict) : this.page;
+  }
+
+  elements(strict = true): Element[] {
+    const ctx = this.context(strict);
+    if (!ctx) return [];
     let out: Element[];
     if (!this.parent) {
-      out = this.page.query(this.selector);
+      out = ctx.query(this.selector);
     } else {
       out = [];
-      for (const scope of this.parent.elements()) {
-        for (const el of this.page.query(this.selector, scope)) if (!out.includes(el)) out.push(el);
+      for (const scope of this.parent.elements(strict)) {
+        for (const el of ctx.query(this.selector, scope)) if (!out.includes(el)) out.push(el);
       }
     }
     if (this.index === null) return out;
@@ -222,7 +258,7 @@ export class FakeLocator {
 
   /** A locator for what selector matches inside the elements this one matches. */
   locator(selector: string): FakeLocator {
-    return new FakeLocator(this.page, selector, this.frame, this);
+    return new FakeLocator(this.page, selector, this.where, this);
   }
 
   getByTestId(id: string): FakeLocator {
@@ -230,11 +266,11 @@ export class FakeLocator {
   }
 
   frameLocator(selector: string): FakeFrameLocator {
-    return new FakeFrameLocator(this.page, selector);
+    return new FakeFrameLocator(this.page, selector, (strict) => this.context(strict));
   }
 
   nth(index: number): FakeLocator {
-    return new FakeLocator(this.page, this.selector, this.frame, this.parent, index);
+    return new FakeLocator(this.page, this.selector, this.where, this.parent, index);
   }
 
   first(): FakeLocator {
@@ -251,7 +287,7 @@ export class FakeLocator {
 
   async count(): Promise<number> {
     this.page.calls.push(['count', this.selector]);
-    return this.elements().length;
+    return this.elements(false).length;
   }
 
   private one(action: string): Element {
@@ -277,13 +313,29 @@ export class FakeLocator {
   async evaluateAll(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
     this.page.calls.push(['evaluateAll', this.selector]);
     this.page.looked();
-    return this.page.run(fn, [this.elements(), unwrapHandles(arg)]);
+    const els = this.elements(false);
+    return (this.context(false) ?? this.page).run(fn, [els, unwrapHandles(arg)]);
   }
 
   /** Playwright's Locator.evaluateHandle(): fn on the one element the locator matches. */
   async evaluateHandle(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<FakeHandle> {
     this.page.calls.push(['evaluateHandle', this.selector]);
-    return new FakeHandle(this.page, this.page.run(fn, [this.one('evaluateHandle'), unwrapHandles(arg)]));
+    const el = this.one('evaluateHandle');
+    const ctx = this.context() ?? this.page;
+    return new FakeHandle(this.page, ctx.run(fn, [el, unwrapHandles(arg)]), ctx);
+  }
+
+  /** Playwright's Locator.elementHandle(): a handle on the one element the locator matches;
+   * a strict mode error for several, and a timeout for none, at once. */
+  async elementHandle(options: { timeout?: number } = {}): Promise<FakeHandle> {
+    this.page.calls.push(['elementHandle', this.selector]);
+    const els = this.elements();
+    if (els.length > 1) {
+      throw new Error('locator.elementHandle: Error: strict mode violation: ' + this.selector + ' resolved to '
+        + els.length + ' elements');
+    }
+    if (!els.length) throw new Error('locator.elementHandle: Timeout ' + (options.timeout ?? 30000) + 'ms exceeded.');
+    return new FakeHandle(this.page, els[0], this.context() ?? this.page);
   }
 
   private act(action: string): Element {
@@ -373,14 +425,29 @@ export class FakeLocator {
 }
 
 class FakeFrameLocator {
-  constructor(readonly page: FakePage, readonly frame: string) {}
+  /** outer: the document the iframe is looked for in, read each time it is used. */
+  constructor(readonly page: FakePage, readonly frame: string, private readonly outer: Where) {}
+
+  /** The frame of the iframe this.frame matches in the document outside it, now: null when it
+   * matches none, or an element with no document. When it matches several, the first one's,
+   * not strict, and else Playwright's strict mode error. */
+  resolve(strict: boolean): FakeFrame | null {
+    const ctx = this.outer(strict);
+    if (!ctx) return null;
+    const els = ctx.query(this.frame);
+    if (els.length > 1 && strict) {
+      throw new Error('frameLocator: Error: strict mode violation: ' + this.frame + ' resolved to ' + els.length
+        + ' elements');
+    }
+    return els.length ? this.page.frameOf(els[0]) : null;
+  }
 
   locator(selector: string): FakeLocator {
-    return new FakeLocator(this.page, selector, this.frame);
+    return new FakeLocator(this.page, selector, (strict) => this.resolve(strict));
   }
 
   frameLocator(selector: string): FakeFrameLocator {
-    return new FakeFrameLocator(this.page, selector);
+    return new FakeFrameLocator(this.page, selector, (strict) => this.resolve(strict));
   }
 
   nth(): FakeFrameLocator {
@@ -388,12 +455,13 @@ class FakeFrameLocator {
   }
 }
 
-/** A JSHandle, or an ElementHandle when its value is an element. */
+/** A JSHandle, or an ElementHandle when its value is an element. ctx is the document whose
+ * window its functions run in. */
 class FakeHandle {
   readonly document: number;
   disposed = false;
 
-  constructor(private readonly page: FakePage, readonly value: unknown) {
+  constructor(private readonly page: FakePage, readonly value: unknown, private readonly ctx: FakeContext = page) {
     this.document = page.documents;
   }
 
@@ -404,16 +472,22 @@ class FakeHandle {
   }
 
   async evaluate(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
-    return this.page.run(fn, [this.live(), unwrapHandles(arg)]);
+    return this.ctx.run(fn, [this.live(), unwrapHandles(arg)]);
   }
 
   async evaluateHandle(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<FakeHandle> {
-    return new FakeHandle(this.page, this.page.run(fn, [this.live(), unwrapHandles(arg)]));
+    return new FakeHandle(this.page, this.ctx.run(fn, [this.live(), unwrapHandles(arg)]), this.ctx);
   }
 
   asElement(): FakeHandle | null {
     const value = this.value as Node | null;
     return value && typeof value === 'object' && value.nodeType === 1 ? this : null;
+  }
+
+  /** ElementHandle.contentFrame(): the frame of an iframe element, else null. */
+  async contentFrame(): Promise<FakeFrame | null> {
+    const value = this.live() as Node | null;
+    return value && typeof value === 'object' && value.nodeType === 1 ? this.page.frameOf(value as Element) : null;
   }
 
   /** ElementHandle.click(): a pointer action on the element, as a Locator's is. */
@@ -473,6 +547,144 @@ function declareShadowRoots(root: ParentNode): void {
   }
 }
 
+/** What selector matches in doc, or inside scope (an element of doc, not itself): 'xpath=...',
+ * 'css=...' or 'text=...', or one of them followed by ' >> nth=<n>'. text=Words matches, as
+ * Playwright's text engine does, the innermost elements whose text has the words, in any case
+ * and with runs of white space as one; text="Words" those whose whole text is them. */
+function queryIn(doc: Document, selector: string, scope: Element | null = null): Element[] {
+  const nth = /^([\s\S]*) >> nth=(-?\d+)$/.exec(selector);
+  if (nth) {
+    const all = queryIn(doc, nth[1], scope);
+    const at = Number(nth[2]) < 0 ? all.length + Number(nth[2]) : Number(nth[2]);
+    return all[at] ? [all[at]] : [];
+  }
+  if (selector.startsWith('text=')) {
+    const body = selector.slice('text='.length);
+    const exact = /^(["']).*\1$/s.test(body);
+    const words = (exact ? body.slice(1, -1) : body).replace(/\s+/g, ' ').trim();
+    const has = (el: Element) => {
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      return exact ? text === words : text.toLowerCase().includes(words.toLowerCase());
+    };
+    const all = pierced(scope ?? doc).filter((el) => !['html', 'head', 'script', 'style'].includes(el.localName) && has(el));
+    return all.filter((el) => !all.some((other) => other !== el && el.contains(other)));
+  }
+  if (selector.startsWith('xpath=')) {
+    const expression = selector.slice('xpath='.length);
+    let result: XPathResult;
+    try {
+      result = doc.evaluate(expression, scope ?? doc, null, 7, null);
+    } catch (error) {
+      throw new Error("locator.count: SyntaxError: Failed to execute 'evaluate' on 'Document': The string '"
+        + expression + "' is not a valid XPath expression.");
+    }
+    const out: Element[] = [];
+    for (let i = 0; i < result.snapshotLength; i++) {
+      const node = result.snapshotItem(i);
+      if (node && node.nodeType === 1) out.push(node as Element);
+    }
+    return out;
+  }
+  const css = selector.startsWith('css=') ? selector.slice(4) : selector;
+  try {
+    doc.querySelector(css);
+  } catch {
+    throw new Error('locator.count: Error: Unexpected token while parsing css selector "' + css + '"');
+  }
+  return pierced(scope ?? doc).filter((el) => el.matches(css));
+}
+
+const FRAME_TAGS = ['iframe', 'frame'];
+
+/** A stand-in for a Playwright Frame: the document of one iframe of the page (see the header). */
+export class FakeFrame implements FakeContext {
+  constructor(readonly owner: FakePage, readonly element: Element, readonly parent: FakePage | FakeFrame) {}
+
+  get document(): Document {
+    return (this.element as HTMLIFrameElement).contentDocument as Document;
+  }
+
+  /** Playwright's frame.name(): the iframe's name attribute, else its id. */
+  name(): string {
+    return this.element.getAttribute('name') || this.element.getAttribute('id') || '';
+  }
+
+  url(): string {
+    if (this.element.hasAttribute('srcdoc')) return 'about:srcdoc';
+    const src = this.element.getAttribute('src');
+    if (!src) return 'about:blank';
+    try {
+      return new URL(src, this.owner.currentUrl).href;
+    } catch {
+      return src;
+    }
+  }
+
+  parentFrame(): FakePage | FakeFrame {
+    return this.parent;
+  }
+
+  childFrames(): FakeFrame[] {
+    return this.owner.framesIn(this.document);
+  }
+
+  page(): FakePage {
+    return this.owner;
+  }
+
+  isDetached(): boolean {
+    return !this.element.isConnected;
+  }
+
+  /** A handle on the iframe element, in the document around it. */
+  async frameElement(): Promise<FakeHandle> {
+    return new FakeHandle(this.owner, this.element, this.parent);
+  }
+
+  query(selector: string, scope: Element | null = null): Element[] {
+    return queryIn(this.document, selector, scope);
+  }
+
+  /** As FakePage.run(): mendwright's own page functions, from their source text, in the
+   * iframe's window, as Playwright runs them in a frame. */
+  run(fn: (...args: unknown[]) => unknown, args: unknown[]): unknown {
+    const window = (this.element as HTMLIFrameElement).contentWindow as unknown as { eval(code: string): unknown };
+    const inWindow = window.eval('(' + fn.toString() + ')') as (...a: unknown[]) => unknown;
+    return inWindow(...args);
+  }
+
+  /** This frame while its iframe is on the page, else null (it was detached). */
+  private here(): FakeFrame | null {
+    return this.element.isConnected ? this : null;
+  }
+
+  locator(selector: string): FakeLocator {
+    return new FakeLocator(this.owner, selector, () => this.here());
+  }
+
+  frameLocator(selector: string): FakeFrameLocator {
+    return new FakeFrameLocator(this.owner, selector, () => this.here());
+  }
+
+  getByTestId(id: string): FakeLocator {
+    return this.locator('css=[data-testid="' + id + '"]');
+  }
+
+  async content(): Promise<string> {
+    const doc = this.document;
+    return (doc.doctype ? '<!DOCTYPE ' + doc.doctype.name + '>' : '') + (doc.documentElement?.outerHTML ?? '');
+  }
+
+  async evaluate(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<unknown> {
+    const result = this.run(fn, [unwrapHandles(arg)]);
+    return result === undefined ? undefined : JSON.parse(JSON.stringify(result));
+  }
+
+  async evaluateHandle(fn: (...args: unknown[]) => unknown, arg?: unknown): Promise<FakeHandle> {
+    return new FakeHandle(this.owner, this.run(fn, [unwrapHandles(arg)]), this);
+  }
+}
+
 /** How Playwright names an element in its call log: <div id="nl" class="nl">. */
 function named(el: Element): string {
   let text = '<' + el.localName;
@@ -483,7 +695,7 @@ function named(el: Element): string {
   return text + '>';
 }
 
-export class FakePage {
+export class FakePage implements FakeContext {
   dom: JSDOM;
   currentUrl: string;
   blocker: string | null;
@@ -511,6 +723,9 @@ export class FakePage {
   readonly visits: string[] = [];
   // What a click put off until the page was looked at n more times (data-click-removes-after-looks).
   private readonly pending: { left: number; run: () => void }[] = [];
+  // An iframe element -> its frame, and the iframes whose documents were written.
+  private readonly frameCache = new WeakMap<Element, FakeFrame>();
+  private readonly written = new WeakSet<Element>();
   readonly keyboard = {
     press: async (key: string): Promise<void> => this.press(key),
   };
@@ -554,36 +769,7 @@ export class FakePage {
 
   /** What selector matches in the document, or inside scope (an element, not itself). */
   query(selector: string, scope: Element | null = null): Element[] {
-    const nth = /^([\s\S]*) >> nth=(-?\d+)$/.exec(selector);
-    if (nth) {
-      const all = this.query(nth[1], scope);
-      const at = Number(nth[2]) < 0 ? all.length + Number(nth[2]) : Number(nth[2]);
-      return all[at] ? [all[at]] : [];
-    }
-    const doc = this.document;
-    if (selector.startsWith('xpath=')) {
-      const expression = selector.slice('xpath='.length);
-      let result: XPathResult;
-      try {
-        result = doc.evaluate(expression, scope ?? doc, null, 7, null);
-      } catch (error) {
-        throw new Error("locator.count: SyntaxError: Failed to execute 'evaluate' on 'Document': The string '"
-          + expression + "' is not a valid XPath expression.");
-      }
-      const out: Element[] = [];
-      for (let i = 0; i < result.snapshotLength; i++) {
-        const node = result.snapshotItem(i);
-        if (node && node.nodeType === 1) out.push(node as Element);
-      }
-      return out;
-    }
-    const css = selector.startsWith('css=') ? selector.slice(4) : selector;
-    try {
-      doc.querySelector(css);
-    } catch {
-      throw new Error('locator.count: Error: Unexpected token while parsing css selector "' + css + '"');
-    }
-    return pierced(scope ?? doc).filter((el) => el.matches(css));
+    return queryIn(this.document, selector, scope);
   }
 
   visible(el: Element): boolean {
@@ -593,7 +779,88 @@ export class FakePage {
       const style = (node.getAttribute('style') || '').replace(/ /g, '').toLowerCase();
       if (style.includes('display:none') || style.includes('visibility:hidden')) return false;
     }
-    return true;
+    // Inside an iframe, only while the iframe is.
+    const iframe = el.ownerDocument?.defaultView?.frameElement ?? null;
+    return iframe ? this.visible(iframe) : true;
+  }
+
+  // --- frames (see the header) -------------------------------------------------------------
+
+  /** The frame of an <iframe> or <frame> element of the page or of one of its frames, its
+   * document written the first time; null for any other element, or one no longer in its
+   * document. The same element always gives the same frame. */
+  frameOf(el: Element): FakeFrame | null {
+    if (!FRAME_TAGS.includes(el.localName) || !el.isConnected) return null;
+    const known = this.frameCache.get(el);
+    if (known) return known;
+    if (!(el as HTMLIFrameElement).contentDocument) return null;
+    let parent: FakePage | FakeFrame | null = null;
+    if (el.ownerDocument === this.document) {
+      parent = this;
+    } else {
+      const outer = el.ownerDocument.defaultView?.frameElement ?? null;
+      parent = outer ? this.frameOf(outer) : null;
+    }
+    if (!parent) return null;
+    this.write(el);
+    const frame = new FakeFrame(this, el, parent);
+    this.frameCache.set(el, frame);
+    return frame;
+  }
+
+  /** The frames of the iframes in doc, in document order, inside its open shadow roots too. */
+  framesIn(doc: Document): FakeFrame[] {
+    return pierced(doc).map((el) => this.frameOf(el)).filter((frame): frame is FakeFrame => frame !== null);
+  }
+
+  /** Playwright's page.frames(): the page as its main frame, then every frame, at any depth. */
+  frames(): (FakePage | FakeFrame)[] {
+    const out: (FakePage | FakeFrame)[] = [this];
+    const walk = (frames: FakeFrame[]) => {
+      for (const frame of frames) {
+        out.push(frame);
+        walk(frame.childFrames());
+      }
+    };
+    walk(this.childFrames());
+    return out;
+  }
+
+  /** As the main frame: the frames of the page's own iframes. */
+  childFrames(): FakeFrame[] {
+    return this.framesIn(this.document);
+  }
+
+  /** As the main frame, which has none. */
+  parentFrame(): null {
+    return null;
+  }
+
+  name(): string {
+    return '';
+  }
+
+  /** Write the document of iframe el from its srcdoc, or for a src from the page this.site
+   * holds at that address, once. */
+  private write(el: Element): void {
+    if (this.written.has(el)) return;
+    this.written.add(el);
+    const doc = (el as HTMLIFrameElement).contentDocument;
+    if (!doc) return;
+    let html = el.getAttribute('srcdoc');
+    if (html === null) {
+      const src = el.getAttribute('src');
+      try {
+        html = src ? this.site[new URL(src, this.currentUrl).href] ?? null : null;
+      } catch {
+        html = null;
+      }
+    }
+    if (html === null) return;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    declareShadowRoots(doc);
   }
 
   blocking(): Element | null {
@@ -713,7 +980,7 @@ export class FakePage {
   }
 
   frameLocator(selector: string): FakeFrameLocator {
-    return new FakeFrameLocator(this, selector);
+    return new FakeFrameLocator(this, selector, () => this);
   }
 
   async content(): Promise<string> {
