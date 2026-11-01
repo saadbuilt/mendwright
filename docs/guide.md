@@ -1998,6 +1998,7 @@ No matching element for: pay (tried 1 candidate(s)).
 ```
 
 If a heal was saved for the key before you marked it, mendwright doesn't act on it. It quarantines that selector and raises `AttentionRequired`.
+A heal whose element fails the [live check](#what-is-checked-when-a-saved-heal-is-used) on the page isn't used there in the first place: it stays in the store, not quarantined, and the step raises the refusal of a destructive key.
 
 `destructive=False` clears a flag that `destructive=True` saved.
 It can't unmark a key from `destructive_keys` or the seed file.
@@ -2262,17 +2263,23 @@ The key changes on every run so the cache is saved each time, and `restore-keys`
 ```yaml
 - uses: actions/cache@v6
   with:
-    path: .mendwright
+    path: |
+      .mendwright
+      !.mendwright/keys
     key: mendwright-${{ github.ref_name }}-${{ github.run_id }}
     restore-keys: mendwright-${{ github.ref_name }}-
 - run: pytest
 ```
+
+`.mendwright/keys` holds the [coordination records](#coordination-records) of the workers of one run: leases, the last hour's model attempts and the model's declines. Leave it out, so a new run starts with none of them, and asks the model again about a page an earlier run's model found nothing on.
 
 In Docker, keep the store on a volume:
 
 ```bash
 docker run -v mendwright-store:/data -e MENDWRIGHT_STORE=/data/overrides.json my-tests
 ```
+
+A volume keeps `keys/` too: a run within 10 minutes of the last reuses its declines, and the hourly budget per key counts both runs. Set `MENDWRIGHT_DECLINE_TTL_SECONDS=0` to ask the model every time.
 
 ### Show heals in the job summary
 
@@ -2305,7 +2312,9 @@ Give a strict job its own fresh store:
 ```yaml
 - uses: actions/cache/restore@v6
   with:
-    path: .mendwright
+    path: |
+      .mendwright
+      !.mendwright/keys
     key: mendwright-${{ github.ref_name }}-${{ github.run_id }}
     restore-keys: mendwright-${{ github.ref_name }}-
 - run: python -m playwright install chromium
