@@ -66,6 +66,8 @@ The two rates are shared by every Healer in one process that uses the same store
 
 ### Healer.locator()
 
+`heal.locator()` looks up one element by its key and selector, and heals the selector when it breaks:
+
 ```python
 heal.locator(key, selector=None, *, role=None, text=None, destructive=None,
              timeout_ms=None, poll_ms=200, optional=False, intent=None, expect_value=None)
@@ -522,7 +524,7 @@ The log line is `found 'newsletter' from its intent: //input[@name='news'] (Anth
 
 ## Checking what a read returns
 
-`expect_value=` says what a read must return, so a heal onto the wrong element can't hand your script the wrong value:
+`expect_value=` says what a read must return, so a heal onto the wrong element is refused when what it reads doesn't fit:
 
 ```python
 price = heal.locator("price", "#price", expect_value="money").inner_text()
@@ -1489,7 +1491,7 @@ heal.locator("email", "#email").fill("ada@example.com")   # a newsletter modal o
 The popup can be a newsletter or discount modal, a prompt for your address or location that can be put off, an app-install banner, a survey, a chat invite, or a consent banner when `cookies=` isn't set.
 It is off by default, and with `dismiss=False` mendwright makes no browser call for it.
 
-In short, it presses Escape, then clicks the popup's close button, then a button that declines, such as No thanks. The rules for each, and the buttons it never clicks, are below.
+In short, it tries Escape, then the popup's close button, then a button that declines, such as No thanks. The rules for each, and the buttons it never clicks, are below.
 
 mendwright acts only when the action's element is covered:
 
@@ -1768,6 +1770,8 @@ AnthropicProvider returned no selector for 'continue': the model says no element
 Through a gateway, the reference worker in `examples/heal_gateway.mjs` passes the same reason on in its `needs_human` reply.
 
 ### Log lines and journal events
+
+The flow changes above write these log lines, and these events to the journal:
 
 ```text
 WARNING mendwright: handled interruption 'cookies' before 'email'
@@ -2052,6 +2056,8 @@ docker run -v mendwright-store:/data -e MENDWRIGHT_STORE=/data/overrides.json my
 ```
 
 ### Show heals in the job summary
+
+Add a step that writes `mendwright report` into the job summary:
 
 ```yaml
 - name: mendwright report
@@ -2954,14 +2960,14 @@ Loads the page where each key was last found, on a site you name with `--origin`
 
 ### mendwright notify
 
+Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)).
+
 ```text
 mendwright notify [--store PATH] [--run ID | --since TIME | --all]
                   [--format {slack,json}] [--when {changes,attention,always}]
                   [--detail {keys,counts}] [--title TEXT] [--run-url URL] [--pr-url URL]
                   [--tests RESULT] [--timeout SECONDS] [--dry-run] [--fail-on-error]
 ```
-
-Sums up the events of one run in `journal.jsonl` and posts it to the webhook in `MENDWRIGHT_WEBHOOK_URL` (see [Alerts](#alerts)).
 
 It reads only the journal, line by line, leaves out a line that is not an event it can read, and takes a `heal.declined` code that is not one of its own as `other`. It makes one POST, with one retry.
 
@@ -3029,7 +3035,7 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`.
 HTTP 429, a 5xx, a timeout and a connection error are tried once more, after 2 seconds. Any other answer is not.
 
-A webhook URL can be a secret, so the messages hide it:
+The webhook URL can hold a key, so the messages hide it:
 
 - They name the webhook by its scheme and host, with a label of the host that looks random (12 characters or more with a letter and a digit, or 20 or more) as `***`, since for some receivers, such as AWS Lambda function URLs (`https://***.lambda-url.us-east-1.on.aws`) and Pipedream, the host is the key.
 - Of an error body they show only one word of lower-case letters and underscores, such as Slack's `no_service`, that is no part of the URL. They leave any other body out, since a receiver can quote its key in it.
