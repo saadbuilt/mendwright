@@ -236,3 +236,26 @@ export function port(netloc: string): number | null {
 export function nowIso(date: Date = new Date()): string {
   return date.toISOString().replace(/\.\d{3}Z$/, '+00:00');
 }
+
+const PY_SPLIT = new RegExp('[' + PY_SPACE + ']+');
+
+/** str.split() with no argument: the words between runs of what str.isspace() is true for. */
+export function pySplit(s: string): string[] {
+  return s.split(PY_SPLIT).filter(Boolean);
+}
+
+/** str(value or '') in Python: '' for a value Python reads as false (None, False, 0, '', an
+ * empty list), else its str(). */
+export function strOr(value: unknown): string {
+  return pyTruthy(value) ? pyStr(value) : '';
+}
+
+// The characters str.isdigit() is true for that are not decimal digits (\p{Nd}): those of
+// Numeric_Type=Digit, such as the superscripts ² and ³ and the circled ①, as Python 3.12
+// lists them (category No). ½ is not one.
+const PY_DIGIT = /[\p{Nd}\u{b2}-\u{b3}\u{b9}\u{1369}-\u{1371}\u{19da}\u{2070}\u{2074}-\u{2079}\u{2080}-\u{2089}\u{2460}-\u{2468}\u{2474}-\u{247c}\u{2488}-\u{2490}\u{24ea}\u{24f5}-\u{24fd}\u{24ff}\u{2776}-\u{277e}\u{2780}-\u{2788}\u{278a}-\u{2792}\u{10a40}-\u{10a43}\u{10e60}-\u{10e68}\u{11052}-\u{1105a}\u{1f100}-\u{1f10a}]/u;
+
+/** str.isdigit() for one character (a code point). */
+export function isDigitChar(c: string): boolean {
+  return PY_DIGIT.test(c);
+}

@@ -19,14 +19,23 @@ import type { Frame, Locator, Page } from '@playwright/test';
 import {
   DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord, type Refusal,
 } from './coordinator';
-import { PlaywrightDriver, type PageLike, type Placement } from './driver';
+import {
+  NOT_LOOKED_AT, asksAnswer, asksConsent, controlText, expectControl, expectOf, isConsent, parseProbe, pick, popupOf,
+  type Popup, type Probe,
+} from './dismiss';
+import {
+  PlaywrightDriver, UNSURE, driverPopupClick, driverPopupControls, driverPopupProbe, driverPopupRelease, driverPopupRoot,
+  driverPressEscape, type PageLike, type Placement, type PopupRoot,
+} from './driver';
 import { AttentionRequired, InterruptionLoop, InvalidSelector } from './errors';
 import {
-  MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, absentMessage, handledMessage, isInterceptionError, loopMessage,
-  nothingMatchedMessage, pagePath, pageUrl, severalMessage, skipMessage, unhandledMessage,
+  DISMISS_KEY, MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, absentMessage, alertMessage, consentMessage,
+  dismissLoopMessage, dismissedMessage, handledMessage, isInterceptionError, loopMessage, lostMessage,
+  nothingMatchedMessage, pagePath, pageUrl, severalMessage, skipMessage, stepText, undismissedMessage,
+  unhandledMessage,
 } from './flow';
 import {
-  COOKIE_CHOICES, cookieChoiceError, cookiePreset, makeInterruption, nthTargets,
+  COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, makeInterruption, nthTargets,
   type CookieChoice, type Interruption, type InterruptionEvent,
 } from './interruptions';
 import { Journal, runId, runIdProblem, type JournalLike } from './journal';
@@ -34,7 +43,7 @@ import { sharedLimiter, type Guardrails } from './limits';
 import { log, type LogSink } from './log';
 import { NullProvider, type HealProvider } from './providers/base';
 import { autoProvider } from './providers/detect';
-import { pyRepr } from './py';
+import { pyLen, pyRepr, pySlice } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
@@ -100,6 +109,10 @@ export interface OpenOptions {
   fingerprint?: boolean;
   /** Where mendwright's lines go (default: warnings on stderr). */
   log?: LogSink;
+  /** Dismiss a popup nobody registered when it covers the element of an action: Escape, its
+   * close button, or a decline button such as No thanks, never one that accepts, subscribes,
+   * pays or goes somewhere. Off by default. */
+  dismiss?: boolean;
 }
 
 export interface LocatorOptions {
@@ -190,8 +203,48 @@ function movedMessage(key: string, hosts: string[], verb: string): string {
     + 'which could have reached an element outside that shadow root. Look the element up again with heal.locator().';
 }
 
+/** What one step has handled (see flow.MAX_INTERRUPTIONS_PER_STEP): how many interruptions
+ * and popups, the keys of the ones handled, in order ('<popup>' for a dismissed popup), and
+ * gaveUp, the popup open({ dismiss: true }) could not dismiss in this step, so it is tried
+ * once per step and named in one WARNING. */
 interface Budget {
   used: number;
+  handled: string[];
+  gaveUp: string | null;
+}
+
+const newBudget = (): Budget => ({ used: 0, handled: [], gaveUp: null });
+
+/** What a look at an element after a step on the popup over it says: 'gone' when the popup's
+ * root was removed or hidden, or the element is on top again ('free'); 'lost' when the
+ * element could not be looked at (it matches none or several now) or is hidden or outside the
+ * window now, so mendwright cannot tell what the step did; 'there' when the popup still
+ * covers it. */
+function popupState(probe: Probe | null): 'gone' | 'lost' | 'there' {
+  if (probe === null) return 'lost';
+  if (probe.gone || (!probe.covered && probe.why === 'free')) return 'gone';
+  return probe.covered ? 'there' : 'lost';
+}
+
+/** One step taken on a popup: how ('escape', 'close' or 'decline') and the button's label
+ * (null for Escape). */
+type PopupStep = [string, string | null];
+
+/** What HealLocator adds to an action Healer.runStep() runs: started after the registered
+ * interruptions were handled, place right before each try, failed when the action failed in
+ * the browser (the heal canary). */
+interface StepHooks {
+  started?: () => void;
+  place?: () => Promise<unknown>;
+  failed?: () => void;
+}
+
+/** An action's argument as Playwright takes it: the real Locator of a HealLocator (resolved)
+ * or of one of heal.page's guarded locators. */
+async function nativeOf(value: unknown): Promise<unknown> {
+  if (value instanceof HealLocator) return value.locatorNow();
+  if (value && typeof value === 'object' && PROXIES.has(value)) return PROXIES.get(value)!.native;
+  return value;
 }
 
 interface Plan {
@@ -261,7 +314,11 @@ export class Healer {
   private readonly fingerprinted = new Set<string>();
   private readonly severalSeen = new Set<string>();
   private readonly mutex = new Mutex();
+  // Popups are dismissed one at a time: two actions awaited together never click the same one.
+  private readonly popupMutex = new Mutex();
   private pageProxy: Page | Frame | null = null;
+  /** @internal open({ dismiss: true }): dismiss popups nobody registered (see dismiss()). */
+  dismissOn = false;
 
   constructor(page: PageLike, driver: PlaywrightDriver, store: SelectorStore, coordinator: HealCoordinator,
               timeoutMs: number) {
@@ -452,7 +509,7 @@ export class Healer {
       if (!(error instanceof AttentionRequired)) throw error;
       missed = error;
     }
-    const budget: Budget = { used: 0 };
+    const budget = newBudget();
     while (await this.handleInterruptions(key, budget, plan.timeoutMs, plan.pollMs)) {
       try {
         return await attempt();
@@ -666,7 +723,10 @@ export class Healer {
         throw new InterruptionLoop(loopMessage(before, item.key, budget.used));
       }
       budget.used += 1;
-      if (await this.runInterruption(item, target, before, timeoutMs, pollMs)) handled = true;
+      if (await this.runInterruption(item, target, before, timeoutMs, pollMs)) {
+        budget.handled.push(item.key);
+        handled = true;
+      }
     }
     return handled;
   }
@@ -691,7 +751,7 @@ export class Healer {
       await sleep(Math.max(pollMs, 20));
     }
     if (!this.handled.has(item.key)) this.handled.set(item.key, before);
-    this.interruptLog.push({ key: item.key, before });
+    this.interruptLog.push({ key: item.key, before, popup: null, how: null, label: null });
     this.coordinator.emit('warning', handledMessage(item.key, before));
     this.coordinator.journal.event('flow.interrupt', {
       key: item.key, before, action: item.action, preset: item.preset, selector: item.preset ? null : target,
@@ -701,15 +761,281 @@ export class Healer {
 
   /** @internal Handle what the page shows before an action or the first read of key. */
   async beforeAction(key: string, timeoutMs: number, pollMs: number): Promise<Budget> {
-    const budget: Budget = { used: 0 };
+    const budget = newBudget();
     if (this.interruptions.size) await this.handleInterruptions(key, budget, timeoutMs, pollMs);
     return budget;
   }
 
-  /** @internal After an action was intercepted: true when an interruption was handled. */
-  async unblock(key: string, budget: Budget, timeoutMs: number, pollMs: number): Promise<boolean> {
-    if (!this.interruptions.size) return false;
-    return this.handleInterruptions(key, budget, timeoutMs, pollMs);
+  /** @internal After an action on key failed because something covered native's element:
+   * handle the registered interruptions the page shows, else, with dismiss: true, dismiss a
+   * popup over the element. True when one was handled or dismissed. */
+  async unblock(key: string, native: Locator, budget: Budget, timeoutMs: number, pollMs: number): Promise<boolean> {
+    if (this.interruptions.size && (await this.handleInterruptions(key, budget, timeoutMs, pollMs))) return true;
+    return this.dismiss(key, native, budget, timeoutMs, pollMs);
+  }
+
+  /** @internal Run verb on native as the step key: the registered interruptions the page
+   * shows first, then, with dismiss: true, a popup over its element (not before focus() and
+   * setInputFiles()), then the action. After an action that failed because something covered
+   * its element, an interruption is handled, else a popup dismissed, and only then is the
+   * action tried once more. */
+  async runStep(key: string, native: Locator, verb: string, args: unknown[], timeoutMs: number, pollMs: number,
+                hooks: StepHooks = {}): Promise<unknown> {
+    const run = () => (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[verb](...args);
+    const budget = await this.beforeAction(key, timeoutMs, pollMs);
+    hooks.started?.();
+    await this.dismissBefore(key, native, verb, budget, timeoutMs, pollMs);
+    await hooks.place?.();
+    try {
+      return await run();
+    } catch (error) {
+      if (isUsageError(error)) throw error;
+      const intercepted = isInterceptionError(error);
+      const used = budget.used;
+      if (!(intercepted && (await this.unblock(key, native, budget, timeoutMs, pollMs)))) {
+        if (intercepted && budget.used === used && !budget.gaveUp) this.reportNothingMatched(key);
+        hooks.failed?.();
+        throw error;
+      }
+      await hooks.place?.();
+      try {
+        return await run();   // once, after an interruption was handled or a popup dismissed
+      } catch (again) {
+        if (isUsageError(again)) throw again;
+        hooks.failed?.();
+        throw again;
+      }
+    }
+  }
+
+  /** @internal An action of one of heal.page's guarded locators (with dismiss: true): verb on
+   * the real Locator, as the step named step, with the checks of runStep() and no heal
+   * canary: no heal found that element. */
+  async runGuarded(step: string, native: Locator, verb: string, args: unknown[]): Promise<unknown> {
+    const real: unknown[] = [];
+    for (const arg of args) real.push(await nativeOf(arg));
+    return this.runStep(step, native, verb, real, timeoutOf(args) ?? this.timeoutMs, 200);
+  }
+
+  // --- popups nobody registered: open({ dismiss: true }) -----------------------------------
+
+  /** Before an action on native, after beforeAction() handled the registered interruptions
+   * the page shows: with dismiss: true, dismiss a popup that covers its element (see
+   * dismiss()). Not before focus() or setInputFiles(), which work on a covered element. With
+   * dismiss off it makes no browser call. */
+  private async dismissBefore(key: string, native: Locator, verb: string, budget: Budget, timeoutMs: number,
+                              pollMs: number): Promise<boolean> {
+    if (!this.dismissOn || NOT_LOOKED_AT.has(verb)) return false;
+    return this.dismiss(key, native, budget, timeoutMs, pollMs);
+  }
+
+  /** With dismiss: true, dismiss each popup that covers native's element, while the step's
+   * budget lasts. True when at least one was dismissed.
+   *
+   * What counts as covered and as a popup is dismiss.ts's to say: it never acts on a popup
+   * that holds the element or on a small fixed bar. The look at what covers the element costs
+   * one round trip; a popup is then dismissed under a lock, so two actions awaited together
+   * never click the same one, and that looks again first. Nothing is dismissed while an
+   * interruption the step handled is still on the page (one that fades out slowly may be the
+   * popup over the element), nor a role="alertdialog", which asks for an answer, nor, with
+   * cookies: 'accept', a popup that looks like a consent banner or has a button that says
+   * accept, agree or allow. Each popup counts once against the budget, whatever was tried on
+   * it, and InterruptionLoop is thrown when the budget is used up and one is still in the way
+   * (one that comes back each time, say). A popup that could not be dismissed is named in one
+   * WARNING and not looked at again in this step (budget.gaveUp). */
+  private async dismiss(before: string, native: Locator | null, budget: Budget, timeoutMs: number,
+                        pollMs: number): Promise<boolean> {
+    // The Python package also returns here while a run function of heal.interrupt() runs,
+    // which may be filling in the very popup. This package has no run functions yet.
+    if (!this.dismissOn || native === null || budget.gaveUp) return false;
+    const seen = await driverPopupProbe(this.driver, native, null, true);
+    if (popupOf(parseProbe(seen)) === null) return false;
+    return this.popupMutex.run(() => this.dismissPopups(before, native, budget, timeoutMs, pollMs));
+  }
+
+  private async dismissPopups(before: string, native: Locator, budget: Budget, timeoutMs: number,
+                              pollMs: number): Promise<boolean> {
+    const driver = this.driver;
+    let dismissed = false;
+    let again = false;
+    if (await this.interruptionLeft(budget)) return false;
+    let probe = parseProbe(await driverPopupProbe(driver, native, null, true));
+    for (;;) {
+      const popup = popupOf(probe);
+      if (popup === null) return dismissed;
+      if (asksAnswer(popup)) {
+        this.coordinator.emit('warning', alertMessage(before, popup.summary));
+        budget.gaveUp = popup.summary;
+        return dismissed;
+      }
+      if (this.acceptsConsent() && isConsent(popup)) {
+        this.coordinator.emit('warning', consentMessage(before, popup.summary));
+        budget.gaveUp = popup.summary;
+        return dismissed;
+      }
+      if (budget.used >= MAX_INTERRUPTIONS_PER_STEP) {
+        // No popup text in the event: the code and the step it was in front of.
+        this.coordinator.journal.event('flow.stop', { key: DISMISS_KEY, code: 'popup_loop', before });
+        throw new InterruptionLoop(dismissLoopMessage(before, popup.summary, budget.used,
+          budget.handled.includes(DISMISS_KEY)));
+      }
+      const root = await driverPopupRoot(driver, native, expectOf(popup));
+      if (root === null) {
+        if (!again) {
+          again = true;   // it changed between two looks: look once more
+          probe = parseProbe(await driverPopupProbe(driver, native, null, true));
+          continue;
+        }
+        this.coordinator.emit('warning', undismissedMessage(before, popup.summary, [], { changed: true }));
+        budget.gaveUp = popup.summary;
+        return dismissed;
+      }
+      again = false;
+      if (this.acceptsConsent() && asksConsent(await driverPopupControls(driver, native, root))) {
+        await driverPopupRelease(driver, root);
+        this.coordinator.emit('warning', consentMessage(before, popup.summary));
+        budget.gaveUp = popup.summary;
+        return dismissed;
+      }
+      budget.used += 1;
+      const [done, next] = await this.dismissPopup(before, native, popup, root, timeoutMs, pollMs);
+      if (!done) {
+        budget.gaveUp = popup.summary;
+        return dismissed;
+      }
+      probe = next;
+      dismissed = true;
+      budget.handled.push(DISMISS_KEY);
+    }
+  }
+
+  /** Whether an interruption the step handled is still on the page: the popup over the
+   * element may be that one, a banner that fades out slowly, say, and declining it could undo
+   * what its registered action did. */
+  private async interruptionLeft(budget: Budget): Promise<boolean> {
+    for (const key of budget.handled) {
+      const item = this.interruptions.get(key);
+      if (item && (await this.interruptionTarget(item)) !== null) return true;
+    }
+    return false;
+  }
+
+  /** Whether cookies: 'accept' registered its preset. */
+  private acceptsConsent(): boolean {
+    const item = this.interruptions.get(COOKIE_BANNER_KEY);
+    return !!item && item.preset === 'accept';
+  }
+
+  /** Press Escape (when the keyboard focus lets the key reach the popup, and never with
+   * cookies: 'accept': every key listener of the page gets the key, a consent banner's too),
+   * then click the popup's close button, then a decline button, and look again after each
+   * (popupSettle). root is the handle on the popup, which this lets go of. [true, the last
+   * probe] once one worked; else [false, null] after the WARNING that names the popup. When
+   * the element can no longer be looked at after a step, or a click threw after it may have
+   * reached the page, mendwright cannot tell what that step did: it stops there and does not
+   * count the popup as dismissed. */
+  private async dismissPopup(before: string, native: Locator, popup: Popup, root: PopupRoot, timeoutMs: number,
+                             pollMs: number): Promise<[boolean, Probe | null]> {
+    const driver = this.driver;
+    const limit = Math.min(Math.max(timeoutMs || 0, 0), SETTLE_MS);
+    const done: PopupStep[] = [];   // each step that did not close it, in order
+    let escaped = false;
+    const consent = this.acceptsConsent();
+    try {
+      if (!consent && (await driverPressEscape(driver, native, root))) {
+        escaped = true;
+        const outcome = await this.afterStep(before, native, popup, root, limit, pollMs, ['escape', null], done);
+        if (outcome) return outcome;
+      }
+      for (const kind of ['close', 'decline'] as const) {
+        const chosen = pick(await driverPopupControls(driver, native, root), popup)[kind];
+        if (!chosen) continue;
+        const [index, control] = chosen;
+        const clicked = await driverPopupClick(driver, native, root, expectControl(index, control),
+          Math.max(limit, 1000));   // 0 is no limit to Playwright
+        if (!clicked) continue;   // it changed since it was listed, and was not clicked
+        const step: PopupStep = [kind, controlText(control)];
+        if (clicked === UNSURE) {
+          done.push(step);
+          this.coordinator.emit('warning', lostMessage(before, popup.summary, 'clicked ' + stepText(...step), true));
+          this.journalDismiss(before, popup, 'lost', null, null, done);
+          return [false, null];
+        }
+        const outcome = await this.afterStep(before, native, popup, root, limit, pollMs, step, done);
+        if (outcome) return outcome;
+      }
+      if (done.length) {
+        // One last look: a popup that closes with an animation may be gone by now.
+        const probe = parseProbe(await driverPopupProbe(driver, native, root));
+        if (popupState(probe) === 'gone') {
+          const [how, label] = done.pop() as PopupStep;
+          this.recordDismissal(before, popup, how, label, done);
+          return [true, probe];
+        }
+      }
+    } finally {
+      await driverPopupRelease(driver, root);
+    }
+    this.coordinator.emit('warning', undismissedMessage(before, popup.summary, done.map((s) => stepText(...s)),
+      { escaped, consent }));
+    if (done.length) this.journalDismiss(before, popup, 'failed', null, null, done);
+    return [false, null];
+  }
+
+  /** Look again after one step on the popup. [true, probe] once it was recorded as
+   * dismissed; [false, null] after the WARNING for an element that can no longer be looked
+   * at; null when the popup is still there, with step added to done. */
+  private async afterStep(before: string, native: Locator, popup: Popup, root: PopupRoot, limitMs: number,
+                          pollMs: number, step: PopupStep, done: PopupStep[]): Promise<[boolean, Probe | null] | null> {
+    const [probe, state] = await this.popupSettle(native, root, limitMs, pollMs);
+    if (state === 'gone') {
+      this.recordDismissal(before, popup, step[0], step[1], done);
+      return [true, probe];
+    }
+    done.push(step);
+    if (state === 'lost') {
+      const [how, label] = step;
+      const did = how === 'escape' ? 'pressed Escape' : 'clicked ' + stepText(how, label);
+      this.coordinator.emit('warning', lostMessage(before, popup.summary, did));
+      this.journalDismiss(before, popup, 'lost', null, null, done);
+      return [false, null];
+    }
+    return null;
+  }
+
+  /** Look at native's element again until the popup's root is gone or hidden, or the element
+   * is no longer covered, for up to limitMs. Looks at least once, even with no time to wait.
+   * The last probe, and popupState() of it: 'gone', 'lost' or, at the end, 'there'. */
+  private async popupSettle(native: Locator, root: PopupRoot, limitMs: number,
+                            pollMs: number): Promise<[Probe | null, 'gone' | 'lost' | 'there']> {
+    const deadline = Date.now() + limitMs;
+    for (;;) {
+      const probe = parseProbe(await driverPopupProbe(this.driver, native, root));
+      const state = popupState(probe);
+      if (state !== 'there' || Date.now() >= deadline) return [probe, state];
+      await sleep(Math.max(pollMs, 20));
+    }
+  }
+
+  /** One WARNING, a flow.dismiss journal event and an entry in handledInterruptions for a
+   * popup that was dismissed with how ('escape', 'close' or 'decline'; label is the button's)
+   * after the steps in done did not close it. */
+  private recordDismissal(before: string, popup: Popup, how: string, label: string | null, done: PopupStep[]): void {
+    this.interruptLog.push({ key: DISMISS_KEY, before, popup: popup.summary, how, label });
+    this.coordinator.emit('warning', dismissedMessage(before, popup.summary, stepText(how, label),
+      done.map((s) => stepText(...s))));
+    this.journalDismiss(before, popup, 'dismissed', how, label, done);
+  }
+
+  /** The flow.dismiss journal event: outcome is 'dismissed' (how and label say with what),
+   * 'failed' or 'lost'; tried lists each step before it that did not close the popup, so every
+   * key mendwright pressed and button it clicked is on record. */
+  private journalDismiss(before: string, popup: Popup, outcome: string, how: string | null, label: string | null,
+                         done: PopupStep[]): void {
+    const tried = done.map(([h, lab]) => (lab === null ? { how: h } : { how: h, label: lab }));
+    this.coordinator.journal.event('flow.dismiss', {
+      key: DISMISS_KEY, before, popup: popup.summary, outcome, how, label, tried,
+    });
   }
 
   /** @internal */
@@ -862,36 +1188,15 @@ export class HealLocator {
       expect = check;
       args = [...args.slice(0, -1), ...(Object.keys(rest).length ? [rest] : [])];
     }
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] instanceof HealLocator) args[i] = await (args[i] as HealLocator).ensure();
-    }
+    for (let i = 0; i < args.length; i++) args[i] = await nativeOf(args[i]);
     const { timeoutMs, pollMs } = this.plan;
-    const healer = this.healer;
-    const run = () => (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[verb](...args);
-    const budget = await healer.beforeAction(this.key, timeoutMs, pollMs);
-    this.readsDue = false;
-    let result: unknown;
-    await this.waitPlaced(native, verb);
-    try {
-      result = await run();
-    } catch (error) {
-      if (isUsageError(error)) throw error;
-      const intercepted = isInterceptionError(error);
-      const used = budget.used;
-      if (!(intercepted && (await healer.unblock(this.key, budget, timeoutMs, pollMs)))) {
-        if (intercepted && budget.used === used) healer.reportNothingMatched(this.key);
-        this.healer.coordinator.confirmPending(this.key, false, { by: 'action' });
-        throw error;
-      }
-      await this.waitPlaced(native, verb);
-      try {
-        result = await run();   // once, after an interruption was handled
-      } catch (again) {
-        if (isUsageError(again)) throw again;
-        this.healer.coordinator.confirmPending(this.key, false, { by: 'action' });
-        throw again;
-      }
-    }
+    const result = await this.healer.runStep(this.key, native, verb, args, timeoutMs, pollMs, {
+      started: () => {
+        this.readsDue = false;   // its reads need not look again
+      },
+      place: () => this.waitPlaced(native, verb),
+      failed: () => this.healer.coordinator.confirmPending(this.key, false, { by: 'action' }),
+    });
     if (expect) {
       let ok = false;
       try {
@@ -902,6 +1207,11 @@ export class HealLocator {
       this.healer.coordinator.confirmPending(this.key, ok, { by: 'expect' });
     }
     return result;
+  }
+
+  /** @internal The real Locator, resolved, as an action's argument (dragTo's target). */
+  locatorNow(): Promise<Locator | null> {
+    return this.ensure();
   }
 
   /** @internal */
@@ -1035,10 +1345,110 @@ function bound(target: object, name: string | symbol): unknown {
   return typeof value === 'function' ? value.bind(target) : value;
 }
 
+// heal.page's locators: each proxy, with the real Locator it stands for and the name of its
+// step, as log lines and handledInterruptions give it.
+const PROXIES = new WeakMap<object, { native: unknown; step: string }>();
+
+// What builds another locator on a Page, Frame, Locator or FrameLocator. With
+// open({ dismiss: true }), heal.page hands back what they build as a guarded locator; with it
+// off, the real one.
+const LOCATOR_BUILDERS = new Set(['locator', 'getByRole', 'getByText', 'getByLabel', 'getByPlaceholder', 'getByAltText',
+  'getByTitle', 'getByTestId', 'frameLocator', 'nth', 'filter', 'and', 'or', 'first', 'last', 'owner', 'contentFrame']);
+const ACTION_NAMES: ReadonlySet<string> = new Set(ACTIONS);
+
+/** @internal The step name of one of heal.page's locators, as log lines give it, or null for
+ * anything else. */
+export function stepOf(value: unknown): string | null {
+  return value && typeof value === 'object' && PROXIES.has(value) ? PROXIES.get(value)!.step : null;
+}
+
+/** True for a Playwright Locator or FrameLocator: chainable (locator and frameLocator) with
+ * nth(), and no document of its own (no content()), as a Page or Frame has. */
+function looksLikeLocator(value: unknown): boolean {
+  const v = value as Record<string, unknown> | null;
+  return !!v && typeof v === 'object' && typeof v.locator === 'function' && typeof v.frameLocator === 'function'
+    && typeof v.nth === 'function' && typeof v.content !== 'function';
+}
+
+/** An argument as a guarded locator's name shows it, in TypeScript: 'Continue' (a string as
+ * Python's repr() writes it), { name: 'Continue', exact: true }, /Continue/i, and a locator by
+ * its own step. A string longer than 60 characters is cut, as the Python package cuts it. */
+function argText(value: unknown): string {
+  if (value && typeof value === 'object' && PROXIES.has(value)) return PROXIES.get(value)!.step;
+  if (value instanceof HealLocator) return 'heal.locator(' + pyRepr(value.key) + ')';
+  if (looksLikeLocator(value)) return '<locator>';
+  const cut = (text: string) => (pyLen(text) <= 60 ? text : pySlice(text, 57) + '...');
+  if (typeof value === 'string') return cut(pyRepr(value));
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (value instanceof RegExp) return cut(String(value));
+  if (typeof value === 'function') return '<function>';
+  if (Array.isArray(value)) return '[' + value.map(argText).join(', ') + ']';
+  if (typeof value === 'object') {
+    const parts = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined)
+      .map(([k, v]) => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : pyRepr(k)) + ': ' + argText(v));
+    return parts.length ? '{ ' + parts.join(', ') + ' }' : '{}';
+  }
+  return String(value);
+}
+
+/** A call as a guarded locator's name shows it: getByRole('button', { name: 'Go' }). Trailing
+ * arguments left out (undefined) are not shown. */
+function callText(name: string, args: unknown[]): string {
+  const shown = [...args];
+  while (shown.length && shown[shown.length - 1] === undefined) shown.pop();
+  return name + '(' + shown.map(argText).join(', ') + ')';
+}
+
+/** value as a guarded locator named name, when open({ dismiss: true }) was passed and value is
+ * a Locator or FrameLocator; else value itself. */
+function guard(healer: Healer, value: unknown, name: string): unknown {
+  if (!healer.dismissOn || !looksLikeLocator(value)) return value;
+  return guardedLocator(healer, value as Locator, name);
+}
+
+/** Member name of t (a step named step), as heal.page hands it back: with dismiss: true, a
+ * locator it builds is guarded, named after the step and the call; anything else is t's. */
+function chained(healer: Healer, step: string, t: object, name: string | symbol): unknown {
+  const value = bound(t, name);
+  if (!healer.dismissOn || typeof name !== 'string' || !LOCATOR_BUILDERS.has(name) || typeof value !== 'function') {
+    return value;
+  }
+  return (...args: unknown[]) => guard(healer, (value as (...a: unknown[]) => unknown)(...args),
+    step + '.' + callText(name, args));
+}
+
+/** With open({ dismiss: true }), what heal.page hands back for the locators it does not heal:
+ * the getBy* locators, a locator built with options, a chained locator, frameLocator(),
+ * and(), or(), first(), last(), nth(), filter(), and the Locators of
+ * heal.page.locator(selector).all(). It is the real Locator (or FrameLocator), not healed, and
+ * nothing about it is saved. Its actions run through the same checks as heal.locator()'s,
+ * without the heal canary: registered interruptions are handled first, a popup that covers
+ * the element is dismissed (see dismiss.ts), and an action that failed because something
+ * covered the element is tried once more after one was. Locators built from it are guarded
+ * the same way. expect() takes it, and native is the real one. */
+function guardedLocator(healer: Healer, target: Locator, step: string): Locator {
+  const proxy = new Proxy(target, {
+    get(t, name) {
+      if (name === 'native') return t;
+      if (typeof name === 'string' && ACTION_NAMES.has(name)
+          && typeof (t as unknown as Record<string, unknown>)[name] === 'function') {
+        return (...args: unknown[]) => healer.runGuarded(step, t, name, args);
+      }
+      return chained(healer, step, t, name);
+    },
+  });
+  PROXIES.set(proxy, { native: target, step });
+  return proxy;
+}
+
 /** heal.page.locator(selector): its actions and waiting reads go through
- * heal.locator(selector, selector); everything else is the real Locator's. */
+ * heal.locator(selector, selector); everything else is the real Locator's. With
+ * open({ dismiss: true }), the locators chained from it and those its all() gives are guarded
+ * (see guardedLocator). */
 function healingLocator(healer: Healer, target: Locator, selector: string): Locator {
-  return new Proxy(target, {
+  const step = 'page.locator(' + pyRepr(selector) + ')';
+  const proxy = new Proxy(target, {
     get(t, name) {
       if (name === 'native') return t;
       if (typeof name === 'string' && LOCATOR_HEALED.has(name)) {
@@ -1056,9 +1466,16 @@ function healingLocator(healer: Healer, target: Locator, selector: string): Loca
           return healer.peekVisible(selector);
         };
       }
-      return bound(t, name);
+      if (name === 'all') {
+        // A Locator for each element the selector matches, as Playwright gives them, never
+        // healed and with nothing saved; each one guarded with dismiss: true.
+        return async () => (await t.all()).map((item, i) => guard(healer, item, step + '.all()[' + i + ']'));
+      }
+      return chained(healer, step, t, name);
     },
   });
+  PROXIES.set(proxy, { native: target, step });
+  return proxy;
 }
 
 /** heal.page: see Healer.page. */
@@ -1070,7 +1487,11 @@ function healingPage(healer: Healer): Page | Frame {
       if (name === 'locator') {
         return (selector: string, ...rest: unknown[]) => {
           const real = (t as Page).locator(selector, ...(rest as []));
-          if (rest.some((r) => r !== undefined) || !healable(selector)) return real;
+          if (rest.some((r) => r !== undefined) || !healable(selector)) {
+            // options, or a selector mendwright cannot store: the real Locator, guarded with
+            // dismiss: true.
+            return guard(healer, real, 'page.' + callText('locator', [selector, ...rest]));
+          }
           return healingLocator(healer, real, selector);
         };
       }
@@ -1095,7 +1516,8 @@ function healingPage(healer: Healer): Page | Frame {
           return (proxy as unknown as Record<string, (...a: unknown[]) => unknown>)[name](...args);
         };
       }
-      return bound(t, name);
+      // With dismiss: true, the getBy* locators and frameLocator() come back guarded.
+      return chained(healer, 'page', t, name);
     },
   }) as Page | Frame;
 }
@@ -1138,6 +1560,11 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   const cookies = options.cookies;
   if (cookies !== undefined && cookies !== null && !COOKIE_CHOICES.includes(cookies)) {
     throw new TypeError(cookieChoiceError(cookies));
+  }
+  if (options.dismiss !== undefined && typeof options.dismiss !== 'boolean') {
+    // A string such as 'no' would read as true.
+    throw new TypeError('mendwright.open() takes dismiss: true or dismiss: false, got dismiss: '
+      + argText(options.dismiss) + '.');
   }
   const storePath = path.resolve(expandPath(options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH));
   const timeoutMs = options.timeoutMs ?? envTimeout() ?? DEFAULT_TIMEOUT_MS;
@@ -1182,6 +1609,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
     healAcrossPages: options.healAcrossPages, disabled, log: options.log,
   });
   const healer = new Healer(native, driver, store, coordinator, timeoutMs);
+  healer.dismissOn = Boolean(options.dismiss);
   if (cookies) {
     const preset = cookiePreset(cookies);
     (healer as unknown as { interruptions: Map<string, Interruption> }).interruptions.set(preset.key, preset);

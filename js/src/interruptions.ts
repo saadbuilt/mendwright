@@ -40,9 +40,19 @@ export interface Interruption {
   preset: CookieChoice | null;
 }
 
+/** One interruption a healer handled: its key, and the step it was handled for.
+ *
+ * A popup that open({ dismiss: true }) dismissed is listed too, under the key '<popup>'
+ * (flow.DISMISS_KEY), with popup (how the log line names it, as dismiss.summary() does), how
+ * ('escape', 'close' or 'decline', as in the flow.dismiss journal event) and label (the label
+ * of the button that closed it, null for Escape). All three are null for a registered
+ * interruption. */
 export interface InterruptionEvent {
   key: string;
   before: string;
+  popup: string | null;
+  how: string | null;
+  label: string | null;
 }
 
 export const ACTIONS = ['click', 'dblclick', 'fill', 'type', 'press', 'pressSequentially', 'check', 'uncheck',
@@ -105,7 +115,7 @@ export function nthTargets(selector: string, count: number, limit = 5): string[]
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 // Punctuation in a label, both apostrophes included, so "Don't allow" reads as 'don t allow'.
-const PUNCT = ".,:;!?()[]'\u2019\u00d7-_/";
+export const PUNCT = ".,:;!?()[]'\u2019\u00d7-_/";
 
 const cls = (name: string) => "contains(concat(' ', normalize-space(@class), ' '), ' " + name + " ')";
 const ids = (...values: string[]) => values.map((i) => "@id='" + i + "'").join(' or ');

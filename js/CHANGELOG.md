@@ -5,6 +5,17 @@ All notable changes to the npm package `mendwright` are documented here. The Pyt
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version starts with 0, a minor release can change the public API.
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- `open(page, { dismiss: true })`, and `mendwrightOptions: { dismiss: true }` for the fixtures, dismiss a popup nobody registered when it covers the element of an action, with the Python package's rules: Escape (only while the focus is on the page's body or in the popup, outside an iframe, and never with `cookies: 'accept'`), then the popup's close button, then a decline button such as No thanks. A button that accepts, subscribes, pays or goes somewhere, a priced one, a link with a real href, a bare ×, a label, a form's submit or reset button, a control that holds a field, a disabled one and a toggle are never clicked, an alert dialog is left alone, a popup that asks (a Cancel or Keep button) gets Escape only, and a consent banner is left alone with `cookies: 'accept'`. Each dismissal logs one WARNING, writes a `flow.dismiss` journal event and is listed in `heal.handledInterruptions` under `'<popup>'` (`DISMISS_KEY`). A popup that comes back each time throws `InterruptionLoop` after 3, with a `flow.stop` event whose code is `popup_loop`. The page scripts are the Python package's, character for character, and the tests compare the rules, the texts and the journal line with the Python package's.
+- With `dismiss: true`, the locators `heal.page` doesn't heal (`getBy*`, a locator built with options, chained locators, `frameLocator()`, `and()`, `or()`, `first()`, `last()`, `nth()`, `filter()` and those of `heal.page.locator(selector).all()`) get the interruption and popup checks before their actions. They aren't healed, nothing about them is saved, and `expect()` takes them.
+
+### Changed
+
+- The entries of `heal.handledInterruptions` have `popup`, `how` and `label`, which are `null` for a registered interruption, as the Python package's `InterruptionEvent` has them.
+
 ## [0.1.0] - 2026-11-01
 
 The first release: the Python package's `heal.locator()` and `heal.page` for Playwright Test.

@@ -6,11 +6,13 @@
 //
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
 
-import type { Frame, JSHandle, Locator, Page } from '@playwright/test';
+import type { ElementHandle, Frame, JSHandle, Locator, Page } from '@playwright/test';
 
 import { mendwrightLib } from './browser/lib';
+import { POPUP_CONTROLS_JS, POPUP_CONTROL_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS } from './browser/popup';
 import { InvalidSelector } from './errors';
 import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
+import { clickMayHaveRun } from './flow';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
@@ -186,6 +188,27 @@ export interface Snapshot {
   outside(index: number, ids: string[]): Promise<string | null>;
   dispose(): Promise<void>;
 }
+
+// The popup scripts (browser/popup.ts), each made a function from its source text once, so
+// Playwright sends the source to the page and calls it, as it does any function. A string
+// would reach the page as an expression and never be called.
+const popupFunctions = new Map<string, (...args: any[]) => unknown>();
+
+function popupFunction(source: string): (...args: any[]) => unknown {
+  let fn = popupFunctions.get(source);
+  if (!fn) {
+    fn = new Function('return ' + source)() as (...args: any[]) => unknown;
+    popupFunctions.set(source, fn);
+  }
+  return fn;
+}
+
+/** The handle on a popup's root that popupRoot() gives. */
+export type PopupRoot = ElementHandle;
+
+/** What popupClick() returns for a click that threw after it may have reached the page
+ * (flow.clickMayHaveRun): mendwright records it and stops. */
+export const UNSURE = 'unsure';
 
 /** True while handle's document is still the page's. */
 async function alive(handle: JSHandle): Promise<boolean> {
@@ -385,6 +408,73 @@ export class PlaywrightDriver {
     }));
   }
 
+  // --- popups, for open({ dismiss: true }) (see dismiss.ts) ---------------------------------
+
+  /** What covers the element of native (POPUP_PROBE_JS), in one round trip that does not
+   * wait: null unless the Locator matches one element. known is a popup's root from
+   * popupRoot(), to learn whether it is gone. scroll scrolls an element whose middle is
+   * outside the window into view first. */
+  popupProbe(native: Locator, known: PopupRoot | null = null, scroll = false): Promise<unknown> {
+    return native.evaluateAll(popupFunction(POPUP_PROBE_JS) as (els: Element[], arg: unknown) => unknown,
+      { known, scroll });
+  }
+
+  /** An ElementHandle on the root of the popup over the element (POPUP_ROOT_JS), or null when
+   * it is no longer what dismiss.expectOf() describes. */
+  async popupRoot(native: Locator, expect: unknown): Promise<PopupRoot | null> {
+    const handle = await native.evaluateHandle(popupFunction(POPUP_ROOT_JS) as (el: Element, arg: unknown) => unknown,
+      expect, { timeout: 2000 });
+    const element = handle.asElement() as ElementHandle | null;
+    if (element === null) await handle.dispose();
+    return element;
+  }
+
+  /** The facts of each control of the popup whose root is root (POPUP_CONTROLS_JS). */
+  popupControls(_native: Locator, root: PopupRoot): Promise<unknown> {
+    return root.evaluate(popupFunction(POPUP_CONTROLS_JS) as (el: Element) => unknown);
+  }
+
+  /** Click control number expect.index of the popup, a real click through Playwright's checks,
+   * when it is still the one mendwright chose (POPUP_CONTROL_JS). true when it was clicked,
+   * false when it was not, UNSURE when the click threw after it may have reached the page (it
+   * started a navigation that did not commit in time, say). */
+  async popupClick(_native: Locator, root: PopupRoot, expect: unknown, timeoutMs: number): Promise<boolean | typeof UNSURE> {
+    const handle = await root.evaluateHandle(popupFunction(POPUP_CONTROL_JS) as (el: Element, arg: unknown) => unknown,
+      expect);
+    const element = handle.asElement() as ElementHandle | null;
+    if (element === null) {
+      await handle.dispose();
+      return false;
+    }
+    try {
+      await element.click({ timeout: timeoutMs });
+    } catch (error) {
+      return clickMayHaveRun(error) ? UNSURE : false;
+    } finally {
+      try {
+        await element.dispose();
+      } catch {
+        // the page navigated or closed
+      }
+    }
+    return true;
+  }
+
+  /** Press Escape on the page's keyboard (a Frame's page's, for a Frame), when POPUP_FOCUS_JS
+   * says the key reaches the popup whose root is root: the keyboard sends it to the focused
+   * element, in whatever frame has the focus. true when it was pressed. */
+  async pressEscape(_native: Locator, root: PopupRoot): Promise<boolean> {
+    if ((await root.evaluate(popupFunction(POPUP_FOCUS_JS) as (el: Element) => unknown)) !== true) return false;
+    const page = this.page as Page;
+    const keyboard = page.keyboard ?? (this.page as Frame).page().keyboard;
+    await keyboard.press('Escape');
+    return true;
+  }
+
+  popupRelease(root: PopupRoot): Promise<void> {
+    return root.dispose();
+  }
+
   /** The elements of the page that have role (a hidden one only for checkbox), with their
    * raw reads, kept in the page for xpathFor() and outside(). */
   async snapshot(role: string): Promise<Snapshot> {
@@ -403,4 +493,55 @@ export class PlaywrightDriver {
       },
     };
   }
+}
+
+// --- the fail-closed popup calls (the Python package's driver_popup_*) -----------------------
+// A popup that cannot be read or reached is left alone: any error gives the answer that does
+// nothing.
+
+async function optional<T>(call: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await call();
+  } catch {
+    return fallback;
+  }
+}
+
+/** driver.popupProbe(): POPUP_PROBE_JS's result for the element, or null when the read
+ * failed. */
+export function driverPopupProbe(driver: PlaywrightDriver, native: Locator, known: PopupRoot | null = null,
+                                 scroll = false): Promise<unknown> {
+  return optional(() => driver.popupProbe(native, known, scroll), null);
+}
+
+/** driver.popupRoot(): a handle on the popup's root, or null. */
+export function driverPopupRoot(driver: PlaywrightDriver, native: Locator, expect: unknown): Promise<PopupRoot | null> {
+  return optional(() => driver.popupRoot(native, expect), null);
+}
+
+/** driver.popupControls(): the controls POPUP_CONTROLS_JS lists, or []. */
+export async function driverPopupControls(driver: PlaywrightDriver, native: Locator, root: PopupRoot): Promise<unknown[]> {
+  const out = await optional(() => driver.popupControls(native, root), null);
+  return Array.isArray(out) ? out : [];
+}
+
+/** driver.popupClick(): true when the control was found as expected and clicked, UNSURE when
+ * the click threw after it may have reached the page, else false (also when it threw). */
+export async function driverPopupClick(driver: PlaywrightDriver, native: Locator, root: PopupRoot, expect: unknown,
+                                       timeoutMs: number): Promise<boolean | typeof UNSURE> {
+  const out = await optional(() => driver.popupClick(native, root, expect, timeoutMs), false);
+  return out === true || out === UNSURE ? out : false;
+}
+
+/** driver.pressEscape(): true when Escape was pressed. false when the keyboard focus is not on
+ * the page's body or in the popup whose root is root, or the element is in an iframe
+ * (POPUP_FOCUS_JS): Escape goes to the focused element, and could clear a field the script
+ * filled or close a dialog it uses. */
+export async function driverPressEscape(driver: PlaywrightDriver, native: Locator, root: PopupRoot): Promise<boolean> {
+  return (await optional(() => driver.pressEscape(native, root), false)) === true;
+}
+
+/** driver.popupRelease(). Never throws. */
+export async function driverPopupRelease(driver: PlaywrightDriver, root: PopupRoot): Promise<void> {
+  await optional(() => driver.popupRelease(root), undefined);
 }

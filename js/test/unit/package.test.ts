@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import * as ts from 'typescript';
 
 import { mendwrightLib } from '../../src/browser/lib';
+import * as popupScripts from '../../src/browser/popup';
 import * as api from '../../src/index';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -81,9 +82,21 @@ test('the browser code is self-contained: it runs from its source text alone', (
   assert.ok(!/__awaiter|__spreadArray|__assign|require\(|exports\./.test(source));
 });
 
+test('the popup scripts are self-contained: each is a function from its source text alone', () => {
+  for (const [name, source] of Object.entries(popupScripts)) {
+    const fn = new Function('return ' + source)();
+    assert.equal(typeof fn, 'function', name);
+    assert.ok(!/__awaiter|__spreadArray|__assign|require\(|exports\.|import\(/.test(source), name);
+  }
+  assert.deepEqual(Object.keys(popupScripts).sort(), ['POPUP_CONTROLS_JS', 'POPUP_CONTROL_JS', 'POPUP_FOCUS_JS',
+    'POPUP_PROBE_JS', 'POPUP_ROOT_JS']);
+});
+
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
-    'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal']) {
+    'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
+    'InterruptionLoop', 'DISMISS_KEY']) {
     assert.ok(name in api, name);
   }
+  assert.equal(api.DISMISS_KEY, '<popup>');
 });

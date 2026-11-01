@@ -17,7 +17,9 @@ const VALUE_ATTR = /\svalue=("[^"]*"|'[^']*')/g;
 const URL = /https?:\/\/[^\s"'<>]+/g;
 const LONGNUM = /(?<!\p{Nd})\p{Nd}{12,19}(?!\p{Nd})/gu;
 
-function scrub(text: string): string {
+/** URLs as [URL], and runs of 12 to 19 digits as [redacted number] (the Python package's
+ * capture._scrub). */
+export function scrub(text: string): string {
   return text.replace(URL, '[URL]').replace(LONGNUM, '[redacted number]');
 }
 

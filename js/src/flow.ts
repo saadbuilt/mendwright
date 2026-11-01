@@ -172,3 +172,131 @@ export function absentMessage(key: string): string {
   return "mendwright: '" + key + "' was not on the page, so this step was skipped and there is no "
     + 'element to read. Check proxy.present before reading from an optional step.';
 }
+
+// --- popups nobody registered: open({ dismiss: true }) (see dismiss.ts) -----------------------
+
+/** The key handledInterruptions lists a popup under that open({ dismiss: true }) dismissed:
+ * nobody registered it, so it has no key of its own. */
+export const DISMISS_KEY = '<popup>';
+
+// What a browser library says when the page went away under a call: a click that started a
+// navigation, say.
+const PAGE_WENT = /navigat|context was destroyed|target closed|has been closed|detached/i;
+
+/** Whether a click that threw error may have reached the page all the same: Playwright's call
+ * log says the click action was done (it then waited for a navigation, say, and timed out),
+ * or the page navigated or closed under the call. False for an error that came before the
+ * click, such as a timeout waiting for the element to be visible or another element that
+ * intercepted it. */
+export function clickMayHaveRun(error: unknown): boolean {
+  const text = String((error as Error)?.message ?? error);
+  return ACTION_RAN.test(text.toLowerCase()) || PAGE_WENT.test(text);
+}
+
+function listed(items: string[]): string {
+  if (items.length < 2) return items.join('');
+  return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+}
+
+/** How a log line names one step on a popup: 'Escape', or a button's label in quotes, as
+ * people read buttons. */
+export function stepText(how: string, label?: string | null): string {
+  if (how === 'escape') return 'Escape';
+  return label ? '\u201c' + label + '\u201d' : 'an unlabelled button';
+}
+
+/** What mendwright did, from stepText() results: 'pressed Escape and clicked “Close”'. */
+function did(tried: string[]): string {
+  return listed(tried.map((t) => (t === 'Escape' ? 'pressed Escape' : 'clicked ' + t)));
+}
+
+/** The WARNING for a popup open({ dismiss: true }) dismissed. popup is how dismiss.summary()
+ * names it, how is stepText() of the step that closed it, and tried lists the steps before
+ * that did not close it. */
+export function dismissedMessage(before: string, popup: string, how: string, tried: string[]): string {
+  let text = 'dismissed a popup in the way of ' + pyRepr(before) + ': ' + popup + ' with ' + how;
+  if (tried.length) text += ', after ' + listed(tried) + ' did not close it';
+  return text;
+}
+
+const REGISTER = 'Register the button that closes it with heal.interrupt("<name>", "<selector of the button>"). '
+  + 'If it needs data first, register its field before the button: heal.interrupt("<name>_field", '
+  + "\"<selector of the field>\", { action: 'fill', args: ['<value>'] }).";
+
+/** The WARNING for a popup in the way of a step that open({ dismiss: true }) found and could
+ * not dismiss. tried lists the steps it took, in order (stepText()). escaped false says it did
+ * not press Escape, because the keyboard focus was outside the popup or the popup is in an
+ * iframe, or with consent because cookies: 'accept' is set. changed says the popup changed
+ * before mendwright could act. */
+export function undismissedMessage(before: string, popup: string, tried: string[],
+                                   options: { escaped?: boolean; changed?: boolean; consent?: boolean } = {}): string {
+  const { escaped = true, changed = false, consent = false } = options;
+  let text: string;
+  if (changed) {
+    text = 'It changed before mendwright could act on it, so mendwright left it alone';
+  } else if (tried.length) {
+    const onlyEscape = tried.length === 1 && tried[0] === 'Escape';
+    text = 'mendwright ' + did(tried) + ', which did not close it, and it has no ' + (onlyEscape ? '' : 'other ')
+      + 'close or decline button that mendwright may click';
+  } else {
+    text = 'It has no close or decline button that mendwright may click, so mendwright left it alone';
+  }
+  if (!escaped && !changed && consent) {
+    text += ". mendwright did not press Escape: with cookies: 'accept' it never does, because every key listener "
+      + "of the page gets the key, a consent banner's too, which may take it as a refusal";
+  } else if (!escaped && !changed) {
+    text += '. mendwright did not press Escape, which goes to the element that has the keyboard focus: that was '
+      + 'outside the popup, or the popup is in an iframe';
+  }
+  return 'could not dismiss a popup in the way of ' + pyRepr(before) + ': ' + popup + '. ' + text + '. The action '
+    + "goes ahead, and fails with the browser's own error if the popup blocks it. " + REGISTER;
+}
+
+/** The WARNING for an element that could not be looked at any more once mendwright did done
+ * ('pressed Escape', 'clicked “No thanks”') on a popup in its way, or, with raised, for a
+ * click that threw after it may have reached the page. */
+export function lostMessage(before: string, popup: string, done: string, raised = false): string {
+  const what = raised
+    ? ', and the click raised an error after it may have reached the page (a navigation it started did not finish '
+      + 'in time, say), so mendwright cannot tell what it did. mendwright'
+    : ', and then could not look at the element of ' + pyRepr(before) + ' as before (it matches no element or '
+      + 'several now, it is hidden or outside the window, or it left the page). That step may have changed the page, '
+      + 'so mendwright';
+  return done.charAt(0).toUpperCase() + done.slice(1) + ' on a popup in the way of ' + pyRepr(before) + ': ' + popup
+    + what + ' does not count the popup as dismissed and does not try a failed action again.';
+}
+
+/** The WARNING for a popup that looks like a consent banner, with cookies: 'accept' and
+ * dismiss: true: dismissing it would turn the consent down. */
+export function consentMessage(before: string, popup: string): string {
+  return 'left a popup in the way of ' + pyRepr(before) + ' alone: ' + popup + '. It looks like a consent banner the '
+    + "cookies: 'accept' preset does not know, and Escape, a close or a decline button could turn the consent down, "
+    + "so mendwright does not dismiss it. The action goes ahead, and fails with the browser's own error if the "
+    + 'banner blocks it. Register its accept button with heal.interrupt("<name>", "<selector of the button>").';
+}
+
+/** The WARNING for a popup that is a role="alertdialog": it asks for an answer, and Escape or
+ * any of its buttons would give one. */
+export function alertMessage(before: string, popup: string): string {
+  return 'left a popup in the way of ' + pyRepr(before) + ' alone: ' + popup + '. It is an alert dialog '
+    + '(role="alertdialog"), which asks for an answer, such as "Delete this project?", and Escape or any of its '
+    + 'buttons would give one, so mendwright does not press or click anything on it. The action goes ahead, and '
+    + "fails with the browser's own error if the dialog blocks it. If your script should answer it, register the "
+    + 'button with heal.interrupt("<name>", "<selector of the button>").';
+}
+
+/** The InterruptionLoop text for a step whose budget is used up while a popup still covers its
+ * element. again: a popup was dismissed in this step already, so it is likely one that comes
+ * back each time; false: the budget went to interruptions. */
+export function dismissLoopMessage(before: string, popup: string, count: number, again = true): string {
+  if (again) {
+    return 'mendwright: ' + count + ' interruptions and popups were handled for ' + pyRepr(before) + ' and a popup is '
+      + 'still in the way: ' + popup + '. It comes back each time it is dismissed, so mendwright stopped instead of '
+      + 'dismissing it again. Register the button that closes it for good with heal.interrupt(), or find out what '
+      + 'opens it again.';
+  }
+  return 'mendwright: ' + count + ' interruptions were handled for ' + pyRepr(before) + ' and a popup is still in the '
+    + 'way: ' + popup + '. A step handles at most ' + MAX_INTERRUPTIONS_PER_STEP + ', so mendwright stopped instead of '
+    + 'dismissing it. Find out what keeps opening them, or register the button that closes the popup with '
+    + 'heal.interrupt().';
+}

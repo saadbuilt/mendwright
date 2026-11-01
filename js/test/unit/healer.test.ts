@@ -561,7 +561,7 @@ describe('interruptions and the cookies preset', () => {
     const heal = w.open({ cookies: 'reject' });
     await heal.locator('email', '#email').fill('ada@example.com');
     assert.deepEqual(w.page.clicked.map((el) => el.id), ['onetrust-reject-all-handler']);
-    assert.deepEqual(heal.handledInterruptions, [{ key: 'cookie_banner', before: 'email' }]);
+    assert.deepEqual(heal.handledInterruptions, [{ key: 'cookie_banner', before: 'email', popup: null, how: null, label: null }]);
     assert.ok(journalOf(w.dir).some((e) => e.event === 'flow.interrupt' && e.preset === 'reject'));
   });
 
