@@ -1,0 +1,587 @@
+{
+ "version": "0.10.0",
+ "git_rev": "be9ca7b4b40b42ff324d3576cf459a0e067c08e9",
+ "git_dirty": false,
+ "init_sha256": "2300f1843f8c87929dafdf05765a4bd37eed4e498dce8ea69daa90ba71db21df",
+ "viewport": [
+  1080,
+  736
+ ],
+ "model": {
+  "name": "mendwright-selector:latest",
+  "bytes": 986049096,
+  "parameter_size": "1.5B"
+ },
+ "A_plain_v1": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.046,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.013,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.035,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.033,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "B_plain_banner": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": false,
+   "error_type": "TimeoutError",
+   "error": "Page.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"#email\")\n    - locator resolved to <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\"/>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"cc-wrap\" class=\"cookie-consent\">…</div> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"cc-wrap\" class=\"cookie-consent\">…</div> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    58 × waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div id=\"cc-wrap\" class=\"cookie-consent\">…</div> intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n",
+   "error_line": "playwright._impl._errors.TimeoutError: Page.click: Timeout 30000ms exceeded.",
+   "seconds": 30.005,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "B_banner_up_after": true,
+ "C_mendwright_banner": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.182,
+   "log": [
+    "mendwright: handled interruption 'cookie_banner' before '#email'"
+   ],
+   "log_at": [
+    0.15
+   ]
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.01,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.107,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.083,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "C_seconds": 0.382,
+ "C_banner_up_after": false,
+ "C_heals": [],
+ "M_mendwright_v1": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.09,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.01,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.07,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.067,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "M_seconds": 0.237,
+ "M_heals": [],
+ "M_fingerprints": {
+  "#email": true,
+  "#accept-terms": true,
+  "#continue": true
+ },
+ "D_plain_v2": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": false,
+   "error_type": "TimeoutError",
+   "error": "Page.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"#email\")\n",
+   "error_line": "playwright._impl._errors.TimeoutError: Page.click: Timeout 30000ms exceeded.",
+   "seconds": 30.003,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "D_timeout_ms": 10000,
+ "D_mendwright_v2": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 10.222,
+   "log": [
+    "mendwright: healed '#email': #email -> //input[@name='email'] (fingerprint, 0.0s)"
+   ],
+   "log_at": [
+    10.166
+   ]
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.009,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 10.501,
+   "log": [
+    "mendwright: healed '#accept-terms': #accept-terms -> //input[@id='opt-91c4'] (LocalModelProvider, 0.3s)"
+   ],
+   "log_at": [
+    10.424
+   ]
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 10.239,
+   "log": [
+    "mendwright: healed '#continue': #continue -> //button[normalize-space()='Continue to payment'] (fingerprint, 0.0s)"
+   ],
+   "log_at": [
+    10.17
+   ]
+  }
+ ],
+ "D_seconds": 30.971,
+ "D_heals": [
+  {
+   "key": "#email",
+   "old": "('#email',)",
+   "new": "//input[@name='email']",
+   "source": "fingerprint"
+  },
+  {
+   "key": "#accept-terms",
+   "old": "('#accept-terms',)",
+   "new": "//input[@id='opt-91c4']",
+   "source": "model"
+  },
+  {
+   "key": "#continue",
+   "old": "('#continue',)",
+   "new": "//button[normalize-space()='Continue to payment']",
+   "source": "fingerprint"
+  }
+ ],
+ "D_fingerprint_notes": [
+  {
+   "key": "#email",
+   "applied": "//input[@name='email']",
+   "note": ""
+  },
+  {
+   "key": "#accept-terms",
+   "applied": null,
+   "note": "the fingerprint match for '#accept-terms' was not confident: two elements score alike (0.42 and 0.41), so the fingerprint does not tell them apart"
+  },
+  {
+   "key": "#continue",
+   "applied": "//button[normalize-space()='Continue to payment']",
+   "note": ""
+  }
+ ],
+ "D_proposed": [
+  {
+   "key": "#email",
+   "xpath": "//input[@name='email']",
+   "reasoning": "fingerprint score 0.40, next best 0.00"
+  },
+  {
+   "key": "#accept-terms",
+   "xpath": "//input[@id='opt-91c4']",
+   "reasoning": "local model picked candidate 2 of 2: input[checkbox] label=\"I agree to the purchase terms\" id=\"opt-91c4\" | in \"Your details\""
+  },
+  {
+   "key": "#continue",
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "reasoning": "fingerprint score 0.58, next best 0.41"
+  }
+ ],
+ "D_journal": [
+  {
+   "ts": "2026-11-01T17:15:46+00:00",
+   "event": "heal.requested",
+   "key": "#email"
+  },
+  {
+   "ts": "2026-11-01T17:15:46+00:00",
+   "event": "heal.proposed",
+   "key": "#email",
+   "xpath": "//input[@name='email']",
+   "reasoning": "fingerprint score 0.40, next best 0.00",
+   "source": "fingerprint"
+  },
+  {
+   "ts": "2026-11-01T17:15:46+00:00",
+   "event": "heal.applied",
+   "key": "#email",
+   "provider": "fingerprint",
+   "latency_ms": 31,
+   "xpath": "//input[@name='email']",
+   "old": [
+    "#email"
+   ],
+   "source": "fingerprint"
+  },
+  {
+   "ts": "2026-11-01T17:15:56+00:00",
+   "event": "heal.requested",
+   "key": "#accept-terms"
+  },
+  {
+   "ts": "2026-11-01T17:15:56+00:00",
+   "event": "heal.proposed",
+   "key": "#accept-terms",
+   "xpath": "//input[@id='opt-91c4']",
+   "reasoning": "local model picked candidate 2 of 2: input[checkbox] label=\"I agree to the purchase terms\" id=\"opt-91c4\" | in \"Your details\""
+  },
+  {
+   "ts": "2026-11-01T17:15:56+00:00",
+   "event": "heal.applied",
+   "key": "#accept-terms",
+   "provider": "LocalModelProvider",
+   "model": "mendwright-selector",
+   "latency_ms": 297,
+   "xpath": "//input[@id='opt-91c4']",
+   "old": [
+    "#accept-terms"
+   ]
+  },
+  {
+   "ts": "2026-11-01T17:16:06+00:00",
+   "event": "heal.requested",
+   "key": "#continue"
+  },
+  {
+   "ts": "2026-11-01T17:16:06+00:00",
+   "event": "heal.proposed",
+   "key": "#continue",
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "reasoning": "fingerprint score 0.58, next best 0.41",
+   "source": "fingerprint"
+  },
+  {
+   "ts": "2026-11-01T17:16:06+00:00",
+   "event": "heal.applied",
+   "key": "#continue",
+   "provider": "fingerprint",
+   "latency_ms": 15,
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "old": [
+    "#continue"
+   ],
+   "source": "fingerprint"
+  }
+ ],
+ "D_winners": {
+  "#continue": {
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:16:06+00:00",
+   "lastSucceededAt": "2026-11-01T17:16:06+00:00",
+   "status": "active"
+  },
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:15:46+00:00",
+   "lastSucceededAt": "2026-11-01T17:15:46+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
+  "#accept-terms": {
+   "xpath": "//input[@id='opt-91c4']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:15:56+00:00",
+   "lastSucceededAt": "2026-11-01T17:15:56+00:00",
+   "status": "active",
+   "css": "#opt-91c4"
+  }
+ },
+ "D_checked": [
+  [
+   "opt-77a1",
+   false
+  ],
+  [
+   "opt-91c4",
+   true
+  ]
+ ],
+ "D_email_value": "ada@example.com",
+ "E_mendwright_v2_again": [
+  {
+   "verb": "click",
+   "arg": "#email",
+   "ok": true,
+   "seconds": 0.086,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "type",
+   "arg": "ada@example.com",
+   "ok": true,
+   "seconds": 0.009,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "check",
+   "arg": "#accept-terms",
+   "ok": true,
+   "seconds": 0.073,
+   "log": [],
+   "log_at": []
+  },
+  {
+   "verb": "click",
+   "arg": "#continue",
+   "ok": true,
+   "seconds": 0.067,
+   "log": [],
+   "log_at": []
+  }
+ ],
+ "E_seconds": 0.235,
+ "E_heals": [],
+ "E_journal": [],
+ "E_winners": {
+  "#accept-terms": {
+   "xpath": "//input[@id='opt-91c4']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:15:56+00:00",
+   "lastSucceededAt": "2026-11-01T17:16:07+00:00",
+   "status": "active",
+   "css": "#opt-91c4"
+  },
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:15:46+00:00",
+   "lastSucceededAt": "2026-11-01T17:16:07+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
+  "#continue": {
+   "xpath": "//button[normalize-space()='Continue to payment']",
+   "source": "heal",
+   "addedAt": "2026-11-01T17:16:06+00:00",
+   "lastSucceededAt": "2026-11-01T17:16:07+00:00",
+   "status": "active"
+  }
+ },
+ "flow": {
+  "F1": {
+   "steps": [
+    {
+     "step": "input[name=email]",
+     "ok": true,
+     "seconds": 2.177,
+     "log": [
+      "WARNING mendwright: dismissed a popup in the way of 'input[name=email]': <div id=\"nl\" role=\"dialog\" class=\"nl-overlay\"> (\"MEMBERS ONLY Get 10% off your first order Join our newslette…\") with “No thanks”, after Escape did not close it"
+     ],
+     "log_at": [
+      2.149
+     ]
+    }
+   ],
+   "seconds": 2.177,
+   "open_kwargs": {
+    "dismiss": true
+   },
+   "click": "input[name=email]",
+   "click_kwargs": {},
+   "store_fresh": true,
+   "popup_up_after": false,
+   "sign_up": "never clicked"
+  },
+  "pages": {
+   "v2_nl": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body>\n<div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div>\n<div class=\"x8k2\"><h2>Your details</h2>\n<div class=\"f9a1\">\n  <span class=\"lbl\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\">\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-77a1\"> Email me deals and news</label>\n  <label class=\"opt\"><input type=\"checkbox\" id=\"opt-91c4\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\">Back to cart</button>\n</div></div>\n\n<div id=\"nl\" class=\"nl-overlay\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"nl-t\"\n  style=\"position:fixed;inset:0;background:rgba(18,16,40,.52);display:flex;align-items:center;justify-content:center\">\n  <div class=\"nl-card\" style=\"background:#fff;border-radius:18px;padding:28px 30px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,.28)\">\n    <div style=\"font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a6fd0;font-weight:700\">Members only</div>\n    <div id=\"nl-t\" style=\"font-size:25px;font-weight:700;margin:6px 0 8px\">Get 10% off your first order</div>\n    <div style=\"color:#57606a;font-size:15px;line-height:1.45;margin-bottom:16px\">Join our newsletter for deals and new arrivals.</div>\n    <input type=\"email\" placeholder=\"Your email\" style=\"width:100%;padding:12px;border:1px solid #d0d7de;border-radius:9px;font-size:16px;margin-bottom:12px\">\n    <button type=\"button\" class=\"nl-yes\" onclick=\"window.mwSignedUp=true;this.textContent='Thanks!'\"\n      style=\"width:100%;padding:13px;border:0;border-radius:10px;background:#3b2a86;color:#fff;font-size:16px;font-weight:600\">Sign up</button>\n    <button type=\"button\" class=\"nl-no\" onclick=\"document.getElementById('nl').remove()\"\n      style=\"width:100%;margin-top:8px;padding:10px;border:0;background:none;color:#57606a;font-size:15px\">No thanks</button>\n  </div>\n</div>\n</body></html>"
+  }
+ },
+ "steps": {
+  "pages": {
+   "today": {
+    "/checkout": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><b>1 Shipping</b> <span>›</span> <span>2 Payment</span> <span>›</span> <span>3 Review</span></div><div class=\"wrap\"><h2>Shipping address</h2><div class=\"card\"><span class=\"lbl\">Full name</span><input id=\"ship-name\" name=\"name\" placeholder=\"Ada Lovelace\"><span class=\"lbl\">Street and number</span><input id=\"ship-street\" name=\"street\" placeholder=\"12 Market Street\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/payment\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/payment": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Shipping</span> <span>›</span> <b>2 Payment</b> <span>›</span> <span>3 Review</span></div><div class=\"wrap\"><h2>Payment</h2><div class=\"card\"><span class=\"lbl\">Card number</span><input id=\"card-number\" name=\"card\" placeholder=\"1234 1234 1234 1234\"><span class=\"lbl\">Expiry</span><input id=\"card-exp\" name=\"exp\" placeholder=\"MM / YY\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/review\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/review": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Shipping</span> <span>›</span> <span>2 Payment</span> <span>›</span> <b>3 Review</b></div><div class=\"wrap\"><h2>Review your order</h2><div class=\"card\"><div style=\"font-size:15px;line-height:1.7;color:#3b3f46\">1 × Trail jacket · $129<br>Ships to Ada Lovelace</div><button class=\"go\" type=\"button\" data-next=\"/checkout/done\">Place order</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/done": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"></div><div class=\"wrap\"><h2>Thanks, Ada!</h2><div class=\"card\"><div style=\"font-size:15px;color:#3b3f46\">Order #10482 is confirmed.</div></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>"
+   },
+   "switched": {
+    "/checkout": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><b>1 Payment</b> <span>›</span> <span>2 Shipping</span> <span>›</span> <span>3 Review</span></div><div class=\"wrap\"><h2>Payment</h2><div class=\"card\"><span class=\"lbl\">Card number</span><input id=\"card-number\" name=\"card\" placeholder=\"1234 1234 1234 1234\"><span class=\"lbl\">Expiry</span><input id=\"card-exp\" name=\"exp\" placeholder=\"MM / YY\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/shipping\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/shipping": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Payment</span> <span>›</span> <b>2 Shipping</b> <span>›</span> <span>3 Review</span></div><div class=\"wrap\"><h2>Shipping address</h2><div class=\"card\"><span class=\"lbl\">Full name</span><input id=\"ship-name\" name=\"name\" placeholder=\"Ada Lovelace\"><span class=\"lbl\">Street and number</span><input id=\"ship-street\" name=\"street\" placeholder=\"12 Market Street\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/review\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/review": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Payment</span> <span>›</span> <span>2 Shipping</span> <span>›</span> <b>3 Review</b></div><div class=\"wrap\"><h2>Review your order</h2><div class=\"card\"><div style=\"font-size:15px;line-height:1.7;color:#3b3f46\">1 × Trail jacket · $129<br>Ships to Ada Lovelace</div><button class=\"go\" type=\"button\" data-next=\"/checkout/done\">Place order</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/done": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"></div><div class=\"wrap\"><h2>Thanks, Ada!</h2><div class=\"card\"><div style=\"font-size:15px;color:#3b3f46\">Order #10482 is confirmed.</div></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>"
+   },
+   "extra": {
+    "/checkout": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><b>1 Payment</b> <span>›</span> <span>2 Protection</span> <span>›</span> <span>3 Shipping</span> <span>›</span> <span>4 Review</span></div><div class=\"wrap\"><h2>Payment</h2><div class=\"card\"><span class=\"lbl\">Card number</span><input id=\"card-number\" name=\"card\" placeholder=\"1234 1234 1234 1234\"><span class=\"lbl\">Expiry</span><input id=\"card-exp\" name=\"exp\" placeholder=\"MM / YY\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/protection\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/protection": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Payment</span> <span>›</span> <b>2 Protection</b> <span>›</span> <span>3 Shipping</span> <span>›</span> <span>4 Review</span></div><div class=\"wrap\"><h2>Add travel protection?</h2><div class=\"card\"><div style=\"font-size:15px;line-height:1.6;color:#3b3f46;margin-bottom:8px\">Cover your jacket against loss for $4.99.</div><button class=\"go\" type=\"button\" data-next=\"/checkout/shipping\">Add protection</button><button class=\"alt\" type=\"button\" data-next=\"/checkout/shipping\">Continue without</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/shipping": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Payment</span> <span>›</span> <span>2 Protection</span> <span>›</span> <b>3 Shipping</b> <span>›</span> <span>4 Review</span></div><div class=\"wrap\"><h2>Shipping address</h2><div class=\"card\"><span class=\"lbl\">Full name</span><input id=\"ship-name\" name=\"name\" placeholder=\"Ada Lovelace\"><span class=\"lbl\">Street and number</span><input id=\"ship-street\" name=\"street\" placeholder=\"12 Market Street\"><button class=\"go\" id=\"next\" type=\"button\" data-next=\"/checkout/review\">Continue</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/review": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"><span>1 Payment</span> <span>›</span> <span>2 Protection</span> <span>›</span> <span>3 Shipping</span> <span>›</span> <b>4 Review</b></div><div class=\"wrap\"><h2>Review your order</h2><div class=\"card\"><div style=\"font-size:15px;line-height:1.7;color:#3b3f46\">1 × Trail jacket · $129<br>Ships to Ada Lovelace</div><button class=\"go\" type=\"button\" data-next=\"/checkout/done\">Place order</button></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>",
+    "/checkout/done": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind</title><style>*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.st{display:flex;gap:10px;padding:18px 36px 0;font-size:14px;color:#8b949e} .st b{color:#3b2a86}\n.wrap{padding:18px 36px} h2{font-size:25px;margin:0 0 18px}\n.card{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.card input{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:14px}\n.go{margin-top:6px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.alt{margin-top:8px;width:100%;background:none;border:1px solid #d0d7de;border-radius:10px;padding:12px;font-size:15px;color:#3b2a86}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body><div class=\"nv\"><b>Northwind</b><span>Secure checkout</span></div><div class=\"st\"></div><div class=\"wrap\"><h2>Thanks, Ada!</h2><div class=\"card\"><div style=\"font-size:15px;color:#3b3f46\">Order #10482 is confirmed.</div></div></div><script>for (const b of document.querySelectorAll(\"[data-next]\")) b.onclick = () => { location.href = b.dataset.next; };</script></body></html>"
+   }
+  },
+  "open_kwargs": {},
+  "steps": [
+   [
+    "shipping",
+    "#ship-name",
+    {}
+   ],
+   [
+    "payment",
+    "#card-number",
+    {}
+   ],
+   [
+    "review",
+    "text=\"Place order\"",
+    {
+     "last": true
+    }
+   ]
+  ],
+  "today": {
+   "flow": "today",
+   "ran": [
+    "shipping",
+    "payment",
+    "review"
+   ],
+   "ok": true,
+   "seconds": 0.373,
+   "timeout_ms": 10000,
+   "log": [
+    "INFO mendwright: ran step 'shipping' on /checkout (0.1s)",
+    "INFO mendwright: ran step 'payment' on /checkout/payment (0.1s)",
+    "INFO mendwright: ran step 'review' on /checkout/review (0.1s)"
+   ],
+   "log_at": [
+    0.141,
+    0.28,
+    0.373
+   ],
+   "visited": [
+    "/checkout",
+    "/checkout/payment",
+    "/checkout/review",
+    "/checkout/done"
+   ],
+   "final_url": "https://northwind.example/checkout/done",
+   "done": true
+  },
+  "switched": {
+   "flow": "switched",
+   "ran": [
+    "payment",
+    "shipping",
+    "review"
+   ],
+   "ok": true,
+   "seconds": 0.358,
+   "timeout_ms": 10000,
+   "log": [
+    "INFO mendwright: ran step 'payment' on /checkout (0.1s)",
+    "WARNING mendwright: ran 'payment' before 'shipping': the site changed the order of the steps",
+    "INFO mendwright: ran step 'shipping' on /checkout/shipping (0.1s)",
+    "INFO mendwright: ran step 'review' on /checkout/review (0.1s)"
+   ],
+   "log_at": [
+    0.143,
+    0.152,
+    0.275,
+    0.358
+   ],
+   "visited": [
+    "/checkout",
+    "/checkout/shipping",
+    "/checkout/review",
+    "/checkout/done"
+   ],
+   "final_url": "https://northwind.example/checkout/done",
+   "done": true
+  },
+  "extra": {
+   "flow": "extra",
+   "ok": false,
+   "error_type": "AttentionRequired",
+   "error": "mendwright: no step showed on /checkout/protection within 10000 ms. mendwright looked for 'shipping' (#ship-name) and 'review' (text=\"Place order\"). Steps that ran: 'payment'. If the site added a step here, add it with heal.step(): @heal.step(\"<name>\", \"<selector of something only that step shows>\"). If a step's landmark changed, update its when=: landmarks are never healed.",
+   "error_line": "mendwright.exceptions.AttentionRequired: mendwright: no step showed on /checkout/protection within 10000 ms. mendwright looked for 'shipping' (#ship-name) and 'review' (text=\"Place order\"). Steps that ran: 'payment'. If the site added a step here, add it with heal.step(): @heal.step(\"<name>\", \"<selector of something only that step shows>\"). If a step's landmark changed, update its when=: landmarks are never healed.",
+   "seconds": 10.174,
+   "timeout_ms": 10000,
+   "log": [
+    "INFO mendwright: ran step 'payment' on /checkout (0.1s)"
+   ],
+   "log_at": [
+    0.132
+   ],
+   "visited": [
+    "/checkout",
+    "/checkout/protection"
+   ],
+   "final_url": "https://northwind.example/checkout/protection",
+   "done": false
+  }
+ }
+}
