@@ -71,7 +71,7 @@ from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, fra
 from .shadow import (MISSING, ShadowHost, as_document, chain_hosts, driver_shadowed, hosts_of,
                      place_text, saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
-from .fleet import page_signature, single_flight
+from .fleet import decline_ttl_setting, page_signature, single_flight
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 
@@ -619,6 +619,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     # MENDWRIGHT_DISABLE=1 swaps in a provider that declines, which the coordinator's heal
     # path reads; the flag also stops a key being followed into an iframe.
     coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
+    # How long a model's decline of a key on a page is reused (see mendwright.fleet).
+    coord.decline_ttl = decline_ttl_setting()
     # What turned the fingerprint tier off, for the refusal of a list looked up with
     # nonempty=True (see Healer._nonempty_blocked).
     coord.fingerprint_off_by = None if fingerprint else off_by

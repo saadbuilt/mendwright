@@ -372,6 +372,12 @@ class HealCoordinator:
         # for a heal another worker saved, after store.refresh() (see _look_again). It
         # returns the selector it adopted, or None.
         self.look_again = None
+        # Seconds a model's decline of a key on a page is reused (see _reused_decline):
+        # mendwright.open() sets MENDWRIGHT_DECLINE_TTL_SECONDS here; 0 (a coordinator used
+        # on its own) asks the model every time. wallclock gives the times declines are kept
+        # with (time.time(), so another process reads them the same); tests replace it.
+        self.decline_ttl = 0
+        self.wallclock = time.time
 
     @contextlib.contextmanager
     def scoped(self, driver, frame_xpath, shadow_hosts=None):
@@ -502,15 +508,53 @@ class HealCoordinator:
             logger.log(level, 'mendwright: ' + message)
 
     def _decline(self, selector_key, reason, level=logging.WARNING, logged=None, *,
-                 code='other'):
+                 code='other', **fields):
         """Record why a heal did not apply (for resolve_with_heal to surface), log it, journal
-        it as heal.declined with ``code`` (one of DECLINE_CODES), and return the falsy value
-        try_heal uses for 'not applied'. ``logged`` is a shorter reason for the log line,
-        when the full one was already logged elsewhere."""
+        it as heal.declined with ``code`` (one of DECLINE_CODES) and any other fields (cached
+        for a decline reused, see _reused_decline), and return the falsy value try_heal uses
+        for 'not applied'. ``logged`` is a shorter reason for the log line, when the full one
+        was already logged elsewhere."""
         self.heal_reasons[selector_key] = reason
         self._emit(level, 'did not heal ' + repr(selector_key) + ': ' + str(logged or reason))
-        journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason)
+        journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason,
+                      **fields)
         return False
+
+    def _decline_ident(self, selector_key, broken_candidates, context):
+        """(store file, key, page signature) a decline of this heal is kept and looked up
+        under (see mendwright.fleet), or None when declines are not reused here."""
+        from .fleet import page_signature, store_name
+        if not self.decline_ttl:
+            return None
+        name = store_name(self.store)
+        if name is None:
+            return None
+        page = context.get('page') if isinstance(context, dict) else None
+        return name, selector_key, page_signature(page, _old_selectors(broken_candidates))
+
+    def _reused_decline(self, selector_key, broken_candidates, context):
+        """A model's decline of this key on this page, given here or by another worker
+        within MENDWRIGHT_DECLINE_TTL_SECONDS: declined again with its reason and code, and
+        cached=True in the journal, with no model call and no budget spent. None when there
+        is none."""
+        from .fleet import DECLINES, reused_note
+        ident = self._decline_ident(selector_key, broken_candidates, context)
+        if ident is None:
+            return None
+        now = self.wallclock()
+        row = DECLINES.get(*ident, now)
+        if row is None:
+            return None
+        reason = row['reason'] + reused_note(row['at'], now, self.decline_ttl)
+        return self._decline(selector_key, reason, code=row['code'], cached=True)
+
+    def _remember_decline(self, selector_key, broken_candidates, context, code, reason):
+        """Keep the model's decline (code not_here or gate) for other workers and the next
+        lookups (see mendwright.fleet.DECLINES)."""
+        from .fleet import DECLINES
+        ident = self._decline_ident(selector_key, broken_candidates, context)
+        if ident is not None:
+            DECLINES.put(*ident, code, reason, self.wallclock(), self.decline_ttl)
 
     def _outside_shadow(self, selector_key):
         """Why a heal of the key may not run here, or '': this coordinator heals on the page
@@ -605,6 +649,10 @@ class HealCoordinator:
         adopted = self._look_again(selector_key, broken_candidates)
         if adopted:
             return adopted
+        # Or the model already said, about this page, that nothing here fits.
+        reused = self._reused_decline(selector_key, broken_candidates, context)
+        if reused is not None:
+            return reused
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -673,11 +721,14 @@ class HealCoordinator:
                     self.journal.rejected(selector_key, reason='no proposal', error=error)
                     # The model found no element on this page that fits, or was not sure
                     # which: the providers end that sentence with NOT_HERE_HINT, so the code
-                    # does not depend on its wording.
-                    return self._decline(selector_key,
-                        type(self.provider).__name__ + " returned no selector for '"
-                        + selector_key + "': " + error,
-                        code='not_here' if NOT_HERE_HINT in error else 'no_proposal')
+                    # does not depend on its wording. Only that answer is kept for other
+                    # workers: a failure of the provider (network, rate limit, key) is not.
+                    code = 'not_here' if NOT_HERE_HINT in error else 'no_proposal'
+                    reason = (type(self.provider).__name__ + " returned no selector for '"
+                              + selector_key + "': " + error)
+                    self._remember_decline(selector_key, broken_candidates, context, code,
+                                           reason)
+                    return self._decline(selector_key, reason, code=code)
                 self.journal.rejected(selector_key, reason='no proposal')
                 return self._decline(selector_key,
                     "the model returned no usable selector for '" + selector_key + "'. Try a "
@@ -715,11 +766,12 @@ class HealCoordinator:
             self.journal.rejected(selector_key, xpath=proposal.get('xpath'), reason=reason,
                                   source=tag)
             bundle = dict(bundle, rejectedXpath=proposal.get('xpath'), rejectReason=reason)
-        self._decline(selector_key,
-            "no selector the model proposed for '" + selector_key + "' passed mendwright's local "
-            "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
-            "matches exactly one element of the expected role and is present on the live page.",
-            code='gate')
+        reason = ("no selector the model proposed for '" + selector_key + "' passed "
+                  "mendwright's local gate (last reason: " + str(reason) + "). The gate requires "
+                  "a non-brittle xpath that matches exactly one element of the expected role and "
+                  "is present on the live page.")
+        self._remember_decline(selector_key, broken_candidates, context, 'gate', reason)
+        self._decline(selector_key, reason, code='gate')
         return None
 
     def _call_meta(self, selector_key, meta):

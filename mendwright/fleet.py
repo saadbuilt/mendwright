@@ -13,6 +13,14 @@ a thousand parallel tests or scrapers), this module makes them heal it once:
   follower whose wait runs out makes its own attempt under the normal caps. A follower on the
   async healer awaits an asyncio future on its event loop, so it holds no worker thread.
 
+- Declines a worker reuses (DECLINES): when the model looked at a page and gave no usable
+  heal (it said no element fits, code not_here, or nothing it proposed passed the checks,
+  code gate), that answer is kept per (store file, key, page signature) for
+  MENDWRIGHT_DECLINE_TTL_SECONDS (600 by default, 0 turns it off). Inside that time a worker
+  reuses the decline and its reason instead of asking the model again, and spends no budget.
+  Failures of the provider itself (a network error, a rate limit, a bad key) are not kept:
+  asking again can work.
+
 The page signature (page_signature) says which pages a heal or a decline can be shared on.
 It is deterministic, so the TypeScript port can compute it byte for byte.
 """
@@ -26,7 +34,8 @@ import threading
 import time
 
 __all__ = ['page_signature', 'FLIGHTS', 'Flights', 'Flight', 'single_flight',
-           'single_flight_async', 'store_name']
+           'single_flight_async', 'store_name', 'DECLINES', 'Declines', 'REUSED_DECLINES',
+           'DECLINE_TTL_DEFAULT', 'decline_ttl_setting']
 
 
 # --- the page signature -------------------------------------------------------------------------
@@ -227,3 +236,85 @@ async def single_flight_async(store, key, signature, heal, timeout_s):
             FLIGHTS.finish(flight)
     await FLIGHTS.wait_async(flight, timeout_s)
     return await heal()
+
+
+# --- declines a worker reuses (the negative cache) ---------------------------------------------
+
+# The heal.declined codes of a model's answer about a page, which workers reuse: it found no
+# element that fits, or nothing it proposed passed the checks.
+REUSED_DECLINES = ('not_here', 'gate')
+
+# How long a decline is reused when MENDWRIGHT_DECLINE_TTL_SECONDS is not set: ten minutes.
+DECLINE_TTL_DEFAULT = 600
+DECLINE_TTL_VAR = 'MENDWRIGHT_DECLINE_TTL_SECONDS'
+
+
+def decline_ttl_setting(environ=None):
+    """MENDWRIGHT_DECLINE_TTL_SECONDS: how many seconds a model's decline is reused, a whole
+    number, 0 to ask the model every time; DECLINE_TTL_DEFAULT when it is unset. Raises
+    ValueError for anything else, as MENDWRIGHT_TIMEOUT_MS does."""
+    raw = (os.environ if environ is None else environ).get(DECLINE_TTL_VAR)
+    if raw is None or not raw.strip():
+        return DECLINE_TTL_DEFAULT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError('mendwright: ' + DECLINE_TTL_VAR + ' must be a whole number of '
+                         'seconds, 0 to ask the model every time, got ' + repr(raw) + '. Fix '
+                         'it, or unset it for ' + str(DECLINE_TTL_DEFAULT) + ' seconds.')
+    return value
+
+
+class Declines:
+    """The declines a process reuses: (store file, key, page signature) -> {'code', 'reason',
+    'at', 'until'}, with wall-clock times (time.time()), so a record another process wrote
+    (see mendwright.fleet's per-key records) means the same."""
+
+    # Expired rows are dropped once the table has this many.
+    PRUNE_AT = 1000
+
+    def __init__(self):
+        self._rows = {}
+        self._lock = threading.Lock()
+
+    def get(self, name, key, signature, now):
+        """The decline in force for (name, key, signature) at now, as a dict, or None."""
+        with self._lock:
+            row = self._rows.get((name, key, signature))
+            if row is None:
+                return None
+            if row['until'] <= now:
+                del self._rows[(name, key, signature)]
+                return None
+            return dict(row)
+
+    def put(self, name, key, signature, code, reason, now, ttl):
+        """Keep a decline of code (one of REUSED_DECLINES) for ttl seconds from now. Any other
+        code, and ttl 0, keep nothing."""
+        if not ttl or ttl <= 0 or code not in REUSED_DECLINES:
+            return
+        with self._lock:
+            if len(self._rows) >= self.PRUNE_AT:
+                self._rows = {k: r for k, r in self._rows.items() if r['until'] > now}
+            self._rows[(name, key, signature)] = {'code': code, 'reason': reason, 'at': now,
+                                                  'until': now + ttl}
+
+    def clear(self):
+        with self._lock:
+            self._rows.clear()
+
+
+# Every decline a worker of this process reuses goes through this one table.
+DECLINES = Declines()
+
+
+def reused_note(at, now, ttl):
+    """What a reused decline adds to its reason: whose answer it is, and for how long it is
+    reused."""
+    age = max(0, int(round(now - at)))
+    return (' (mendwright asked the model about this page ' + str(age) + ' second'
+            + ('' if age == 1 else 's') + ' ago, in this or another worker, and reuses its '
+            'answer for ' + str(int(ttl)) + ' seconds instead of asking again: '
+            + DECLINE_TTL_VAR + '.)')
