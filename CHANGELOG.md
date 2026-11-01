@@ -11,7 +11,7 @@ While the version starts with 0, a minor release can change the public API.
 
 ### Changed
 
-- The README is rewritten: what mendwright does and how to try it come first, then why a repair can be trusted and where it can't, the benchmark with its caveats, and short answers to the usual questions (determinism, cost, speed, `data-testid`, removing it). The guide says that `mendwright check` clicks a consent banner with `--cookies`.
+- The README is rewritten: what mendwright does and how to try it come first, then why a repair can be trusted and where it can't, the benchmark with its caveats, and short answers to the usual questions (determinism, cost, speed, `data-testid`, removing it). The guide says that `mendwright check` clicks a consent banner with `--cookies`. The summary PyPI shows, and `mendwright --help`, describe the repair from a saved fingerprint first, then a model.
 
 ## [0.10.0] - 2026-11-01
 

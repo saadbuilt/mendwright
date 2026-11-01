@@ -1723,8 +1723,9 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog='mendwright',
         description='Self-healing selectors for Playwright and Selenium. When a selector '
-                    'breaks, a model suggests a new one, mendwright checks it against the '
-                    'page, and the step is retried.',
+                    'breaks, mendwright repairs it from a saved fingerprint of its element, '
+                    'or asks a model when that match is not confident, checks the repair on '
+                    'the live page, and retries the step.',
         epilog='Run "mendwright <command> --help" for the options of one command.')
     parser.add_argument('-V', '--version', action='store_true',
                         help='print the version and exit')
