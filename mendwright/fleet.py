@@ -35,7 +35,8 @@ import time
 
 __all__ = ['page_signature', 'FLIGHTS', 'Flights', 'Flight', 'single_flight',
            'single_flight_async', 'store_name', 'DECLINES', 'Declines', 'REUSED_DECLINES',
-           'DECLINE_TTL_DEFAULT', 'decline_ttl_setting']
+           'DECLINE_TTL_DEFAULT', 'decline_ttl_setting', 'KeyRecords', 'records_for',
+           'LEASE_TTL', 'OWNER']
 
 
 # --- the page signature -------------------------------------------------------------------------
@@ -128,6 +129,7 @@ class Flights:
     def __init__(self):
         self._flights = {}
         self._changed = threading.Condition()
+        self._lease_waiters = 0
 
     def begin(self, ident):
         """(flight, leader): the flight of ident under way, or a new one this caller leads."""
@@ -181,6 +183,19 @@ class Flights:
         finally:
             self._waiting(flight, -1)
 
+    def _lease_waiting(self, step):
+        with self._changed:
+            self._lease_waiters += step
+            self._changed.notify_all()
+
+    def lease_waiting(self):
+        """How many leaders of this process wait for the lease of another process now."""
+        with self._changed:
+            return self._lease_waiters
+
+    def _pause(self, seconds):
+        time.sleep(seconds)
+
     def waiting(self, ident=None):
         """How many followers wait now: for the flight of ident, or for any flight."""
         with self._changed:
@@ -200,7 +215,8 @@ FLIGHTS = Flights()
 
 
 def single_flight(store, key, signature, heal, timeout_s, *, clock=time.monotonic):
-    """heal(), at most one at a time per (store file, key, page signature) in this process.
+    """heal(), at most one at a time per (store file, key, page signature) in this process,
+    and across the processes of this host.
 
     The first caller leads: it runs heal(), the whole heal and the retry of the step, and the
     flight ends when that returns or raises, so its heal, its first success and its decline
@@ -208,34 +224,51 @@ def single_flight(store, key, signature, heal, timeout_s, *, clock=time.monotoni
     it, at most timeout_s seconds (the step's own timeout), then runs heal() itself: that
     adopts the leader's heal or reuses its decline when they fit (see
     HealCoordinator.try_heal), else makes its own attempt under the normal caps. Followers
-    that wake together adopt in parallel. A store with no file (store_name) heals alone."""
+    that wake together adopt in parallel. Before it heals, the leader takes the key's lease
+    for the other processes (see the comment above LEASE_TTL), or waits for the process that
+    holds it, at most timeout_s seconds too. A store with no file (store_name) heals alone."""
     name = store_name(store)
     if name is None:
         return heal()
     flight, leader = FLIGHTS.begin((name, key, signature))
-    if leader:
+    if not leader:
+        FLIGHTS.wait(flight, timeout_s)
+        return heal()
+    try:
+        records = records_for(store)
+        held = _lead_across_processes(records, key, signature, clock() + timeout_s, clock,
+                                      FLIGHTS._pause)
         try:
             return heal()
         finally:
-            FLIGHTS.finish(flight)
-    FLIGHTS.wait(flight, timeout_s)
-    return heal()
+            if held:
+                _release(records, key)
+    finally:
+        FLIGHTS.finish(flight)
 
 
-async def single_flight_async(store, key, signature, heal, timeout_s):
-    """single_flight() for the async healer: heal is a coroutine function, and a follower
-    awaits the leader on its event loop (Flights.wait_async)."""
+async def single_flight_async(store, key, signature, heal, timeout_s, *, clock=time.monotonic):
+    """single_flight() for the async healer: heal is a coroutine function, a follower awaits
+    the leader on its event loop (Flights.wait_async), and a leader that waits for the lease
+    of another process awaits too."""
     name = store_name(store)
     if name is None:
         return await heal()
     flight, leader = FLIGHTS.begin((name, key, signature))
-    if leader:
+    if not leader:
+        await FLIGHTS.wait_async(flight, timeout_s)
+        return await heal()
+    try:
+        records = records_for(store)
+        held = await _lead_across_processes_async(records, key, signature, clock() + timeout_s,
+                                                  clock)
         try:
             return await heal()
         finally:
-            FLIGHTS.finish(flight)
-    await FLIGHTS.wait_async(flight, timeout_s)
-    return await heal()
+            if held:
+                _release(records, key)
+    finally:
+        FLIGHTS.finish(flight)
 
 
 # --- declines a worker reuses (the negative cache) ---------------------------------------------
@@ -318,3 +351,336 @@ def reused_note(at, now, ttl):
             + ('' if age == 1 else 's') + ' ago, in this or another worker, and reuses its '
             'answer for ' + str(int(ttl)) + ' seconds instead of asking again: '
             + DECLINE_TTL_VAR + '.)')
+
+
+# --- per-key records across the processes of one host -----------------------------------------
+#
+# Every process that opens a store file on this machine sees the same small record per key
+# next to it (KeyRecords, through backends.file.FileBackend):
+#
+#     <store folder>/keys/<first 32 hex of sha256(key)>.json      (for overrides.json)
+#     <store folder>/<file name>.keys/<...>.json                  (for any other file name)
+#
+# A record is JSON: {"schema": 1, "key": ..., "lease": {"owner", "sig", "at", "ttl"},
+# "attempts": [time, ...], "declines": {sig: {"code", "reason", "at", "until"}}}, every time
+# a wall-clock time.time() of this host (one host, one clock). It never goes in
+# overrides.json: a writer that predates these fields drops what it does not know.
+#
+# - The lease makes single-flight work across processes: the in-process leader of a heal
+#   takes it (a compare-and-swap, so exactly one process gets it) and holds it while it heals,
+#   renewed every LEASE_RENEW seconds by a thread of its process. A process whose leader finds
+#   the live lease of another process for the same page waits, at most its step's timeout,
+#   then adopts that heal or reuses that decline. A lease nobody renewed for LEASE_TTL
+#   seconds belongs to a process that died: exactly one waiter takes it over.
+# - attempts holds the times of the model attempts made for the key in the last hour, by every
+#   process: rate_per_key_per_hour holds for all of them together.
+# - declines holds the model's declines of the key per page signature, with their TTL (see
+#   DECLINES), so every process reuses them.
+#
+# A record that cannot be read or written means no coordination: the heal goes on alone,
+# under the caps of its process, and never waits on it.
+
+# Seconds a lease holds without a renewal, seconds between renewals, and between two looks of a
+# waiter at the record.
+LEASE_TTL = 15.0
+LEASE_RENEW = 5.0
+LEASE_POLL = 0.05
+RECORD_SCHEMA = 1
+# How many times a compare-and-swap is tried before the change is given up.
+_CAS_TRIES = 50
+
+
+def _owner():
+    import socket
+    import uuid
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = 'host'
+    return host + '/' + str(os.getpid()) + '/' + uuid.uuid4().hex[:12]
+
+
+# Who holds a lease this process takes: the host, the process id and a random part, so a
+# process id the OS gives again later is not taken for this process.
+OWNER = _owner()
+
+
+class KeyRecords:
+    """The per-key records of one store file (see the comment above LEASE_TTL), through a
+    backend that keeps the StoreBackend contract."""
+
+    def __init__(self, backend, prefix='keys/'):
+        self.backend = backend
+        self.prefix = prefix
+
+    def name(self, key):
+        return self.prefix + hashlib.sha256(key.encode('utf-8')).hexdigest()[:32] + '.json'
+
+    def read(self, key):
+        """(record, version): {} and None when there is none. A record that is not one (a
+        partial write by hand, another tool's file) reads as {} with its version, so the next
+        write replaces it. Backend errors propagate."""
+        import json
+        found = self.backend.get(self.name(key))
+        if found.body is None:
+            return {}, found.version
+        try:
+            record = json.loads(found.body.decode('utf-8'))
+        except ValueError:
+            return {}, found.version
+        return (record if isinstance(record, dict) else {}), found.version
+
+    def update(self, key, change):
+        """Change key's record with a compare-and-swap: change(record) returns (new record or
+        None for no write, result), and is called again on the record as it is now after a
+        Conflict. Returns result. Backend errors propagate."""
+        import json
+        from .backends import Conflict
+        for _ in range(_CAS_TRIES):
+            record, version = self.read(key)
+            new, result = change(dict(record))
+            if new is None:
+                return result
+            new = dict(new, schema=RECORD_SCHEMA, key=key)
+            body = json.dumps(new, separators=(',', ':'), sort_keys=True).encode('utf-8')
+            try:
+                if version is None:
+                    self.backend.put(self.name(key), body, create_only=True)
+                else:
+                    self.backend.put(self.name(key), body, if_match=version)
+                return result
+            except Conflict:
+                continue
+        raise Conflict('mendwright: ' + self.name(key) + ' kept changing under ' + str(_CAS_TRIES)
+                       + ' tries')
+
+    # --- the lease ------------------------------------------------------------------------------
+
+    def look(self, key, now):
+        """('none' | 'live' | 'expired', lease): the lease of key's record at now."""
+        record, _version = self.read(key)
+        lease = record.get('lease')
+        if not isinstance(lease, dict) or not isinstance(lease.get('owner'), str):
+            return 'none', None
+        try:
+            ends = float(lease.get('at')) + float(lease.get('ttl'))
+        except (TypeError, ValueError):
+            return 'expired', lease
+        return ('live' if ends > now else 'expired'), lease
+
+    def take(self, key, signature, owner, now, ttl):
+        """Take key's lease for (owner, signature) when there is none, it is owner's, or it
+        has expired. True when owner holds it now. Racing processes: exactly one gets it (a
+        compare-and-swap)."""
+        def change(record):
+            lease = record.get('lease')
+            if isinstance(lease, dict) and lease.get('owner') not in (None, owner):
+                try:
+                    live = float(lease.get('at')) + float(lease.get('ttl')) > now
+                except (TypeError, ValueError):
+                    live = False
+                if live:
+                    return None, False
+            record['lease'] = {'owner': owner, 'sig': signature, 'at': now, 'ttl': ttl}
+            return record, True
+        return self.update(key, change)
+
+    def renew(self, key, owner, now):
+        """Move the lease of owner on to now. False when owner no longer holds it."""
+        def change(record):
+            lease = record.get('lease')
+            if not isinstance(lease, dict) or lease.get('owner') != owner:
+                return None, False
+            record['lease'] = dict(lease, at=now)
+            return record, True
+        return self.update(key, change)
+
+    def release(self, key, owner):
+        """Give the lease of owner back."""
+        def change(record):
+            lease = record.get('lease')
+            if not isinstance(lease, dict) or lease.get('owner') != owner:
+                return None, False
+            record.pop('lease', None)
+            return record, True
+        return self.update(key, change)
+
+    # --- the budget and the declines --------------------------------------------------------------
+
+    def spend(self, key, cap, now, window=3600.0):
+        """Count a model attempt for key at now when the attempts of every process in the last
+        window seconds are fewer than cap: (True, attempts before it), else (False, attempts)."""
+        def change(record):
+            stamps = [t for t in record.get('attempts') or ()
+                      if isinstance(t, (int, float)) and not isinstance(t, bool)
+                      and now - window < t <= now + window]
+            if cap is not None and len(stamps) >= cap:
+                return None, (False, len(stamps))
+            record['attempts'] = stamps + [now]
+            return record, (True, len(stamps))
+        return self.update(key, change)
+
+    def decline(self, key, signature, now):
+        """The decline in force for key on the page signature at now, or None."""
+        record, _version = self.read(key)
+        row = (record.get('declines') or {}).get(signature)
+        if not isinstance(row, dict) or not isinstance(row.get('reason'), str):
+            return None
+        try:
+            if float(row.get('until')) <= now:
+                return None
+            return {'code': str(row.get('code')), 'reason': row['reason'],
+                    'at': float(row.get('at')), 'until': float(row.get('until'))}
+        except (TypeError, ValueError):
+            return None
+
+    def keep_decline(self, key, signature, code, reason, now, ttl):
+        """Keep a decline for every process, until now + ttl; expired ones are dropped."""
+        def change(record):
+            rows = {s: r for s, r in (record.get('declines') or {}).items()
+                    if isinstance(r, dict) and isinstance(r.get('until'), (int, float))
+                    and r['until'] > now}
+            rows[signature] = {'code': code, 'reason': reason, 'at': now, 'until': now + ttl}
+            record['declines'] = rows
+            return record, True
+        return self.update(key, change)
+
+
+# The KeyRecords of each store file this process uses: path -> KeyRecords.
+_RECORDS = {}
+_RECORDS_LOCK = threading.Lock()
+
+
+def records_for(store):
+    """The KeyRecords of store's file (see the comment above LEASE_TTL), or None for a store
+    without a file, or one that never writes (read_only)."""
+    from .backends import OVERRIDES
+    from .backends.file import FileBackend
+    if getattr(store, 'read_only', False) is True:
+        return None
+    name = store_name(store)
+    if name is None:
+        return None
+    with _RECORDS_LOCK:
+        found = _RECORDS.get(name)
+        if found is None:
+            folder, file_name = os.path.split(os.path.abspath(os.fspath(store._override_path)))
+            prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
+            found = _RECORDS[name] = KeyRecords(FileBackend(folder), prefix)
+        return found
+
+
+class _Renewer:
+    """The thread that renews the leases this process holds, every LEASE_RENEW seconds,
+    while their heals run (a model call can take longer than LEASE_TTL)."""
+
+    def __init__(self):
+        self._held = {}
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._thread = None
+
+    def add(self, records, key):
+        with self._lock:
+            self._held[(id(records), key)] = (records, key)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name='mendwright-leases',
+                                                daemon=True)
+                self._thread.start()
+
+    def remove(self, records, key):
+        with self._lock:
+            self._held.pop((id(records), key), None)
+
+    def _run(self):
+        while True:
+            self._wake.wait(LEASE_RENEW)
+            with self._lock:
+                held = list(self._held.values())
+            for records, key in held:
+                try:
+                    if not records.renew(key, OWNER, time.time()):
+                        self.remove(records, key)       # taken over: it is not ours any more
+                except Exception:
+                    pass
+
+
+RENEWER = _Renewer()
+
+
+def _lead_across_processes(records, key, signature, deadline, clock, pause):
+    """For the in-process leader: True when this process holds key's lease for signature
+    now (it must release it, see _release), False when it heals without one. While the live
+    lease of another process for the same page is held, and clock() is before deadline, it
+    waits, pause(LEASE_POLL) between looks. A lease its owner gave back meanwhile ends the
+    wait (that heal or decline is there to adopt or reuse); an expired one is taken over, by
+    exactly one waiter."""
+    from .backends import BackendError, Conflict
+    if records is None:
+        return False
+    waited = False
+    try:
+        while True:
+            state, lease = records.look(key, time.time())
+            if state == 'live' and lease.get('owner') != OWNER:
+                if lease.get('sig') != signature or clock() >= deadline:
+                    return False    # another page's heal, or no time left: heal alone
+                if not waited:
+                    waited = True
+                    FLIGHTS._lease_waiting(1)
+                pause(LEASE_POLL)
+                continue
+            if state == 'none' and waited:
+                return False        # the other process is done: adopt or reuse its outcome
+            try:
+                if records.take(key, signature, OWNER, time.time(), LEASE_TTL):
+                    RENEWER.add(records, key)
+                    return True
+            except Conflict:
+                pass
+    except BackendError:
+        return False
+    finally:
+        if waited:
+            FLIGHTS._lease_waiting(-1)
+
+
+def _release(records, key):
+    RENEWER.remove(records, key)
+    try:
+        records.release(key, OWNER)
+    except Exception:
+        pass        # it expires on its own
+
+
+async def _lead_across_processes_async(records, key, signature, deadline, clock):
+    """_lead_across_processes() on an event loop: it awaits between looks. A look at the
+    record is one small file read."""
+    from .backends import BackendError, Conflict
+    if records is None:
+        return False
+    waited = False
+    try:
+        while True:
+            state, lease = records.look(key, time.time())
+            if state == 'live' and lease.get('owner') != OWNER:
+                if lease.get('sig') != signature or clock() >= deadline:
+                    return False
+                if not waited:
+                    waited = True
+                    FLIGHTS._lease_waiting(1)
+                await asyncio.sleep(LEASE_POLL)
+                continue
+            if state == 'none' and waited:
+                return False
+            try:
+                if records.take(key, signature, OWNER, time.time(), LEASE_TTL):
+                    RENEWER.add(records, key)
+                    return True
+            except Conflict:
+                pass
+    except BackendError:
+        return False
+    finally:
+        if waited:
+            FLIGHTS._lease_waiting(-1)

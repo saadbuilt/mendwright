@@ -520,6 +520,28 @@ class HealCoordinator:
                       **fields)
         return False
 
+    def _shared_budget(self, selector_key):
+        """Count this model attempt in the key's record for every process of this host (see
+        mendwright.fleet.KeyRecords.spend): None when it fits rate_per_key_per_hour, else
+        ('shared', attempts, cap) for the message. No guardrails, no per-key cap, a store with
+        no records and a record that cannot be read or written leave it to this process's
+        caps."""
+        from .fleet import records_for
+        limiter = getattr(self.guardrails, 'rate_limiter', None)
+        cap = getattr(limiter, 'per_key_per_hour', None)
+        if self.guardrails is None or not isinstance(cap, int) or isinstance(cap, bool):
+            return None
+        records = records_for(self.store)
+        if records is None:
+            return None
+        try:
+            ok, count = records.spend(selector_key, cap, self.wallclock())
+        except Exception:
+            logger.debug('mendwright: could not count the attempt in the key record',
+                         exc_info=True)
+            return None
+        return None if ok else ('shared', count, cap)
+
     def _decline_ident(self, selector_key, broken_candidates, context):
         """(store file, key, page signature) a decline of this heal is kept and looked up
         under (see mendwright.fleet), or None when declines are not reused here."""
@@ -537,12 +559,21 @@ class HealCoordinator:
         within MENDWRIGHT_DECLINE_TTL_SECONDS: declined again with its reason and code, and
         cached=True in the journal, with no model call and no budget spent. None when there
         is none."""
-        from .fleet import DECLINES, reused_note
+        from .fleet import DECLINES, records_for, reused_note
         ident = self._decline_ident(selector_key, broken_candidates, context)
         if ident is None:
             return None
         now = self.wallclock()
         row = DECLINES.get(*ident, now)
+        records = records_for(self.store) if row is None else None
+        if records is not None:
+            try:
+                row = records.decline(selector_key, ident[2], now)    # another process's
+            except Exception:
+                row = None
+            if row is not None:
+                DECLINES.put(*ident, row['code'], row['reason'], row['at'],
+                             row['until'] - row['at'])
         if row is None:
             return None
         reason = row['reason'] + reused_note(row['at'], now, self.decline_ttl)
@@ -551,10 +582,19 @@ class HealCoordinator:
     def _remember_decline(self, selector_key, broken_candidates, context, code, reason):
         """Keep the model's decline (code not_here or gate) for other workers and the next
         lookups (see mendwright.fleet.DECLINES)."""
-        from .fleet import DECLINES
+        from .fleet import DECLINES, REUSED_DECLINES, records_for
         ident = self._decline_ident(selector_key, broken_candidates, context)
-        if ident is not None:
-            DECLINES.put(*ident, code, reason, self.wallclock(), self.decline_ttl)
+        if ident is None or code not in REUSED_DECLINES:
+            return
+        now = self.wallclock()
+        DECLINES.put(*ident, code, reason, now, self.decline_ttl)
+        records = records_for(self.store)
+        if records is not None:
+            try:
+                records.keep_decline(selector_key, ident[2], code, reason, now, self.decline_ttl)
+            except Exception:
+                logger.debug('mendwright: could not keep the decline in the key record',
+                             exc_info=True)
 
     def _outside_shadow(self, selector_key):
         """Why a heal of the key may not run here, or '': this coordinator heals on the page
@@ -689,6 +729,12 @@ class HealCoordinator:
             return self._decline(selector_key, rate_cap_message(selector_key,
                                                                 _cap_full(self.guardrails,
                                                                           selector_key)),
+                                 code='rate_limit')
+        # The per-key cap holds for every process of this host on this store together.
+        shared = self._shared_budget(selector_key)
+        if shared is not None:
+            self.journal.rejected(selector_key, reason='rate/spend cap')
+            return self._decline(selector_key, rate_cap_message(selector_key, shared),
                                  code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:

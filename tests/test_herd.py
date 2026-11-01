@@ -123,8 +123,10 @@ def test_a_herd_of_threads_makes_one_model_call(tmp_path, make_page, stub_provid
     threads = [threading.Thread(target=run, args=(heal,)) for _page, heal in workers]
     for thread in threads:
         thread.start()
+    # The leader is in propose(), and everyone else waits for it (both only grow until then).
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
     assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
-    assert len(calls) == 1               # the leader is in propose(); everyone else waits
     release.set()
     for thread in threads:
         thread.join(60)
@@ -158,8 +160,12 @@ def test_the_async_healer_follows_on_its_event_loop(tmp_path, make_page, stub_pr
             heal._clock = _instant()
             healers.append(heal)
         tasks = [asyncio.ensure_future(h.locator(KEY, CODE).check()) for h in healers]
-        waited = await asyncio.to_thread(FLIGHTS.wait_until,
-                                         lambda: FLIGHTS.waiting() == N - 1, 60)
+
+        def ready():
+            with changed:
+                changed.wait_for(lambda: len(calls) == 1, 60)
+            return FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+        waited = await asyncio.to_thread(ready)
         release.set()
         await asyncio.gather(*tasks)
         return waited

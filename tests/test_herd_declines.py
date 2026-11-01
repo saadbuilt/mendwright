@@ -79,6 +79,8 @@ def test_a_herd_on_a_decline_makes_one_model_call(tmp_path, make_page, stub_prov
     threads = [threading.Thread(target=run, args=(heal,)) for heal in healers]
     for thread in threads:
         thread.start()
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
     assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
     release.set()
     for thread in threads:
@@ -108,8 +110,12 @@ def test_the_async_healer_reuses_a_decline_too(tmp_path, make_page, stub_provide
             heal._clock = _instant()
             healers.append(heal)
         tasks = [asyncio.ensure_future(h.locator(KEY, CODE).check()) for h in healers]
-        waited = await asyncio.to_thread(FLIGHTS.wait_until,
-                                         lambda: FLIGHTS.waiting() == N - 1, 60)
+
+        def ready():
+            with changed:
+                changed.wait_for(lambda: len(calls) == 1, 60)
+            return FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+        waited = await asyncio.to_thread(ready)
         release.set()
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return waited, results
