@@ -920,11 +920,109 @@ print('null')`, w.storePath);
       await run(heal);
       return first;
     })();
+    // The Python package runs the flow on an lxml checkout with the shape of a sync Playwright
+    // page, the one of its own tests/test_steps.py, cut to what this flow uses: it needs only
+    // lxml and mendwright.
     const py = runPython<{ ran: string[]; heals: string[][]; filled: Record<string, string>; asked: number }>(`
 import json, sys
-sys.path.insert(0, 'tests')
+import lxml.html
 import mendwright
-from test_steps import PAYMENT, REVIEW, SHIPPING, in_order
+from mendwright.drivers.base import VISIBLE_MATCH_JS
+from mendwright.fingerprint import FINGERPRINT_JS
+
+SITE = 'https://shop.test/checkout/'
+SHIPPING = "//h1[.='Shipping']"
+PAYMENT = "//h1[.='Payment']"
+REVIEW = "//button[.='Place order']"
+
+def hidden(el):
+    while el is not None:
+        style = (el.get('style') or '').replace(' ', '').lower()
+        if 'display:none' in style or el.get('hidden') is not None:
+            return True
+        el = el.getparent()
+    return False
+
+class Locator:
+    def __init__(self, page, selector, visible=False):
+        self.page, self.selector, self.visible = page, selector, visible
+    def els(self):
+        els = self.page.query(self.selector)
+        return [e for e in els if not hidden(e)] if self.visible else els
+    def locator(self, selector):
+        assert selector == 'visible=true'
+        return Locator(self.page, self.selector, True)
+    def count(self):
+        return len(self.els())
+    def is_visible(self, **kwargs):
+        els = self.els()
+        if len(els) > 1:
+            raise RuntimeError('strict mode violation: ' + self.selector)
+        return len(els) == 1 and not hidden(els[0])
+    def scroll_into_view_if_needed(self, **kwargs):
+        pass
+    def evaluate_all(self, js):
+        els = self.els()
+        html = lambda el: lxml.html.tostring(el, encoding='unicode', with_tail=False)
+        if js == VISIBLE_MATCH_JS and els:
+            return {'tag': els[0].tag, 'visible': min(len(els), 2), 'html': html(els[0])}
+        if js == FINGERPRINT_JS or len(els) != 1:
+            return None
+        return {'tag': els[0].tag, 'html': html(els[0])}
+    def get_attribute(self, name, **kwargs):
+        els = self.els()
+        return els[0].get(name) if els else None
+    def __getattr__(self, verb):
+        if verb not in ('click', 'fill'):
+            raise AttributeError(verb)
+        return lambda *args, **kwargs: self.page.act(self.selector, verb, args)
+
+class Shop:
+    def __init__(self, pages, start):
+        self.pages, self.filled = pages, {}
+        self.goto(start)
+    def goto(self, path):
+        self.url = SITE + path
+        self.doc = lxml.html.document_fromstring('<html><body>' + self.pages[path] + '</body></html>')
+    def query(self, selector):
+        if selector.startswith('xpath='):
+            try:
+                found = self.doc.xpath(selector[len('xpath='):])
+            except Exception:
+                return []
+            return [e for e in found if isinstance(getattr(e, 'tag', None), str)]
+        body = selector[len('css='):] if selector.startswith('css=') else selector
+        return self.doc.xpath('//*[@id=$i]', i=body[1:]) if body.startswith('#') else []
+    def act(self, selector, verb, args):
+        els = self.query(selector)
+        if len(els) != 1:
+            raise RuntimeError('Locator.' + verb + ': ' + selector + ' matched ' + str(len(els)))
+        if verb == 'fill':
+            els[0].set('value', args[0])
+            self.filled[els[0].get('id')] = args[0]
+        elif els[0].get('data-go'):
+            self.goto(els[0].get('data-go'))
+    def locator(self, selector):
+        return Locator(self, selector)
+    def frame_locator(self, selector):
+        return self
+    def content(self):
+        return lxml.html.tostring(self.doc, encoding='unicode')
+    def evaluate(self, js, arg=None):
+        return []
+
+def next_button(go):
+    return "<button id='next' type='button' data-go='" + go + "'>Next</button>"
+
+# The site now asks for the card first, and the shipping form's field has a new id.
+pages = {
+    'a': "<h1>Payment</h1><label for='card-number'>Card number</label><input id='card-number' name='card'>"
+         + next_button('b'),
+    'b': "<h1>Shipping</h1><label for='ship-full-name'>Full name</label><input id='ship-full-name' "
+         "name='ship-full-name'>" + next_button('c'),
+    'c': "<h1>Review</h1><button id='place' type='button' data-go='done'>Place order</button>",
+    'done': '<h1>Thank you</h1><p>Your order is placed.</p>',
+}
 
 class Model:
     def __init__(self, xpath):
@@ -936,7 +1034,7 @@ class Model:
         pass
 
 store = json.load(sys.stdin)
-shop = in_order('payment', 'shipping', 'review', field='ship-full-name')
+shop = Shop(pages, 'a')
 model = Model("//input[@id='ship-full-name']")
 heal = mendwright.open(shop, provider=model, store_path=store, timeout_ms=60, fingerprint=False)
 heal.coordinator.log = None
