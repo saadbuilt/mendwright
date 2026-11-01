@@ -12,7 +12,9 @@
 //   steps, intent, fingerprint, listFingerprint and shadowHosts (where the element was
 //   found, see shadow.ts), written only when one of them changes.
 // - A candidate the Python package saved inside an iframe or an open shadow root keeps its
-//   frameXPath, css and shadowHosts, in a three-way merge of their own.
+//   frameXPath, css and shadowHosts, and a heal the Python package saved with a get_by twin
+//   (Python 0.11) keeps its getBy, in a three-way merge of their own. This package never runs
+//   css or getBy: mendwright fix reads them.
 // - Writes take the lock file overrides.json.lock, take in what other processes (Python or
 //   TypeScript, other Playwright Test workers) wrote since the last read with a three-way
 //   merge, and replace the file atomically. On a conflict 'quarantined' wins, then
@@ -45,6 +47,7 @@ export interface Candidate {
   frameXPath?: string;
   css?: string;
   shadowHosts?: Hosts;
+  getBy?: string;
   list?: boolean;
   proposal?: Record<string, unknown>;
   acceptedAt?: string;
@@ -95,8 +98,8 @@ type Meta = Partial<Record<MetaField, unknown>>;
 export const MAX_PAGES = 5;
 const LIST_WAITING = ['proposed', 'accepted'];
 const MAX_LIST_HEALS = 3;
-const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts'] as const;
-type Place = [string, string, string];
+const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts', 'getBy'] as const;
+type Place = [string, string, string, string];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -870,6 +873,7 @@ export class SelectorStore {
         if ('frameXPath' in c) item.frameXPath = c.frameXPath;
         if (Array.isArray(c.shadowHosts) && c.shadowHosts.length) item.shadowHosts = [...c.shadowHosts];
         if (typeof c.css === 'string' && c.css) item.css = c.css;
+        if (typeof c.getBy === 'string' && c.getBy) item.getBy = c.getBy;
         if (c.list === true) item.list = true;
         const evidence = evidenceOf(c);
         if (evidence !== null) item.proposal = evidence;
