@@ -70,7 +70,12 @@ const LAYOUT = {
 };
 const { ED, TERM, BR, LH, Z } = LAYOUT;
 const CO = { x: BR.x, y: BR.y + LAYOUT.CHROME, w: BR.w, h: BR.h - LAYOUT.CHROME };   // browser content on the stage
-const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#5aa9ff', purple: '#b98cff', amber: '#f2c14e', grey: '#9aa4b2', white: '#ffffff' };
+// Black and white: white on the black stage, black on the white pages. Red and green stay, as
+// the marks of broken and repaired; what was blue, purple or amber is white on the stage.
+const C = { green: '#3fd47a', red: '#ff6b6b', blue: '#ffffff', purple: '#ffffff', amber: '#ffffff', grey: '#a3a3a3', white: '#ffffff' };
+// the same marks drawn on a white page: black, and a darker red and green that read on white
+const PGC = { green: '#15803d', red: '#c81e1e', ink: '#000000' };
+const onPage = col => col === C.green ? PGC.green : col === C.red ? PGC.red : PGC.ink;
 
 // ---------- static DOM ----------
 const bg = el('div', '', null, document.body); bg.id = 'bg';
@@ -92,6 +97,12 @@ br.id = 'br';
 const content = $('.content', br), ov = $('#ov', br), prog = $('#prog', br), urlEl = $('.url .u', br);
 const urlBox = $('.url', br), navEl = $('.nav', br), ctl = $('.ctl', br), edT = $('.t', ed);
 const VEIL = { code: $('.veil', ed), run: $('.veil', term), page: $('.veil', br) };
+// a terminal as wide as the stage (the check beat): the other panels step back while it shows
+const WC = { x: 40, y: 56 + LAYOUT.HEAD, w: 1840, h: 874 - LAYOUT.HEAD };
+const wide = el('div', 'panel', `<div class="phead"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="t">Terminal</span></div><div class="content"></div>`, stage,
+  `left:${WC.x}px;top:56px;width:${WC.w}px;height:874px`);
+wide.id = 'wide';
+const wideC = $('.content', wide);
 const ann = el('div', '', `<svg width="1920" height="1080"></svg>`, stage); ann.id = 'ann';
 const annSvg = $('svg', ann);
 const sveil = el('div', '', null, stage); sveil.id = 'sveil';
@@ -133,7 +144,7 @@ const TL = {
   dur: 0, beats: [], code: [], frames: [], runs: [], caps: [], callouts: [], tags: [], boxes: [], clicks: [],
   cur: [], curOn: [], halo: [], focus: [], fills: [], checks: [], press: [], urls: [], badges: [], reloads: [],
   keycaps: [], pstamps: [], montage: [], stageIn: 0, stageOut: 1e9, title: null, end: null, ctitle: null, estrip: null,
-  edTitle: [], chrome: [], reveals: [],
+  edTitle: [], chrome: [], reveals: [], wide: [],
   lead: 0,      // a clip's title holds this long (real s) before the story's clock starts
 };
 const beat = (t, name, real) => TL.beats.push({ t, name, real: !!real });
@@ -157,8 +168,10 @@ const reload = t => TL.reloads.push(t);
 const montage = (a, b) => TL.montage.push([a, b]);
 const edTitle = (t, name) => TL.edTitle.push([t, name]);           // the editor's file name from t on
 const chrome = (t, title) => TL.chrome.push([t, title]);           // the browser shows title instead of its address (null: the address)
-// a part of a page that comes in at t: a new text element on screen, which audit() counts
-const reveal = o => TL.reveals.push(Object.assign({ dy: 10 }, o));
+// a part of a page that comes in at t (and leaves at t1): a new text element on screen, which
+// audit() counts, unless text: false (a highlight); all: true for every element that matches
+const reveal = o => TL.reveals.push(Object.assign({ dy: 10, text: true }, o));
+const widePanel = (a, b) => TL.wide.push([a, b]);
 function codeBlock(o) { const b = Object.assign({ marks: [], hl: [], tok: {} }, o); TL.code.push(b); return b; }
 function frame(o) { const f = Object.assign({ pop: [], reloads: [] }, o); TL.frames.push(f); return f; }
 function run(o) { const r = Object.assign({ receipts: [] }, o); TL.runs.push(r); return r; }
@@ -256,7 +269,8 @@ function mainStory() {
   // ----- B1: today; one line, and it remembers
   beat(4.6, 'B1 empty line 1');
   focus(4.4, 'code');
-  cap(4.4, 7.8, 'Add <em>one line</em> to your script.');
+  // one caption: it already says "remembers" when the first element is remembered
+  cap(4.4, 10.5, 'Add <em>one line</em>. It <i>remembers</i> what it touches.');
   beat(5.9, 'B1 one line typed in');
   focus(6.2, 'page');
   // no clock here: B1 is about memory; the only small run time on screen is the next run's
@@ -277,7 +291,6 @@ function mainStory() {
   tag({ at: 'v1:#continue', html: REM, col: C.blue, t: [9.45, 11.7], col0: 'v1:.card' });
   blk.hl.push([4.2, 'L1', 0], [6.4, 'L1', 1], [7.0, 'L2', 1], [8.1, 'L3', 1], [8.9, 'L4', 1], [9.9, 'L4', 0]);
   blk.marks.push([6.8, 'L1', '✓', C.green, 11.7], [7.5, 'L2', '✓', C.green, 11.7], [8.6, 'L3', '✓', C.green, 11.7], [9.3, 'L4', '✓', C.green, 11.7]);
-  cap(8.0, 11.4, 'It <i>remembers</i> each element it touches.');
   focus(9.9, 'run');
   beat(7.4, 'B1 email remembered');
   beat(10.6, 'B1 passed, 3 remembered');
@@ -297,12 +310,13 @@ function mainStory() {
   const d = D.Dsteps, s = [0];
   d.forEach(x => s.push(s[s.length - 1] + x.seconds));      // real step boundaries
   const found = i => s[i] + d[i].log_at[0];                  // when the repair's log line came
-  const keys2 = [[16.6, 0], [18.4, TIMEOUT], [18.6, found(0)], [20.6, s[1]], [23.6, s[1]], [23.8, s[2]],
+  const keys2 = [[16.6, 0], [18.4, TIMEOUT], [18.5, TIMEOUT], [18.6, found(0)], [20.6, s[1]], [23.6, s[1]], [23.8, s[2]],
     [24.0, s[2]], [25.6, s[2] + TIMEOUT], [27.4, s[2] + TIMEOUT], [28.8, found(2)], [30.8, s[3]],
     [35.2, s[3]], [36.3, s[3] + TIMEOUT], [36.4, found(3)], [37.0, s[4]], [38.9, D.D_seconds]];
   focus(16.6, 'page');
-  run({ t0: 16.6, t1: 41.4, cmd: [16.6, '$ python checkout.py'], keys: keys2,
-    stamp: { t: 38.9, kind: 'ok', html: `✓ Passed · ${D.D_heals.length} repaired, checked, saved` } });
+  // the callouts say a wait is sped up, so the clock does not say it too
+  run({ t0: 16.6, t1: 41.4, cmd: [16.6, '$ python checkout.py'], keys: keys2, speedLabel: false,
+    stamp: { t: 38.9, kind: 'ok', html: `✓ Passed · ${D.D_heals.length} healed, checked, saved` } });
   blk.hl.push([16.6, 'L1', 1]);
   // B3 #email: mendwright waits its timeout, then finds the field from memory
   const sel = SCRIPT.map(x => x[1]);
@@ -313,7 +327,8 @@ function mainStory() {
   ] });
   box({ at: 'v2:input[name=email]', col: C.blue, t: [18.6, 23.8] });
   beat(17.6, 'B3 waiting for #email');
-  cap(19.8, 23.4, 'Found <i>from memory</i>. No AI.');
+  cap(18.0, 19.8, `Each broken selector first waits out ${TIMEOUT} s.`);
+  cap(19.8, 23.4, 'Healed <i>from memory</i>. No AI.');
   curOn(19.9, 21.3); cur(19.85, 'v2:input[name=email]', -90, 4);
   click(20.6, 'v2:input[name=email]', C.white); fill(20.7, 21.2, 'v2:input[name=email]', 'ada@example.com', 41.4);
   blk.marks.push([20.6, 'L1', '✓', C.green, 41.4]);
@@ -327,20 +342,18 @@ function mainStory() {
   box({ at: 'v2:label.opt:nth-of-type(1)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
   box({ at: 'v2:label.opt:nth-of-type(2)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
   twoCandidates();
-  cap(26.0, 29.5, 'Two checkboxes. Memory isn’t sure which.');
+  cap(26.0, 28.0, 'Two checkboxes. Memory isn’t sure which.');
   beat(26.9, 'B4 two candidates');
   const modelS = D.model_seconds;
   callout({ at: 'v2:label.opt:nth-of-type(2)', t: [27.4, 34.6], leader: 28.8, sets: [
     { t: 27.4, ic: '★', col: C.purple, h: 'Asking the local model', s: `${GB} GB · runs on this machine`, shimmer: [27.4, 28.8] },
     { t: 28.8, ic: '★', col: C.purple, h: `Picked in ${modelS} s`, s: XP.terms, mono: true, typed: [28.9, 29.3], result: true },
   ] });
-  beat(28.1, 'B4 asking the local model');
   box({ at: 'v2:label.opt:nth-of-type(2)', col: C.purple, t: [28.8, 34.6], pad: 6 });
-  cap(30.0, 34.6, `So mendwright’s <em>${GB} GB local model</em> picks.`);
   curOn(30.25, 31.4); cur(30.2, 'v2:#opt-91c4', 2, 3);
   click(30.8, 'v2:#opt-91c4', C.white); check(30.8, 'v2:#opt-91c4', 41.4);
   blk.marks.push([30.8, 'L3', '✓', C.green, 41.4]);
-  beat(30.95, 'B4 token purple, click');
+  beat(30.95, 'B4 token green, click');
   beat(31.8, 'B4 picked by the local model');
   // B5 #continue from memory, and the run passes
   blk.hl.push([34.8, 'L4', 1], [38.9, 'L4', 0]);
@@ -361,7 +374,7 @@ function mainStory() {
   // ----- B6: the next run
   reload(41.4);
   focus(41.4, 'page');
-  cap(41.6, 48.0, 'Next run: saved fixes, <u>no waiting, no model.</u>');
+  cap(41.6, 47.6, 'Next run: saved fixes, <u>no waiting, no model.</u>');
   if (D.E_heals.length) throw new Error('E: the next run repaired something');
   const e = D.Esteps, Et = [42.0, 42.4, 42.7, 43.0, 43.6];
   let ea = 0;
@@ -386,7 +399,63 @@ function mainStory() {
   focus(44.2, 'run');
   beat(43.2, 'B6 saved fixes used');
   beat(46.0, 'B6 next run, no waiting');
-  return blk;
+  // room for the wait's caption while the clock holds at the timeout (from 18.5), for the
+  // two checkboxes' caption (from 27.0), and for the model's caption between its toast and its
+  // pick (from 28.5)
+  // and a second less after the next run's result (from 46.5, where nothing starts)
+  const W = t => t + (t >= 18.5 ? 2.4 : 0) + (t >= 27.0 ? 1.6 : 0) + (t >= 28.5 ? 1.0 : 0) - (t >= 46.5 ? 1.0 : 0);
+  warp(W);
+  const ask = W(27.4);              // "Asking the local model"; its caption 1.2 s on, the pick 1.2 s after
+  if (Math.abs(W(28.8) - ask - 2.4) > 1e-9) throw new Error('B4: the pick is not 2.4 s after the model is asked');
+  cap(ask + 1.2, ask + 5.4, `So it asks its <em>${GB} GB local model</em>.`);
+  beat(ask + 1.8, 'B4 it asks the local model');
+  beat(19.6, 'B3 each waits out the timeout');
+  return { blk, end: W(48.4) };
+}
+
+// Move every time on the timeline through W (a time at or after a point moves later), so a
+// story written in its first times gets room without retiming each line by hand.
+function warp(W) {
+  const w2 = p => [W(p[0]), W(p[1])];
+  for (const b of TL.beats) if (!b.real) b.t = W(b.t);
+  for (const c of TL.caps) { c.a = W(c.a); c.b = W(c.b); }
+  for (const k of ['focus', 'urls', 'edTitle', 'chrome']) for (const x of TL[k]) x[0] = W(x[0]);
+  for (const k of ['clicks', 'cur', 'press', 'badges']) for (const x of TL[k]) x.t = W(x.t);
+  for (const k of ['curOn', 'halo', 'montage', 'wide']) TL[k] = TL[k].map(w2);
+  for (const x of TL.fills) { x.a = W(x.a); x.b = W(x.b); x.until = W(x.until); }
+  for (const x of TL.checks) { x.t = W(x.t); x.until = W(x.until); }
+  for (const k of ['boxes', 'tags', 'keycaps', 'pstamps']) for (const x of TL[k]) x.t = w2(x.t);
+  for (const x of TL.reveals) { x.t = W(x.t); if (x.t1 != null) x.t1 = W(x.t1); }
+  for (const c of TL.callouts) {
+    c.t = w2(c.t);
+    if (c.leader != null) c.leader = W(c.leader);
+    for (const s of c.sets) { s.t = W(s.t); for (const k of ['ring', 'typed', 'shimmer']) if (s[k]) s[k] = w2(s[k]); }
+  }
+  TL.reloads = TL.reloads.map(W);
+  for (const b of TL.code) {
+    b.t0 = W(b.t0); b.t1 = W(b.t1);
+    for (const r of b.rows) {
+      for (const k of ['type', 'tint']) if (r[k]) r[k] = w2(r[k]);
+      if (r.appear != null) r.appear = W(r.appear);
+      for (const k of ['at', 'n']) if (Array.isArray(r[k])) for (const x of r[k]) x[0] = W(x[0]);
+    }
+    for (const x of b.hl) x[0] = W(x[0]);
+    for (const m of b.marks) { m[0] = W(m[0]); m[4] = W(m[4]); }
+    for (const ks of Object.values(b.tok)) for (const x of ks) x[0] = W(x[0]);
+  }
+  for (const f of TL.frames) { f.t = w2(f.t); f.pop = f.pop.map(w2); f.reloads = f.reloads.map(W); }
+  for (const r of TL.runs) {
+    r.t0 = W(r.t0); r.t1 = W(r.t1);
+    for (const k of ['cmd', 'prev']) if (r[k]) r[k][0] = W(r[k][0]);
+    for (const x of [...(r.keys || []), ...(r.clockCol || [])]) x[0] = W(x[0]);
+    if (r.stamp) r.stamp.t = W(r.stamp.t);
+    for (const x of r.receipts) x.t = W(x.t);
+    if (r.diagram) {
+      for (const row of r.diagram.rows) row.t = W(row.t);
+      for (const x of r.diagram.lit) x[0] = W(x[0]);
+      if (r.diagram.done != null) r.diagram.done = W(r.diagram.done);
+    }
+  }
 }
 
 // ---------- the montage (brief mode: one caption, one stamp, focal on the page) ----------
@@ -398,29 +467,12 @@ function montageCookies(t0) {
   frame({ id: 'm1', html: D.pages.v1, t: [t0, t1], popup: '#cc-wrap', pop: [[t0 - 1, t0 + 1.6]] });
   url(t0, 'northwind.example/checkout');
   codeBlock({ t0, t1, rows: openRows('page', { cookies: 'reject' }, 'page') });
-  cap(t0 + .2, t1 - .2, 'Cookie banner? It clicks “Reject all”.');
+  cap(t0 + .2, t1 - .2, 'Also: cookie banners? It clicks “Reject all”.');
   beat(t0 + .9, 'M1 cookie banner');
   curOn(t0 + .9, t0 + 1.9); cur(t0 + .9, 'm1:#cc-wrap button', -10, 4); haloOn(t0 + 1.0, t0 + 1.8);
   click(t0 + 1.3, 'm1:#cc-wrap button', C.purple); press(t0 + 1.3, 'm1:#cc-wrap button');
   pstamp({ t: [t0 + 2.2, t1], kind: 'ok', html: '✓ Passed · banner rejected', frame: 'm1' });
   beat(t0 + 3.4, 'M1 banner rejected');
-  return t1;
-}
-function montagePopup(t0) {
-  const t1 = t0 + 4.2, F1 = D.F.F1;
-  montage(t0, t1);
-  if (F1.sign_up !== 'never clicked' || F1.popup_up_after) throw new Error('F1: wrong outcome');
-  run({ t0, t1, cmd: [t0, '$ python checkout.py'] });
-  frame({ id: 'm2', html: D.F.pages.v2_nl, t: [t0, t1], popup: '#nl', pop: [[t0 + .2, t0 + 2.5]] });
-  codeBlock({ t0, t1, rows: openRows('page', F1.open_kwargs, 'page') });
-  cap(t0 + .2, t1 - .2, 'A popup? <u>“No thanks”</u>. <s>Never “Sign up”.</s>');
-  box({ at: 'm2:.nl-yes', col: C.red, dashed: true, t: [t0 + 1.4, t0 + 2.5], pad: 6 });
-  tag({ at: 'm2:.nl-yes', html: 'never', col: C.red, solid: true, t: [t0 + 1.4, t0 + 2.5], clear: 'm2:#nl > div', leader: true, pad: 6 });
-  beat(t0 + 1.9, 'M2 popup: never Sign up');
-  curOn(t0 + 1.6, t0 + 2.7); cur(t0 + 1.6, 'm2:.nl-no', -8, 4); haloOn(t0 + 1.7, t0 + 2.5);
-  click(t0 + 2.2, 'm2:.nl-no', C.purple); press(t0 + 2.2, 'm2:.nl-no');
-  pstamp({ t: [t0 + 3.0, t1], kind: 'ok', html: '✓ “Sign up” never clicked', frame: 'm2' });
-  beat(t0 + 3.7, 'M2 never clicked');
   return t1;
 }
 
@@ -437,8 +489,10 @@ function rectOf(node) {
 const grow = (r, p) => ({ x: r.x - p, y: r.y - p, w: r.w + 2 * p, h: r.h + 2 * p });
 const cxy = r => [r.x + r.w / 2, r.y + r.h / 2];
 // iframe px -> content px -> stage px
-function toContent(f, r) { return { x: (r.x - f.cam.x) * Z, y: (r.y - f.cam.y) * Z, w: r.w * Z, h: r.h * Z }; }
-function toStage(f, r) { const c = toContent(f, r); return { x: c.x + CO.x, y: c.y + CO.y, w: c.w, h: c.h }; }
+function toContent(f, r) { const z = f.z || Z; return { x: (r.x - f.cam.x) * z, y: (r.y - f.cam.y) * z, w: r.w * z, h: r.h * z }; }
+function toStage(f, r) { const c = toContent(f, r), o = f.org || CO; return { x: c.x + o.x, y: c.y + o.y, w: c.w, h: c.h }; }
+// the stage rect a frame's annotations must stay inside: its panel's content
+function zoneOfFrame(f) { return f.panel === 'wide' ? { x: WC.x, y: WC.y, w: WC.w, h: WC.h } : { x: BR.x, y: CO.y, w: BR.w, h: CO.h }; }
 function frameOf(at) { const i = at.indexOf(':'); return FR[at.slice(0, i)]; }
 function nodeOf(at) {
   if (resolved.has(at)) return resolved.get(at);
@@ -505,7 +559,7 @@ function measure() {
       const r = rectOf(f.doc.querySelector('.card, .f9a1'));
       f.cam = { x: r.x - LAYOUT.CARD_AT[0] / Z, y: r.y - LAYOUT.CARD_AT[1] / Z };
     }
-    f.pgw.style.transform = `scale(${Z}) translate(${(-f.cam.x).toFixed(2)}px,${(-f.cam.y).toFixed(2)}px)`;
+    f.pgw.style.transform = `scale(${f.z || Z}) translate(${(-f.cam.x).toFixed(2)}px,${(-f.cam.y).toFixed(2)}px)`;
   }
   // the redesign must break all three selectors
   if (FR.v2 && FR.v2.doc.querySelector('#email, #accept-terms, #continue')) throw new Error('V2 still matches an old selector: "no match" would be false');
@@ -521,7 +575,10 @@ function measure() {
   if (TL.ctitle) buildClipTitle();
   if (TL.estrip) buildEndStrip();
   for (const c of TL.caps) c.e = el('div', 'cap', c.html, document.body);
-  for (const r of TL.reveals) r.n = nodeOf(r.at);
+  for (const r of TL.reveals) {
+    r.ns = r.all ? [...frameOf(r.at).doc.querySelectorAll(r.at.slice(r.at.indexOf(':') + 1))] : [nodeOf(r.at)];
+    if (!r.ns.length) throw new Error('nothing to reveal: ' + r.at);
+  }
   TL.focus.sort((a, b) => a[0] - b[0]);
   if (!TL.focus.length || TL.focus[0][0] > 0) TL.focus.unshift([0, 'all']);
   checkFits();
@@ -530,14 +587,20 @@ function measure() {
 // ---------- the browser: pages, boxes, ripples, cursor ----------
 function makeFrames() {
   for (const f of TL.frames) {
-    f.pgw = el('div', 'pgw', null, content);
-    content.insertBefore(f.pgw, ov);
-    f.ifr = el('iframe', '', null, f.pgw);
+    if (f.panel === 'wide') {         // on the wide panel: no zoom, the panel's size
+      Object.assign(f, { z: 1, org: { x: WC.x, y: WC.y } });
+      f.pgw = el('div', 'pgw', null, wideC, `width:${WC.w}px;height:${WC.h}px`);
+    } else {
+      f.pgw = el('div', 'pgw', null, content);
+      content.insertBefore(f.pgw, ov);
+    }
+    f.ifr = el('iframe', '', null, f.pgw, f.panel === 'wide' ? `width:${WC.w}px;height:${WC.h}px` : null);
     f.ifr.srcdoc = f.html;
     FR[f.id] = f;
   }
 }
 function buildPage() {
+  for (const b of TL.boxes) if (frameOf(b.at).panel === 'wide') throw new Error('a box on the wide panel: ' + b.at);
   for (const b of TL.boxes) b.e = el('div', 'box', null, ov);
   for (const c of TL.clicks) c.e = el('div', 'ripple', null, ov);
   TL.curKeys = [[0, [CO.x + 600, CO.y + 560]]].concat(TL.cur.map(k => {
@@ -580,10 +643,12 @@ function drawBrowser(t) {
   ctl.style.visibility = ct ? 'inherit' : 'hidden';
   if (ct && ctl.textContent !== ct) ctl.textContent = ct;
   for (const r of TL.reveals) {
-    const p = clamp(spring(t - r.t, .4));
-    r.n.style.visibility = p <= .002 ? 'hidden' : 'visible';
-    r.n.style.opacity = p.toFixed(3);
-    r.n.style.transform = `translateY(${((1 - p) * r.dy).toFixed(2)}px)`;
+    const p = clamp(spring(t - r.t, .4)) * (r.t1 != null ? 1 - clamp(spring(t - r.t1, .3)) : 1);
+    for (const n of r.ns) {
+      n.style.visibility = p <= .002 ? 'hidden' : 'visible';
+      n.style.opacity = p.toFixed(3);
+      n.style.transform = `translateY(${((1 - p) * r.dy).toFixed(2)}px)`;
+    }
   }
   for (const f of TL.frames) {
     const p = pres(t, f.t[0], f.t[1], .45, .35);
@@ -621,8 +686,8 @@ function drawBrowser(t) {
     const p = pres(t, b.t[0], b.t[1], .4, .3);
     if (p <= .002) { b.e.style.visibility = 'hidden'; continue; }
     const r = grow(SR(b.at), b.pad);
-    setBox(b.e, { x: r.x - CO.x, y: r.y - CO.y, w: r.w, h: r.h }, { col: b.col, dashed: b.dashed,
-      fill: b.dashed ? `${b.col}12` : `${b.col}14`, glow: b.dashed ? 0 : 4, p });
+    setBox(b.e, { x: r.x - CO.x, y: r.y - CO.y, w: r.w, h: r.h }, { col: onPage(b.col), dashed: b.dashed,
+      fill: 'transparent', glow: 0, p });
   }
   // cursor
   const [cx, cy] = toCO(trackN(t, TL.curKeys, .5));
@@ -644,12 +709,12 @@ function drawBrowser(t) {
     c.e.style.visibility = 'inherit';
     c.e.style.left = (x - rad) + 'px'; c.e.style.top = (y - rad) + 'px';
     c.e.style.width = c.e.style.height = 2 * rad + 'px';
-    c.e.style.borderColor = c.col; c.e.style.opacity = (.9 * (1 - p)).toFixed(3);
+    c.e.style.borderColor = onPage(c.col); c.e.style.opacity = (.9 * (1 - p)).toFixed(3);
   }
 }
 
 // ---------- the editor ----------
-const TOKTXT = { broken: '#ffb0b0', mem: '#9ccbff', ai: '#d4b2ff', saved: '#8ce8b0' };   // a token's text, tinted by its state
+const TOKTXT = { broken: '#ffffff', mem: '#ffffff', ai: '#ffffff', saved: '#ffffff' };   // a token's text: white; its underline says its state
 function drawEditor(t) {
   const blk = blockAt(t);
   let et = 'checkout.py';
@@ -667,7 +732,7 @@ function drawEditor(t) {
       const n = Math.round(o.len * lin(t, o.r.type[0], o.r.type[1]));
       o.cw.style.width = (n * CW + 1).toFixed(1) + 'px';
     }
-    o.ln.style.background = o.r.tint ? `rgba(185,140,255,${(.16 * pres(t, o.r.tint[0], o.r.tint[1], .4, .9)).toFixed(3)})` : 'transparent';
+    o.ln.style.background = o.r.tint ? `rgba(255,255,255,${(.13 * pres(t, o.r.tint[0], o.r.tint[1], .4, .9)).toFixed(3)})` : 'transparent';
     o.ln.style.borderRadius = '10px';
     // the result of the line
     let m = null;
@@ -683,13 +748,13 @@ function drawEditor(t) {
       const ks = b.tok[tok.dataset.k] || [];
       let st = null, t0 = 0;
       for (const [tt, s] of ks) if (t >= tt) { st = s; t0 = tt; }
-      const col = { broken: C.red, mem: C.blue, ai: C.purple, saved: C.green }[st];
+      const col = { broken: C.red, mem: C.green, ai: C.green, saved: C.green }[st];
       if (!col) { tok.style.textDecoration = 'none'; tok.style.background = 'transparent'; tok.style.color = ''; continue; }
       tok.style.textDecoration = `underline ${st === 'broken' ? 'wavy' : 'solid'} ${col}`;
       tok.style.textUnderlineOffset = '7px'; tok.style.textDecorationThickness = st === 'broken' ? '2px' : '3px';
       tok.style.textDecorationSkipInk = 'none';
       tok.style.color = TOKTXT[st];
-      tok.style.background = `${col}${Math.round(0x40 * clamp(spring(t - t0, .4))).toString(16).padStart(2, '0')}`;
+      tok.style.background = 'transparent';
     }
   }
   // the current line
@@ -751,14 +816,15 @@ function buildDiagram(dg, parent) {
   return w;
 }
 function drawDiagram(dg, t) {
-  dg.rowEls.forEach(({ row, e, chips }) => {
+  dg.rowEls.forEach(({ row, e, chips }, ri) => {
+    const lights = !dg.litRows || dg.litRows.includes(ri);
     mat(e, spring(t - row.t, .4), { dy: 8, blur: 4, s0: .98 });
     const tone = row.tone === 'amber' ? C.amber : C.grey;
     let lit = null, done = [];
     for (const [tt, name] of dg.lit) if (t >= tt) { if (lit) done.push(lit); lit = name; }
     if (dg.done != null && t >= dg.done) { if (lit) done.push(lit); lit = null; }
     chips.forEach(c => {
-      const on = c.name === lit, was = done.includes(c.name);
+      const on = lights && c.name === lit, was = lights && done.includes(c.name);
       const warn = on && dg.warn && c.name === dg.warn;
       const col = warn ? C.amber : on ? (row.tone === 'amber' ? C.amber : '#eef2f7') : was ? C.green : tone;
       c.e.style.color = on && !warn && row.tone === 'amber' ? '#1b1405' : warn ? '#1b1405' : col;
@@ -785,7 +851,7 @@ function drawRuns(t) {
       let sp = 0, seg = null;
       for (const s of r.segs) { const q = pres(t, s.a - .05, s.b, .2, .2); if (q > sp) { sp = q; seg = s; } }
       if (seg) r.speedE.textContent = `▶▶ sped up ×${seg.n}`;
-      r.speedE.style.opacity = clamp(sp).toFixed(3);
+      r.speedE.style.opacity = r.speedLabel === false ? 0 : clamp(sp).toFixed(3);
     }
     if (r.stampE) {
       const q = spring(t - r.stamp.t, .38, .7);
@@ -800,8 +866,9 @@ function drawRuns(t) {
 // ---------- annotations: callouts, tags, leaders, keycaps, page stamps ----------
 const RING = `<svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="11" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="3.5"/><circle class="arc" cx="15" cy="15" r="11" fill="none" stroke="${C.amber}" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="69.12" stroke-dashoffset="69.12" transform="rotate(-90 15 15)"/></svg>`;
 function buildAnn() {
-  const inner = { x: BR.x + 16, y: CO.y + 12, r: BR.x + BR.w - 16, b: BR.y + BR.h - 12 };
+  const innerOf = at => { const z = zoneOfFrame(frameOf(at)); return { x: z.x + 16, y: z.y + 12, r: z.x + z.w - 16, b: z.y + z.h - 12 }; };
   for (const c of TL.callouts) {
+    const inner = innerOf(c.at);
     c.e = el('div', 'callout', null, ann);
     c.sets.forEach(s => {
       const ic = s.ic === 'ring' ? `<span class="ic">${RING}</span>` : s.ic ? `<span class="ic" style="color:${s.col || '#fff'}">${s.ic}</span>` : '';
@@ -840,6 +907,7 @@ function buildAnn() {
     } else if (inner.b - (T.y + T.h + 24) >= H0) {
       x = T.x; y = T.y + T.h + 24; side = 'below';
     } else { x = T.x; y = T.y - 24 - H0; side = 'above'; }
+    y += c.dy || 0;
     x = clamp(x, inner.x, inner.r - c.W); y = clamp(y, inner.y, inner.b - H0);
     Object.assign(c, { x, y, side, T });
     c.e.style.left = x + 'px'; c.e.style.top = y + 'px'; c.e.style.width = c.W + 'px';
@@ -852,12 +920,14 @@ function buildAnn() {
   }
   for (const g of TL.tags) {
     const col = g.col;
-    g.e = el('div', 'tag', g.html, ann, g.solid
-      ? `background:${col};color:${col === C.green ? '#04210f' : col === C.red ? '#2a0606' : '#0b1220'}`
-      : `background:rgba(14,18,27,.92);border:1.5px solid ${col}99;color:#eef2f7`);
+    // on a page: a solid red or green mark with white text, else black with white text; in the
+    // editor: black with a white border
+    g.e = el('div', 'tag', g.html, ann, g.zone === 'code'
+      ? 'background:#000;border:1.5px solid rgba(255,255,255,.6);color:#fff'
+      : `background:${g.solid ? onPage(col) : '#000'};border:1.5px solid ${g.solid ? onPage(col) : '#000'};color:#fff`);
     const w = g.e.getBoundingClientRect().width, h = g.e.getBoundingClientRect().height;
     const T = SR(g.at, g.t[0]), pad = g.pad != null ? g.pad : 7;
-    const zr = g.zone === 'code' ? ED.x + ED.w - 12 : inner.r;
+    const zr = g.zone === 'code' ? ED.x + ED.w - 12 : innerOf(g.at).r;
     // right of the element (and of col0 / clear: a column or a popup card it must clear),
     // else below it; 'below-of' sits under another element (a popup card), centred on the
     // target; 'left' sits left of the element (or of clear), dy moves it off an input
@@ -884,7 +954,7 @@ function buildAnn() {
       else if (g.side === 'below-of') g.pts = [[x + w / 2, y], [x + w / 2, B.y + B.h]];
       else g.pts = g.side === 'left' ? [[x + w, ly], [B.x, ly]] : [[x, ly], [B.x + B.w, ly]];
       g.line.setAttribute('points', g.pts.map(p => p.map(v => v.toFixed(1)).join(',')).join(' '));
-      g.line.setAttribute('fill', 'none'); g.line.setAttribute('stroke', col); g.line.setAttribute('stroke-width', '2.5');
+      g.line.setAttribute('fill', 'none'); g.line.setAttribute('stroke', g.zone === 'code' ? col : onPage(col)); g.line.setAttribute('stroke-width', '2.5');
       g.line.setAttribute('stroke-linejoin', 'round');
     }
   }
@@ -936,7 +1006,7 @@ function drawAnn(t) {
       else { x1 = clamp(T.x + T.w / 2, c.x + 24, c.x + c.W - 24); y1 = c.y + h; x2 = x1; y2 = T.y; }
       const L = Math.hypot(x2 - x1, y2 - y1), q = clamp(spring(t - c.leader, .35)) * (1 - clamp(spring(t - c.t[1], .3)));
       Object.entries({ x1, y1, x2, y2 }).forEach(([k, v]) => c.line.setAttribute(k, v.toFixed(1)));
-      c.line.setAttribute('stroke', c.lineCol); c.line.setAttribute('stroke-width', '2');
+      c.line.setAttribute('stroke', onPage(c.lineCol)); c.line.setAttribute('stroke-width', '2');
       c.line.setAttribute('stroke-dasharray', L.toFixed(1)); c.line.setAttribute('stroke-dashoffset', (L * (1 - q)).toFixed(1));
       c.line.style.opacity = (t >= c.leader ? .7 * annDim(c.zone, t) : 0).toFixed(3);
     }
@@ -978,11 +1048,11 @@ function buildTitle() {
   const call = sel => `<span class="k-obj">page</span><span class="k-p">.</span><span class="k-fn">click</span><span class="k-p">(</span><span class="sel">${esc(JSON.stringify(sel))}<i class="strike"></i></span><span class="k-p">)</span>`;
   const e = el('div', 'card', `<div class="wm"><b>mendwright</b></div><div class="tsub">Playwright &amp; Selenium selectors that repair themselves.</div>
     <div class="ba">
-      <div class="bar old"><span class="mk" style="color:${C.red}"><i>✕</i></span><span class="tc mono">${call(SCRIPT[0][1])}</span><span class="nt" style="color:${C.red}">after a redesign: no match</span></div>
-      <div class="bar neu"><span class="mk" style="color:${C.green}"><i>✓</i></span><span class="tc mono">${call(XP.email)}</span><span class="nt" style="color:${C.blue}">◆ found again from memory · no AI</span></div>
+      <div class="bar old"><span class="lb">your selector</span><span class="tc mono">${call(SCRIPT[0][1])}</span><span class="nt"><i style="color:${C.red}">✕</i>no match after a redesign</span></div>
+      <div class="bar neu"><span class="lb">what mendwright used</span><span class="tc mono">${call(XP.email)}</span><span class="nt"><i style="color:${C.green}">✓</i>found from memory · no AI</span></div>
     </div>`, document.body);
   const [ro, rn] = e.querySelectorAll('.bar');
-  TC = { e, ro: [...ro.children], rn: [...rn.children], nSel: $('.sel', rn), strike: $('.strike', ro), oMk: $('.mk i', ro), nMk: $('.mk i', rn) };
+  TC = { e, ro: [...ro.children], rn: [...rn.children], nSel: $('.sel', rn), strike: $('.strike', ro), oMk: $('.nt i', ro), nMk: $('.nt i', rn) };
   $('.strike', rn).remove();
 }
 function drawTitle(t) {
@@ -996,12 +1066,12 @@ function drawTitle(t) {
   // everything is on screen at frame 0; the first seconds only emphasize, one row at a time
   const pulse = (a, b) => Math.sin(Math.PI * lin(t, a, b));
   const po = pulse(t0 + .5, t0 + 1.5), pn = pulse(t0 + 1.7, t0 + 2.7);
-  for (const c of TC.ro) c.style.background = `rgba(255,107,107,${(.16 * po).toFixed(3)})`;
-  for (const c of TC.rn) c.style.background = `rgba(90,169,255,${(.16 * pn).toFixed(3)})`;
+  for (const c of TC.ro) c.style.background = `rgba(255,255,255,${(.12 * po).toFixed(3)})`;
+  for (const c of TC.rn) c.style.background = `rgba(255,255,255,${(.12 * pn).toFixed(3)})`;
   TC.oMk.style.transform = `scale(${(1 + .3 * po).toFixed(3)})`;
   TC.nMk.style.transform = `scale(${(1 + .3 * pn).toFixed(3)})`;
   TC.strike.style.width = (100 * clamp(spring(t - (t0 + .7), .35))).toFixed(1) + '%';
-  TC.nSel.style.textShadow = pn > .01 ? `0 0 ${(18 * pn).toFixed(1)}px rgba(90,169,255,${(.8 * pn).toFixed(2)})` : 'none';
+  TC.nSel.style.textShadow = pn > .01 ? `0 0 ${(18 * pn).toFixed(1)}px rgba(255,255,255,${(.7 * pn).toFixed(2)})` : 'none';
 }
 let EC = {};
 function buildEnd() {
@@ -1010,9 +1080,9 @@ function buildEnd() {
  <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Repairs from memory first. No AI.</div>
  <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
  <div><span class="ic" style="background:${C.green}22;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
- <div><span class="ic tx" style="background:${C.green}22;color:${C.green}">PR</span>Confirmed fixes come back as a pull request.</div>
+ <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">PR</span>Confirmed fixes come back as a pull request.</div>
  <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners, popups, steps in any order.</div>
- <div><span class="ic tx" style="background:${C.white}1c;color:#dfe6ee">TS</span>Python and TypeScript share the saved fixes.</div>
+ <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">TS</span>Python and TypeScript share the saved fixes.</div>
 </div>
 <div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>npm i mendwright</div></div>
 <div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
@@ -1044,13 +1114,13 @@ function checkFits() {
   };
   const BRZ = { x: BR.x, y: CO.y, w: BR.w, h: CO.h };
   for (const c of TL.callouts) {
-    fits({ x: c.x, y: c.y, w: c.W, h: Math.max(...c.sets.map(s => s.hgt)) }, BRZ, 'callout ' + c.sets[0].h);
+    fits({ x: c.x, y: c.y, w: c.W, h: Math.max(...c.sets.map(s => s.hgt)) }, zoneOfFrame(frameOf(c.at)), 'callout ' + c.sets[0].h);
     c.sets.forEach(s => { if (s.e.scrollWidth > c.W - 36 + 1) PROBLEMS.push('callout text too wide: ' + s.h + ' / ' + (s.s || '')); });
     const T = grow(c.T, 7), H = Math.max(...c.sets.map(s => s.hgt));
     if (c.x < T.x + T.w && c.x + c.W > T.x && c.y < T.y + T.h && c.y + H > T.y) PROBLEMS.push('callout covers its target: ' + c.sets[0].h);
   }
   for (const g of TL.tags) {
-    fits({ x: g.x, y: g.y, w: g.w, h: g.h }, g.zone === 'code' ? ED : BRZ, 'tag ' + g.html.replace(/<[^>]+>/g, ''));
+    fits({ x: g.x, y: g.y, w: g.w, h: g.h }, g.zone === 'code' ? ED : zoneOfFrame(frameOf(g.at)), 'tag ' + g.html.replace(/<[^>]+>/g, ''));
     const what = 'tag ' + g.html.replace(/<[^>]+>/g, '');
     const hit = r => g.x < r.x + r.w && g.x + g.w > r.x && g.y < r.y + r.h && g.y + g.h > r.y;
     if (g.zone === 'code') for (const o of ROWS) {     // a code tag never covers the text of a line that shows meanwhile
@@ -1097,7 +1167,7 @@ function checkFits() {
   for (const o of ROWS) { const w = o.len * CW; if (58 + w > ED.w - (o.r.nomark ? 16 : 44)) PROBLEMS.push('code row does not fit: ' + o.ln.querySelector('.cw').textContent); }
   for (const b of TL.code) for (const mk of b.marks) if (b.rowEls[mk[1]].r.nomark) PROBLEMS.push('a mark on a row without one: ' + mk[1]);
   for (const f of TL.frames) if (f.fit) for (const n of f.doc.querySelectorAll(f.fit)) {
-    fits(toStage(f, rectOf(n)), BRZ, 'page ' + f.id + ' ' + f.fit);
+    fits(toStage(f, rectOf(n)), zoneOfFrame(f), 'page ' + f.id + ' ' + f.fit);
     if (n.scrollWidth > n.clientWidth + 1) PROBLEMS.push('page ' + f.id + ': a line is too wide in ' + f.fit);
   }
   for (const c of TL.caps) {
@@ -1132,7 +1202,7 @@ window.audit = function audit() {
   }
   for (const s of TL.pstamps) texts.push({ t: s.t[0], kind: 'stamp', what: plain(s.html), result: true });
   for (const k of TL.keycaps) texts.push({ t: k.t[0], kind: 'keycap', what: k.text, partOf: true });
-  for (const r of TL.reveals) texts.push({ t: r.t, kind: 'reveal', what: r.what, result: !!r.result });
+  for (const r of TL.reveals) if (r.text) texts.push({ t: r.t, kind: 'reveal', what: r.what, result: !!r.result });
   texts.sort((a, b) => a.t - b.t);
   const f = x => x.toFixed(2);
   // at most one new text element per 1.2 s (a keycap shows with its callout)
@@ -1183,6 +1253,10 @@ function render(vt) {
   stage.style.visibility = sp < .002 ? 'hidden' : 'visible';
   band.style.opacity = clamp(sp).toFixed(3);
   if (sp >= .002) {
+    let wp = 0;
+    for (const [a, b] of TL.wide) wp = Math.max(wp, pres(t, a, b, .45, .35));
+    mat(wide, wp, { dy: 0, s0: .985, blur: 10 });
+    for (const p of [ed, term, br]) p.style.opacity = (1 - clamp(wp)).toFixed(3);
     drawFocus(t);
     drawEditor(t);
     drawRuns(t);
@@ -1206,17 +1280,17 @@ window.ready = false;
 function cutMain() {
   hookCard(0, 4.2);
   TL.stageIn = 4.2;
-  const blk = mainStory();
-  let t = window.pullRequestBeat(48.4, blk);     // the repairs become a pull request
-  focus(t, 'page');
+  const { blk, end } = mainStory();
+  let t = window.pullRequestBeat(end, blk);      // the repairs become a pull request
+  focus(t, 'code+page');                         // the montage: its code lines say how
   t = montageCookies(t);
-  t = montagePopup(t);
+  t = window.popupBeat(t);                       // an offer declined, a question left to you
   t = window.montageSteps(t);
-  t = window.checkBeat(t);                       // mendwright check before the nightly run
+  t = window.checkBeat(t);                       // mendwright check, as before that first run
   t = window.typescriptBeat(t);                  // the same repairs from TypeScript
-  endCard(t, t + 7.6);
+  endCard(t, t + 6.2);
   TL.stageOut = t;
-  TL.dur = t + 7.6;
+  TL.dur = t + 6.2;
 }
 window.CUTS = { main: cutMain };
 function defineCut() {

@@ -36,10 +36,11 @@ window.montageSteps = function montageSteps(t0) {
   dg.rows[1].t = t0 + .1;
   dg.lit = [[t0 + .8, 'payment'], [T.ship, 'shipping'], [T.rev, 'review']];
   dg.done = T.done;
+  dg.litRows = [1];                  // only the site's order lights up and turns green
   run({ t0, t1, diagram: dg });
   // deliberate departure from "one focal zone", as in clip D: the order diagram's lit chip
-  // and the page are read together
-  focus(t0, 'run+page');
+  // and the page are read together, and the code says how
+  focus(t0, 'all');
   cap(t0 + .2, t1 - .2, 'Steps reordered? It follows the site.');
   beat(t0 + 1.2, 'M3 payment first');
   fill(t0 + .8, t0 + 1.1, 'm3checkout:#card-number', '4242 4242 4242 4242');

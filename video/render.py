@@ -168,6 +168,21 @@ def main_data(cap):
     }
 
 
+def popup_data(cm):
+    """The popup beat of the main cut: an offer and a question nobody registered, over the
+    redesign (capture_main.json's 'popups', on its black-and-white pages)."""
+    p = cm['popups']
+    o, q = p['offer'], p['question']
+    check(p['open_kwargs'] == {'dismiss': True} and p['click'] == 'input[name=email]' and p['click_kwargs'] == {},
+          'popups: not the script the beat shows')
+    check(o['ok'] and o['clicked'] == ['No thanks'] and not o['popup_up_after'] and o['store_fresh'],
+          'popups: the offer was not declined with No thanks')
+    check(any('dismissed a popup' in line and '“No thanks”' in line for line in o['log']), 'popups: no log line for the declined offer')
+    check(not q['ok'] and q['clicked'] == [] and q['popup_up_after'] and q['store_fresh'],
+          'popups: the question was answered, or did not stay')
+    return dict(p, pages={'offer': cm['pages']['offer'], 'question': cm['pages']['question']})
+
+
 def team_data(t, main):
     """The team beats of the main cut (the pull request, mendwright check, TypeScript), from capture_team.json."""
     # the pytest test is the script the main cut shows, in a test function
@@ -218,16 +233,20 @@ def team_data(t, main):
     keys = [a for v, a in main['script'] if v != 'type']
     check([a['selector'] for a in acts] == ['xpath=' + heals[k] for k in keys], 'team: the TypeScript run did not use the saved repairs')
     check(not any(t['ts_old_selectors_on_v2'].values()), 'team: the redesign still has an old selector')
+    # the TypeScript run's page was at the shop's address, as in every other run
+    pages = [u for u in t['ts_urls'] if u.endswith('/checkout')]
+    check(len(pages) == 1 and pages[0].split('//', 1)[1] == 'northwind.example/checkout', 'team: the TypeScript run was at %s' % pages)
+    check(t['pages']['v2'] == main['pages']['v2'], 'team: the TypeScript run had another page than the main cut shows')
     return {'title': t['pr_title'], 'n': len(wb), 'test': test_ids.pop(), 'diff': hunk, 'diffFile': path,
             'fixCmd': 'mendwright ' + ' '.join(t['fix_md']['cmd'][3:]), 'checkCmd': 'mendwright ' + ' '.join(ck['cmd'][3:]),
             'checkOut': ck['stdout'], 'tsCmd': ' '.join(ts['cmd']), 'tsOut': ts['stdout'], 'spec': t['files']['checkout.spec.ts'],
-            'tsUrl': '127.0.0.1:%d/checkout' % t['port'], 'jsVersion': t['js_version']}
+            'tsUrl': pages[0].split('//', 1)[1], 'jsVersion': t['js_version']}
 
 
-# The clips show runs of mendwright 0.7.0; the main cut, runs of 0.10.0 (capture_main.py and
+# The clips show runs of mendwright 0.7.0; the main cut, runs of 0.10.1 (capture_main.py and
 # capture_team.py). Within a cut, every run ran the same mendwright: one version, one source.
 CAPTURES = {'clips': (('capture.json', 'capture_flow.json', 'capture_smart.json', 'capture_steps.json', 'capture_selenium.json'), '0.7.0'),
-            'main': (('capture_main.json', 'capture_team.json'), '0.10.0')}
+            'main': (('capture_main.json', 'capture_team.json'), '0.10.1')}
 
 
 def provenance(which):
@@ -243,11 +262,12 @@ def build(cut):
     if cut == 'main':
         cm = load('capture_main.json')
         data = main_data(cm)
+        data['pages'] = {'v1': cm['pages']['v1_banner'], 'v2': cm['pages']['v2']}   # the pages the runs had
         data['provenance'] = provenance('main')
-        data['F'] = flow_data(cm['flow'])
+        data['P'] = popup_data(cm)
         data['ST'] = steps_data(cm['steps'])
         data['T'] = team_data(load('capture_team.json'), data)
-        fkeys = ('F', 'ST')
+        fkeys = ('P', 'ST')
     else:
         data = main_data(load('capture.json'))
         data['provenance'] = provenance('clips')

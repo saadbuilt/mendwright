@@ -23,9 +23,9 @@ PACE = float(re.search(r'const PACE = ([0-9.]+);', open(os.path.join(HERE, 'comp
 # (story time, region (x, y, w, h) at 1920x1080, label): 1:1 crops added under the beats
 CODE = (40, 56, 640, 400)
 CROPS = {
-    'main': [(15.6, CODE, 'code: three selectors broken (red wavy)'), (30.5, CODE, 'code: #accept-terms from the model (purple)'),
-             (40.8, CODE, 'code: blue / purple / blue repairs'), (46.0, CODE, 'code: all saved (green)'),
-             (73.6, CODE, 'code: TypeScript, the import line'), (75.6, CODE, 'code: TypeScript, saved fixes used')],
+    'main': [(15.6, CODE, 'code: three selectors broken (red wavy)'), (35.5, CODE, 'code: #accept-terms healed (green)'),
+             (45.8, CODE, 'code: all three healed (green)'), (51.0, CODE, 'code: next run, saved fixes'),
+             (82.4, CODE, 'code: TypeScript, the import line'), (84.4, CODE, 'code: TypeScript, saved fixes used')],
     'A': [(22.4, CODE, 'code: Selenium + mendwright')],
     'B': [(3.0, CODE, 'code: one script for both popups')],
     'C': [(13.6, CODE, 'code: interrupt line, heal.page tag')],
