@@ -1,0 +1,124 @@
+"""The hourly model budget from the environment: MENDWRIGHT_RATE_PER_KEY_PER_HOUR and
+MENDWRIGHT_RATE_GLOBAL_PER_HOUR, the defaults of open()'s two rates."""
+
+import inspect
+
+import pytest
+
+import mendwright
+from mendwright import AttentionRequired, cli, facade
+from mendwright import aio
+
+PAGE = "<form><button id='b'>Go</button></form>"
+BROKEN = "//button[@id='gone']"
+FIXED = "//button[@id='b']"
+
+
+def _limiter(healer):
+    return healer.coordinator.guardrails.rate_limiter
+
+
+def _open(make_page, stub_provider, tmp_path, **kw):
+    return mendwright.open(make_page(PAGE), provider=stub_provider(FIXED),
+                           store_path=str(tmp_path / 'o.json'), timeout_ms=0, **kw)
+
+
+def test_without_the_variables_the_budget_is_3_and_60(tmp_path, make_page, stub_provider):
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path))
+    assert (limiter.per_key_per_hour, limiter.global_per_hour) == (3, 60)
+
+
+def test_the_variables_set_the_budget(tmp_path, make_page, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', ' 7 ')
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', '900')
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path))
+    assert (limiter.per_key_per_hour, limiter.global_per_hour) == (7, 900)
+
+
+def test_none_in_a_variable_removes_that_limit(tmp_path, make_page, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'None')
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path))
+    assert (limiter.per_key_per_hour, limiter.global_per_hour) == (None, 60)
+
+
+def test_an_empty_variable_counts_as_unset(tmp_path, make_page, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', '  ')
+    assert _limiter(_open(make_page, stub_provider, tmp_path)).global_per_hour == 60
+
+
+def test_a_rate_passed_to_open_wins_over_the_variable(tmp_path, make_page, stub_provider,
+                                                      monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', '7')
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', '900')
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path,
+                             rate_per_key_per_hour=2, rate_global_per_hour=None))
+    assert (limiter.per_key_per_hour, limiter.global_per_hour) == (2, None)
+
+
+def test_a_rate_of_3_passed_to_open_wins_over_the_variable_too(tmp_path, make_page,
+                                                               stub_provider, monkeypatch):
+    # The same number as the built-in default is still the caller's own choice.
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', '7')
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path, rate_per_key_per_hour=3))
+    assert limiter.per_key_per_hour == 3
+
+
+def test_zero_lets_no_model_attempt_through(tmp_path, make_page, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', '0')
+    provider = stub_provider(FIXED)
+    healer = mendwright.open(make_page(PAGE), provider=provider, fingerprint=False,
+                             store_path=str(tmp_path / 'o.json'), timeout_ms=0)
+    with pytest.raises(AttentionRequired, match='rate/spend cap') as exc:
+        healer.locator('go', BROKEN, role='button')
+    assert provider.bundles == []
+    assert 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR' in str(exc.value)
+
+
+@pytest.mark.parametrize('raw', ['ten', '-1', '2.5', 'unlimited'])
+@pytest.mark.parametrize('var, param', [
+    ('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'rate_per_key_per_hour'),
+    ('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'rate_global_per_hour'),
+])
+def test_a_bad_value_stops_open_and_names_the_variable(tmp_path, make_page, stub_provider,
+                                                       monkeypatch, raw, var, param):
+    monkeypatch.setenv(var, raw)
+    with pytest.raises(ValueError) as exc:
+        _open(make_page, stub_provider, tmp_path)
+    assert var + ' must be a whole number of heal attempts per hour, or none' in str(exc.value)
+    assert param + '= to mendwright.open()' in str(exc.value)
+
+
+def test_a_bad_value_is_ignored_when_both_rates_are_passed(tmp_path, make_page,
+                                                           stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'ten')
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'lots')
+    limiter = _limiter(_open(make_page, stub_provider, tmp_path,
+                             rate_per_key_per_hour=4, rate_global_per_hour=40))
+    assert (limiter.per_key_per_hour, limiter.global_per_hour) == (4, 40)
+
+
+def test_the_async_open_has_the_same_defaults():
+    for name in ('rate_per_key_per_hour', 'rate_global_per_hour'):
+        assert (inspect.signature(aio.open).parameters[name].default
+                is inspect.signature(mendwright.open).parameters[name].default)
+    assert repr(facade.RATE_PER_KEY_DEFAULT) == 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR or 3'
+    assert repr(facade.RATE_GLOBAL_DEFAULT) == 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR or 60'
+
+
+def test_doctor_shows_the_variables(capsys, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', '10')
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'none')
+    assert cli.main(['doctor']) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert '  MENDWRIGHT_RATE_PER_KEY_PER_HOUR=10' in out
+    assert '  MENDWRIGHT_RATE_GLOBAL_PER_HOUR=none' in out
+    assert 'Problems' not in out
+
+
+def test_doctor_lists_a_bad_value_and_still_exits_0(capsys, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'lots')
+    assert cli.main(['doctor']) == 0
+    out = capsys.readouterr().out.splitlines()
+    problems = out[out.index('Problems') + 1:]
+    assert any('MENDWRIGHT_RATE_GLOBAL_PER_HOUR must be a whole number' in line
+               for line in problems)

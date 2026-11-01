@@ -20,7 +20,8 @@ What it adds:
   never accepts one.
 
 Options: --mendwright-page-fixture, --mendwright-store, --mendwright-dry-run,
---mendwright-disable, --mendwright-strict, --mendwright-heal-get-by, and the ini keys
+--mendwright-disable, --mendwright-strict, --mendwright-heal-get-by,
+--mendwright-heal-get-by-model, and the ini keys
 mendwright_page_fixture and mendwright_store. ``-p no:mendwright`` turns the plugin off.
 
 pytest loads this module in every session wherever mendwright is installed. Importing it
@@ -82,6 +83,12 @@ def pytest_addoption(parser):
         default=False,
         help='heal heal.page.get_by_*() calls too, from their fingerprints. Sets '
              'MENDWRIGHT_HEAL_GET_BY=1 for the run.')
+    group.addoption(
+        '--mendwright-heal-get-by-model', dest='mendwright_heal_get_by_model',
+        action='store_true', default=False,
+        help='heal heal.page.get_by_*() calls too, from their fingerprints or, when that does '
+             'not heal one, with the model provider. Sets MENDWRIGHT_HEAL_GET_BY=model for '
+             'the run.')
     parser.addini(
         'mendwright_page_fixture', default='',
         help="fixture that the 'heal' fixture passes to mendwright.open() (default: page).")
@@ -194,6 +201,11 @@ def _env_on(name):
     return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _get_by_model():
+    """True when MENDWRIGHT_HEAL_GET_BY=model: a model may heal get_by_* calls too."""
+    return os.environ.get('MENDWRIGHT_HEAL_GET_BY', '').strip().lower() == 'model'
+
+
 def _provider_overridden(items):
     """True when a test that uses 'heal' gets mendwright_provider from a fixture other than
     this plugin's default (an override in conftest.py)."""
@@ -281,13 +293,16 @@ class _Session:
         dry_run = config.getoption('mendwright_dry_run')
         disable = config.getoption('mendwright_disable')
         get_by = config.getoption('mendwright_heal_get_by')
-        if dry_run or disable or get_by:
+        get_by_model = config.getoption('mendwright_heal_get_by_model')
+        if dry_run or disable or get_by or get_by_model:
             self._env = pytest.MonkeyPatch()
             if dry_run:
                 self._env.setenv('MENDWRIGHT_DRY_RUN', '1')
             if disable:
                 self._env.setenv('MENDWRIGHT_DISABLE', '1')
-            if get_by:
+            if get_by_model:
+                self._env.setenv('MENDWRIGHT_HEAL_GET_BY', 'model')
+            elif get_by:
                 self._env.setenv('MENDWRIGHT_HEAL_GET_BY', '1')
 
     def pytest_unconfigure(self, config):
@@ -311,7 +326,9 @@ class _Session:
             mode = 'heal'
         if self.strict:
             mode += ', strict'
-        if mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
+        if mode != 'disabled' and _get_by_model():
+            mode += ', get_by_* healed (model too)'
+        elif mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
             mode += ', get_by_* healed'
         if mode != 'disabled' and _no_provider(healing):
             if _fingerprint_on():

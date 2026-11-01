@@ -25,6 +25,9 @@ Usage:
     python benchmarks/run.py --provider ollama --model <model> --cases "near-dup-*"
     python benchmarks/run.py --provider local --model mendwright-selector
     python benchmarks/run.py --provider similarity --no-fingerprint
+    python benchmarks/run.py --calls --browser chromium --provider none
+    python benchmarks/run.py --calls --browser chromium --provider local --model mendwright-selector
+    python benchmarks/run.py --calls --cold --browser chromium --provider local
 
 Providers: anthropic, openai, gemini, ollama, local and auto call a model (keys and
 endpoints come from the environment, the same way mendwright.open() reads them). local is
@@ -35,6 +38,14 @@ default in mendwright.open(), so --provider none measures the fingerprint tier a
 --no-fingerprint turns it off to measure the provider alone. The page is a StandInPage
 (lxml, no browser) unless --browser picks a headless Playwright browser. Only the
 standard library and mendwright are needed; --browser also needs Playwright.
+
+--calls runs the call cases of benchmarks/calls/ instead: the same redesigns, with the step
+written as a heal.page.get_by_*() call (mendwright.open(heal_get_by=...)), which only a real
+browser runs, so --calls needs --browser. --provider none runs them with heal_get_by=True
+(the fingerprint only), and any other provider with heal_get_by='model'. --cold skips the
+first page, so the call never matched before the redesign and has no fingerprint: only a
+model can heal it, and only a get_by_role() call. A heal of a call is saved with its get_by
+twin, and the run records whether that twin finds the right element on the new page.
 
 See docs/benchmark.md for what is measured and how to read the results.
 """
@@ -62,6 +73,7 @@ import lxml.etree
 import lxml.html
 
 import mendwright
+from mendwright import getby
 from mendwright.capture import redact
 from mendwright.demo import StandInPage
 from mendwright.exceptions import AttentionRequired
@@ -70,6 +82,7 @@ from mendwright.validation import _role_of
 
 HERE = Path(__file__).resolve().parent
 CASES_DIR = HERE / 'cases'
+CALLS_DIR = HERE / 'calls'
 RESULTS_DIR = HERE / 'results'
 
 # Results files written by this harness carry this number. report.py reads it.
@@ -132,6 +145,8 @@ class Case:
     destructive: bool = False
     v1_url: str | None = None   # where each version is shown; None: about:blank
     v2_url: str | None = None
+    call: str | None = None     # a call case: the get_by_* call the step is (see CALLS_DIR)
+    pages: str | None = None    # a call case: the case of benchmarks/cases/ it takes pages from
 
     @property
     def positive(self):
@@ -157,6 +172,23 @@ def load_cases(pattern='*', root=CASES_DIR):
     return [load_case(p) for p in folders if fnmatch.fnmatch(p.name, pattern)]
 
 
+def load_call_case(path, cases_root=CASES_DIR):
+    """A call case from its JSON file: the step is the get_by_* call ``call``, on the pages
+    (and addresses) of the case ``pages`` of benchmarks/cases/, graded against ``truth``."""
+    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    base = load_case(Path(cases_root) / data['pages'])
+    return Case(id=data['id'], category=data['category'], description=data['description'],
+                key=data['call'], selector=data['call'], truth=data.get('truth'),
+                role=None, destructive=False, v1_url=base.v1_url, v2_url=base.v2_url,
+                v1=base.v1, v2=base.v2, call=data['call'], pages=data['pages'])
+
+
+def load_call_cases(pattern='*', root=CALLS_DIR, cases_root=CASES_DIR):
+    """Every call case (benchmarks/calls/<id>.json) whose id matches ``pattern``, by id."""
+    files = sorted(Path(root).glob('*.json'))
+    return [load_call_case(f, cases_root) for f in files if fnmatch.fnmatch(f.stem, pattern)]
+
+
 def corpus_hash(cases):
     """A short hash of the cases' files, so a results file names the corpus it ran on."""
     digest = hashlib.sha256()
@@ -166,6 +198,8 @@ def corpus_hash(cases):
                   'destructive': case.destructive}
         if case.v1_url or case.v2_url:
             fields.update(v1_url=case.v1_url, v2_url=case.v2_url)
+        if case.call is not None:
+            fields.update(call=case.call, pages=case.pages)
         meta = json.dumps(fields, sort_keys=True)
         for part in (meta, case.v1, case.v2):
             digest.update(part.replace('\r\n', '\n').encode('utf-8'))
@@ -723,12 +757,36 @@ def show(page, html, url=None):
     page.goto(url)
 
 
+def get_by_mode(proposer):
+    """heal_get_by= for a call case: True (the fingerprint only, as 0.10.0) for the none
+    baseline, which never proposes, else 'model'."""
+    return True if isinstance(proposer, NoneProposer) else 'model'
+
+
+def _call_step(heal, case, timeout_ms):
+    """A call case's step: its get_by_* call on heal.page, and a read that waits for the
+    element, so a miss heals as an action would, without acting on the page."""
+    getby.build(heal.page, getby.parse(case.call)).inner_text(timeout=max(timeout_ms, 1))
+
+
+def _twin_reaches(page, twin, truth):
+    """True when the get_by twin matches one element of the live page, the truth's."""
+    try:
+        built = getby.build(page, getby.parse(twin))
+        return (built.count() == 1
+                and built.and_(page.locator('xpath=' + xpath_of(truth))).count() == 1)
+    except Exception:
+        return False
+
+
 def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, run=1,
-             heal_across_pages=False, fingerprint=True):
+             heal_across_pages=False, fingerprint=True, cold=False):
     """Run one case on ``page`` (a StandInPage or a sync Playwright page) with
     ``proposer`` and return its record. The store lives in a temporary folder.
     heal_across_pages and fingerprint are passed to mendwright.open(); the published runs
-    leave heal_across_pages off."""
+    leave heal_across_pages off. A call case (case.call) runs its get_by_* call on
+    heal.page, with heal_get_by=get_by_mode(proposer), on a sync Playwright page only;
+    cold=True skips v1, so the call never matched before the redesign."""
     folder = tempfile.mkdtemp(prefix='mendwright-bench-')
     recorder = Recorder(proposer)
     record = {'id': case.id, 'category': case.category, 'run': run,
@@ -738,14 +796,19 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
               'prompt_chars_total': 0, 'est_tokens': 0, 'decline_reason': None,
               'provider_error': False, 'proposals': [], 'gate_caught_wrong': 0, 'note': None,
               'healed_by': None}
+    if case.call is not None:
+        record.update(call=case.call, cold=bool(cold), twin=None, twin_ok=None)
     try:
+        options = {}
+        if case.call is not None:
+            options['heal_get_by'] = get_by_mode(proposer)
         with _healing_on():
             heal = mendwright.open(page, provider=proposer,
                                    store_path=os.path.join(folder, 'overrides.json'),
                                    dry_run=False, timeout_ms=timeout_ms,
                                    rate_per_key_per_hour=None, rate_global_per_hour=None,
                                    heal_across_pages=heal_across_pages,
-                                   fingerprint=fingerprint)
+                                   fingerprint=fingerprint, **options)
         log = []
         heal.coordinator.log = log.append
         kwargs = {'poll_ms': poll_ms}
@@ -754,22 +817,30 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
         if case.destructive:
             kwargs['destructive'] = True
 
-        show(page, case.v1, case.v1_url)
-        try:
-            heal.locator(case.key, case.selector, **kwargs)
-        except AttentionRequired as exc:
-            record['note'] = 'the selector did not match v1: ' + scrub(str(exc)).splitlines()[0]
-            return record
-        record['learned_role'] = heal.store.meta(case.key).get('expectedRole')
-        learn = getattr(proposer, 'learn', None)
-        if callable(learn):
-            learn(case.key, page.content(), case.selector)
+        def step():
+            if case.call is not None:
+                _call_step(heal, case, timeout_ms)
+            else:
+                heal.locator(case.key, case.selector, **kwargs)
+
+        if not cold:
+            show(page, case.v1, case.v1_url)
+            try:
+                step()
+            except AttentionRequired as exc:
+                record['note'] = ('the selector did not match v1: '
+                                  + scrub(str(exc)).splitlines()[0])
+                return record
+            record['learned_role'] = heal.store.meta(case.key).get('expectedRole')
+            learn = getattr(proposer, 'learn', None)
+            if callable(learn) and case.call is None:
+                learn(case.key, page.content(), case.selector)
 
         show(page, case.v2, case.v2_url)
         started = time.perf_counter()
         healed, reason = None, None
         try:
-            heal.locator(case.key, case.selector, **kwargs)
+            step()
             if not heal.heals:
                 record['note'] = 'the v1 selector still matches v2, so nothing was healed'
                 return record
@@ -793,6 +864,13 @@ def run_case(case, proposer, page, *, timeout_ms=STANDIN_TIMEOUT_MS, poll_ms=0, 
         record['provider_error'] = bool(reason) and _provider_error(reason, proposer)
         if healed is not None:
             record['healed_target'] = _target(doc, healed, truth_path)
+            if case.call is not None:
+                row = next((c for c in heal.store.candidates(case.key)
+                            if c.get('xpath') == healed), None)
+                twin = row.get('getBy') if row else None
+                record['twin'] = twin
+                if twin and case.truth is not None:
+                    record['twin_ok'] = _twin_reaches(page, twin, case.truth)
         if case.positive:
             if healed is None:
                 record['outcome'] = 'missed'
@@ -870,10 +948,12 @@ def browser_session(name):
         manager.stop()
 
 
-def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None, fingerprint=True):
+def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None, fingerprint=True,
+              cold=False):
     """Run every case ``repeat`` times and return the records. ``proposer`` is one
     provider shared by all cases, or a callable that takes a Case and returns one.
-    fingerprint=False turns mendwright's fingerprint tier off, so only the provider heals."""
+    fingerprint=False turns mendwright's fingerprint tier off, so only the provider heals.
+    cold=True runs call cases without their first page (see run_case)."""
     make = proposer if callable(proposer) and not hasattr(proposer, 'propose') else (lambda case: proposer)
     records = []
     total = len(cases) * repeat
@@ -886,12 +966,12 @@ def run_cases(cases, proposer, *, browser=None, repeat=1, progress=None, fingerp
                     try:
                         record = run_case(case, make(case), page, timeout_ms=BROWSER_TIMEOUT_MS,
                                           poll_ms=BROWSER_POLL_MS, run=run,
-                                          fingerprint=fingerprint)
+                                          fingerprint=fingerprint, cold=cold)
                     finally:
                         page.close()
                 else:
                     record = run_case(case, make(case), StandInPage(), run=run,
-                                      fingerprint=fingerprint)
+                                      fingerprint=fingerprint, cold=cold)
                 records.append(record)
                 if progress:
                     progress(len(records), total, record)
@@ -933,6 +1013,9 @@ def summarize(records, repeat=1):
         'avg_prompt_tokens_est': round(avg_chars / CHARS_PER_TOKEN) if sized else None,
         'run_prompt_chars': round(total_chars / max(repeat, 1)),
         'run_tokens_est': round(total_chars / max(repeat, 1) / CHARS_PER_TOKEN),
+        # Call cases: heals saved with a get_by twin, and twins that reach the right element.
+        'twins': sum(1 for r in records if r.get('twin')),
+        'twins_right': sum(1 for r in records if r.get('twin_ok') is True),
     }
 
 
@@ -973,11 +1056,13 @@ def markdown_summary(result):
     return '\n'.join(lines)
 
 
-def default_out(provider, model, page_mode, when, fingerprint=True):
-    """benchmarks/results/<provider>[-<model>][-nofp]-<page>-<date>.json: -nofp marks a run
-    with the fingerprint tier off."""
+def default_out(provider, model, page_mode, when, fingerprint=True, calls=False, cold=False):
+    """benchmarks/results/<provider>[-<model>][-nofp][-calls[-cold]]-<page>-<date>.json:
+    -nofp marks a run with the fingerprint tier off, -calls a run of the call cases, -cold one
+    whose calls never matched before the redesign."""
     name = provider + ('-' + re.sub(r'[^A-Za-z0-9._-]+', '_', model) if model else '')
     name += '' if fingerprint else '-nofp'
+    name += ('-calls' + ('-cold' if cold else '')) if calls else ''
     return RESULTS_DIR / (name + '-' + page_mode + '-' + when.strftime('%Y%m%d') + '.json')
 
 
@@ -998,12 +1083,22 @@ def main(argv=None):
     parser.add_argument('--no-fingerprint', action='store_true',
                         help="turn mendwright's fingerprint tier off, so only the provider heals "
                              '(default: on, as in mendwright.open())')
+    parser.add_argument('--calls', action='store_true',
+                        help='run the call cases of benchmarks/calls/, each a heal.page.get_by_*() '
+                             'call (needs --browser)')
+    parser.add_argument('--cold', action='store_true',
+                        help='with --calls: skip the first page, so each call never matched '
+                             'before the redesign')
     args = parser.parse_args(argv)
     fingerprint = not args.no_fingerprint
     if args.repeat < 1:
         parser.error('--repeat must be 1 or more')
+    if args.cold and not args.calls:
+        parser.error('--cold needs --calls')
+    if args.calls and not args.browser:
+        parser.error('--calls needs --browser: StandInPage has no get_by_* calls')
 
-    cases = load_cases(args.cases)
+    cases = load_call_cases(args.cases) if args.calls else load_cases(args.cases)
     if not cases:
         parser.error('no case id matches ' + repr(args.cases))
     try:
@@ -1036,6 +1131,9 @@ def main(argv=None):
         print('model calls: at most ' + str(2 * len(cases) * args.repeat)
               + ' (2 per case: a proposal and one retry)')
     print('fingerprint tier: ' + ('on' if fingerprint else 'off (--no-fingerprint)'))
+    if args.calls:
+        print('call cases, heal_get_by=' + repr(get_by_mode(proposer))
+              + (', cold: each call never matched before the redesign' if args.cold else ''))
     print('', flush=True)
 
     def progress(done, total, record):
@@ -1053,7 +1151,7 @@ def main(argv=None):
     when = datetime.datetime.now(datetime.timezone.utc)
     try:
         records = run_cases(cases, proposer, browser=args.browser, repeat=args.repeat,
-                            progress=progress, fingerprint=fingerprint)
+                            progress=progress, fingerprint=fingerprint, cold=args.cold)
     except SetupError as exc:
         print('benchmark: ' + str(exc), file=sys.stderr)
         return 2
@@ -1072,6 +1170,9 @@ def main(argv=None):
         'provider_class': type(proposer).__name__,
         'model': model,
         'fingerprint': fingerprint,
+        'calls': bool(args.calls),
+        'cold': bool(args.cold),
+        'heal_get_by': get_by_mode(proposer) if args.calls else None,
         'endpoint': url,
         'page': page_mode,
         'repeat': args.repeat,
@@ -1084,7 +1185,7 @@ def main(argv=None):
         'records': records,
     }
     out = Path(args.out) if args.out else default_out(args.provider, model, page_mode, when,
-                                                      fingerprint)
+                                                      fingerprint, args.calls, args.cold)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1) + '\n', encoding='utf-8', newline='\n')
 
@@ -1095,6 +1196,9 @@ def main(argv=None):
           + str(s['cases']) + '. Wrong proposals the gate stopped: ' + str(s['gate_caught_wrong']) + '.')
     if fingerprint:
         print('Heals by the fingerprint tier (no model call): ' + str(s['fingerprint_heals']) + '.')
+    if args.calls:
+        print('Heals saved with a get_by twin: ' + str(s['twins']) + ', of which '
+              + str(s['twins_right']) + ' find the right element on the new page.')
     if s['provider_errors']:
         print('Provider errors: ' + str(s['provider_errors']) + ' case(s) were declined because a '
               'call failed (see decline_reason in the results file). Rerun those before '

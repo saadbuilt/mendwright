@@ -4,7 +4,7 @@ When a redesign breaks a selector, how often does a heal land on the right eleme
 The benchmark in [`benchmarks/`](../benchmarks/) answers that for any provider mendwright supports, with a fixed set of cases you can rerun.
 
 Results so far are in [benchmarks/RESULTS.md](../benchmarks/RESULTS.md).
-The runs so far: mendwright's fingerprint tier alone, two model-free baselines with and without it, and mendwright's own local model ([training/README.md](../training/README.md)). No hosted model numbers are published yet.
+The runs so far: mendwright's fingerprint tier alone, two model-free baselines with and without it, and mendwright's own local model ([training/README.md](../training/README.md)), on the 47 cases and on 19 of the same redesigns with the step written as a `get_by_*` call ([get_by calls](#get_by-calls)). No hosted model numbers are published yet.
 
 Contents:
 
@@ -16,6 +16,7 @@ Contents:
 - [The baselines](#the-baselines)
 - [Running it with your model](#running-it-with-your-model)
 - [Cost of a run](#cost-of-a-run)
+- [get_by calls](#get_by-calls)
 - [Caveats](#caveats)
 - [Adding a case](#adding-a-case)
 
@@ -191,6 +192,8 @@ Options:
 | `--repeat N` | run every case N times. Repeats count as separate attempts in the totals. |
 | `--browser chromium` | use headless Playwright instead of StandInPage (also `firefox` or `webkit`) |
 | `--no-fingerprint` | turn the fingerprint tier off, to measure the provider alone. The results file name gets `-nofp`. |
+| `--calls` | run the call cases of `benchmarks/calls/` instead (needs `--browser`, see [get_by calls](#get_by-calls)). The results file name gets `-calls`. |
+| `--cold` | with `--calls`: skip the first page, so each call never matched before the redesign. The results file name gets `-cold`. |
 | `--out FILE` | where to write the results. The default is `benchmarks/results/<provider>-<model>-<page>-<date>.json`. |
 
 The results file holds the date, mendwright and Python versions, the provider class, model id and endpoint, the page mode, a hash of the cases, a summary and one record per case.
@@ -219,6 +222,41 @@ cost = input_tokens / 1,000,000 * input_price + output_tokens / 1,000,000 * outp
 For example, at $3 per million input tokens and $15 per million output tokens, one pass with `--no-fingerprint` costs roughly $0.40 to $0.90, and about half that with the tier on.
 Those rates are an example to show the arithmetic, not a quote for any model. `--repeat 3` triples the cost.
 HTML often comes out at fewer than 4 characters per token, so the real token count can be higher than this estimate; your provider's usage page has the exact figure.
+
+## get_by calls
+
+`benchmarks/calls/` holds 19 call cases: the same redesigns, with the step written as a `heal.page.get_by_*()` call instead of `heal.locator(key, selector)` (see [get_by locators](guide.md#get_by-locators)).
+Each is one JSON file:
+
+```json
+{
+  "id": "call-label-reworded-signin-link",
+  "category": "label_reworded",
+  "description": "The step is the call get_by_role(\"link\", name=\"Sign in\"). The header link reads \"Log in\", next to a new \"Create account\" link.",
+  "pages": "label-reworded-signin-link",
+  "call": "get_by_role(\"link\", name=\"Sign in\")",
+  "truth": "//header//a[@href='/account/login']"
+}
+```
+
+`pages` names the case of `benchmarks/cases/` whose pages, addresses and truth it takes; `call` is the call, in mendwright's spelling (`mendwright.get_by_key()`).
+The call matches the step's element on v1 and nothing on v2, which was checked in Chromium for each one: they are the redesigns in which a call breaks, 11 where a heal is right (reworded, translated, rebuilt labels) and 8 where none is (removed, ambiguous, next to a dangerous control, or a step that moved to another page).
+A redesign that keeps the element's role and words doesn't break a call, so most of the 47 cases have no call case.
+
+```bash
+python benchmarks/run.py --calls --browser chromium --provider none
+python benchmarks/run.py --calls --browser chromium --provider local --model mendwright-selector
+python benchmarks/run.py --calls --browser chromium --provider local --no-fingerprint
+python benchmarks/run.py --calls --cold --browser chromium --provider local
+```
+
+A call case runs its call on `heal.page` with `inner_text()`, a read that heals as an action would without acting on the page.
+`--provider none` runs it with `heal_get_by=True`, the fingerprint only, as 0.10.0 does; any other provider with `heal_get_by="model"`.
+`--cold` skips v1, so the call never matched before the redesign: it has no fingerprint, no recorded role and no page the page guard could compare, and mendwright asks the model only for a `get_by_role()` call.
+`--calls` needs `--browser`: StandInPage has no `get_by_*` calls.
+Each heal of a call is saved with a suggested call (see [Suggested calls](guide.md#suggested-calls)), and the record says what it was (`twin`) and whether it matches the truth element, and nothing else, on v2 (`twin_ok`).
+The results file name gets `-calls`, and `-cold` for a cold run, and `RESULTS.md` shows the call runs in a section of their own.
+The published call runs use the fingerprint tier and mendwright's local model only.
 
 ## Caveats
 
@@ -255,3 +293,4 @@ Add `--browser chromium` to rerun the Chromium rows too.
 - the right element has the role the v1 element has, and is not hidden
 - each page is under 25 KB, writes `<tbody>` in tables, loads nothing from the network, and hides things with inline styles or the `hidden` attribute
 - the published baseline runs were made on the current cases (the hash in the results file matches), and `RESULTS.md` matches the results files
+- a call case takes its pages, category and truth from the case it names, and its call is in mendwright's spelling; the published call runs were made on the current call cases

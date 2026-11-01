@@ -43,8 +43,8 @@ PHRASES = {
                                   'to check with mendwright lists'),
     'list_waits_fix': ('selector', 'matched nothing as a list, and the list heal accepted for it '
                                    'waits for mendwright fix or its seed file'),
-    'get_by': ('selector', 'could not be repaired from its fingerprint, and mendwright asks no '
-                           'model for a get_by_* call'),
+    'get_by': ('selector', 'could not be repaired from its fingerprint, and with '
+                           "heal_get_by=True, mendwright asks no model for a get_by_* call"),
     'frame': ('selector', 'is inside an iframe mendwright did not look into'),
     'shadow': ('selector', 'is inside a shadow root, where mendwright could not repair it'),
     'quarantined': ('selector', 'had a repair that was wrong, so it was quarantined'),

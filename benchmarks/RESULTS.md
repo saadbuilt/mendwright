@@ -308,3 +308,110 @@ Wrong heals: 0 of 47 cases. Wrong proposals the gate stopped: 0. Fingerprint tie
 | step moved to another page (negative) | 4 | 0 | 0 | 0 | 4 | 0 |
 
 No wrong heals.
+
+## get_by calls
+
+The call corpus has 19 cases: 11 where a heal is the right answer and 8 where the right answer is to not heal.
+
+The same redesigns, with the step written as a `heal.page.get_by_*()` call instead of `heal.locator(key, selector)`: a call that found the step's element on the old page and finds nothing on the new one, such as `get_by_role("link", name="Sign in")` once the link reads "Log in". Each call case in `benchmarks/calls/` takes its pages from a case of `benchmarks/cases/` and its truth too. They run in a real browser only (`--calls --browser chromium`), since only Playwright runs a call.
+
+A heal_get_by=True row is 0.10.0's behaviour: the fingerprint only, no model. A heal_get_by='model' row asks the model when the fingerprint does not heal the call. A cold row skips the old page, so each call never matched before the redesign: there is no fingerprint and no page the key was found on, so the page guard cannot stop a step that moved, and mendwright asks the model only for a `get_by_role()` call (any other call names no kind of element its pick could be checked against). "Saved with a twin" counts heals saved with a get_by twin, a call that matched the healed element and nothing else when the heal was made; "twin finds the right element" checks that call on the new page against the case's truth.
+
+There are few call cases, so one case moves a rate by 9 points (positives) or 12 points (negatives). The calls were written for these pages after the pages existed, and the fingerprint tier and the local model were not tuned on them, but the local model was trained on pages like the ones in `benchmarks/cases/`.
+
+| Run | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives | Healed by fingerprint | Saved with a twin | Twin finds the right element | Avg model calls | Avg latency |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fingerprint tier alone (heal_get_by=True) | headless chromium | 2026-11-01 | 4/11 (36.4%) | 0 (0.0%) | 7 (63.6%) | 8/8 | 0/8 | 4 | 4 | 4 | 0.00 | - |
+| local (mendwright-selector) + fingerprint, heal_get_by='model' | headless chromium | 2026-11-01 | 8/11 (72.7%) | 0 (0.0%) | 3 (27.3%) | 8/8 | 0/8 | 4 | 8 | 8 | 0.68 | 187 ms |
+| local (mendwright-selector), heal_get_by='model' | headless chromium | 2026-11-01 | 8/11 (72.7%) | 0 (0.0%) | 3 (27.3%) | 8/8 | 0/8 | - | 7 | 7 | 0.89 | 160 ms |
+| local (mendwright-selector) + fingerprint, heal_get_by='model', cold | headless chromium | 2026-11-01 | 5/11 (45.5%) | 0 (0.0%) | 6 (54.5%) | 8/8 | 0/8 | 0 | 4 | 4 | 0.74 | 180 ms |
+
+## Each call run
+
+### fingerprint tier alone (heal_get_by=True), headless chromium, 2026-11-01
+
+mendwright 0.11.0.dev0, Python 3.12.10, Windows-11. Provider class NoneProposer.
+19 cases (corpus c415393cc004). Results file: `benchmarks/results/none-calls-chromium-20261101.json`.
+
+Wrong heals: 0 of 19 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 4. Prompt text for one pass over the cases: about 0 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 2 | 1 | 0 | 1 | 0 | 0 |
+| wrapped in a new element | 1 | 0 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
+| attribute churn | 1 | 1 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 0 | 0 | 3 | 0 | 0 |
+| form fields reordered | 1 | 1 | 0 | 0 | 0 | 0 |
+| removed (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| ambiguous duplicates (negative) | 1 | 0 | 0 | 0 | 1 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+
+No wrong heals.
+
+### local (mendwright-selector) + fingerprint, heal_get_by='model', headless chromium, 2026-11-01
+
+mendwright 0.11.0.dev0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
+19 cases (corpus c415393cc004). Results file: `benchmarks/results/local-mendwright-selector-calls-chromium-20261101.json`.
+
+Wrong heals: 0 of 19 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 4. Prompt text for one pass over the cases: about 5,307 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 2 | 1 | 0 | 1 | 0 | 0 |
+| wrapped in a new element | 1 | 0 | 0 | 1 | 0 | 0 |
+| label text reworded | 3 | 2 | 0 | 1 | 0 | 0 |
+| attribute churn | 1 | 1 | 0 | 0 | 0 | 0 |
+| translated text | 3 | 3 | 0 | 0 | 0 | 0 |
+| form fields reordered | 1 | 1 | 0 | 0 | 0 | 0 |
+| removed (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| ambiguous duplicates (negative) | 1 | 0 | 0 | 0 | 1 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+
+No wrong heals.
+
+### local (mendwright-selector), heal_get_by='model', headless chromium, 2026-11-01
+
+mendwright 0.11.0.dev0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
+19 cases (corpus c415393cc004). Results file: `benchmarks/results/local-mendwright-selector-nofp-calls-chromium-20261101.json`.
+
+Wrong heals: 0 of 19 cases. Wrong proposals the gate stopped: 0. Fingerprint tier: off. Prompt text for one pass over the cases: about 5,925 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 2 | 2 | 0 | 0 | 0 | 0 |
+| wrapped in a new element | 1 | 1 | 0 | 0 | 0 | 0 |
+| label text reworded | 3 | 2 | 0 | 1 | 0 | 0 |
+| attribute churn | 1 | 0 | 0 | 1 | 0 | 0 |
+| translated text | 3 | 2 | 0 | 1 | 0 | 0 |
+| form fields reordered | 1 | 1 | 0 | 0 | 0 | 0 |
+| removed (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| ambiguous duplicates (negative) | 1 | 0 | 0 | 0 | 1 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+
+No wrong heals.
+
+### local (mendwright-selector) + fingerprint, heal_get_by='model', cold, headless chromium, 2026-11-01
+
+mendwright 0.11.0.dev0, Python 3.12.10, Windows-11. Provider class LocalModelProvider, model mendwright-selector, endpoint http://127.0.0.1:11434.
+19 cases (corpus c415393cc004). Results file: `benchmarks/results/local-mendwright-selector-calls-cold-chromium-20261101.json`.
+
+Wrong heals: 0 of 19 cases. Wrong proposals the gate stopped: 0. Heals by the fingerprint tier, with no model call: 0. Prompt text for one pass over the cases: about 5,060 input tokens (characters / 4, an estimate).
+
+| Category | Cases | Correct | Wrong | Missed | Declined | Wrong on negatives |
+|---|---|---|---|---|---|---|
+| id renamed or removed | 2 | 1 | 0 | 1 | 0 | 0 |
+| wrapped in a new element | 1 | 1 | 0 | 0 | 0 | 0 |
+| label text reworded | 3 | 1 | 0 | 2 | 0 | 0 |
+| attribute churn | 1 | 0 | 0 | 1 | 0 | 0 |
+| translated text | 3 | 2 | 0 | 1 | 0 | 0 |
+| form fields reordered | 1 | 0 | 0 | 1 | 0 | 0 |
+| removed (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+| ambiguous duplicates (negative) | 1 | 0 | 0 | 0 | 1 | 0 |
+| removed, dangerous control nearby (negative) | 3 | 0 | 0 | 0 | 3 | 0 |
+| step moved to another page (negative) | 2 | 0 | 0 | 0 | 2 | 0 |
+
+No wrong heals.

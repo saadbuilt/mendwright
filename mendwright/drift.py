@@ -943,7 +943,8 @@ class _Preview:
             html_provider=lambda: html, inventory_provider=lambda: [], guard=coordinator.guard,
             dry_run=False, guardrails=None, journal=_MemoryJournal(), log=lambda line: None,
             fingerprint=coordinator.fingerprint,
-            heal_across_pages=coordinator.heal_across_pages, entry=coordinator.entry)
+            heal_across_pages=coordinator.heal_across_pages, entry=coordinator.entry,
+            get_by_model=getattr(coordinator, 'get_by_model', False), twins=None)
         shadow.disabled = bool(getattr(coordinator, 'disabled', False))
         self.snapshot, self.shadow = snapshot, shadow
         return True

@@ -441,6 +441,66 @@ describe('shadowHosts in this package', () => {
   });
 });
 
+const CALL = 'get_by_role("button", name="Sign in")';
+const HEALED = "//button[@id='login']";
+const TWIN = 'get_by_role("button", name="Log in", exact=True)';
+
+describe('a get_by twin the Python package 0.11 saved with a heal', () => {
+  function writeTwin(): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema: 2, selectors: { [CALL]: {
+      expectedRole: 'button', candidates: [
+        { xpath: CALL, source: 'code', addedAt: '2026-11-01T00:00:00+00:00', lastSucceededAt: null, status: 'active' },
+        { xpath: HEALED, source: 'heal', addedAt: '2026-11-01T00:00:01+00:00',
+          lastSucceededAt: '2026-11-01T00:00:01+00:00', status: 'active', getBy: TWIN }] } } }));
+  }
+
+  test('stays on its row when this package writes the file', () => {
+    writeTwin();
+    const store = loadStore(file);
+    assert.equal(store.candidates(CALL).find((c) => c.xpath === HEALED)?.getBy, TWIN);
+    store.setLastPage(CALL, '/login');
+    store.recordSuccess(CALL, HEALED);
+    store.setCodeCandidates('other', ['#other']);
+    const row = read().selectors[CALL].candidates.find((c: any) => c.xpath === HEALED);
+    assert.equal(row.getBy, TWIN);
+  });
+
+  test('is taken in when another process saved it after this store read the file', () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const store = loadStore(file);
+    store.setCodeCandidates(CALL, [CALL]);
+    writeTwin();                                   // another process healed the call
+    store.setLastPage(CALL, '/login');
+    const row = read().selectors[CALL].candidates.find((c: any) => c.xpath === HEALED);
+    assert.equal(row.getBy, TWIN);
+  });
+});
+
+describe('a get_by twin in a store the Python package wrote', { skip: needsPython() }, () => {
+  test('is still there for the Python package after this package writes', () => {
+    runPython(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+store.set_code_candidates(args['call'], [args['call']])
+store.add_candidate(args['call'], args['healed'], source='heal', get_by=args['twin'])
+print('null')`, { file, call: CALL, healed: HEALED, twin: TWIN });
+    const store = loadStore(file);
+    store.recordSuccess(CALL, HEALED);
+    store.setMeta(CALL, { text: 'Log in' });
+    const py = runPython<string | null>(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+print(json.dumps(next(c.get('getBy') for c in store.candidates(args['call']) if c['xpath'] == args['healed'])))`,
+    { file, call: CALL, healed: HEALED });
+    assert.equal(py, TWIN);
+  });
+});
+
 describe('list rows the Python package 0.10.0 wrote', { skip: needsPython() }, () => {
   test('stay as they are when this package writes, a list fingerprint taken inside a shadow root included', () => {
     runPython(`

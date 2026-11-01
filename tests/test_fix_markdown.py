@@ -128,7 +128,7 @@ def test_json_lists_what_is_written_back_and_where(root, capsys):
     terms, search = data["written_back"]
     assert terms == {
         "key": "accept_terms", "role": "checkbox", "old": ["#accept-terms"], "now": [TERMS_CSS],
-        "xpath": TERMS, "css": TERMS_CSS, "confirmed": True,
+        "xpath": TERMS, "css": TERMS_CSS, "suggested_call": None, "confirmed": True,
         "found_by": {"tier": "fingerprint", "provider": "fingerprint", "model": None, "at": T1},
         "confirmed_by": {"by": "test", "test": "tests/test_checkout.py::test_signup", "at": T2},
         "places": [{"path": "tests/test_checkout.py", "line": 3}]}

@@ -123,7 +123,7 @@ Pages also change in ways that aren't a broken selector. Each of these is off un
 - **Popups you didn't know about**, with `dismiss=True`. When one covers the element of an action, mendwright presses Escape, then a close button, then a decline button such as No thanks, chosen by its label. It never clicks Subscribe, Accept, a priced button, or Continue (except "Continue without..."), though it can't see what a button's own script does.
 - **Steps in a different order**, such as a checkout that now asks for the card before the address: `heal.step()` and `heal.run_steps()`.
 - **Iframes** one level down, and **open shadow roots** at any depth.
-- **Playwright's `get_by_role()` and the other `get_by_*` calls**, with `heal_get_by=True`, repaired from the saved details only.
+- **Playwright's `get_by_role()` and the other `get_by_*` calls**: with `heal_get_by=True` repaired from the saved details only, and with `heal_get_by="model"` by a model too when those aren't enough.
 
 <!-- readme-test: flow -->
 ```python

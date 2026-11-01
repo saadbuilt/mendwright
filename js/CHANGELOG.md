@@ -5,6 +5,10 @@ All notable changes to the npm package `mendwright` are documented here. The Pyt
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version starts with 0, a minor release can change the public API.
 
+## [Unreleased]
+
+- The store keeps the `getBy` field the Python package saves with a heal of a `get_by_*` call since its 0.11.0 (a suggested call for `mendwright fix`) when it writes `overrides.json`, and takes in one another process saved, as it does `css`. This package never runs it.
+
 ## [0.1.0] - 2026-11-01
 
 The first release: the Python package's `heal.locator()` and `heal.page` for Playwright Test.

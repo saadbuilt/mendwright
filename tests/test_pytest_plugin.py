@@ -772,6 +772,25 @@ def test_heal_get_by_option_sets_the_variable_for_the_run_and_the_header_says_so
     assert 'get_by_* healed' not in result.stdout.str()
 
 
+def test_heal_get_by_model_option_sets_model_and_the_header_says_so(project):
+    project.makepyfile("""
+        import os
+
+        def test_it(heal):
+            assert os.environ.get('MENDWRIGHT_HEAL_GET_BY') == 'model'
+            assert heal._heal_get_by == 'model'
+            assert heal.coordinator.get_by_model is True
+    """)
+    result = run(project, '--mendwright-heal-get-by-model')
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(['mendwright: store .mendwright?overrides.json, mode heal, '
+                                 'get_by_* healed (model too) (no provider*'])
+    assert 'MENDWRIGHT_HEAL_GET_BY' not in os.environ
+    # Both flags: model wins, since it does all that the other does.
+    result = run(project, '--mendwright-heal-get-by', '--mendwright-heal-get-by-model')
+    result.assert_outcomes(passed=1)
+
+
 def test_strict_mode_names_fix_for_a_call_heal():
     from mendwright.pytest_plugin import _Session
 

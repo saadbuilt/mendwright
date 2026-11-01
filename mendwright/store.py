@@ -12,7 +12,10 @@ sees it, and so is where the key's element was last found (``set_last_page``: la
 and pages; ``set_last_url``: lastUrl, the page's address with its record ids masked, see
 mendwright.flow.page_url, and ``set_meta(shadow_hosts=...)``: shadowHosts, the shadow hosts
 around it, see mendwright.shadow) and the steps of run_steps() it was found during
-(``set_last_step``: steps). A candidate inside an open shadow root has shadowHosts too.
+(``set_last_step``: steps). A candidate inside an open shadow root has shadowHosts too, and
+a heal saved with its get_by twin has getBy (see client.get_by_twin): a get_by_* call that
+matched the healed element when the heal was made, which mendwright fix suggests and nothing
+runs. A process before 0.11 reads such a file as before and drops getBy when it writes it.
 The file stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these. A key of ``destructive_keys``
@@ -117,7 +120,11 @@ def merge(seed, override):
     return out
 
 
-_PLACE_FIELDS = ('frameXPath', 'css', 'shadowHosts')
+# The fields of a candidate that say where it runs or what it stands for, merged three ways
+# (see _merge_place): its iframe, its CSS form and shadow hosts, and its get_by twin (getBy,
+# a get_by_* call that matched the healed element when the heal was made, see
+# client.get_by_twin). css and getBy are saved for mendwright fix and never run.
+_PLACE_FIELDS = ('frameXPath', 'css', 'shadowHosts', 'getBy')
 
 
 def _place_value(c, field):
@@ -128,7 +135,8 @@ def _place_value(c, field):
 
 
 def _place(c):
-    """(frameXPath, css, shadowHosts) of a candidate, '' for each one it doesn't have."""
+    """(frameXPath, css, shadowHosts, getBy) of a candidate, '' for each one it doesn't
+    have."""
     return tuple(_place_value(c, field) for field in _PLACE_FIELDS)
 
 
@@ -138,7 +146,7 @@ def _row_state(c):
 
 
 def _merge_place(local, theirs, base):
-    """Three-way merge of a candidate's frameXPath, css and shadowHosts (see
+    """Three-way merge of a candidate's frameXPath, css, shadowHosts and getBy (see
     SelectorStore._absorb). base is what the store last read or wrote, or None when it
     never saw the row."""
     for i, field in enumerate(_PLACE_FIELDS):
@@ -902,7 +910,7 @@ class SelectorStore:
         return not was_top
 
     def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
-                      list_heal=None, shadow_hosts=None, now=None):
+                      list_heal=None, shadow_hosts=None, get_by=None, now=None):
         """Add a candidate selector for key, or update the one with the same text.
 
         frame_xpath is the selector of the iframe the candidate runs in: '' moves an
@@ -911,9 +919,12 @@ class SelectorStore:
         (see mendwright.shadow): [] moves it out of one, None leaves it. css is a CSS
         selector checked to match the same element as a healed XPath (see mendwright.css),
         saved for mendwright fix and never run: '' drops one saved before, None leaves it.
-        list_heal True marks a heal of a list, saved as "list": true, as a build of 0.8.0
-        before its release did: list lookups use no heal (see Healer.locator_all), and
-        mendwright fix writes none of these back. False clears the mark, None leaves it."""
+        get_by is the heal's get_by twin, a get_by_* call checked to match the healed element
+        and nothing else (see client.get_by_twin), saved as getBy for mendwright fix and never
+        run, with the same '' and None. list_heal True marks a heal of a list, saved as
+        "list": true, as a build of 0.8.0 before its release did: list lookups use no heal
+        (see Healer.locator_all), and mendwright fix writes none of these back. False clears
+        the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         hosts = None if shadow_hosts is None else list(saved_hosts(list(shadow_hosts)))
@@ -926,6 +937,8 @@ class SelectorStore:
                 cand['shadowHosts'] = hosts
             if css:
                 cand['css'] = css
+            if get_by:
+                cand['getBy'] = get_by
             if list_heal:
                 cand['list'] = True
             entry['candidates'].append(cand)
@@ -938,6 +951,8 @@ class SelectorStore:
                 found['shadowHosts'] = hosts
             if css is not None and (found.get('css') or '') != css:
                 found['css'] = css
+            if get_by is not None and (found.get('getBy') or '') != get_by:
+                found['getBy'] = get_by
             if list_heal:
                 found['list'] = True
             elif list_heal is not None:
@@ -1175,8 +1190,8 @@ class SelectorStore:
           a stale view), otherwise this store's;
         - when both changed the destructive flag, True wins;
         - lastSucceededAt is the newer of the two;
-        - a candidate's frameXPath and css follow the same rule as a value: the file's when
-          only the other side changed them, this store's otherwise;
+        - a candidate's frameXPath, css, shadowHosts and getBy follow the same rule as a
+          value: the file's when only the other side changed them, this store's otherwise;
         - a list heal's proposal is the one with the later 'at' (the file's when this store
           has none), and its acceptedAt the file's when this store has none, but not for a
           list heal this store took over as code (see set_code_candidates).
@@ -1258,6 +1273,8 @@ class SelectorStore:
                     item['shadowHosts'] = list(c['shadowHosts'])
                 if isinstance(c.get('css'), str) and c['css']:
                     item['css'] = c['css']
+                if isinstance(c.get('getBy'), str) and c['getBy']:
+                    item['getBy'] = c['getBy']
                 if c.get('list') is True:
                     item['list'] = True
                 evidence = evidence_of(c)

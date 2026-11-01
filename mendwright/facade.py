@@ -271,20 +271,52 @@ def fingerprint_setting(fingerprint=None):
 
 def get_by_setting(heal_get_by=None):
     """Whether heal.page's get_by_* calls are looked up and healed (see
-    Healer._get_by_locator): the heal_get_by= argument when it is not None, else
-    MENDWRIGHT_HEAL_GET_BY (1 or 0), else off. MENDWRIGHT_DISABLE=1 leaves it as it is: the
-    calls are looked up, and nothing heals. Raises ValueError for a MENDWRIGHT_HEAL_GET_BY
-    that is not a flag."""
+    Healer._get_by_locator), and how: False, True (from the fingerprint only) or 'model'
+    (getby.MODEL: the model provider too). The heal_get_by= argument when it is not None,
+    else MENDWRIGHT_HEAL_GET_BY (1, 0 or model), else False. MENDWRIGHT_DISABLE=1 leaves it
+    as it is: the calls are looked up, and nothing heals. Raises ValueError for a
+    MENDWRIGHT_HEAL_GET_BY that is none of those."""
     if heal_get_by is not None:
-        return bool(heal_get_by)
-    return bool(_env_flag('MENDWRIGHT_HEAL_GET_BY'))
+        return getby.MODEL if heal_get_by == getby.MODEL else bool(heal_get_by)
+    return get_by_env()
+
+
+def get_by_env():
+    """MENDWRIGHT_HEAL_GET_BY as get_by_setting() reads it: False when it is unset."""
+    raw = os.environ.get('MENDWRIGHT_HEAL_GET_BY')
+    if raw is not None and raw.strip().lower() == getby.MODEL:
+        return getby.MODEL
+    try:
+        return bool(_env_flag('MENDWRIGHT_HEAL_GET_BY'))
+    except ValueError:
+        raise ValueError('mendwright: MENDWRIGHT_HEAL_GET_BY must be 1, 0 or model, got '
+                         + repr(raw) + ". Set it to 1 to heal heal.page's get_by_* calls from "
+                         'their fingerprints, to model to let the model provider heal them too, '
+                         'or unset it.') from None
 
 
 def _get_by_choice(heal_get_by, entry):
-    """Raise TypeError for a heal_get_by= other than True, False or None."""
-    if heal_get_by is not None and not isinstance(heal_get_by, bool):
-        raise TypeError(entry + ' takes heal_get_by=True, heal_get_by=False or heal_get_by=None, '
-                        'got heal_get_by=' + repr(heal_get_by) + '.')
+    """Raise TypeError for a heal_get_by= other than True, False, None or 'model'."""
+    if heal_get_by is not None and not isinstance(heal_get_by, bool) and not (
+            isinstance(heal_get_by, str) and heal_get_by == getby.MODEL):
+        raise TypeError(entry + " takes heal_get_by=True, heal_get_by='model', "
+                        'heal_get_by=False or heal_get_by=None, got heal_get_by='
+                        + repr(heal_get_by) + '.')
+
+
+def suggest_setting(suggest_get_by=None, entry='mendwright.open()'):
+    """Whether a heal of any key, not only of a get_by_* call, is saved with a get_by twin
+    for mendwright fix (see client.get_by_twin): the suggest_get_by= argument when it is not
+    None, else MENDWRIGHT_SUGGEST_GET_BY (1 or 0), else off. Raises TypeError for an
+    argument other than True, False or None, and ValueError for a variable that is not a
+    flag."""
+    if suggest_get_by is not None:
+        if not isinstance(suggest_get_by, bool):
+            raise TypeError(entry + ' takes suggest_get_by=True, suggest_get_by=False or '
+                            'suggest_get_by=None, got suggest_get_by=' + repr(suggest_get_by)
+                            + '.')
+        return suggest_get_by
+    return bool(_env_flag('MENDWRIGHT_SUGGEST_GET_BY'))
 
 
 def _env_timeout():
@@ -299,6 +331,46 @@ def _env_timeout():
         raise ValueError('mendwright: MENDWRIGHT_TIMEOUT_MS must be a whole number of '
                          'milliseconds, got ' + repr(raw) + '. Fix it, or pass timeout_ms= '
                          'to mendwright.open().')
+    return value
+
+
+class _RateDefault:
+    """The default of one of open()'s two rates: its environment variable when that is set,
+    else the built-in number. A rate passed to open(), None included, wins over both."""
+
+    __slots__ = ('var', 'value', 'param')
+
+    def __init__(self, var, value, param):
+        self.var, self.value, self.param = var, value, param
+
+    def __repr__(self):
+        return self.var + ' or ' + str(self.value)
+
+
+RATE_PER_KEY_DEFAULT = _RateDefault('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 3, 'rate_per_key_per_hour')
+RATE_GLOBAL_DEFAULT = _RateDefault('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 60, 'rate_global_per_hour')
+RATE_DEFAULTS = (RATE_PER_KEY_DEFAULT, RATE_GLOBAL_DEFAULT)
+
+
+def rate_setting(rate):
+    """One of open()'s two rates: the one passed (a whole number, or None for no limit),
+    else its environment variable (a whole number, or none), else 3 or 60. Raises ValueError
+    for a variable that is neither, as MENDWRIGHT_TIMEOUT_MS does."""
+    if not isinstance(rate, _RateDefault):
+        return rate
+    raw = os.environ.get(rate.var)
+    if raw is None or not raw.strip():
+        return rate.value
+    if raw.strip().lower() == 'none':
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError('mendwright: ' + rate.var + ' must be a whole number of heal attempts '
+                         'per hour, or none for no limit, got ' + repr(raw) + '. Fix it, or pass '
+                         + rate.param + '= to mendwright.open().')
     return value
 
 
@@ -323,11 +395,13 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          store_path: str | os.PathLike | None = None, guard: Callable[[], bool] | None = None,
          dry_run: bool | None = None, destructive_keys: Iterable[str] = frozenset(),
          guardrails: Guardrails | None = None, journal: Any = None,
-         rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
+         rate_per_key_per_hour: int | None | _RateDefault = RATE_PER_KEY_DEFAULT,
+         rate_global_per_hour: int | None | _RateDefault = RATE_GLOBAL_DEFAULT,
          timeout_ms: int | None = None, cookies: str | None = None,
          heal_across_pages: bool = False, fingerprint: bool | None = None,
          dismiss: bool = False, expect_values: dict | None = None,
-         heal_get_by: bool | None = None) -> Healer:
+         heal_get_by: bool | str | None = None,
+         suggest_get_by: bool | None = None) -> Healer:
     """Wrap a live page or driver into a Healer.
 
     - The driver is detected from the object (sync Playwright, camoufox, patchright,
@@ -381,17 +455,29 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
       Playwright as written. Off by default (None reads the environment), and then
       heal.page's get_by_* are the real ones. On Selenium it does nothing. See
       Healer._get_by_locator.
+    - heal_get_by='model' (or MENDWRIGHT_HEAL_GET_BY=model) does the same, and when the
+      fingerprint does not heal a call, or the call never matched, asks the model provider
+      too, with the call's role and words as the intent; every check of a heal still runs,
+      and a call that never matched is looked for only when it is a get_by_role() call.
+      A heal of a call is saved with a get_by twin, a call that matched the healed element
+      and nothing else, which mendwright fix suggests (see client.get_by_twin).
+    - suggest_get_by=True (or MENDWRIGHT_SUGGEST_GET_BY=1) saves a get_by twin with the heal
+      of any key on Playwright, at a few more round trips per heal. Off by default.
 
     Settings an argument leaves at None come from the environment:
     MENDWRIGHT_STORE (store_path, default ./.mendwright/overrides.json),
-    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000), MENDWRIGHT_DRY_RUN=1 (dry_run) and
-    MENDWRIGHT_HEAL_GET_BY=1 (heal_get_by). MENDWRIGHT_DISABLE=1 turns healing off:
+    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000), MENDWRIGHT_DRY_RUN=1 (dry_run),
+    MENDWRIGHT_HEAL_GET_BY=1 or model (heal_get_by) and MENDWRIGHT_SUGGEST_GET_BY=1
+    (suggest_get_by). MENDWRIGHT_DISABLE=1 turns healing off:
     selectors still resolve, nothing is healed and no provider is called, even one passed
     as provider=.
 
     Heals are written to journal.jsonl next to the store. A direct in-process provider
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
-    by every Healer on the same store file in this process.
+    by every Healer on the same store file in this process: rate_per_key_per_hour and
+    rate_global_per_hour, else MENDWRIGHT_RATE_PER_KEY_PER_HOUR and
+    MENDWRIGHT_RATE_GLOBAL_PER_HOUR, else 3 and 60. None (or none in the variable) removes
+    a limit.
     """
     from .proxies import unwrap
     page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
@@ -400,6 +486,7 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     _get_by_choice(heal_get_by, 'mendwright.open()')
     checks = expectations(expect_values)
     heal_get_by = get_by_setting(heal_get_by)
+    suggest_get_by = suggest_setting(suggest_get_by)
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
         driver, provider=provider, store=store, store_path=store_path, guard=guard,
@@ -411,10 +498,19 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._dismiss_on = dismiss
     healer._expect_values = checks
     healer._heal_get_by = heal_get_by
+    get_by_modes(coord, heal_get_by, suggest_get_by)
     if preset is not None:
         healer._interruptions[preset.key] = preset
         healer._watch(preset)
     return healer
+
+
+def get_by_modes(coordinator, heal_get_by, suggest_get_by):
+    """Tell the coordinator what open(heal_get_by=, suggest_get_by=) chose: get_by_model,
+    whether a model may heal a get_by_* call, and twins, which heals are saved with a get_by
+    twin ('calls' for the keys of get_by_* calls, 'all' for every key)."""
+    coordinator.get_by_model = heal_get_by == getby.MODEL
+    coordinator.twins = 'all' if suggest_get_by else 'calls'
 
 
 def _dismiss_choice(dismiss, entry):
@@ -449,6 +545,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         timeout_ms = _env_timeout()
     if timeout_ms is None:
         timeout_ms = DEFAULT_TIMEOUT_MS
+    rate_per_key_per_hour = rate_setting(rate_per_key_per_hour)
+    rate_global_per_hour = rate_setting(rate_global_per_hour)
     if dry_run is None:
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
     off_by = _fingerprint_off_by(fingerprint)
