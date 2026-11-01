@@ -20,10 +20,11 @@ or from the file MENDWRIGHT_STORE_TOKEN_FILE names (set one of them), never from
 the URL. Without either, no Authorization header is sent.
 
 The URL must be https://, or http:// to localhost, 127.0.0.1 or [::1]. TLS is verified with
-the default context (SSL_CERT_FILE adds a CA). No redirect is followed, so the token goes to
-no other host, and HTTPS_PROXY is honoured as urllib honours it, except for a loopback URL,
-which never goes through a proxy. timeout= holds for the connection and for each read of an
-answer. A request is never retried: see the contract in mendwright.backends.
+the default context; SSL_CERT_FILE names a CA bundle to trust. No redirect is followed, so
+the token goes to no other host, and HTTPS_PROXY is honoured as urllib honours it, except
+for a loopback URL, which never goes through a proxy. timeout= holds for the connection and
+for each read of an answer. A request is never retried: see the contract in
+mendwright.backends.
 
 Errors: 401 and 403 raise Denied; a timeout, a refused or lost connection, a TLS failure, an
 answer that is not HTTP, 408, 429 and 5xx raise Unavailable; any other answer (a redirect,
@@ -278,7 +279,7 @@ class HttpBackend:
         elif isinstance(reason, ConnectionRefusedError):
             why = 'the connection was refused'
         elif isinstance(reason, ssl.SSLCertVerificationError):
-            why = 'its TLS certificate could not be verified (SSL_CERT_FILE adds a CA)'
+            why = 'its TLS certificate could not be verified (SSL_CERT_FILE names a CA bundle to trust)'
         elif isinstance(reason, ssl.SSLError):
             why = 'TLS failed (' + type(reason).__name__ + ')'
         elif isinstance(reason, ConnectionError):

@@ -49,7 +49,7 @@ read = store.get(OVERRIDES)                          # Read(body, version, not_m
   - The file may end in a newline. It may be UTF-8, with or without a BOM, or UTF-16 as PowerShell 5 writes it.
   - Without either, no `Authorization` header is sent.
 - **https:// only.** Plain `http://` is allowed to `localhost`, `127.0.0.1` and `[::1]` only.
-  - TLS is verified. `SSL_CERT_FILE` adds a private CA.
+  - TLS is verified. To trust a private CA, point `SSL_CERT_FILE` at a bundle that holds it.
   - `HTTPS_PROXY` is honoured, except for a loopback URL.
   - No redirect is followed, so the token goes to no other host.
 - **Timeouts:** 10 seconds to connect and for each read, with no retries.
