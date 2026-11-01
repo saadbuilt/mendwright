@@ -145,6 +145,7 @@ const TL = {
   cur: [], curOn: [], halo: [], focus: [], fills: [], checks: [], press: [], urls: [], badges: [], reloads: [],
   keycaps: [], pstamps: [], montage: [], stageIn: 0, stageOut: 1e9, title: null, end: null, ctitle: null, estrip: null,
   edTitle: [], chrome: [], reveals: [], wide: [],
+  pageLit: false,   // the page is never veiled (its area is white under it, so a switch or reload stays white)
   lead: 0,      // a clip's title holds this long (real s) before the story's clock starts
 };
 const beat = (t, name, real) => TL.beats.push({ t, name, real: !!real });
@@ -270,7 +271,7 @@ function mainStory() {
   // ----- B1: your test, one line added; the run remembers each element
   focus(4.4, 'code');
   cap(4.4, 10.5, 'Add one line, and it remembers each element.');
-  beat(4.6, 'B1 the test');
+  beat(4.75, 'B1 the test');           // once the stage is in
   beat(5.9, 'B1 one line added');
   focus(6.2, 'page');
   const M = D.M;
@@ -320,7 +321,7 @@ function mainStory() {
     { t: F + 1.4, ic: '◆', col: C.blue, h: 'Found again from memory', s: XP.email, mono: true, typed: [F + 1.5, F + 1.9], result: true }] });
   box({ at: 'v2:input[name=email]', col: C.green, t: [F + 1.4, F + 4.2] });
   curOn(F + 1.8, F + 2.6); cur(F + 1.75, 'v2:input[name=email]', -90, 4);
-  click(F + 2.2, 'v2:input[name=email]', C.white); fill(F + 2.3, F + 2.7, 'v2:input[name=email]', 'ada@example.com', END);
+  click(F + 2.2, 'v2:input[name=email]', C.white); fill(F + 2.3, F + 2.7, 'v2:input[name=email]', 'ada@example.com', N + .25);
   blk.marks.push([F + 2.2, 'L1', '✓', C.green, END], [F + 2.8, 'L2', '✓', C.green, END]);
   beat(F + 2.4, 'B3 #email found from memory');
   // the terms checkbox: two look alike, so the local model picks
@@ -333,7 +334,7 @@ function mainStory() {
     { t: F + 6.2, ic: '★', col: C.purple, h: `Picked by the ${GB} GB local model`, s: XP.terms, mono: true, typed: [F + 6.3, F + 6.7], result: true }] });
   box({ at: 'v2:label.opt:nth-of-type(2)', col: C.green, t: [F + 6.2, F + 8.6], pad: 6 });
   curOn(F + 6.6, F + 7.6); cur(F + 6.55, 'v2:#opt-91c4', 2, 3);
-  click(F + 7.2, 'v2:#opt-91c4', C.white); check(F + 7.2, 'v2:#opt-91c4', END);
+  click(F + 7.2, 'v2:#opt-91c4', C.white); check(F + 7.2, 'v2:#opt-91c4', N + .25);
   blk.marks.push([F + 7.2, 'L3', '✓', C.green, END]);
   beat(F + 7.4, 'B3 picked by the local model');
   // #continue, from memory
@@ -349,7 +350,7 @@ function mainStory() {
   beat(F + 13.6, 'B3 passed, 3 repaired');
 
   // ----- B4: the next run uses the saved repairs (the redesign has none of the old selectors,
-  // the run repairs nothing and passes)
+  // the run repairs nothing and passes); the page reloads at N with its form empty again
   reload(N);
   focus(N, 'page');
   if (D.E_heals.length) throw new Error('E: the next run repaired something');
@@ -928,6 +929,7 @@ function drawAnn(t) {
 function zoneOn(zone, z) { return z === 'all' || z.split('+').includes(zone); }
 function veilAt(zone, t) {
   if (zone === 'none') return 0;
+  if (zone === 'page' && TL.pageLit) return 0;     // the main cut: the page stays white and in full view
   return clamp(track(t, TL.focus.map(([tt, z]) => [tt, zoneOn(zone, z) ? 0 : 1]), .35));
 }
 function drawFocus(t) {
@@ -1178,6 +1180,7 @@ window.ready = false;
 function cutMain() {
   hookCard(0, 4.2);
   TL.stageIn = 4.2;
+  TL.pageLit = true;                       // the shop page stays white and in full view throughout
   const { end } = mainStory();             // your test, the redesign, three repairs, the next run
   let t = window.offerBeat(end);           // a promotion in the way is closed
   t = window.confirmBeat(t);               // a dialog that needs an answer gets your function's
