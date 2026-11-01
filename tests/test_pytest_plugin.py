@@ -130,15 +130,13 @@ def test_a_passing_test_confirms_its_heal(project):
 
 
 def test_the_canary_names_the_passing_test(project):
-    long_id = 'x' * 400
+    # A long function name, not a long parametrize id: pytest 9.2 shortens those to 'case0'.
+    long_name = 'test_long_' + 'x' * 400
     project.makepyfile('''
-        import pytest
-
         def test_terms(heal):
             heal.locator('terms', "//input[@id='old']", role='checkbox').check()
 
-        @pytest.mark.parametrize('case', [''' + repr(long_id) + '''])
-        def test_long(heal, case):
+        def ''' + long_name + '''(heal):
             heal.locator('go', "//button[@id='go']", role='button').click()
     ''')
     run(project).assert_outcomes(passed=2)
@@ -148,7 +146,7 @@ def test_the_canary_names_the_passing_test(project):
         True, 'test', 'test_the_canary_names_the_passing_test.py::test_terms')
     [long] = [e for e in events(journal) if e['event'] == 'heal.canary' and e['key'] == 'go']
     assert len(long['test']) == 300
-    assert long['test'] == ('test_the_canary_names_the_passing_test.py::test_long[' + long_id)[:300]
+    assert long['test'] == ('test_the_canary_names_the_passing_test.py::' + long_name)[:300]
 
 
 def test_strict_mode_still_names_the_test_that_confirmed_the_heal(project):
