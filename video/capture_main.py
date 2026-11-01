@@ -6,8 +6,10 @@ PATH is the mendwright checkout the installed package was built from: its git re
 recorded, and the installed __init__.py must be byte for byte the checkout's. The local model
 must be in Ollama (mendwright model install), and Playwright's Chromium installed.
 
-Every page is the made-up shop (pages.json, and the popup and steps pages of
-capture_flow.json and capture_steps.json), served at https://northwind.example by
+Every page is the made-up shop (pages.json, the steps pages of capture_steps.json, and
+the two popups below over the redesign), in black and white: each page is drawn once in
+Chromium and every color is set to black or white (see BW_JS), and the runs and the video
+use those pages, which the JSON keeps. They are served at https://northwind.example by
 page.route(), so nothing reaches the network and the store saves the page's address.
 Each run gets the store it needs in a temporary folder:
 
@@ -18,7 +20,9 @@ Each run gets the store it needs in a temporary folder:
   D_plain_v2             plain Playwright on the redesign: the click times out
   D_mendwright_v2        mendwright on the redesign, with M's store: three repairs
   E_mendwright_v2_again  the same again, with D's store: the saved repairs
-  F1                     mendwright.open(page, dismiss=True) on the redesign with a newsletter popup
+  popups                 mendwright.open(page, dismiss=True), a fresh store each, on the redesign
+                         with an offer (Get my code / No thanks) and then with a question
+                         (Keep cart / No thanks) over the email field; neither closes on Escape
   steps                  heal.step() and heal.run_steps() on today's, the switched and the extra flow
 
 The script is the one the main cut shows (D.script); each step's time and the log lines it
@@ -58,14 +62,99 @@ def load(name):
         return json.load(f)
 
 
-def shop_pages():
-    """Today's page with and without its cookie banner, and the redesign (pages.json)."""
-    p = load('pages.json')
-    banner = p['v1']
+# Two popups nobody registered, over the redesign's email field. Neither closes on Escape,
+# and both have a "No thanks". The offer reads as a promotion (% off): mendwright may decline
+# it with "No thanks", and never clicks "Get my code". The question has a Keep button, so it
+# asks something: there "No thanks" would be an answer (throw the cart away), and mendwright
+# presses Escape and nothing more. The page notes each button clicked in window.mwClicked.
+_NOTE = "(window.mwClicked = window.mwClicked || []).push(this.textContent.trim())"
+_OVERLAY = 'position:fixed;inset:0;background:rgba(18,16,40,.52);display:flex;align-items:center;justify-content:center'
+_CARD = 'background:#fff;border-radius:18px;padding:28px 30px;width:440px;box-shadow:0 20px 60px rgba(0,0,0,.28)'
+_BTN = 'width:100%;padding:13px;border:0;border-radius:10px;font-size:16px;font-weight:600'
+POPUPS = {
+    'offer': ('<div id="offer" role="dialog" aria-modal="true" aria-labelledby="offer-t" style="%s">'
+              '<div class="pop-card" style="%s">'
+              '<div id="offer-t" style="font-size:25px;font-weight:700;margin:0 0 8px">Get 15%% off your first order</div>'
+              '<div style="color:#57606a;font-size:15px;line-height:1.45;margin-bottom:16px">Enter your email and we will send you a one-time code.</div>'
+              '<input type="email" placeholder="Your email" style="width:100%%;padding:12px;border:1px solid #d0d7de;border-radius:9px;font-size:16px;margin-bottom:12px">'
+              '<button type="button" class="pop-yes" onclick="%s" style="%s;background:#3b2a86;color:#fff">Get my code</button>'
+              '<button type="button" class="pop-no" onclick="%s;document.getElementById(\'offer\').remove()" style="%s;margin-top:8px;background:none;color:#57606a;font-weight:400">No thanks</button>'
+              '</div></div>') % (_OVERLAY, _CARD, _NOTE, _BTN, _NOTE, _BTN),
+    'question': ('<div id="ask" role="dialog" aria-modal="true" aria-labelledby="ask-t" style="%s">'
+                 '<div class="pop-card" style="%s">'
+                 '<div id="ask-t" style="font-size:25px;font-weight:700;margin:0 0 8px">Restore your saved cart?</div>'
+                 '<div style="color:#57606a;font-size:15px;line-height:1.45;margin-bottom:18px">You left 2 items in your cart last time.</div>'
+                 '<div style="display:flex;gap:10px">'
+                 '<button type="button" class="ask-keep" onclick="%s;document.getElementById(\'ask\').remove()" style="%s;background:#3b2a86;color:#fff">Keep cart</button>'
+                 '<button type="button" class="ask-no" onclick="%s;document.getElementById(\'ask\').remove()" style="%s;background:#fff;color:#3b2a86;border:1px solid #d0d7de">No thanks</button>'
+                 '</div></div></div>') % (_OVERLAY, _CARD, _NOTE, _BTN, _NOTE, _BTN),
+}
+
+# Black and white: every element's background is set to black or white (a see-through one
+# keeps its alpha), its text to white on black and to black or grey on white, its borders to
+# black or grey, and shadows, gradients and the checkbox's accent color go. What the page
+# says and how it is built stay as they were.
+BW_JS = r"""() => {
+  const parse = c => { const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return null;
+    const v = m[1].split(',').map(parseFloat); return { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 }; };
+  const lum = c => (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+  const set = (e, k, v) => e.style.setProperty(k, v, 'important');
+  const dark = new Map();
+  for (const e of document.body.querySelectorAll('*')) {
+    const s = getComputedStyle(e), bg = parse(s.backgroundColor), fg = parse(s.color);
+    let d = dark.get(e.parentElement) || false;
+    if (bg && bg.a > 0) {
+      const isDark = lum(bg) < 0.5;
+      if (bg.a >= 0.99) { set(e, 'background-color', isDark ? '#000' : '#fff'); d = isDark; }
+      else set(e, 'background-color', isDark ? 'rgba(0,0,0,' + bg.a + ')' : 'rgba(255,255,255,' + bg.a + ')');
+    }
+    dark.set(e, d);
+    set(e, 'background-image', 'none');
+    set(e, 'box-shadow', 'none');
+    set(e, 'color', d ? '#fff' : (fg && lum(fg) > 0.45 ? '#6b6b6b' : '#000'));
+    for (const side of ['top', 'right', 'bottom', 'left'])
+      if (parseFloat(s['border-' + side + '-width']) > 0) {
+        const b = parse(s['border-' + side + '-color']);
+        set(e, 'border-' + side + '-color', b && lum(b) < 0.5 ? '#000' : '#b5b5b5');
+      }
+    if (e.tagName === 'INPUT') set(e, 'accent-color', '#000');
+  }
+  document.body.style.setProperty('background-color', '#fff', 'important');
+  document.body.style.setProperty('color', '#000', 'important');
+  return '<!doctype html>' + document.documentElement.outerHTML;
+}"""
+
+
+def black_and_white(p, pages):
+    """pages ({name: html}, nested dicts too) in black and white, drawn in Chromium once each."""
+    browser = p.chromium.launch()
+    page = browser.new_page(viewport={'width': VIEWPORT[0], 'height': VIEWPORT[1]})
+
+    def bw(x):
+        if isinstance(x, dict):
+            return {k: bw(v) for k, v in x.items()}
+        page.set_content(x)
+        return page.evaluate(BW_JS)
+    out = bw(pages)
+    browser.close()
+    return out
+
+
+def shop_pages(p):
+    """Today's page with and without its cookie banner, the redesign (pages.json), and the
+    redesign with each popup over it, in black and white."""
+    raw = load('pages.json')
+    v2 = raw['v2']
+    pages = {'v1_banner': raw['v1'], 'v2': v2}
+    for name, popup in POPUPS.items():
+        assert v2.count('</body>') == 1
+        pages[name] = v2.replace('</body>', popup + '</body>')
+    pages = black_and_white(p, pages)
+    banner = pages['v1_banner']
     i = banner.index('<div id="cc-wrap"')
-    plain = banner[:i].rstrip() + '\n</body></html>'
-    assert 'cc-wrap' not in plain and '</body></html>' in banner[i:]
-    return {'v1': plain, 'v1_banner': banner, 'v2': p['v2']}
+    pages['v1'] = banner[:i] + '</body></html>'
+    assert 'cc-wrap' not in pages['v1'] and banner.endswith('</body></html>')
+    return pages
 
 
 class Lines(logging.Handler):
@@ -263,38 +352,41 @@ def main_runs(p, tmp, pages):
     return out
 
 
-def popup_run(p, tmp):
-    """F1: a newsletter popup nobody registered, dismiss=True, a fresh store."""
-    fl = load('capture_flow.json')
-    store = os.path.join(tmp, 'F1', '.mendwright', 'overrides.json')
-    b, page = browser_page(p, {'/checkout': fl['pages']['v2_nl']})
-    page.goto(ORIGIN + '/checkout')
-    fresh = not os.path.exists(store)
-    heal = mendwright.open(page, dismiss=True, store_path=store)
-    n = len(LOG.lines)
-    t0 = time.perf_counter()
-    step = {'step': 'input[name=email]'}
-    try:
-        heal.page.click('input[name=email]')
-        step['ok'] = True
-    except Exception as e:
-        step.update(ok=False, error_type=type(e).__name__, error=str(e))
-    t1 = time.perf_counter()
-    got = LOG.lines[n:]
-    step.update(seconds=round(t1 - t0, 3), log=[lv + ' ' + m for _, lv, m in got], log_at=[round(t - t0, 3) for t, _, _ in got])
-    f1 = {'steps': [step], 'seconds': step['seconds'], 'open_kwargs': {'dismiss': True}, 'click': 'input[name=email]',
-          'click_kwargs': {}, 'store_fresh': fresh,
-          'popup_up_after': page.locator('#nl').count() > 0,
-          'sign_up': 'clicked' if page.evaluate('() => window.mwSignedUp === true') else 'never clicked'}
-    b.close()
-    return {'F1': f1, 'pages': {'v2_nl': fl['pages']['v2_nl']}}
+def popup_runs(p, tmp, pages):
+    """The offer, then the question: the same two lines on each, a fresh store each.
+        heal = mendwright.open(page, dismiss=True)
+        heal.page.click("input[name=email]")"""
+    out = {'open_kwargs': {'dismiss': True}, 'click': 'input[name=email]', 'click_kwargs': {}}
+    for name, root in (('offer', '#offer'), ('question', '#ask')):
+        store = os.path.join(tmp, 'popup-' + name, '.mendwright', 'overrides.json')
+        b, page = browser_page(p, {'/checkout': pages[name]})
+        page.goto(ORIGIN + '/checkout')
+        fresh = not os.path.exists(store)
+        heal = mendwright.open(page, dismiss=True, store_path=store)
+        n = len(LOG.lines)
+        t0 = time.perf_counter()
+        rec = {'name': name, 'store_fresh': fresh}
+        try:
+            heal.page.click('input[name=email]')
+            rec['ok'] = True
+        except Exception as e:
+            rec.update(ok=False, error_type=type(e).__name__, error=str(e), error_line=error_line(e))
+        t1 = time.perf_counter()
+        got = LOG.lines[n:]
+        rec.update(seconds=round(t1 - t0, 3), log=[lv + ' ' + m for _, lv, m in got], log_at=[round(t - t0, 3) for t, _, _ in got],
+                   popup_up_after=page.locator(root).count() > 0,
+                   clicked=page.evaluate('() => window.mwClicked || []'),
+                   handled=[str(x) for x in heal.handled_interruptions])
+        out[name] = rec
+        b.close()
+    return out
 
 
 def steps_runs(p, tmp):
     st = load('capture_steps.json')
-    out = {'pages': st['pages'], 'open_kwargs': {}, 'steps': [[n, w, k] for n, w, k in STEPS]}
+    out = {'pages': black_and_white(p, st['pages']), 'open_kwargs': {}, 'steps': [[n, w, k] for n, w, k in STEPS]}
     for flow in ('today', 'switched', 'extra'):
-        b, page = browser_page(p, st['pages'][flow])
+        b, page = browser_page(p, out['pages'][flow])
         visited = []
         page.on('framenavigated', lambda fr: fr == page.main_frame and visited.append(fr.url[len(ORIGIN):]))
         heal = mendwright.open(page, store_path=os.path.join(tmp, 'steps-' + flow, '.mendwright', 'overrides.json'))
@@ -355,10 +447,11 @@ def main():
         os.environ.pop(k, None)
     data = dict(provenance(a.source), viewport=VIEWPORT, model=model_info())
     warm_model()
-    pages = shop_pages()
     with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
+        pages = shop_pages(p)
+        data['pages'] = {k: pages[k] for k in ('v1_banner', 'v2', 'offer', 'question')}
         data.update(main_runs(p, tmp, pages))
-        data['flow'] = popup_run(p, tmp)
+        data['popups'] = popup_runs(p, tmp, pages)
         data['steps'] = steps_runs(p, tmp)
     write(a.out, data)
 

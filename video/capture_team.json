@@ -1,8 +1,8 @@
 {
- "version": "0.10.0",
- "git_rev": "be9ca7b4b40b42ff324d3576cf459a0e067c08e9",
+ "version": "0.10.1",
+ "git_rev": "6632b9cc78fe24505896f3546489eaf8117bb530",
  "git_dirty": false,
- "init_sha256": "2300f1843f8c87929dafdf05765a4bd37eed4e498dce8ea69daa90ba71db21df",
+ "init_sha256": "a919364f81c17a0b64e3cc5ad8bb27a62e54f70fa82b602997c6d648ec50c8e5",
  "js_version": "0.1.0",
  "model_name": "mendwright-selector",
  "port": 8765,
@@ -10,7 +10,10 @@
   "tests/test_checkout.py": "import mendwright\n\n\ndef test_checkout(page):\n    page = mendwright.open(page).page\n    page.click(\"#email\")\n    page.keyboard.type(\"ada@example.com\")\n    page.check(\"#accept-terms\")\n    page.click(\"#continue\")\n",
   "tests/conftest.py": "import json\nimport os\n\nimport pytest\nfrom playwright.sync_api import sync_playwright\n\n\n@pytest.fixture\ndef page():\n    \"\"\"The shop at https://northwind.example, served by page.route(): SHOP_PAGES[SHOP_VERSION].\"\"\"\n    with open(os.environ[\"SHOP_PAGES\"], encoding=\"utf-8\") as f:\n        html = json.load(f)[os.environ[\"SHOP_VERSION\"]]\n    with sync_playwright() as p:\n        browser = p.chromium.launch()\n        pg = browser.new_page(viewport={\"width\": 1080, \"height\": 736})\n        pg.route(\"https://northwind.example/**\", lambda route: route.fulfill(\n            status=200, content_type=\"text/html; charset=utf-8\", body=html))\n        pg.goto(\"https://northwind.example/checkout\")\n        yield pg\n        browser.close()\n",
   "checkout.spec.ts": "import { test } from 'mendwright/test';\n\ntest('checkout', async ({ page }) => {\n  await page.goto('/checkout');\n  await page.fill('#email', 'ada@example.com');\n  await page.check('#accept-terms');\n  await page.click('#continue');\n});\n",
-  "playwright.config.ts": "import { defineConfig } from '@playwright/test';\n\nexport default defineConfig({\n  testDir: '.',\n  reporter: 'list',\n  use: { baseURL: 'http://127.0.0.1:8765', viewport: { width: 1080, height: 736 }, trace: 'on' },\n});\n"
+  "playwright.config.ts": "import { defineConfig } from '@playwright/test';\n\nexport default defineConfig({\n  testDir: '.',\n  reporter: 'list',\n  use: {\n    baseURL: 'http://northwind.example', viewport: { width: 1080, height: 736 }, trace: 'on',\n    launchOptions: { args: ['--host-resolver-rules=MAP northwind.example 127.0.0.1:8765', '--disable-features=HttpsUpgrades'] },\n  },\n});\n"
+ },
+ "pages": {
+  "v2": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div></div>\n</body></html>"
  },
  "pytest_v1": {
   "cmd": [
@@ -22,8 +25,8 @@
    "no:cacheprovider"
   ],
   "exit": 0,
-  "seconds": 1.572,
-  "stdout": "============================= test session starts =============================\nplatform win32 -- Python 3.12.10, pytest-9.2.0, pluggy-1.7.0\nrootdir: <project>\nplugins: mendwright-0.10.0\ncollected 1 item\n\ntests\\test_checkout.py .                                                 [100%]\n\n============================== 1 passed in 0.93s ==============================\n",
+  "seconds": 1.587,
+  "stdout": "============================= test session starts =============================\nplatform win32 -- Python 3.12.10, pytest-9.2.0, pluggy-1.7.0\nrootdir: <project>\nplugins: mendwright-0.10.1\ncollected 1 item\n\ntests\\test_checkout.py .                                                 [100%]\n\n============================== 1 passed in 0.92s ==============================\n",
   "stderr": ""
  },
  "last_url_after_v1": {
@@ -41,18 +44,18 @@
    "no:cacheprovider"
   ],
   "exit": 0,
-  "seconds": 32.737,
-  "stdout": "============================= test session starts =============================\nplatform win32 -- Python 3.12.10, pytest-9.2.0, pluggy-1.7.0\nrootdir: <project>\nplugins: mendwright-0.10.0\ncollected 1 item\n\ntests\\test_checkout.py .                                                 [100%]\n\n================================= mendwright ==================================\nmendwright: 3 selectors healed in 1 test (3 confirmed by passing tests)\n  tests/test_checkout.py::test_checkout  #email: #email -> //input[@name='email']\n  tests/test_checkout.py::test_checkout  #accept-terms: #accept-terms -> //input[@id='opt-91c4']\n  tests/test_checkout.py::test_checkout  #continue: #continue -> //button[normalize-space()='Continue to payment']\n============================= 1 passed in 32.10s ==============================\n",
+  "seconds": 32.364,
+  "stdout": "============================= test session starts =============================\nplatform win32 -- Python 3.12.10, pytest-9.2.0, pluggy-1.7.0\nrootdir: <project>\nplugins: mendwright-0.10.1\ncollected 1 item\n\ntests\\test_checkout.py .                                                 [100%]\n\n================================= mendwright ==================================\nmendwright: 3 selectors healed in 1 test (3 confirmed by passing tests)\n  tests/test_checkout.py::test_checkout  #email: #email -> //input[@name='email']\n  tests/test_checkout.py::test_checkout  #accept-terms: #accept-terms -> //input[@id='opt-91c4']\n  tests/test_checkout.py::test_checkout  #continue: #continue -> //button[normalize-space()='Continue to payment']\n============================= 1 passed in 31.71s ==============================\n",
   "stderr": ""
  },
  "journal_v2": [
   {
-   "ts": "2026-11-01T17:29:49+00:00",
+   "ts": "2026-11-01T18:10:02+00:00",
    "event": "heal.requested",
    "key": "#email"
   },
   {
-   "ts": "2026-11-01T17:29:49+00:00",
+   "ts": "2026-11-01T18:10:02+00:00",
    "event": "heal.proposed",
    "key": "#email",
    "xpath": "//input[@name='email']",
@@ -60,11 +63,11 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T17:29:49+00:00",
+   "ts": "2026-11-01T18:10:02+00:00",
    "event": "heal.applied",
    "key": "#email",
    "provider": "fingerprint",
-   "latency_ms": 94,
+   "latency_ms": 78,
    "xpath": "//input[@name='email']",
    "old": [
     "#email"
@@ -72,36 +75,36 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T17:29:59+00:00",
+   "ts": "2026-11-01T18:10:12+00:00",
    "event": "heal.requested",
    "key": "#accept-terms"
   },
   {
-   "ts": "2026-11-01T17:30:00+00:00",
+   "ts": "2026-11-01T18:10:12+00:00",
    "event": "heal.proposed",
    "key": "#accept-terms",
    "xpath": "//input[@id='opt-91c4']",
    "reasoning": "local model picked candidate 2 of 2: input[checkbox] label=\"I agree to the purchase terms\" id=\"opt-91c4\" | in \"Your details\""
   },
   {
-   "ts": "2026-11-01T17:30:00+00:00",
+   "ts": "2026-11-01T18:10:12+00:00",
    "event": "heal.applied",
    "key": "#accept-terms",
    "provider": "LocalModelProvider",
    "model": "mendwright-selector",
-   "latency_ms": 547,
+   "latency_ms": 391,
    "xpath": "//input[@id='opt-91c4']",
    "old": [
     "#accept-terms"
    ]
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.requested",
    "key": "#continue"
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.proposed",
    "key": "#continue",
    "xpath": "//button[normalize-space()='Continue to payment']",
@@ -109,7 +112,7 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.applied",
    "key": "#continue",
    "provider": "fingerprint",
@@ -121,7 +124,7 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.canary",
    "key": "#email",
    "xpath": "//input[@name='email']",
@@ -130,7 +133,7 @@
    "test": "tests/test_checkout.py::test_checkout"
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.canary",
    "key": "#accept-terms",
    "xpath": "//input[@id='opt-91c4']",
@@ -139,7 +142,7 @@
    "test": "tests/test_checkout.py::test_checkout"
   },
   {
-   "ts": "2026-11-01T17:30:10+00:00",
+   "ts": "2026-11-01T18:10:23+00:00",
    "event": "heal.canary",
    "key": "#continue",
    "xpath": "//button[normalize-space()='Continue to payment']",
@@ -156,7 +159,7 @@
    "fix"
   ],
   "exit": 0,
-  "seconds": 0.238,
+  "seconds": 0.198,
   "stdout": "mendwright fix: 3 replacements in 1 file would put 3 healed selectors into your code. Dry run, nothing was changed.\n\n--- a/tests/test_checkout.py\n+++ b/tests/test_checkout.py\n@@ -3,7 +3,7 @@\n \n def test_checkout(page):\n     page = mendwright.open(page).page\n-    page.click(\"#email\")\n+    page.click('input[name=\"email\"]')\n     page.keyboard.type(\"ada@example.com\")\n-    page.check(\"#accept-terms\")\n-    page.click(\"#continue\")\n+    page.check(\"#opt-91c4\")\n+    page.click(\"//button[normalize-space()='Continue to payment']\")\n\n#accept-terms  (checkbox)  healed, confirmed\n  was  #accept-terms\n  now  #opt-91c4\n  tests/test_checkout.py:8\n\n#continue  (button)  healed, confirmed\n  was  #continue\n  now  //button[normalize-space()='Continue to payment']\n  tests/test_checkout.py:9\n\n#email  (input)  healed, confirmed\n  was  #email\n  now  input[name=\"email\"]\n  tests/test_checkout.py:6\n\nRun the same command with --apply to write these changes.\n\nOnce your code holds the new selector, mendwright tries it first on the next run, because selectors in your code win over saved heals.\n",
   "stderr": ""
  },
@@ -170,8 +173,8 @@
    "json"
   ],
   "exit": 0,
-  "seconds": 0.227,
-  "stdout": "{\n  \"schema\": 1,\n  \"mendwright\": \"0.10.0\",\n  \"store\": \"<project>\\\\.mendwright\\\\overrides.json\",\n  \"journal\": {\n    \"path\": \"<project>\\\\.mendwright\\\\journal.jsonl\",\n    \"exists\": true\n  },\n  \"applied\": false,\n  \"scanned\": 2,\n  \"plan\": \"156828e24dc97a5c1aa4bfec4e7edadc61ad268e526198adf18787bdaa24af31\",\n  \"written_back\": [\n    {\n      \"key\": \"#accept-terms\",\n      \"role\": \"checkbox\",\n      \"old\": [\n        \"#accept-terms\"\n      ],\n      \"now\": [\n        \"#opt-91c4\"\n      ],\n      \"xpath\": \"//input[@id='opt-91c4']\",\n      \"css\": \"#opt-91c4\",\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"model\",\n        \"provider\": \"LocalModelProvider\",\n        \"model\": \"mendwright-selector\",\n        \"at\": \"2026-11-01T17:30:00+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T17:30:10+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 8\n        }\n      ]\n    },\n    {\n      \"key\": \"#continue\",\n      \"role\": \"button\",\n      \"old\": [\n        \"#continue\"\n      ],\n      \"now\": [\n        \"//button[normalize-space()='Continue to payment']\"\n      ],\n      \"xpath\": \"//button[normalize-space()='Continue to payment']\",\n      \"css\": null,\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"fingerprint\",\n        \"provider\": \"fingerprint\",\n        \"model\": null,\n        \"at\": \"2026-11-01T17:30:10+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T17:30:10+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 9\n        }\n      ]\n    },\n    {\n      \"key\": \"#email\",\n      \"role\": \"input\",\n      \"old\": [\n        \"#email\"\n      ],\n      \"now\": [\n        \"input[name=\\\"email\\\"]\"\n      ],\n      \"xpath\": \"//input[@name='email']\",\n      \"css\": \"input[name=\\\"email\\\"]\",\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"fingerprint\",\n        \"provider\": \"fingerprint\",\n        \"model\": null,\n        \"at\": \"2026-11-01T17:29:49+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T17:30:10+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 6\n        }\n      ]\n    }\n  ],\n  \"replacements\": [\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 6,\n      \"keys\": [\n        \"#email\"\n      ],\n      \"selector\": \"#email\",\n      \"new\": \"input[name=\\\"email\\\"]\",\n      \"was\": \"\\\"#email\\\"\",\n      \"now\": \"'input[name=\\\"email\\\"]'\"\n    },\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 8,\n      \"keys\": [\n        \"#accept-terms\"\n      ],\n      \"selector\": \"#accept-terms\",\n      \"new\": \"#opt-91c4\",\n      \"was\": \"\\\"#accept-terms\\\"\",\n      \"now\": \"\\\"#opt-91c4\\\"\"\n    },\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 9,\n      \"keys\": [\n        \"#continue\"\n      ],\n      \"selector\": \"#continue\",\n      \"new\": \"//button[normalize-space()='Continue to payment']\",\n      \"was\": \"\\\"#continue\\\"\",\n      \"now\": \"\\\"//button[normalize-space()='Continue to payment']\\\"\"\n    }\n  ],\n  \"left_alone\": [],\n  \"files\": [\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"replacements\": 3,\n      \"written\": false\n    }\n  ],\n  \"errors\": []\n}\n",
+  "seconds": 0.191,
+  "stdout": "{\n  \"schema\": 1,\n  \"mendwright\": \"0.10.1\",\n  \"store\": \"<project>\\\\.mendwright\\\\overrides.json\",\n  \"journal\": {\n    \"path\": \"<project>\\\\.mendwright\\\\journal.jsonl\",\n    \"exists\": true\n  },\n  \"applied\": false,\n  \"scanned\": 2,\n  \"plan\": \"156828e24dc97a5c1aa4bfec4e7edadc61ad268e526198adf18787bdaa24af31\",\n  \"written_back\": [\n    {\n      \"key\": \"#accept-terms\",\n      \"role\": \"checkbox\",\n      \"old\": [\n        \"#accept-terms\"\n      ],\n      \"now\": [\n        \"#opt-91c4\"\n      ],\n      \"xpath\": \"//input[@id='opt-91c4']\",\n      \"css\": \"#opt-91c4\",\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"model\",\n        \"provider\": \"LocalModelProvider\",\n        \"model\": \"mendwright-selector\",\n        \"at\": \"2026-11-01T18:10:12+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T18:10:23+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 8\n        }\n      ]\n    },\n    {\n      \"key\": \"#continue\",\n      \"role\": \"button\",\n      \"old\": [\n        \"#continue\"\n      ],\n      \"now\": [\n        \"//button[normalize-space()='Continue to payment']\"\n      ],\n      \"xpath\": \"//button[normalize-space()='Continue to payment']\",\n      \"css\": null,\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"fingerprint\",\n        \"provider\": \"fingerprint\",\n        \"model\": null,\n        \"at\": \"2026-11-01T18:10:23+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T18:10:23+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 9\n        }\n      ]\n    },\n    {\n      \"key\": \"#email\",\n      \"role\": \"input\",\n      \"old\": [\n        \"#email\"\n      ],\n      \"now\": [\n        \"input[name=\\\"email\\\"]\"\n      ],\n      \"xpath\": \"//input[@name='email']\",\n      \"css\": \"input[name=\\\"email\\\"]\",\n      \"confirmed\": true,\n      \"found_by\": {\n        \"tier\": \"fingerprint\",\n        \"provider\": \"fingerprint\",\n        \"model\": null,\n        \"at\": \"2026-11-01T18:10:02+00:00\"\n      },\n      \"confirmed_by\": {\n        \"by\": \"test\",\n        \"test\": \"tests/test_checkout.py::test_checkout\",\n        \"at\": \"2026-11-01T18:10:23+00:00\"\n      },\n      \"places\": [\n        {\n          \"path\": \"tests/test_checkout.py\",\n          \"line\": 6\n        }\n      ]\n    }\n  ],\n  \"replacements\": [\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 6,\n      \"keys\": [\n        \"#email\"\n      ],\n      \"selector\": \"#email\",\n      \"new\": \"input[name=\\\"email\\\"]\",\n      \"was\": \"\\\"#email\\\"\",\n      \"now\": \"'input[name=\\\"email\\\"]'\"\n    },\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 8,\n      \"keys\": [\n        \"#accept-terms\"\n      ],\n      \"selector\": \"#accept-terms\",\n      \"new\": \"#opt-91c4\",\n      \"was\": \"\\\"#accept-terms\\\"\",\n      \"now\": \"\\\"#opt-91c4\\\"\"\n    },\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"line\": 9,\n      \"keys\": [\n        \"#continue\"\n      ],\n      \"selector\": \"#continue\",\n      \"new\": \"//button[normalize-space()='Continue to payment']\",\n      \"was\": \"\\\"#continue\\\"\",\n      \"now\": \"\\\"//button[normalize-space()='Continue to payment']\\\"\"\n    }\n  ],\n  \"left_alone\": [],\n  \"files\": [\n    {\n      \"path\": \"tests/test_checkout.py\",\n      \"replacements\": 3,\n      \"written\": false\n    }\n  ],\n  \"errors\": []\n}\n",
   "stderr": ""
  },
  "fix_md": {
@@ -185,7 +188,7 @@
    "md"
   ],
   "exit": 0,
-  "seconds": 0.256,
+  "seconds": 0.236,
   "stdout": "## mendwright fix\n\n### Selectors written back (3)\n\n| Key | Was | Now | Found by | Confirmed by | Where |\n| --- | --- | --- | --- | --- | --- |\n| `#accept-terms` (checkbox) | `#accept-terms` | `#opt-91c4` | model: `LocalModelProvider`, `mendwright-selector` | passing test `tests/test_checkout.py::test_checkout` | `tests/test_checkout.py:8` |\n| `#continue` (button) | `#continue` | `//button[normalize-space()='Continue to payment']` | fingerprint (no model) | passing test `tests/test_checkout.py::test_checkout` | `tests/test_checkout.py:9` |\n| `#email` (input) | `#email` | `input[name=\"email\"]` | fingerprint (no model) | passing test `tests/test_checkout.py::test_checkout` | `tests/test_checkout.py:6` |\n",
   "stderr": ""
  },
@@ -197,12 +200,12 @@
    "-m",
    "mendwright",
    "check",
-   "--base-url",
-   "http://127.0.0.1:8765"
+   "--origin",
+   "https://northwind.example=http://127.0.0.1:8765"
   ],
   "exit": 1,
-  "seconds": 11.239,
-  "stdout": "mendwright check: 3 keys on 1 page, Playwright chromium (headless), 11.0 s\nStore: <project>\\.mendwright\\overrides.json\n\nhttp://127.0.0.1:8765/checkout  (HTTP 200, 10.2 s)\n  None of this page's 3 keys matched. A redesign, an error page and a page that needs a sign-in or earlier steps all look like this, and mendwright check can't tell them apart.\n  needs model    #accept-terms  #accept-terms matches nothing, and the fingerprint match\n                                for '#accept-terms' was not confident: two elements\n                                score alike (0.42 and 0.41), so the fingerprint does not\n                                tell them apart. A run would ask LocalModelProvider\n                                (mendwright selector model in Ollama), model\n                                mendwright-selector. mendwright check asks no model.\n  would heal     #continue      #continue matches nothing. A run would heal it from\n                                memory to //button[normalize-space()='Continue to\n                                payment'] (fingerprint score 0.58, next best 0.41),\n                                which passed every check of a heal on this page. Nothing\n                                was saved.\n  would heal     #email         #email matches nothing. A run would heal it from memory\n                                to //input[@name='email'] (fingerprint score 0.40, next\n                                best 0.00), which passed every check of a heal on this\n                                page. Nothing was saved.\n\n2 would heal from memory, 1 needs a model.\nExit 1: 3 keys broke.\n",
+  "seconds": 10.99,
+  "stdout": "mendwright check: 3 keys on 1 page, Playwright chromium (headless), 10.8 s\nStore: <project>\\.mendwright\\overrides.json\n\nhttp://127.0.0.1:8765/checkout  (HTTP 200, 10.2 s)\n  None of this page's 3 keys matched. A redesign, an error page and a page that needs a sign-in or earlier steps all look like this, and mendwright check can't tell them apart.\n  needs model    #accept-terms  #accept-terms matches nothing, and the fingerprint match\n                                for '#accept-terms' was not confident: two elements\n                                score alike (0.42 and 0.41), so the fingerprint does not\n                                tell them apart. A run would ask LocalModelProvider\n                                (mendwright selector model in Ollama), model\n                                mendwright-selector. mendwright check asks no model.\n  would heal     #continue      #continue matches nothing. A run would heal it from\n                                memory to //button[normalize-space()='Continue to\n                                payment'] (fingerprint score 0.58, next best 0.41),\n                                which passed every check of a heal on this page. Nothing\n                                was saved.\n  would heal     #email         #email matches nothing. A run would heal it from memory\n                                to //input[@name='email'] (fingerprint score 0.40, next\n                                best 0.00), which passed every check of a heal on this\n                                page. Nothing was saved.\n\n2 would heal from memory, 1 needs a model.\nExit 1: 3 keys broke.\n",
   "stderr": "mendwright check: loading 1 page recorded on https://northwind.example, loaded from http://127.0.0.1:8765, with Playwright chromium (headless).\n"
  },
  "ts": {
@@ -212,8 +215,8 @@
    "test"
   ],
   "exit": 0,
-  "seconds": 1.747,
-  "stdout": "\nRunning 1 test using 1 worker\n\n  ok 1 checkout.spec.ts:3:5 › checkout (377ms)\n\n  1 passed (914ms)\n",
+  "seconds": 4.529,
+  "stdout": "\nRunning 1 test using 1 worker\n\n  ok 1 checkout.spec.ts:3:5 › checkout (3.1s)\n\n  1 passed (3.7s)\n",
   "stderr": ""
  },
  "ts_run_id": "ts-1",
@@ -239,6 +242,10 @@
    "selector": "xpath=//button[normalize-space()='Continue to payment']",
    "url": null
   }
+ ],
+ "ts_urls": [
+  "http://northwind.example",
+  "http://northwind.example/checkout"
  ],
  "ts_old_selectors_on_v2": {
   "#email": 0,

@@ -15,12 +15,15 @@ https://northwind.example:
   fix         mendwright fix (the diff), --format json, and --apply --format md on a copy,
               which is what mendwright's GitHub Action puts in the pull request, with the
               Action's own title for it
-  check       mendwright check --base-url, in a copy of the project whose store is as it was
-              after pytest_v1, with the redesign served on 127.0.0.1: what broke, and what a
-              run would repair from memory
+  check       mendwright check --origin, in a copy of the project whose store is as it was
+              after pytest_v1, with the shop's pages loaded from the redesign served on
+              127.0.0.1: what broke, and what a run would repair from memory
   ts          Playwright Test with the TypeScript package (import { test } from
-              'mendwright/test') on the redesign, with the store pytest_v2 saved; its trace
-              names the selector each action used
+              'mendwright/test') on the redesign, with the store pytest_v2 saved. Its
+              Chromium resolves northwind.example to that server, and doesn't first try the
+              address over HTTPS, which that server doesn't serve (launch options in the
+              config, not in the spec), so the page is at the shop's address; its trace names
+              the selector each action used and the address of the page
 
 Local paths in the outputs (the store's path, pytest's rootdir) are written as <project>
 and <js>; nothing else is changed.
@@ -92,9 +95,12 @@ PW_CONFIG = """import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   reporter: 'list',
-  use: { baseURL: 'http://127.0.0.1:%d', viewport: { width: %d, height: %d }, trace: 'on' },
+  use: {
+    baseURL: 'http://northwind.example', viewport: { width: %d, height: %d }, trace: 'on',
+    launchOptions: { args: ['--host-resolver-rules=MAP northwind.example 127.0.0.1:%d', '--disable-features=HttpsUpgrades'] },
+  },
 });
-""" % (PORT, VIEWPORT[0], VIEWPORT[1])
+""" % (VIEWPORT[0], VIEWPORT[1], PORT)
 
 SITE = {'html': ''}
 
@@ -150,6 +156,31 @@ def action_title(source, n):
     return mod.title_for(n)
 
 
+def trace_urls(results):
+    """Every page address the Playwright Test run's trace names."""
+    seen = set()
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if isinstance(v, str) and k.lower().endswith('url') and v.startswith('http'):
+                    seen.add(v)
+                else:
+                    walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    for root, _, files in os.walk(results):
+        for f in files:
+            if f == 'trace.zip':
+                with zipfile.ZipFile(os.path.join(root, f)) as z:
+                    for name in z.namelist():
+                        if name.endswith('.trace'):
+                            for line in z.read(name).decode('utf-8').splitlines():
+                                walk(json.loads(line))
+    return sorted(seen)
+
+
 def trace_actions(results):
     """The page actions of the Playwright Test run, from its trace: method and selector."""
     out = []
@@ -181,7 +212,9 @@ def main():
     data = dict(provenance(a.source), js_version=js_version, model_name=MODEL, port=PORT,
                 files={'tests/test_checkout.py': TEST, 'tests/conftest.py': CONFTEST, 'checkout.spec.ts': SPEC,
                        'playwright.config.ts': PW_CONFIG})
-    pages = shop_pages()
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        pages = shop_pages(p)
     env = {k: v for k, v in os.environ.items() if not k.startswith(('MENDWRIGHT_', 'ANTHROPIC_', 'OPENAI_', 'GEMINI_'))}
     env = {k: v for k, v in env.items() if k not in ('FORCE_COLOR', 'NO_COLOR', 'PY_COLORS')}
     env.update(MENDWRIGHT_LOCAL_MODEL=MODEL, PYTHONIOENCODING='utf-8', PYTHONUTF8='1', NO_COLOR='1')
@@ -200,6 +233,7 @@ def main():
         pj = os.path.join(tmp, 'pages.json')
         with open(pj, 'w', encoding='utf-8') as f:
             json.dump(pages, f)
+        data['pages'] = {'v2': pages['v2']}
         sd = os.path.join(shop, '.mendwright')
         pytest = [sys.executable, '-m', 'pytest', 'tests/test_checkout.py', '-p', 'no:cacheprovider']
         # pytest on today's page, then on the redesign
@@ -222,7 +256,8 @@ def main():
         data['pr_title'] = action_title(a.source, written)
         # mendwright check: the store as it was after today's run, against the redesign
         SITE['html'] = pages['v2']
-        data['check'] = run([sys.executable, '-m', 'mendwright', 'check', '--base-url', 'http://127.0.0.1:%d' % PORT],
+        data['check'] = run([sys.executable, '-m', 'mendwright', 'check', '--origin',
+                             'https://northwind.example=http://127.0.0.1:%d' % PORT],
                             nightly, env, places + [(nightly, '<project>')])
         # the TypeScript package, with the store pytest_v2 saved
         vt = os.path.join(js, 'video-ts')
@@ -240,12 +275,12 @@ def main():
         data['ts_run_id'] = RUN_ID
         data['ts_journal'] = journal(sd)[n0:]
         data['ts_actions'] = trace_actions(os.path.join(vt, 'results'))
+        data['ts_urls'] = trace_urls(os.path.join(vt, 'results'))
     finally:
         server.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
     # the redesign has none of the script's selectors: what the TypeScript run found, it found
     # through the saved repairs
-    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         b = p.chromium.launch()
         pg = b.new_page()
