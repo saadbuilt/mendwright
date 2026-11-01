@@ -77,28 +77,37 @@ window.pullRequestBeat = function pullRequestBeat(t0) {
 
 
 // ---------- a popup nobody registered, with dismiss=True: a promotion over the email field.
-// mendwright pressed Escape, which did not close it, then its decline button (the log says so).
+// mendwright pressed Escape, which did not close it, then its decline button, No thanks (the
+// log and the journal say so); Subscribe is never touched.
 window.offerBeat = function offerBeat(t0) {
-  const O = D.P.offer, t1 = t0 + 5.6, field = 'pa:input[name=email]';
+  const O = D.P.offer, t1 = t0 + 6.8, field = 'pa:input[name=email]', no = 'pa:.pop-no';
   if (!O.ok || O.page.clicked.join() !== 'No thanks' || O.popup_up_after || O.heals.length) throw new Error('offer: not declined with No thanks');
+  const J = O.journal.find(j => j.event === 'flow.dismiss');
+  if (!J || J.how !== 'decline' || J.label !== 'No thanks' || !J.tried.some(x => x.how === 'escape')) throw new Error('offer: not declined after Escape');
   const od = O.log.findIndex(l => /dismissed a popup in the way of '#email'/.test(l));
   if (od < 0) throw new Error('offer: no log line');
   const blk = codeBlock({ t0, t1, rows: scriptRowsOf(O.script, [[1], [2], [3]]) });
-  frame({ id: 'pa', html: D.P.pages.offer, t: [t0, t1], popup: '#offer', pop: [[t0 - 1, t0 + 2.4]] });
+  // the popup is up as the page shows; it closes as No thanks comes back up
+  frame({ id: 'pa', html: D.P.pages.offer, t: [t0, t1], popup: '#offer', pop: [[t0 - 1, t0 + 3.25]] });
   reload(t0); url(t0, 'northwind.example/checkout');
   focus(t0, 'code+page');
-  cap(t0 + .4, t0 + 4.6, 'Popups that get in the way are closed.');
+  cap(t0 + .4, t0 + 5.0, 'A promotion in the way is declined, never accepted.');
   run({ t0, t1, cmd: [t0 + .1, '$ python checkout.py'],
-    stamp: { t: t0 + 3.0, kind: 'ok', html: '✓ Passed · popup closed' },
-    receipts: [{ t: t0 + 3.0, text: elide(msgOf(O.log[od]), 'dismissed a popup', 'with “No thanks”, after Escape did not close it') }] });
-  curOn(t0 + 1.0, t0 + 3.0); cur(t0 + .95, field, -90, 4); cur(t0 + 1.7, 'pa:.pop-no', -8, 4);
-  click(t0 + 2.3, 'pa:.pop-no', C.white); press(t0 + 2.3, 'pa:.pop-no');
-  cur(t0 + 2.45, field, -90, 4); click(t0 + 2.8, field, C.white);
-  blk.hl.push([t0, 's3', 0], [t0 + 1.0, 's3', 1], [t0 + 3.0, 's3', 0]);
-  blk.marks.push([t0 + 2.8, 's3', '✓', C.green, t1]);
-  focus(t0 + 3.0, 'all');
-  beat(t0 + 1.4, 'C1 a promotion in the way');
-  beat(t0 + 3.8, 'C2 closed with its decline button');
+    stamp: { t: t0 + 4.3, kind: 'ok', html: '✓ Passed · promotion declined' },
+    receipts: [{ t: t0 + 4.3, text: elide(msgOf(O.log[od]), 'dismissed a popup', 'with “No thanks”, after Escape did not close it') }] });
+  // the step's field is under the popup; the cursor goes to No thanks, coming into its row from
+  // the left (under Subscribe, never over it), rests, and presses it: a grey pressed fill, then
+  // the dialog closes; then the click on the field goes on
+  curOn(t0 + 1.0, t0 + 4.4); cur(t0 + .6, field, -90, 4);
+  cur(t0 + 1.9, no, -60, 40, 'left'); cur(t0 + 2.15, no, -8, 4);
+  click(t0 + 2.95, no, C.white); press(t0 + 2.95, no, .35);
+  cur(t0 + 3.55, field, -90, 4); click(t0 + 4.0, field, C.white);
+  blk.hl.push([t0, 's3', 0], [t0 + 1.0, 's3', 1], [t0 + 4.3, 's3', 0]);
+  blk.marks.push([t0 + 4.0, 's3', '✓', C.green, t1]);
+  focus(t0 + 4.3, 'all');
+  beat(t0 + 1.6, 'C1 a promotion in the way');
+  beat(t0 + 3.1, 'C2 No thanks pressed');
+  beat(t0 + 4.8, 'C3 declined, and the click goes on');
   return t1;
 };
 

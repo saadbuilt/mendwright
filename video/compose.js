@@ -158,7 +158,9 @@ const curOn = (a, b) => TL.curOn.push([a, b]);
 const haloOn = (a, b) => TL.halo.push([a, b]);
 const fill = (a, b, at, text, until = 1e9) => TL.fills.push({ a, b, at, text, until });
 const check = (t, at, until = 1e9) => TL.checks.push({ t, at, until });
-const press = (t, at) => TL.press.push({ t, at });
+// a button pressed at t; shade: held down that long (s) with a grey pressed fill, for a light
+// button such as a popup's No thanks (a dark button only scales)
+const press = (t, at, shade) => TL.press.push({ t, at, shade });
 const box = o => TL.boxes.push(Object.assign({ pad: 7, dashed: false }, o));
 const tag = o => TL.tags.push(Object.assign({ zone: 'page', place: 'right' }, o));
 const callout = o => TL.callouts.push(Object.assign({ zone: 'page', place: 'auto' }, o));
@@ -505,7 +507,9 @@ function buildPage() {
     const r = SR(k.at);
     // a wide input: point near its start, where the text goes; anything else: its centre
     const big = r.w > 300 && k.edge !== 'top' && !Array.isArray(k.at) && !k.at.startsWith('code:') && nodeOf(k.at).tagName === 'INPUT';
-    const p = Array.isArray(k.at) ? k.at : [(big ? r.x + 110 : r.x + r.w / 2) + k.dx, (k.edge === 'top' ? r.y : r.y + r.h / 2) + k.dy];
+    // edge 'left': from the element's left edge (a way in beside it), 'top': from its top
+    const x0 = k.edge === 'left' ? r.x : big ? r.x + 110 : r.x + r.w / 2;
+    const p = Array.isArray(k.at) ? k.at : [x0 + k.dx, (k.edge === 'top' ? r.y : r.y + r.h / 2) + k.dy];
     return [k.t, p];
   }));
   for (const c of TL.clicks) { const r = SR(c.at); c.p = Array.isArray(c.at) ? c.at : [r.x + r.w / 2, r.y + r.h / 2]; }
@@ -576,9 +580,18 @@ function drawBrowser(t) {
   const chk = new Map();
   for (const x of TL.checks) chk.set(x.at, (chk.get(x.at) || false) || (t >= x.t && t < x.until));
   for (const [at, v] of chk) nodeOf(at).checked = v;
-  const prs = new Map();
-  for (const x of TL.press) prs.set(x.at, Math.max(prs.get(x.at) || 0, Math.sin(Math.PI * lin(t, x.t, x.t + .24))));
+  const prs = new Map(), shd = new Map();
+  for (const x of TL.press) {
+    const v = x.shade ? Math.min(lin(t, x.t - .03, x.t + .05), 1 - lin(t, x.t + x.shade - .1, x.t + x.shade)) : Math.sin(Math.PI * lin(t, x.t, x.t + .24));
+    prs.set(x.at, Math.max(prs.get(x.at) || 0, v));
+    if (x.shade) shd.set(x.at, Math.max(shd.get(x.at) || 0, v));
+  }
   for (const [at, v] of prs) nodeOf(at).style.transform = `scale(${(1 - .05 * v).toFixed(4)})`;
+  for (const [at, v] of shd) {       // set from t on every frame: a still at any moment is right
+    const n = nodeOf(at);
+    n.style.setProperty('background-color', `rgba(0,0,0,${(.1 * v).toFixed(3)})`, 'important');
+    n.style.setProperty('border-radius', '8px', 'important');
+  }
   // boxes
   for (const b of TL.boxes) {
     const p = pres(t, b.t[0], b.t[1], .4, .3);
@@ -982,7 +995,7 @@ function buildEnd() {
  <div><span class="ic" style="background:${C.white}1c;color:${C.white}">◆</span>Repairs from memory first, checked on the live page.</div>
  <div><span class="ic" style="background:${C.white}1c;color:${C.white}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
  <div><span class="ic" style="background:${C.white}1c;color:${C.green}">✓</span>Repairs your tests confirm come back as a pull request.</div>
- <div><span class="ic" style="background:${C.white}1c;color:${C.white}">▸</span>Popups are closed, or answered by your own function.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.white}">▸</span>Promotions are declined; popups you register get your answer.</div>
 </div>
 <div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>npm i mendwright</div></div>
 <div class="repo">github.com/saadbuilt/mendwright · Python and TypeScript · MIT</div>`, document.body);
@@ -1187,7 +1200,7 @@ function cutMain() {
   TL.stageIn = 4.2;
   TL.pageLit = true;                       // the shop page stays white and in full view throughout
   const { end } = mainStory();             // your test, the redesign, three repairs, the next run
-  let t = window.offerBeat(end);           // a promotion in the way is closed
+  let t = window.offerBeat(end);           // a promotion in the way is declined
   t = window.confirmBeat(t);               // a dialog that needs an answer gets your function's
   t = window.pullRequestBeat(t);           // the confirmed repairs come back as a pull request
   endCard(t, t + 6.2);

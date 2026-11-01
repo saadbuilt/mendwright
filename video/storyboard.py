@@ -25,7 +25,7 @@ CODE = (40, 56, 640, 400)
 CROPS = {
     'main': [(15.6, CODE, 'code: three selectors broken (red wavy)'), (19.0, CODE, 'code: #email repaired'),
              (24.0, CODE, 'code: #accept-terms repaired'), (35.0, CODE, 'code: the next run'),
-             (46.4, CODE, 'code: confirm_email() answers the dialog')],
+             (47.6, CODE, 'code: confirm_email() answers the dialog')],
     'A': [(22.4, CODE, 'code: Selenium + mendwright')],
     'B': [(3.0, CODE, 'code: one script for both popups')],
     'C': [(13.6, CODE, 'code: interrupt line, heal.page tag')],
