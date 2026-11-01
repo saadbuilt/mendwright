@@ -37,7 +37,9 @@ Every safety decision is made by the sync core, unchanged:
 - With open(heal_get_by=True), heal.page.get_by_role() and the other get_by_* calls are
   looked up and healed as on the sync Healer (see Healer._get_by_locator): the lookup is
   awaited on the event loop, the heal runs the coordinator in a worker thread, and a miss
-  raised by the await is also Playwright's TimeoutError.
+  raised by the await is also Playwright's TimeoutError. heal_get_by='model' lets the model
+  provider heal a call too, and a heal of a call is saved with its get_by twin, checked
+  through SyncBridge (same_element, aria_name), as on the sync Healer.
 
 Calls on one AsyncHealer take turns (an asyncio.Lock), so the worker thread never touches
 the store while the event loop does. asyncio.gather() over several locators of one healer
@@ -72,7 +74,7 @@ from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
-from .facade import _dismiss_choice, _get_by_choice, get_by_setting
+from .facade import _dismiss_choice, _get_by_choice, get_by_modes, get_by_setting, suggest_setting
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
                      _cookie_preset, _healed_target_error, _join_overlay, _leave_overlay,
@@ -203,13 +205,15 @@ class SyncBridge:
     thread would wait for itself forever, so that raises RuntimeError at once.
 
     It has the driver methods the coordinator uses (count, is_visible, scroll_into_view,
-    handle, url, outer_html, describe, inventory, fingerprint, and role_match for a heal of
-    a get_by_role() call, and for a list looked for with nonempty=True list_items and
+    handle, url, outer_html, describe, inventory, fingerprint, role_match for a heal of
+    a get_by_role() call, same_element and aria_name for a get_by twin, and for a list looked
+    for with nonempty=True list_items and
     list_fingerprint), act_on for an interruption's action, visible_match for the WARNING
     about a selector that matches several elements, the popup methods of open(dismiss=True)
     (popup_probe and the others), run() for any other callable, and wait() for a run=
-    function of heal.interrupt(). describe, fingerprint, role_match, visible_match,
-    list_items, list_fingerprint and the popup methods are None when the async driver has
+    function of heal.interrupt(). describe, fingerprint, role_match, same_element,
+    aria_name, visible_match, list_items, list_fingerprint and the popup methods are None
+    when the async driver has
     none, and list_fingerprint takes no place= when the async driver's does not.
     pierces_shadow is the async driver's (see drivers.base.css_pierces)."""
 
@@ -230,6 +234,10 @@ class SyncBridge:
             self.fingerprint = None
         if not callable(_member(driver, 'role_match')):
             self.role_match = None      # a heal of a get_by_role() call is then refused
+        if not callable(_member(driver, 'same_element')):
+            self.same_element = None    # no get_by twin is saved then
+        if not callable(_member(driver, 'aria_name')):
+            self.aria_name = None
         if not callable(_member(driver, 'visible_match')):
             self.visible_match = None
         if not callable(_member(driver, 'list_items')):
@@ -328,6 +336,12 @@ class SyncBridge:
 
     def role_match(self, selector, role, level=None, frame_chain=()):
         return self.run(self._driver.role_match, selector, role, level, frame_chain)
+
+    def same_element(self, selector, other, frame_chain=()):
+        return self.run(self._driver.same_element, selector, other, frame_chain)
+
+    def aria_name(self, selector, frame_chain=()):
+        return self.run(self._driver.aria_name, selector, frame_chain)
 
     def list_items(self, selector, frame_chain=()):
         return self.run(self._driver.list_items, selector, frame_chain)
@@ -434,14 +448,16 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
                timeout_ms: int | None = None, cookies: str | None = None,
                heal_across_pages: bool = False, fingerprint: bool | None = None,
                dismiss: bool = False, expect_values: dict | None = None,
-               heal_get_by: bool | None = None) -> AsyncHealer:
+               heal_get_by: bool | str | None = None,
+               suggest_get_by: bool | None = None) -> AsyncHealer:
     """Wrap an async Playwright Page or Frame into an AsyncHealer. Await it inside the
     event loop that runs the page.
 
     Takes the same arguments, environment variables (MENDWRIGHT_STORE,
     MENDWRIGHT_TIMEOUT_MS, MENDWRIGHT_DRY_RUN, MENDWRIGHT_DISABLE, MENDWRIGHT_FINGERPRINT,
-    MENDWRIGHT_HEAL_GET_BY) and defaults as mendwright.open(), cookies=,
-    heal_across_pages=, fingerprint=, dismiss=, expect_values= and heal_get_by= included.
+    MENDWRIGHT_HEAL_GET_BY, MENDWRIGHT_SUGGEST_GET_BY) and defaults as mendwright.open(),
+    cookies=, heal_across_pages=, fingerprint=, dismiss=, expect_values=, heal_get_by= (True or
+    'model') and suggest_get_by= included.
     guard may be a plain or an async callable; it runs on the event loop. The provider stays
     sync and is called in a worker thread. A driver whose count, is_visible and handle are
     coroutine functions is used as it is.
@@ -453,6 +469,7 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     _get_by_choice(heal_get_by, 'mendwright.aio.open()')
     checks = expectations(expect_values)
     heal_get_by = get_by_setting(heal_get_by)
+    suggest_get_by = suggest_setting(suggest_get_by, 'mendwright.aio.open()')
     driver = _async_driver(page)
     bridge = SyncBridge(driver, asyncio.get_running_loop())
     if guard is not None:
@@ -474,6 +491,7 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._core._dismiss_on = dismiss
     healer._core._expect_values = checks
     healer._core._heal_get_by = heal_get_by
+    get_by_modes(coord, heal_get_by, suggest_get_by)
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
         await healer._watch(preset)

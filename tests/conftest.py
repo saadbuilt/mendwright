@@ -26,6 +26,7 @@ message} makes the browser reject that method's calls when they run.
 """
 
 import inspect
+import json
 import re
 
 import lxml.html
@@ -128,6 +129,27 @@ class FakeLocator:
     def input_value(self, **kwargs):
         els = self._elements()
         return (els[0].get('value') or '') if els else ''
+
+    def aria_snapshot(self, **kwargs):
+        """The first line of Playwright's aria_snapshot() for one element: '- role "name"',
+        with [level=N] for a heading. page.aria_snapshot = False makes it missing, as on a
+        Playwright before 1.49."""
+        self._page.aria_reads += 1
+        els = self._elements()
+        if len(els) != 1:
+            raise FakeTimeout('Timeout exceeded: aria_snapshot needs one element')
+        el = els[0]
+        role = aria_role(el) or 'generic'
+        name = accessible_name(self._page._doc, el)
+        line = '- ' + role + (' ' + json.dumps(name) if name else '')
+        if role == 'heading':
+            line += ' [level=' + str(_level(el)) + ']'
+        return line
+
+    def __getattribute__(self, name):
+        if name == 'aria_snapshot' and object.__getattribute__(self, '_page').aria_snapshot is False:
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
 
     def __getattr__(self, verb):
         if verb.startswith('get_by_'):     # a get_by_* call inside this locator's elements
@@ -465,6 +487,8 @@ class FakePage:
         self.get_by_calls = []   # (method, args, kwargs) of every get_by_* call
         self.reject = {}      # get_by_* method -> the error the browser gives for its calls
         self.trips = 0        # page queries of the get_by_* locators
+        self.aria_reads = 0   # aria_snapshot() round trips
+        self.aria_snapshot = True   # False: locators have no aria_snapshot() (Playwright < 1.49)
         self.frames = []      # a Page has a list of frames, a Frame none (no iframes here)
         self.set_html(html)
 

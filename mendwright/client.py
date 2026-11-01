@@ -243,14 +243,51 @@ def css_twin(store, selector_key, doc, body, xpath, driver=None):
     return ''
 
 
-def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, shadow_hosts=None):
-    """store.add_candidate(key, xpath, source='heal'), with css=, frame_xpath= and
-    shadow_hosts= when they are given. A store whose add_candidate is older still gets the
-    heal: without css= (new in 0.6), without shadow_hosts= for a heal outside a shadow root,
-    and without frame_xpath= when it takes neither and the heal is on the page. Returns
-    False, and saves nothing, when it would have to keep a heal that belongs inside an
-    iframe or a shadow root and cannot."""
+# How many get_by twins of a heal are checked on the live page, at most (see get_by_twin).
+MAX_TWINS = 3
+
+
+def get_by_twin(selector_key, doc, body, xpath, driver):
+    """The get_by twin to save with a heal of selector_key onto xpath: a get_by_* call, in
+    mendwright's spelling (getby.canonical), that matches the healed element and nothing else
+    on the live page now, for mendwright fix to suggest. None when it was not looked for: no
+    driver with same_element() (Selenium, a custom driver), or a page body that does not
+    match one element of doc. '' when none of the calls tried passed.
+
+    The calls come from getby.twin_calls(): the element's ARIA role and name as the browser
+    reads them (driver.aria_name, one round trip), the label of a form field, its test id,
+    and for the key of a call the call's own method first. At most MAX_TWINS are checked,
+    each with driver.same_element (two round trips). A twin is never run by mendwright and
+    never written into code: it is a suggestion, checked once, when the heal was made."""
+    from .drivers.base import driver_aria_name, driver_same_element
+    if driver is None or not callable(getattr(driver, 'same_element', None)) or doc is None:
+        return None
+    try:
+        hits = [h for h in doc.xpath(body) if isinstance(getattr(h, 'tag', None), str)]
+    except Exception:
+        return None
+    if len(hits) != 1:
+        return None
+    call = getby.parse(selector_key)
+    aria = driver_aria_name(driver, xpath) if callable(getattr(driver, 'aria_name', None)) else None
+    for twin in getby.twin_calls(hits[0], call, aria)[:MAX_TWINS]:
+        text = getby.canonical(twin)
+        if driver_same_element(driver, text, xpath) is True:
+            return text
+    return ''
+
+
+def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, shadow_hosts=None,
+             get_by=None):
+    """store.add_candidate(key, xpath, source='heal'), with css=, frame_xpath=,
+    shadow_hosts= and get_by= when they are given. A store whose add_candidate is older still
+    gets the heal: without get_by= (new in 0.11), without css= (new in 0.6), without
+    shadow_hosts= for a heal outside a shadow root, and without frame_xpath= when it takes
+    neither and the heal is on the page. Returns False, and saves nothing, when it would have
+    to keep a heal that belongs inside an iframe or a shadow root and cannot."""
     extra = {}
+    if get_by is not None:
+        extra['get_by'] = get_by
     if css is not None:
         extra['css'] = css
     if frame_xpath is not None:
@@ -258,6 +295,9 @@ def add_heal(store, selector_key, xpath, *, css=None, frame_xpath=None, shadow_h
     if shadow_hosts is not None:
         extra['shadow_hosts'] = list(shadow_hosts)
     tries = [extra]
+    if 'get_by' in extra:
+        extra = {k: v for k, v in extra.items() if k != 'get_by'}
+        tries.append(extra)
     if 'shadow_hosts' in extra and not shadow_hosts:
         extra = {k: v for k, v in extra.items() if k != 'shadow_hosts'}
         tries.append(extra)
@@ -304,7 +344,7 @@ def _shadow_heal(store, selector_key, doc, body, meta, driver, hosts):
 
 
 def apply(store, selector_key, proposal, html, meta, driver=None, positional=True,
-          frame_xpath=None, shadow_hosts=None):
+          frame_xpath=None, shadow_hosts=None, twin=False):
     """Validate the proposal and apply the first candidate that passes the full gate to the
     override store. Returns (applied_xpath, reason): the xpath + 'ok' on success, or
     (None, <last reason>) so the caller can feed a real reason into a reprompt.
@@ -343,6 +383,10 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
     saved as a CSS selector for the same element (_shadow_heal), written as the chain of the
     hosts and the CSS, with the hosts as its shadowHosts. Only quarantines made in that
     shadow root block it, and an element no CSS selector tells apart is refused (NO_CSS).
+
+    twin=True saves a heal on the page (not inside an iframe or a shadow root) with its get_by
+    twin (see get_by_twin), checked on the live page after every other check passed. A twin
+    that cannot be found does not stop the heal.
     """
     hosts = tuple(shadow_hosts or ())
     doc, bad = _quarantined_paths(store, selector_key, html, frame_xpath or '', hosts)
@@ -393,8 +437,10 @@ def apply(store, selector_key, proposal, html, meta, driver=None, positional=Tru
         # on the page, where this heal was checked, and shadow_hosts [] takes one out of a
         # shadow root.
         css = css_twin(store, selector_key, doc, body, xpath, driver)
+        get_by = (get_by_twin(selector_key, doc, body, xpath, driver)
+                  if twin and not frame_xpath else None)
         if not add_heal(store, selector_key, xpath, css=css, frame_xpath=frame_xpath or '',
-                        shadow_hosts=[]):
+                        shadow_hosts=[], get_by=get_by):
             return None, 'this store cannot save a selector inside an iframe'
         return xpath, reason
     return None, reason

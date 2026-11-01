@@ -48,7 +48,8 @@ PROVIDER_VARS = (
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
-                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID')
+                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_SUGGEST_GET_BY',
+                 'MENDWRIGHT_RUN_ID')
 # MENDWRIGHT_* variables that hold a URL whose path or query can be a secret (a webhook's
 # path is its key): doctor shows scheme and host only.
 _ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY', 'MENDWRIGHT_WEBHOOK_URL')
@@ -172,12 +173,20 @@ def _fingerprint_info():
 
 def _get_by_info():
     """Whether mendwright.open() looks up and heals heal.page's get_by_* calls by default,
-    what decides it, and whether one can heal: only with the fingerprint tier on."""
-    problem, env = _flag_problem('MENDWRIGHT_HEAL_GET_BY')
+    what decides it, whether a model may heal one too (MENDWRIGHT_HEAL_GET_BY=model), and
+    whether one can heal: with the fingerprint tier on, or a model allowed to."""
+    from .facade import get_by_env
+    from .getby import MODEL
+    try:
+        env, problem = get_by_env(), None
+    except ValueError as exc:
+        env, problem = False, str(exc)
+    raw = os.environ.get('MENDWRIGHT_HEAL_GET_BY')
     enabled = problem is None and bool(env)
-    source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and env is not None else 'default'
-    return {'enabled': enabled, 'source': source,
-            'heals': enabled and _fingerprint_info()['enabled']}
+    model = env == MODEL
+    source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and raw is not None else 'default'
+    return {'enabled': enabled, 'source': source, 'model': model,
+            'heals': enabled and (model or _fingerprint_info()['enabled'])}
 
 
 def _provider_info():
@@ -284,10 +293,15 @@ def _settings_problems():
     from .facade import _env_timeout
     problems = []
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
-                 'MENDWRIGHT_HEAL_GET_BY'):
+                 'MENDWRIGHT_SUGGEST_GET_BY'):
         problem, _ = _flag_problem(name)
         if problem:
             problems.append(problem)
+    from .facade import get_by_env
+    try:
+        get_by_env()
+    except ValueError as exc:
+        problems.append(str(exc))
     try:
         _env_timeout()
     except ValueError as exc:
@@ -388,7 +402,12 @@ def _doctor_text(d):
 
     g = d.get('get_by') or {}
     lines.append('get_by_* locators')
-    if g.get('heals'):
+    if g.get('model'):
+        lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call '
+                           'that matches nothing is healed from its fingerprint, or by the model '
+                           'provider when the fingerprint does not heal it or the call never '
+                           'matched.'))
+    elif g.get('heals'):
         lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that '
                            'matches nothing is healed from its fingerprint, never by a model.'))
     elif g.get('enabled'):

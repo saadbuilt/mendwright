@@ -572,7 +572,7 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
         "mendwright.open(), to heal a call that matches nothing from its fingerprint.")
     assert cli.main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["get_by"] == {
-        "enabled": False, "source": "default", "heals": False}
+        "enabled": False, "source": "default", "model": False, "heals": False}
 
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "1")
     assert cli.main(["doctor"]) == 0
@@ -582,7 +582,7 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
     assert "  MENDWRIGHT_HEAL_GET_BY=1" in out.splitlines()
     assert cli.main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["get_by"] == {
-        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "heals": True}
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "model": False, "heals": True}
 
     monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
     assert cli.main(["doctor"]) == 0
@@ -597,11 +597,30 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
     assert "  not healed (MENDWRIGHT_HEAL_GET_BY=0): heal.page.get_by_role()" in (
         capsys.readouterr().out)
 
+    # model: a model may heal a call too, also with the fingerprint tier off.
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "Model")
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    at = lines.index("get_by_* locators")
+    assert " ".join(line.strip() for line in lines[at + 1:at + 4]) == (
+        "healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call that matches "
+        "nothing is healed from its fingerprint, or by the model provider when the fingerprint "
+        "does not heal it or the call never matched.")
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "model": True, "heals": True}
+    monkeypatch.delenv("MENDWRIGHT_FINGERPRINT")
+
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "sometimes")
     assert cli.main(["doctor"]) == 0
     lines = capsys.readouterr().out.splitlines()
     problems = lines[lines.index("Problems") + 1:]
-    assert any("MENDWRIGHT_HEAL_GET_BY must be 1 or 0" in line for line in problems)
+    assert any("MENDWRIGHT_HEAL_GET_BY must be 1, 0 or model" in line for line in problems)
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": False, "source": "default", "model": False, "heals": False}
 
 
 def test_report_shows_a_call_key_as_it_is(capsys, tmp_path):

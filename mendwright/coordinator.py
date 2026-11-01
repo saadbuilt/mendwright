@@ -9,7 +9,9 @@ quarantines the healed candidate. When a heal does not happen, the coordinator r
 A list whose selectors all match nothing is never healed (see decline_list): with
 nonempty=True, it is looked for and what is found is saved as a proposed list heal for a
 person to check, never used (see propose_list). The key of a heal.page.get_by_*() call is
-healed from its fingerprint only, never by a model (see _heal_get_by).
+healed from its fingerprint only, never by a model (see _heal_get_by), unless get_by_model
+is set (open(heal_get_by='model')): then it goes through the same tiers as any key, with the
+call's role and words as the model's intent (see _call_meta).
 """
 
 import contextlib
@@ -215,7 +217,7 @@ DECLINE_CODES = (
     'list_empty',       # a list whose selectors all match nothing
     'list_not_found',   # a list looked up with nonempty=True: nothing found to propose
     'list_waits_fix',   # a list heal a person accepted, not yet in the code or seed file
-    'get_by',           # a get_by_* call its fingerprint could not heal (no model is asked)
+    'get_by',           # a get_by_* call its fingerprint could not heal, with heal_get_by=True
     'frame',            # found only inside an iframe mendwright did not follow it into
     'shadow',           # inside a shadow root mendwright could not heal it in or follow it into
     'other',
@@ -265,9 +267,16 @@ class HealCoordinator:
                  html_provider, inventory_provider, guard, dry_run=False, log=None,
                  auth_header=DEFAULT_AUTH_HEADER, driver=None, guardrails=None, journal=None,
                  clock=time.monotonic, heal_across_pages=False, entry='mendwright.open()',
-                 fingerprint=False):
+                 fingerprint=False, get_by_model=False, twins='calls'):
         self.store = store
         self.fingerprint = bool(fingerprint)
+        # open(heal_get_by='model'): a model may heal the key of a get_by_* call too (see
+        # _call_meta). Off, such a key is healed from its fingerprint only (_heal_get_by).
+        self.get_by_model = bool(get_by_model)
+        # Which heals are saved with a get_by twin (see client.get_by_twin): 'calls' for the
+        # keys of get_by_* calls, 'all' for every key (open(suggest_get_by=True)), None for
+        # none.
+        self.twins = twins
         # Direct-mode guardrails (rate limit + spend cap) and the event journal. In gateway
         # mode these live server-side, so they default off / no-op here; the facade wires
         # real ones for direct in-process providers.
@@ -451,7 +460,9 @@ class HealCoordinator:
 
         With fingerprint=True the fingerprint tier runs first (after the destructive, page,
         role and guard checks), and the provider is asked only when it does not heal. The
-        key of a get_by_* call is healed from its fingerprint only (see _heal_get_by)."""
+        key of a get_by_* call is healed from its fingerprint only (see _heal_get_by), or,
+        with get_by_model, as any key, with the call's role and words as the intent and, for
+        a call that never matched, the role the call names (see _call_meta)."""
         if meta.get('destructive'):
             # A key marked destructive (pay, submit, delete) is not auto-healed: a validated
             # but wrong selector would act on a live account, and the canary IS the real click.
@@ -470,7 +481,11 @@ class HealCoordinator:
         if outside:
             return self._decline(selector_key, outside, code=self._place_code('shadow'))
         if getby.is_key(selector_key):
-            return self._heal_get_by(selector_key, meta, broken_candidates)
+            if not self.get_by_model:
+                return self._heal_get_by(selector_key, meta, broken_candidates)
+            meta = self._call_meta(selector_key, meta)
+            if meta is None:
+                return False
         # A provider that advertises it is unavailable (e.g. the facade's no-provider
         # stand-in) carries its own actionable reason; surface it verbatim. The str check
         # matters: a bare Mock()/MagicMock() test double answers every attribute with a
@@ -590,7 +605,8 @@ class HealCoordinator:
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath,
-                                    shadow_hosts=self.shadow_hosts)
+                                    shadow_hosts=self.shadow_hosts,
+                                    twin=self._wants_twin(selector_key))
             if applied:
                 self._record_applied(selector_key, broken_candidates, applied, started,
                                      type(self.provider).__name__, self._provider_model(),
@@ -606,6 +622,26 @@ class HealCoordinator:
             "matches exactly one element of the expected role and is present on the live page.",
             code='gate')
         return None
+
+    def _call_meta(self, selector_key, meta):
+        """For try_heal() with get_by_model: the meta to heal the key of a get_by_* call with,
+        or None after declining it. The intent is what the call says of its element
+        (getby.intent_of), for this heal only: it is never saved (an intent a seed file gives
+        the key wins). A call that never matched
+        has no role in the store: a get_by_role() call gets the gate role its ARIA role
+        names (getby.gate_role), checked by Playwright's own matcher too (gate.live_reason);
+        any other call is declined before any model call, since what a model picks could not
+        be checked."""
+        call = getby.parse(selector_key)
+        role = meta.get('expectedRole')
+        if not role or role == 'unknown':
+            role = getby.gate_role(call)
+            if role is None:
+                self._decline(selector_key, getby.role_unknown_model_message(selector_key, call),
+                              code='role_unknown')
+                return None
+        return dict(meta, expectedRole=role,
+                    intent=meta.get('intent') or getby.intent_of(call))
 
     def _heal_get_by(self, selector_key, meta, broken_candidates):
         """try_heal() for the key of a heal.page.get_by_*() call (see mendwright.getby),
@@ -671,7 +707,8 @@ class HealCoordinator:
                 level=logging.INFO, code='dry_run'), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
-                                frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts)
+                                frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts,
+                                twin=self._wants_twin(selector_key))
         if applied:
             self._record_applied(selector_key, broken_candidates, applied, started,
                                  FINGERPRINT_PROVIDER, None, FINGERPRINT_PROVIDER)
@@ -1082,11 +1119,35 @@ class HealCoordinator:
             return None
         return visible
 
+    def _wants_twin(self, selector_key):
+        """Whether a heal of selector_key here is saved with its get_by twin (see
+        client.get_by_twin): twins is 'all', or 'calls' and the key is a get_by_* call's,
+        and the heal is on the page, not inside an iframe or a shadow root."""
+        if self.frame_xpath or self.shadow_hosts:
+            return False
+        return self.twins == 'all' or (self.twins == 'calls' and getby.is_key(selector_key))
+
+    def _twin_of(self, selector_key, applied):
+        """The get_by twin saved with the heal applied, or None."""
+        try:
+            for c in self.store.candidates(selector_key):
+                if c.get('xpath') == applied:
+                    twin = c.get('getBy')
+                    return twin if isinstance(twin, str) and twin else None
+        except Exception:
+            return None
+        return None
+
     def _record_applied(self, selector_key, broken_candidates, applied, started, provider,
                         model, source):
-        """Journal, remember and log a heal that was applied."""
+        """Journal, remember and log a heal that was applied. Its heal.applied carries the
+        heal's get_by twin as get_by, when one was saved, so mendwright fix finds it even in
+        a store a process without twins rewrote."""
         seconds = max(0.0, self.clock() - started)
         where = {'shadow': list(self.shadow_hosts)} if self.shadow_hosts else {}
+        twin = self._twin_of(selector_key, applied)
+        if twin:
+            where['get_by'] = twin
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
