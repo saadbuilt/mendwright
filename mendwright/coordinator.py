@@ -122,6 +122,42 @@ def _canary_call(method, *args, by=None, test=None, **kwargs):
     return method(*args, **kwargs, **_accepted(method, by=by, test=test))
 
 
+def _cap_full(guardrails, selector_key):
+    """guardrails.full(key): which cap refused the heal, or None for guardrails that can't
+    say (a custom one)."""
+    full = getattr(guardrails, 'full', None)
+    try:
+        return full(selector_key) if callable(full) else None
+    except Exception:
+        return None
+
+
+def rate_cap_message(selector_key, why):
+    """Why a heal attempt was refused by the hourly rate/spend cap, in plain words: what was
+    not done (no model was asked), which cap is full (why is guardrails.full()'s answer, or
+    None), and the variables that set the caps."""
+    kind, count, cap = why if isinstance(why, tuple) and len(why) == 3 else (None, None, None)
+    if kind == 'per_key':
+        full = ("this process already made " + str(count) + ' heal attempts for it in the last '
+                'hour, and rate_per_key_per_hour is ' + str(cap))
+    elif kind == 'shared':
+        full = ('the workers that share this store already made ' + str(count) + ' heal attempts '
+                'for it in the last hour, and rate_per_key_per_hour is ' + str(cap))
+    elif kind == 'global':
+        full = ("this process already made " + str(count) + ' heal attempts for all its keys in '
+                'the last hour, and rate_global_per_hour is ' + str(cap))
+    elif kind == 'calls':
+        full = 'this run already made the ' + str(cap) + ' heal calls its spend cap allows'
+    elif kind == 'cost':
+        full = "the provider's cost ceiling of this run's spend cap is reached"
+    else:
+        full = 'the hourly cap of heal attempts is reached'
+    return ("mendwright did not ask the model to repair '" + selector_key + "': " + full
+            + ' (the rate/spend cap of a direct provider; each attempt makes up to 2 model '
+            'calls). It fails closed, and asks again once older attempts drop out of the hour. '
+            'MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR set the caps.')
+
+
 def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
@@ -602,12 +638,10 @@ class HealCoordinator:
         # attempt == one slot), mirroring the gateway's server-side needs_human.
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
             self.journal.rejected(selector_key, reason='rate/spend cap')
-            return self._decline(selector_key,
-                "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
-                "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
-                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...) "
-                "or MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR.",
-                code='rate_limit')
+            return self._decline(selector_key, rate_cap_message(selector_key,
+                                                                _cap_full(self.guardrails,
+                                                                          selector_key)),
+                                 code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:
             self.journal.requested(selector_key)

@@ -71,6 +71,7 @@ from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, fra
 from .shadow import (MISSING, ShadowHost, as_document, chain_hosts, driver_shadowed, hosts_of,
                      place_text, saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
+from .fleet import page_signature, single_flight
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 
@@ -1137,6 +1138,9 @@ class Healer:
         # (see _refused_reuse): (key, page, selector) journaled, and (key, page) logged.
         self._refusals: set = set()
         self._refusals_logged: set = set()
+        # The clock and sleep of a locator() lookup's poll (resolver.resolve). Tests replace them.
+        self._clock = time.monotonic
+        self._sleep = time.sleep
         _register(self)
 
     @property
@@ -1396,7 +1400,8 @@ class Healer:
             # would have only the scroll's timeout.
             with self._overlays.handling():
                 return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms,
-                               refused=self._refused_reuse)
+                               refused=self._refused_reuse, monotonic=self._clock,
+                               sleep=self._sleep)
 
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -1416,7 +1421,7 @@ class Healer:
                 if native is _NOT_FOLLOWED:
                     native = self._follow_into_shadow(key, exc, attempt)
                 if native is _NOT_FOLLOWED:
-                    native = self._heal(key, exc, attempt)
+                    native = self._heal(key, exc, attempt, timeout)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
         self._adopt_winner(key)
@@ -1501,7 +1506,7 @@ class Healer:
                     if _raised_by_run(exc):
                         raise
                     self._get_by_frames(key, exc, 'mendwright.open')
-                    native = self._heal(key, exc, attempt)
+                    native = self._heal(key, exc, attempt, timeout)
             except InterruptionLoop:
                 raise   # the page is blocked: a heal would not help
             except AttentionRequired as exc:
@@ -3252,8 +3257,12 @@ class Healer:
         framed = driver_framed(self._driver, frame)
         return HealScope(frame=frame, driver=framed) if framed is not None else None
 
-    def _heal(self, key, exc, attempt):
-        """Heal through the coordinator after attempt() raised exc, then retry attempt()."""
+    def _heal(self, key, exc, attempt, timeout=None):
+        """Heal through the coordinator after attempt() raised exc, then retry attempt().
+
+        At most one worker of this process heals (store file, key, page) at a time (see
+        mendwright.fleet.single_flight): the others wait for it, at most the step's timeout,
+        then adopt its heal or reuse its decline, or make their own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
         pending = [exc]
 
@@ -3264,14 +3273,29 @@ class Healer:
 
         context = self._flow_context(key, self._url())
         scope = self._heal_scope(key)
-        if scope is None:
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
-        # The key was last found inside an iframe or a shadow root: capture, check and save
-        # the heal there, or refuse it.
-        with scope.entered(self.coordinator):
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
+
+        def heal():
+            if scope is None:
+                return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                         self.store.meta(key), context)
+            # The key was last found inside an iframe or a shadow root: capture, check and
+            # save the heal there, or refuse it.
+            with scope.entered(self.coordinator):
+                return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                         self.store.meta(key), context)
+
+        timeout = self.timeout_ms if timeout is None else timeout
+        return single_flight(self.store, key, self._signature(key, context), heal,
+                             timeout / 1000.0)
+
+    def _signature(self, key, context):
+        """The page signature of a heal of key here (see mendwright.fleet.page_signature):
+        the page, and the selectors of key that just missed."""
+        try:
+            selectors = [c.get('xpath') for c in self.store.candidates(key)]
+        except Exception:
+            selectors = []
+        return page_signature((context or {}).get('page'), selectors)
 
     # --- following a key's own selector into an open shadow root -----------------------
 
