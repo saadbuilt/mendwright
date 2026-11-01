@@ -79,10 +79,12 @@ export function readStore(store: string): any {
   return JSON.parse(fs.readFileSync(store, 'utf-8'));
 }
 
-/** A model that answers with the given proposals, in order, and keeps what it was sent. */
+/** A model that answers with the given proposals, in order, and keeps what it was sent and
+ * the outcomes reported to it. */
 export class FakeModel implements HealProvider {
   readonly model = 'fake';
   readonly bundles: Bundle[] = [];
+  readonly outcomes: [string, string, boolean][] = [];
   lastError: string | null = null;
 
   constructor(private readonly replies: string[]) {}
@@ -91,5 +93,9 @@ export class FakeModel implements HealProvider {
     this.bundles.push(bundle);
     const xpath = this.replies.shift();
     return xpath ? { xpath, fallbacks: [], reasoning: 'fake' } : null;
+  }
+
+  reportOutcome(key: string, xpath: string, success: boolean): void {
+    this.outcomes.push([key, xpath, success]);
   }
 }

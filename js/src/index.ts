@@ -29,5 +29,7 @@ export { setLogSink } from './log';
 export type { LogLevel, LogSink } from './log';
 export type { Interruption, InterruptionEvent, CookieChoice } from './interruptions';
 export { DISMISS_KEY } from './flow';
+export { parseMoney, parseNumber } from './values';
+export type { ExpectValue, ValueName } from './values';
 
 export const version = '0.1.0';

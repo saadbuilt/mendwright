@@ -49,6 +49,9 @@ import { inferRole, roleChoices } from './roles';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
 import { chainHosts, hostsOf, placeText, runTarget, type Target } from './shadow';
 import { expandPath, loadStore, type Candidate, type SelectorStore } from './store';
+import {
+  VALUE_READS, expectation, expectations, refusalReason, refusedMessage, type ExpectValue, type Expectation,
+} from './values';
 
 export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -113,6 +116,10 @@ export interface OpenOptions {
    * close button, or a decline button such as No thanks, never one that accepts, subscribes,
    * pays or goes somewhere. Off by default. */
   dismiss?: boolean;
+  /** { key: check }: expectValue (see LocatorOptions) for those keys on every lookup, those
+   * heal.page makes too, whose key is the selector. An expectValue passed to heal.locator()
+   * wins over it. Not saved. */
+  expectValues?: Record<string, ExpectValue | null | undefined> | Map<string, ExpectValue | null | undefined> | null;
 }
 
 export interface LocatorOptions {
@@ -123,6 +130,15 @@ export interface LocatorOptions {
   pollMs?: number;
   optional?: boolean;
   intent?: string;
+  /** What a read of the element must return when the element was found through a selector a
+   * heal saved, in this run or an earlier one: 'money', 'number', 'integer', 'percent',
+   * 'date', 'email' or 'url', a RegExp, or a function that takes the value and returns
+   * something truthy when it is right. The reads are innerText(), textContent(), inputValue()
+   * and getAttribute(). A value that passes confirms a heal made in this process; one that
+   * fails quarantines the heal, and the read throws AttentionRequired. A read through any
+   * other selector is never checked. Without it, the check of open({ expectValues }) for the
+   * key applies. Not saved. */
+  expectValue?: ExpectValue | null;
 }
 
 const TRUE = ['1', 'true', 'yes', 'on'];
@@ -256,6 +272,7 @@ interface Plan {
   pollMs: number;
   optional: boolean;
   intent: string | undefined;
+  expect: Expectation | null;
 }
 
 // Healers made by open() that are still in use, for the Playwright Test fixture, which
@@ -319,6 +336,8 @@ export class Healer {
   private pageProxy: Page | Frame | null = null;
   /** @internal open({ dismiss: true }): dismiss popups nobody registered (see dismiss()). */
   dismissOn = false;
+  /** @internal open({ expectValues }): key -> the check a read through a heal must pass. */
+  expectValues: Map<string, Expectation> = new Map();
 
   constructor(page: PageLike, driver: PlaywrightDriver, store: SelectorStore, coordinator: HealCoordinator,
               timeoutMs: number) {
@@ -387,8 +406,8 @@ export class Healer {
    * selector is what your code says the element is: an XPath, CSS or Playwright selector, or
    * a list tried in order. role is the kind of element (mendwright reads it from the page when
    * left out). destructive: true marks a control that is never healed. optional: true marks a
-   * step that may not be there. Throws TypeError or InvalidSelector at once for arguments
-   * that can never work. */
+   * step that may not be there. expectValue says what a read through a heal must return.
+   * Throws TypeError or InvalidSelector at once for arguments that can never work. */
   locator(key: string, selector?: string | string[] | null, options: LocatorOptions = {}): HealLocator {
     if (typeof key !== 'string' || !key) {
       throw new TypeError('mendwright: heal.locator() needs a key, a non-empty name such as "email", got ' + pyRepr(key) + '.');
@@ -405,10 +424,11 @@ export class Healer {
     const roles = roleChoices(options.role);
     const code = codeSelectors(key, selector);
     this.checkIntent(key, code, roles, intent);
+    const expect = expectation(options.expectValue, key) ?? this.expectValues.get(key) ?? null;
     return new HealLocator(this, key, {
       roles, code, text: options.text, destructive: options.destructive,
       timeoutMs: options.timeoutMs ?? this.timeoutMs, pollMs: options.pollMs ?? 200,
-      optional: Boolean(options.optional), intent,
+      optional: Boolean(options.optional), intent, expect,
     });
   }
 
@@ -1040,6 +1060,30 @@ export class Healer {
     });
   }
 
+  /** @internal value, which the read verb(...args) returned for key, when it passes expect
+   * or key was not found through a heal (healed is null). A value that passes confirms a heal
+   * of key made in this process, by 'expect_value'. One that fails quarantines the heal (a
+   * heal.canary with success false and a heal.quarantine for one made in this process, else a
+   * heal.quarantine), each with the reason and never the value, logs a WARNING and throws
+   * AttentionRequired with the key, the heal and the value. */
+  async checkValue(key: string, healed: string | null, verb: string, args: readonly unknown[], value: unknown,
+                   expect: Expectation | null): Promise<unknown> {
+    if (healed === null || expect === null) return value;
+    const coordinator = this.coordinator;
+    const ok = await expect.passes(value);
+    const reason = ok ? undefined : refusalReason(verb, args, expect);
+    if (coordinator.isPending(key, healed)) {
+      coordinator.confirmPending(key, ok, { reason, xpath: healed, by: 'expect_value' });
+    } else if (!ok) {
+      this.store.quarantine(key, healed);
+      coordinator.journal.event('heal.quarantine', { key, xpath: healed, reason });
+    }
+    if (ok) return value;
+    const message = refusedMessage(key, healed, verb, args, value, expect);
+    coordinator.emit('warning', message);
+    throw new AttentionRequired('mendwright: ' + message);
+  }
+
   /** @internal */
   reportNothingMatched(key: string): void {
     const others = [...this.interruptions.values()].filter((item) => item.key !== key);
@@ -1100,6 +1144,8 @@ export class HealLocator {
   private hosts: string[] | null = null;
   private isPresent = true;
   private readsDue = true;
+  // The selector a heal saved that the element was found through, else null.
+  private healed: string | null = null;
 
   constructor(healer: Healer, key: string, plan: Plan) {
     this.healer = healer;
@@ -1124,6 +1170,7 @@ export class HealLocator {
     }
     this.nativeLocator = result.native;
     this.hosts = result.hosts;
+    this.healed = result.healed;
     this.isPresent = result.native !== null;
     return result.native;
   }
@@ -1226,7 +1273,10 @@ export class HealLocator {
     }
     // A Locator that matches nothing: answered as Playwright does (see waitPlaced).
     if (!(await this.waitPlaced(native, name))) return ABSENT_ANSWERS.get(name);
-    return (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name](...args);
+    const value = await (native as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name](...args);
+    // expectValue: the value of a read through a heal must pass the key's check.
+    if (!VALUE_READS.has(name) || this.plan.expect === null || this.healed === null) return value;
+    return this.healer.checkValue(this.key, this.healed, name, args, value, this.plan.expect);
   }
 
   click(options?: Parameters<Locator['click']>[0] & ExpectOption): Promise<void> {
@@ -1568,6 +1618,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
     throw new TypeError('mendwright.open() takes dismiss: true or dismiss: false, got dismiss: '
       + argText(options.dismiss) + '.');
   }
+  const checks = expectations(options.expectValues);
   const storePath = path.resolve(expandPath(options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH));
   const timeoutMs = options.timeoutMs ?? envTimeout() ?? DEFAULT_TIMEOUT_MS;
   const dryRun = options.dryRun ?? Boolean(envFlag('MENDWRIGHT_DRY_RUN'));
@@ -1612,6 +1663,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   });
   const healer = new Healer(native, driver, store, coordinator, timeoutMs);
   healer.dismissOn = Boolean(options.dismiss);
+  healer.expectValues = checks;
   if (cookies) {
     const preset = cookiePreset(cookies);
     (healer as unknown as { interruptions: Map<string, Interruption> }).interruptions.set(preset.key, preset);

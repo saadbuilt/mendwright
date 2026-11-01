@@ -58,6 +58,7 @@ test('accept the terms', async ({ page, heal }) => {
 - `optional: true` marks a step that may not be there: if its element doesn't appear, nothing is healed and its actions do nothing.
 - `intent` describes the element in words for the model, such as `'the terms checkbox in the signup form'`. With `role` and no selector, a model looks for the element on first use.
 - `selector` can be a list of selectors, tried in order. The selectors in your code always come first; when you change them, the old ones are kept as `superseded` and no longer tried.
+- `expectValue` says what a read must return when the element was found through a heal, such as `'money'`: see [Checking what a read returns](#checking-what-a-read-returns).
 
 The locator's actions are Playwright's, with the same arguments, and resolve the key first. `await locator.resolve()` resolves it without acting, then `locator.native` is the real Playwright `Locator` and `locator.present` says whether an optional step was there.
 
@@ -139,6 +140,68 @@ A heal is quarantined when an action on it fails in the browser, when `expect` r
 
 `test.use({ mendwrightStrict: true })` fails a test that passed only because a selector was healed. The heal is still saved and confirmed, so strict CI runs need a fresh store.
 
+## Checking what a read returns
+
+A heal passes the checks when the new element has the step's role and is the one visible match. For a read, that can still be the wrong element: after a redesign, a price selector can heal onto the rating next to the price, and a scraper saves 4.5 as the price. `expectValue` says what a read must return:
+
+```ts
+const price = await heal.locator('price', '#price', { expectValue: 'money' }).innerText();
+```
+
+When the element was found through a selector a heal saved, in this run or an earlier one, mendwright checks the value the read returns:
+
+- A value that passes is returned. It confirms a heal made in this run, as `expect` on an action does.
+- A value that fails quarantines the heal, and the read throws `AttentionRequired` instead of returning it. The same text is logged as a warning:
+
+  ```text
+  mendwright: 'price' was healed to //span[@class='rating'], and its innerText() there is '4.5', which is not money (expectValue: 'money'). The heal probably found another element, so mendwright quarantined it and did not return the value. The next lookup of 'price' heals it again, and cannot pick that element. If the value is right, change expectValue.
+  ```
+
+  The quarantine blocks the element, not only the selector, so neither the fingerprint tier nor the model can pick the rating again.
+
+A read through any other selector, such as the one in your code, is never checked: `expectValue` only ever refuses a heal. A price your own selector reads as "Call for price" comes back as it is.
+
+The reads it checks are `innerText()`, `textContent()`, `inputValue()` and `getAttribute()`, of `heal.locator()`, `heal.page` and `heal.page.locator()`. Other reads, the actions, and what you run on `native` yourself are as before.
+
+| `expectValue` | Passes for |
+|---|---|
+| `'money'` | an amount with a currency sign or code before or after it, and nothing else: `$1,299.00`, `1.299,00 €`, `129 kr`, `CHF 12.50`, `USD 1299`, `$12.00 USD`, `R1,299.00`, `₹1,29,999.00`, `129,-`, `-$12`. The signs are the Unicode currency signs and `US$`, `C$` and the like; the codes are the common ISO 4217 codes and abbreviations such as `kr`, `zł`, `Kč`, `Ft`, `lei`, `Rs`, `R`, `RM` and `CHF`. A number without one, such as `1,299.00`, is not money: use `'number'` |
+| `'number'` | a number and nothing else, with an optional sign: `1,299.00`, `1.299,00`, `1 299,00`, `1'299.00`, `4.5`, `-3` |
+| `'integer'` | a number with no decimal part written: `1,299`, `12`, but not `12.00` |
+| `'percent'` | a number with `%` before or after it: `12%`, `12.5 %`, `%20` |
+| `'date'` | a calendar date (31/02/2026 is not one): `2026-10-15`, with or without a time (`2026-10-15T10:00`, `2026-10-15T10:00:00+02:00`, `2026-10-15 10:00`), `15/10/2026`, `10/15/2026`, `15.10.2026`, `2026年10月15日`, or with the month's name in English, German, French, Spanish, Italian, Dutch or Portuguese, such as `Oct 15, 2026`, `15. Oktober 2026` or `15 de octubre de 2026`, also after a weekday or before a time |
+| `'email'` | an email address, also as a `mailto:` link |
+| `'url'` | an `http` or `https` URL with a host, one that starts with `//`, or a path that starts with `/`, `./` or `../`, as `getAttribute('href')` gives for a relative link |
+| a `RegExp` | a value it finds a match in, as Python's `re.search()` does. Anchor it with `^` and `$` to match the whole value. Its `g` and `y` flags are left out, so its `lastIndex` is never read or moved |
+| a function | a value it returns something truthy for, or a promise of something truthy. It gets the value as a string, and one that throws or rejects refuses it |
+
+Numbers are read the way most locales write them. Commas, dots, spaces (non-breaking and narrow ones too) and apostrophes group the digits, in threes, or in India in twos before a last group of three (`1,29,999`). When a number has both `.` and `,`, the one that comes last is the decimal point, and a mark that comes more than once groups. A single `.` or `,` followed by exactly three digits, as in `1.299` or `1,299`, is read as a thousands separator, as in a price; `0,299`, `1234.567` and `1 299,500` have a decimal part. In an amount of a currency with three decimals (`KWD`, `BHD`, `OMR`, `JOD`, `TND`), that `.` is the decimal point, as those amounts are written: `KWD 1.250` is 1.250. That `,` could be either (`1,250 TND` is 1.250 in Tunisia and 1250 in English), so `parseMoney()` gives `null` for it, though it passes `'money'`. The value is read in its compatibility form, so fullwidth digits and the digits of other scripts count, and spaces around it don't. A value of `null`, such as `getAttribute()` of an attribute the element doesn't have, passes no check, and a function isn't called for it.
+
+The checks are the Python package's. This package's tests run both packages on a table of over 450 values, and compare the character classes they rest on (Python's `\d`, `\w` and `\s`, `str.casefold()` and the like) for every character Python's Unicode version knows.
+
+`parseMoney()` and `parseNumber()` read the value you got the same way. They give the amount as a string, as the Python package's `Decimal` prints it, so no digit is lost, or `null`:
+
+```ts
+import { parseMoney } from 'mendwright';
+
+parseMoney('1.299,00 €');   // '1299.00'
+parseMoney('129 kr');       // '129'
+parseMoney('4.5');          // null: no currency
+```
+
+The string keeps the trailing zeros, and writes a number below 0.000001 as Python does, such as `'1E-7'`. `Number()` reads both.
+
+`heal.page` takes no `expectValue`, so give the checks for its keys to `open()`, or to the fixtures with `test.use({ mendwrightOptions: { expectValues } })`. The key is the selector:
+
+```ts
+const heal = open(page, { expectValues: { '#price': 'money', '#delivery': 'date' } });
+await heal.page.innerText('#price');   // checked when '#price' was found through a heal
+```
+
+The same object covers the keys of `heal.locator()`, and an `expectValue` passed to it wins over it. Neither is saved, so pass them on each run. A check that can never work, such as `'cash'` or a number, throws `TypeError` from `heal.locator()` or `open()`, before anything touches the page. A function written in place, as in `{ expectValue: (v) => ... }`, is called "the function" in messages; a named one by its name.
+
+In the journal, a refused read writes a `heal.canary` with `success: false` and `by: 'expect_value'` (for a heal made in this run) and a `heal.quarantine`, each with a `reason` such as `expect_value: innerText() is not money`, as the Python package writes them. The value itself is never written. A read that passes confirms a heal made in this run with a `heal.canary` whose `by` is `'expect_value'`.
+
 ## Cookie banners and other interruptions
 
 `open(page, { cookies: 'reject' })`, or `test.use({ mendwrightOptions: { cookies: 'reject' } })`, closes the consent banners of common consent managers without accepting: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, cookieconsent, CookieYes and Complianz, and, for others, a reject, decline or necessary-only button inside an element that is about cookies. `cookies: 'accept'` accepts them. It is off by default. The selectors are the Python package's, so a consent screen that isn't about cookies, such as an OAuth screen with Allow and Deny, is never clicked.
@@ -205,7 +268,7 @@ The journal has the Python package's events, with the same fields: each line has
 | `dryRun` (check proposals, apply none) | `MENDWRIGHT_DRY_RUN` | off |
 | `fingerprint` | `MENDWRIGHT_FINGERPRINT` | on |
 | `journal` (where the events go) | `MENDWRIGHT_RUN_ID` (the run id of each line) | `journal.jsonl` next to the store; the run id on GitHub Actions is `gh-<run id>.<attempt>`, else none |
-| `destructiveKeys`, `guard`, `healAcrossPages`, `cookies`, `dismiss`, `ratePerKeyPerHour`, `rateGlobalPerHour`, `log` | | |
+| `destructiveKeys`, `guard`, `healAcrossPages`, `cookies`, `dismiss`, `expectValues`, `ratePerKeyPerHour`, `rateGlobalPerHour`, `log` | | |
 
 `MENDWRIGHT_DISABLE=1` resolves selectors but never heals or calls a provider, even one passed as `provider`. The fixtures take `mendwrightProvider`, `mendwrightStore`, `mendwrightOptions` (any other `open()` option), `mendwrightPage` and `mendwrightStrict` through `test.use()`.
 
@@ -224,7 +287,7 @@ And, compared with the Python package's `heal.locator()` and `heal.interrupt()`:
 
 - An iframe is not followed into: a selector that matches only inside an iframe is not looked up there, and no heal is made inside one. A heal the Python package saved inside an iframe is used, but a key last found inside an iframe is not healed when it breaks (after the checks for a key marked destructive and the page guard, which decline it first).
 - No heal is made inside an open shadow root. Each time a key's selector matches, where its element is gets saved as the key's `shadowHosts`, as the Python package saves it, and a key last found inside a shadow root is not healed when it breaks, so an element that looks the same on the page around its host is never picked. A heal the Python package saved inside a shadow root runs as the Python package runs it: its CSS through its hosts, and only a match inside that shadow root counts, never one in the host's light DOM, a shadow root inside it or another host. That is checked when the key is looked up and again right before each action and read of the `HealLocator`, except that `isVisible()` and `isHidden()` answer `false` and `true` at once when the Locator matches nothing at all, as Playwright's do; what you run on its `native` Locator yourself isn't checked. When the Python package 0.9.0 has written the store, which drops every `shadowHosts`, the key's and each heal's, a heal's chain still names its hosts, so that key is still not healed; a key that only your own selector found inside a shadow root has nothing left to say so until it matches again. Don't share a store with the Python package 0.9.0.
-- `expect_value` (checking what a read returns), and `run` functions for interruptions that need a form.
+- `run` functions for interruptions that need a form.
 - Interruptions are not registered with `page.addLocatorHandler()`, so they are handled before the steps mendwright routes only, not before a `getBy*` or chained locator's actions unless `dismiss: true` guards them.
 - Gemini, Bedrock, LiteLLM and the gateway as providers, and seed files.
 - A page whose cleaned HTML is longer than 60,000 characters is cut at the end for a hosted model, instead of having unrelated parts left out, so the element can be cut off. A heal of such a page can't use a position such as `[2]`.

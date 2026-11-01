@@ -95,8 +95,9 @@ test('the popup scripts are self-contained: each is a function from its source t
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
     'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
-    'InterruptionLoop', 'DISMISS_KEY']) {
+    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber']) {
     assert.ok(name in api, name);
   }
   assert.equal(api.DISMISS_KEY, '<popup>');
+  assert.equal(api.parseMoney('1.299,00 €'), '1299.00');
 });

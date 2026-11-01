@@ -117,8 +117,9 @@ export function pyRepr(value: unknown): string {
   return out + quote;
 }
 
-// The characters str.isspace() is true for, which str.strip() takes off both ends.
-const PY_SPACE = '\t\n\x0b\x0c\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000';
+// The characters str.isspace() is true for, which str.strip() takes off both ends, and \s
+// matches in a Python regular expression of str (as the inside of a [...] class).
+export const PY_SPACE = '\t\n\x0b\x0c\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000';
 const PY_STRIP = new RegExp('^[' + PY_SPACE + ']+|[' + PY_SPACE + ']+$', 'g');
 
 /** str.strip() with no argument. */
@@ -131,6 +132,13 @@ const PY_RSTRIP = new RegExp('[' + PY_SPACE + ']+$');
 /** str.rstrip() with no argument. */
 export function pyRstrip(s: string): string {
   return s.replace(PY_RSTRIP, '');
+}
+
+const PY_LSTRIP = new RegExp('^[' + PY_SPACE + ']+');
+
+/** str.lstrip() with no argument. */
+export function pyLstrip(s: string): string {
+  return s.replace(PY_LSTRIP, '');
 }
 
 /** sum() of floats as CPython 3.12 and later add them: Neumaier's compensated summation,
