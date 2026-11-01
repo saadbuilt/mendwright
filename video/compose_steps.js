@@ -21,39 +21,6 @@ function stepFrames(prefix, flow, times) {
   }
 }
 
-// montage beat M3 (brief): the order diagram, the pages, one stamp
-window.montageSteps = function montageSteps(t0) {
-  const t1 = t0 + 4.6, sw = ST.switched;
-  montage(t0, t1);
-  if (!sw.ok || sw.ran[0] !== 'payment') throw new Error('steps: switched run');
-  const T = { pay: t0, ship: t0 + 1.6, rev: t0 + 2.4, done: t0 + 3.0 };
-  stepFrames('m3', 'switched', { '/checkout': [T.pay, T.ship], '/checkout/shipping': [T.ship, T.rev], '/checkout/review': [T.rev, T.done], '/checkout/done': [T.done, t1] });
-  // heal is defined on the row above the steps, as in clip D
-  codeBlock({ t0, t1, rows: [{ ...openRows('heal', ST.open_kwargs)[0], n: 1 },
-    { id: 'st', n: '', html: `<span class="k-fold">⋯ ${ST.steps.length} × @heal.step(…)</span>` },
-    { id: 'rs', n: 2, html: O_('heal') + P_('.') + F_('run_steps') + P_('()') }] });
-  const dg = orderDiagram(t0 + .1);
-  dg.rows[1].t = t0 + .1;
-  dg.lit = [[t0 + .8, 'payment'], [T.ship, 'shipping'], [T.rev, 'review']];
-  dg.done = T.done;
-  dg.litRows = [1];                  // only the site's order lights up and turns green
-  run({ t0, t1, diagram: dg });
-  // deliberate departure from "one focal zone", as in clip D: the order diagram's lit chip
-  // and the page are read together, and the code says how
-  focus(t0, 'all');
-  cap(t0 + .2, t1 - .2, 'Steps reordered? It follows the site.');
-  beat(t0 + 1.2, 'M3 payment first');
-  fill(t0 + .8, t0 + 1.1, 'm3checkout:#card-number', '4242 4242 4242 4242');
-  curOn(t0 + .9, T.done); cur(t0 + .9, 'm3checkout:#next', 60, 4); cur(T.ship + .1, 'm3shipping:#next', 60, 4); cur(T.rev + .05, 'm3review:.go', 60, 4);
-  click(t0 + 1.3, 'm3checkout:#next', C.white); press(t0 + 1.3, 'm3checkout:#next');
-  fill(T.ship + .05, T.ship + .3, 'm3shipping:#ship-name', 'Ada Lovelace');
-  click(T.ship + .5, 'm3shipping:#next', C.white); press(T.ship + .5, 'm3shipping:#next');
-  click(T.rev + .4, 'm3review:.go', C.white); press(T.rev + .4, 'm3review:.go');
-  pstamp({ t: [t0 + 3.4, t1], kind: 'ok', html: `✓ ran ${sw.ran.join(' → ')}`, frame: 'm3done' });
-  beat(t0 + 4.0, 'M3 ran in the site’s order');
-  return t1;
-};
-
 // clip D: "Checkout steps in any order"
 function cutD() {
   const sw = ST.switched, ex = ST.extra;

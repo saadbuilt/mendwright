@@ -168,19 +168,59 @@ def main_data(cap):
     }
 
 
+def main_cut_data(cm):
+    """The main cut's story from capture_main.json: today's page, the redesign, the next run."""
+    secs = lambda k: [s['seconds'] for s in cm[k]]
+    M, Dm, E = cm['M_mendwright_v1'], cm['D_mendwright_v2'], cm['E_mendwright_v2_again']
+    check(all(s['ok'] for s in M + Dm + E), 'main: a step failed')
+    script = [[s['verb'], s['arg']] for s in Dm]
+    check(script == [[s['verb'], s['arg']] for s in M] == [[s['verb'], s['arg']] for s in E], 'main: the runs ran different scripts')
+    check(len(cm['M_fingerprints']) == 3 and all(cm['M_fingerprints'].values()), 'M: not all three elements were remembered')
+    check(cm['M_heals'] == [], 'M: today\'s run repaired something')
+    check([h['source'] for h in cm['D_heals']] == ['fingerprint', 'model', 'fingerprint'], 'D: the repairs came from elsewhere')
+    check(all(len(s['log_at']) == 1 for i, s in enumerate(Dm) if i != 1), 'D: a repair without its log line')
+    check(cm['E_heals'] == [], 'E: the next run repaired something')
+    # the next run passed through the saved repairs: the same ones, each used again
+    check(all(cm['E_winners'][k]['xpath'] == w['xpath'] and cm['E_winners'][k]['lastSucceededAt'] >= w['lastSucceededAt']
+              for k, w in cm['D_winners'].items()) and len(cm['D_winners']) == 3, 'E: the next run did not use the saved repairs')
+    check(dict(cm['D_checked'])['opt-91c4'] and not dict(cm['D_checked'])['opt-77a1'], 'D: the wrong checkbox')
+    notes = {n['key']: n for n in cm['D_fingerprint_notes']}
+    check('two elements score alike' in notes['#accept-terms']['note'] and not notes['#accept-terms']['applied'],
+          'D: the fingerprint tier did not defer #accept-terms to the model for two alike elements')
+    dlogs = [(s['log'][0] if s['log'] else '') for s in Dm]
+    m = re.search(r'LocalModelProvider, ([0-9.]+)s', dlogs[2])
+    win = cm['D_winners']
+    return {
+        'pages': {'v1': cm['pages']['v1'], 'v2': cm['pages']['v2']},
+        'script': script,
+        'M': {'steps': secs('M_mendwright_v1'), 'seconds': cm['M_seconds'], 'fingerprints': cm['M_fingerprints']},
+        'Dsteps': [{'seconds': s['seconds'], 'log_at': s['log_at']} for s in Dm],
+        'D_seconds': cm['D_seconds'], 'D_timeout_ms': cm['D_timeout_ms'], 'D_heals': cm['D_heals'], 'D_logs': dlogs,
+        'Esteps': secs('E_mendwright_v2_again'), 'E_seconds': cm['E_seconds'], 'E_heals': cm['E_heals'],
+        'xpaths': {'email': win['#email']['xpath'], 'terms': win['#accept-terms']['xpath'], 'cont': win['#continue']['xpath']},
+        'model_seconds': m.group(1), 'model_bytes': cm['model']['bytes'],
+        'D_fingerprint_notes': cm['D_fingerprint_notes'], 'D_proposed': cm['D_proposed'], 'D_checked': cm['D_checked'],
+    }
+
+
 def popup_data(cm):
-    """The popup beat of the main cut: an offer and a question nobody registered, over the
-    redesign (capture_main.json's 'popups', on its black-and-white pages)."""
+    """The popup beats of the main cut (capture_main.json's 'popups', on its pages): a promotion
+    nobody registered, closed with dismiss=True, and a dialog that asks to confirm the email,
+    answered by the function the script registered with heal.interrupt(..., run=)."""
     p = cm['popups']
-    o, q = p['offer'], p['question']
-    check(p['open_kwargs'] == {'dismiss': True} and p['click'] == 'input[name=email]' and p['click_kwargs'] == {},
-          'popups: not the script the beat shows')
-    check(o['ok'] and o['clicked'] == ['No thanks'] and not o['popup_up_after'] and o['store_fresh'],
-          'popups: the offer was not declined with No thanks')
-    check(any('dismissed a popup' in line and '“No thanks”' in line for line in o['log']), 'popups: no log line for the declined offer')
-    check(not q['ok'] and q['clicked'] == [] and q['popup_up_after'] and q['store_fresh'],
-          'popups: the question was answered, or did not stay')
-    return dict(p, pages={'offer': cm['pages']['offer'], 'question': cm['pages']['question']})
+    o, c = p['offer'], p['confirm']
+    check(o['ok'] and o['page']['clicked'] == ['No thanks'] and not o['popup_up_after'] and not o['heals'],
+          'popups: the promotion was not declined with No thanks')
+    check(any("dismissed a popup in the way of '#email'" in line and '“No thanks”' in line for line in o['log']),
+          'popups: no log line for the declined promotion')
+    check('dismiss=True' in o['script'], 'popups: the promotion\'s script does not dismiss')
+    pg = c['page']
+    check(c['ok'] and pg['confirmed'] == pg['email'] == 'ada@example.com' and pg['continued'] and pg['terms']
+          and not c['popup_up_after'] and not c['heals'], 'popups: the confirm dialog was not answered')
+    check(any(re.search(r"handled interruption 'confirm_email' before '#continue' with confirm_email\(\)", line) for line in c['log']),
+          'popups: no log line for the confirm dialog')
+    check('run=confirm_email)' in c['script'] and 'dismiss' not in c['script'], 'popups: not the confirm script')
+    return {'offer': o, 'confirm': c, 'pages': {'offer': cm['pages']['offer'], 'confirm': cm['pages']['confirm']}}
 
 
 def team_data(t, main):
@@ -261,13 +301,11 @@ def provenance(which):
 def build(cut):
     if cut == 'main':
         cm = load('capture_main.json')
-        data = main_data(cm)
-        data['pages'] = {'v1': cm['pages']['v1_banner'], 'v2': cm['pages']['v2']}   # the pages the runs had
+        data = main_cut_data(cm)
         data['provenance'] = provenance('main')
         data['P'] = popup_data(cm)
-        data['ST'] = steps_data(cm['steps'])
         data['T'] = team_data(load('capture_team.json'), data)
-        fkeys = ('P', 'ST')
+        fkeys = ('P',)
     else:
         data = main_data(load('capture.json'))
         data['provenance'] = provenance('clips')

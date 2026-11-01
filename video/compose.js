@@ -252,26 +252,27 @@ function endStrip(t0) {
   return t0 + 2.4;
 }
 
-// ---------- main cut: B1..B6 ----------
+// ---------- main cut: the story ----------
+// Your test (B1), the redesign (B2), the first run after it (B3: three repairs, two from
+// memory and one by the local model), and the next run (B4). Story seconds throughout.
 function mainStory() {
-  const V1 = frame({ id: 'v1', html: D.pages.v1, t: [4.2, 11.7], popup: '#cc-wrap', pop: [] });   // today's site, no banner
-  const V2 = frame({ id: 'v2', html: D.pages.v2, t: [11.75, 48.4], reloads: [41.4] });
+  const F = 16.6, N = F + 15.2, END = N + 6.0;      // the first run after the redesign, the next run, the end
+  frame({ id: 'v1', html: D.pages.v1, t: [4.2, 11.7] });
+  const V2 = frame({ id: 'v2', html: D.pages.v2, t: [11.75, END], reloads: [N] });
   if (V2.html.match(/id="(email|accept-terms|continue)"/)) throw new Error('V2 still has an old id');
   url(4.2, 'northwind.example/checkout');
   const rows = scriptRows();
   const blk = codeBlock({
-    t0: 4.2, t1: 48.4,
+    t0: 4.2, t1: END,
     rows: [{ id: 'L0', html: OPEN_ROW, n: 1, type: [4.8, 5.6], tint: [4.8, 7.2] },
       { id: 'L1', html: rows[0], n: 2 }, { id: 'L2', html: rows[1], n: 3 }, { id: 'L3', html: rows[2], n: 4 }, { id: 'L4', html: rows[3], n: 5 }],
   });
-  // ----- B1: today; one line, and it remembers
-  beat(4.6, 'B1 empty line 1');
+  // ----- B1: your test, one line added; the run remembers each element
   focus(4.4, 'code');
-  // one caption: it already says "remembers" when the first element is remembered
-  cap(4.4, 10.5, 'Add <em>one line</em>. It <i>remembers</i> what it touches.');
-  beat(5.9, 'B1 one line typed in');
+  cap(4.4, 10.5, 'Add one line, and it remembers each element.');
+  beat(4.6, 'B1 the test');
+  beat(5.9, 'B1 one line added');
   focus(6.2, 'page');
-  // no clock here: B1 is about memory; the only small run time on screen is the next run's
   const M = D.M;
   if (M.steps.length !== SCRIPT.length) throw new Error('M: the run did not run the whole script');
   const fp = Object.values(M.fingerprints).filter(Boolean).length;
@@ -283,195 +284,92 @@ function mainStory() {
   click(6.8, 'v1:#email', C.white); fill(6.9, 7.45, 'v1:#email', 'ada@example.com');
   click(8.6, 'v1:#accept-terms', C.white); check(8.6, 'v1:#accept-terms');
   click(9.3, 'v1:#continue', C.white); press(9.3, 'v1:#continue');
-  const REM = `<span style="color:${C.blue}">◆</span> remembered`;
-  tag({ at: 'v1:#email', html: REM, col: C.blue, t: [6.8, 11.7], col0: 'v1:.card' });
-  tag({ at: 'v1:label.chk', html: REM, col: C.blue, t: [8.75, 11.7], col0: 'v1:.card' });
-  tag({ at: 'v1:#continue', html: REM, col: C.blue, t: [9.45, 11.7], col0: 'v1:.card' });
   blk.hl.push([4.2, 'L1', 0], [6.4, 'L1', 1], [7.0, 'L2', 1], [8.1, 'L3', 1], [8.9, 'L4', 1], [9.9, 'L4', 0]);
   blk.marks.push([6.8, 'L1', '✓', C.green, 11.7], [7.5, 'L2', '✓', C.green, 11.7], [8.6, 'L3', '✓', C.green, 11.7], [9.3, 'L4', '✓', C.green, 11.7]);
   focus(9.9, 'run');
-  beat(7.4, 'B1 email remembered');
   beat(10.6, 'B1 passed, 3 remembered');
 
-  // ----- B2: the break
-  cap(11.5, 14.9, 'Then the site redeploys.');
-  beat(12.1, 'B2 redeploy crossfade');
+  // ----- B2: a redesign breaks the three selectors
+  cap(11.9, 15.9, 'Then a redesign breaks all three selectors.');
+  beat(12.4, 'B2 the redesign');
   focus(12.8, 'code');
-  blk.tok.email = [[13.2, 'broken'], [19.9, 'mem'], [42.0, 'saved']];
-  blk.tok.terms = [[13.8, 'broken'], [30.2, 'ai'], [42.0, 'saved']];
-  blk.tok.cont = [[14.4, 'broken'], [36.7, 'mem'], [42.0, 'saved']];
-  blk.marks.push([13.2, 'L1', '✕', C.red, 20.6], [13.8, 'L3', '✕', C.red, 30.8], [14.4, 'L4', '✕', C.red, 37.0]);
-  cap(15.0, 18.0, '<s>All three selectors are gone.</s>');
+  blk.tok.email = [[13.2, 'broken'], [F + 1.4, 'saved']];
+  blk.tok.terms = [[13.8, 'broken'], [F + 6.2, 'saved']];
+  blk.tok.cont = [[14.4, 'broken'], [F + 9.8, 'saved']];
+  blk.marks.push([13.2, 'L1', '✕', C.red, F + 2.2], [13.8, 'L3', '✕', C.red, F + 7.2], [14.4, 'L4', '✕', C.red, F + 10.4]);
   beat(15.6, 'B2 three selectors broken');
 
-  // ----- B3..B5: the first run after the redesign
+  // ----- B3: the first run after the redesign. Each step waits out the timeout (sped up, as
+  // the clock says), then mendwright repairs it: #email and #continue from memory, the terms
+  // checkbox by the local model, since two checkboxes look alike to the fingerprint.
   const d = D.Dsteps, s = [0];
   d.forEach(x => s.push(s[s.length - 1] + x.seconds));      // real step boundaries
   const found = i => s[i] + d[i].log_at[0];                  // when the repair's log line came
-  const keys2 = [[16.6, 0], [18.4, TIMEOUT], [18.5, TIMEOUT], [18.6, found(0)], [20.6, s[1]], [23.6, s[1]], [23.8, s[2]],
-    [24.0, s[2]], [25.6, s[2] + TIMEOUT], [27.4, s[2] + TIMEOUT], [28.8, found(2)], [30.8, s[3]],
-    [35.2, s[3]], [36.3, s[3] + TIMEOUT], [36.4, found(3)], [37.0, s[4]], [38.9, D.D_seconds]];
-  focus(16.6, 'page');
-  // the callouts say a wait is sped up, so the clock does not say it too
-  run({ t0: 16.6, t1: 41.4, cmd: [16.6, '$ python checkout.py'], keys: keys2, speedLabel: false,
-    stamp: { t: 38.9, kind: 'ok', html: `✓ Passed · ${D.D_heals.length} healed, checked, saved` } });
-  blk.hl.push([16.6, 'L1', 1]);
-  // B3 #email: mendwright waits its timeout, then finds the field from memory
-  const sel = SCRIPT.map(x => x[1]);
-  const WAIT = (a, b) => `${TIMEOUT} s timeout · ▶▶ sped up ×${speedOf(keys2, a, b)}`;
-  callout({ at: 'v2:input[name=email]', t: [16.8, 23.8], leader: 18.6, sets: [
-    { t: 16.8, ic: 'ring', ring: [16.8, 18.4], h: `Waiting for ${sel[0]}`, s: WAIT(16.6, 18.4) },
-    { t: 18.6, ic: '◆', col: C.blue, h: `${sel[0]} found again`, s: XP.email, mono: true, typed: [18.7, 19.1], result: true },
-  ] });
-  box({ at: 'v2:input[name=email]', col: C.blue, t: [18.6, 23.8] });
-  beat(17.6, 'B3 waiting for #email');
-  cap(18.0, 19.8, `Each broken selector first waits out ${TIMEOUT} s.`);
-  cap(19.8, 23.4, 'Healed <i>from memory</i>. No AI.');
-  curOn(19.9, 21.3); cur(19.85, 'v2:input[name=email]', -90, 4);
-  click(20.6, 'v2:input[name=email]', C.white); fill(20.7, 21.2, 'v2:input[name=email]', 'ada@example.com', 41.4);
-  blk.marks.push([20.6, 'L1', '✓', C.green, 41.4]);
-  beat(21.4, 'B3 found from memory');
-  // B4 #accept-terms: memory can't tell two checkboxes apart, the local model picks
-  blk.marks.push([23.8, 'L2', '✓', C.green, 41.4]);
-  blk.hl.push([23.8, 'L3', 1]);
-  callout({ at: 'v2:label.opt:nth-of-type(2)', t: [24.0, 25.8], sets: [
-    { t: 24.0, ic: 'ring', ring: [24.0, 25.6], h: `Waiting for ${sel[2]}`, s: WAIT(24.0, 25.6) }] });
-  beat(24.9, 'B4 waiting for #accept-terms');
-  box({ at: 'v2:label.opt:nth-of-type(1)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
-  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.amber, dashed: true, t: [25.8, 28.8], pad: 6 });
+  const keys2 = [[F, 0], [F + 1.2, TIMEOUT], [F + 1.4, found(0)], [F + 2.2, s[1]], [F + 3.0, s[1]], [F + 3.2, s[2]],
+    [F + 3.4, s[2]], [F + 4.6, s[2] + TIMEOUT], [F + 5.6, s[2] + TIMEOUT], [F + 6.2, found(2)], [F + 7.2, s[3]],
+    [F + 8.4, s[3]], [F + 9.6, s[3] + TIMEOUT], [F + 9.8, found(3)], [F + 10.4, s[4]]];
+  focus(F, 'page');
+  run({ t0: F, t1: N, cmd: [F, '$ python checkout.py'], keys: keys2,
+    stamp: { t: F + 12.4, kind: 'ok', html: `✓ Passed · ${D.D_heals.length} repaired, checked, saved` } });
+  cap(F + .2, F + 4.8, `The test waits ${TIMEOUT} s, then mendwright repairs it.`);
+  blk.hl.push([F, 'L1', 1], [F + 2.6, 'L2', 1], [F + 3.0, 'L3', 1], [F + 8.2, 'L4', 1], [F + 12.4, 'L4', 0]);
+  // #email, from memory
+  // each repair's callout sits in one place, under the order summary, with a line to its element
+  const UNDER = { place: 'below-of', of: 'v2:.s4m' };
+  callout({ ...UNDER, at: 'v2:input[name=email]', t: [F + 1.4, F + 4.2], leader: F + 1.4, sets: [
+    { t: F + 1.4, ic: '◆', col: C.blue, h: 'Found again from memory', s: XP.email, mono: true, typed: [F + 1.5, F + 1.9], result: true }] });
+  box({ at: 'v2:input[name=email]', col: C.green, t: [F + 1.4, F + 4.2] });
+  curOn(F + 1.8, F + 2.6); cur(F + 1.75, 'v2:input[name=email]', -90, 4);
+  click(F + 2.2, 'v2:input[name=email]', C.white); fill(F + 2.3, F + 2.7, 'v2:input[name=email]', 'ada@example.com', END);
+  blk.marks.push([F + 2.2, 'L1', '✓', C.green, END], [F + 2.8, 'L2', '✓', C.green, END]);
+  beat(F + 2.4, 'B3 #email found from memory');
+  // the terms checkbox: two look alike, so the local model picks
   twoCandidates();
-  cap(26.0, 28.0, 'Two checkboxes. Memory isn’t sure which.');
-  beat(26.9, 'B4 two candidates');
-  const modelS = D.model_seconds;
-  callout({ at: 'v2:label.opt:nth-of-type(2)', t: [27.4, 34.6], leader: 28.8, sets: [
-    { t: 27.4, ic: '★', col: C.purple, h: 'Asking the local model', s: `${GB} GB · runs on this machine`, shimmer: [27.4, 28.8] },
-    { t: 28.8, ic: '★', col: C.purple, h: `Picked in ${modelS} s`, s: XP.terms, mono: true, typed: [28.9, 29.3], result: true },
-  ] });
-  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.purple, t: [28.8, 34.6], pad: 6 });
-  curOn(30.25, 31.4); cur(30.2, 'v2:#opt-91c4', 2, 3);
-  click(30.8, 'v2:#opt-91c4', C.white); check(30.8, 'v2:#opt-91c4', 41.4);
-  blk.marks.push([30.8, 'L3', '✓', C.green, 41.4]);
-  beat(30.95, 'B4 token green, click');
-  beat(31.8, 'B4 picked by the local model');
-  // B5 #continue from memory, and the run passes
-  blk.hl.push([34.8, 'L4', 1], [38.9, 'L4', 0]);
-  callout({ at: 'v2:.btn-x82hd', t: [35.2, 41.4], leader: 36.4, sets: [
-    { t: 35.2, ic: 'ring', ring: [35.2, 36.3], h: `Waiting for ${sel[3]}`, s: WAIT(35.2, 36.3) },
-    { t: 36.4, ic: '◆', col: C.blue, h: `${sel[3]} found again`, result: true },
-  ] });
-  box({ at: 'v2:.btn-x82hd', col: C.blue, t: [36.4, 41.4] });
-  beat(35.8, 'B5 waiting for #continue');
-  beat(36.95, 'B5 #continue found again');
-  curOn(36.45, 37.6); cur(36.4, 'v2:.btn-x82hd', 120, 4);
-  click(37.0, 'v2:.btn-x82hd', C.white); press(37.0, 'v2:.btn-x82hd');
-  blk.marks.push([37.0, 'L4', '✓', C.green, 41.4]);
-  cap(37.6, 41.4, '<u>Checked on the live page</u>, then saved.');
-  focus(38.9, 'run');
-  beat(40.2, 'B5 passed, 3 repaired');
+  box({ at: 'v2:label.opt:nth-of-type(1)', col: C.white, dashed: true, t: [F + 4.6, F + 6.2], pad: 6 });
+  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.white, dashed: true, t: [F + 4.6, F + 6.2], pad: 6 });
+  cap(F + 5.0, F + 9.2, 'Two checkboxes look alike; a local model picks.');
+  beat(F + 5.6, 'B3 two checkboxes look alike');
+  callout({ ...UNDER, at: 'v2:label.opt:nth-of-type(2)', t: [F + 6.2, F + 8.6], leader: F + 6.2, sets: [
+    { t: F + 6.2, ic: '★', col: C.purple, h: `Picked by the ${GB} GB local model`, s: XP.terms, mono: true, typed: [F + 6.3, F + 6.7], result: true }] });
+  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.green, t: [F + 6.2, F + 8.6], pad: 6 });
+  curOn(F + 6.6, F + 7.6); cur(F + 6.55, 'v2:#opt-91c4', 2, 3);
+  click(F + 7.2, 'v2:#opt-91c4', C.white); check(F + 7.2, 'v2:#opt-91c4', END);
+  blk.marks.push([F + 7.2, 'L3', '✓', C.green, END]);
+  beat(F + 7.4, 'B3 picked by the local model');
+  // #continue, from memory
+  callout({ ...UNDER, at: 'v2:.btn-x82hd', t: [F + 9.8, F + 12.2], leader: F + 9.8, sets: [
+    { t: F + 9.8, ic: '◆', col: C.blue, h: 'Found again from memory', result: true }] });
+  box({ at: 'v2:.btn-x82hd', col: C.green, t: [F + 9.8, F + 12.2] });
+  curOn(F + 9.9, F + 10.8); cur(F + 9.85, 'v2:.btn-x82hd', 120, 4);
+  click(F + 10.4, 'v2:.btn-x82hd', C.white); press(F + 10.4, 'v2:.btn-x82hd');
+  blk.marks.push([F + 10.4, 'L4', '✓', C.green, END]);
+  cap(F + 11.0, F + 15.6, 'Every repair is checked on the page, then saved.');
+  beat(F + 10.6, 'B3 #continue found from memory');
+  focus(F + 12.4, 'run');
+  beat(F + 13.6, 'B3 passed, 3 repaired');
 
-  // ----- B6: the next run
-  reload(41.4);
-  focus(41.4, 'page');
-  cap(41.6, 47.6, 'Next run: saved fixes, <u>no waiting, no model.</u>');
+  // ----- B4: the next run uses the saved repairs (the redesign has none of the old selectors,
+  // the run repairs nothing and passes)
+  reload(N);
+  focus(N, 'page');
   if (D.E_heals.length) throw new Error('E: the next run repaired something');
-  const e = D.Esteps, Et = [42.0, 42.4, 42.7, 43.0, 43.6];
+  cap(N + .6, N + 5.2, 'The next run uses the saved repairs right away.');
+  const e = D.Esteps, Et = [N + 1.2, N + 1.6, N + 1.9, N + 2.2, N + 2.8];
   let ea = 0;
   const keys3 = [[Et[0], 0]];
   e.forEach((x, i) => { ea += x; keys3.push([Et[i + 1], ea]); });
-  keys3.push([43.8, D.E_seconds]);
-  run({ t0: 41.4, t1: 48.4, cmd: [41.4, '$ python checkout.py'], prev: [41.4, `first run after the redesign · ${secs(D.D_seconds)} s`],
-    keys: keys3, clockCol: [[44.2, C.green]], stamp: { t: 44.2, kind: 'ok', html: '✓ Passed' } });
-  blk.hl.push([42.0, 'L1', 1], [42.7, 'L3', 1], [43.3, 'L4', 1], [44.0, 'L4', 0]);
-  blk.marks.push([42.4, 'L1', '✓', C.green, 48.4], [42.7, 'L2', '✓', C.green, 48.4], [43.0, 'L3', '✓', C.green, 48.4], [43.6, 'L4', '✓', C.green, 48.4]);
-  curOn(41.85, 44.0); cur(41.8, 'v2:input[name=email]', -90, 4); cur(42.55, 'v2:#opt-91c4', 2, 3); cur(43.15, 'v2:.btn-x82hd', 120, 4);
-  click(42.4, 'v2:input[name=email]', C.white); fill(42.45, 42.7, 'v2:input[name=email]', 'ada@example.com');
-  click(43.0, 'v2:#opt-91c4', C.white); check(43.0, 'v2:#opt-91c4');
-  click(43.6, 'v2:.btn-x82hd', C.white); press(43.6, 'v2:.btn-x82hd');
-  const SAVED = '✓ saved fix';
-  box({ at: 'v2:input[name=email]', col: C.green, t: [42.4, 48.2] });
-  box({ at: 'v2:label.opt:nth-of-type(2)', col: C.green, t: [43.0, 48.2], pad: 6 });
-  box({ at: 'v2:.btn-x82hd', col: C.green, t: [43.6, 48.2] });
-  tag({ at: 'v2:input[name=email]', html: SAVED, col: C.green, t: [42.8, 48.2], solid: true, col0: 'v2:.f9a1' });
-  tag({ at: 'v2:label.opt:nth-of-type(2)', html: SAVED, col: C.green, t: [43.1, 48.2], solid: true, col0: 'v2:.f9a1' });
-  tag({ at: 'v2:.btn-x82hd', html: SAVED, col: C.green, t: [43.7, 48.2], solid: true, col0: 'v2:.f9a1' });
-  focus(44.2, 'run');
-  beat(43.2, 'B6 saved fixes used');
-  beat(46.0, 'B6 next run, no waiting');
-  // room for the wait's caption while the clock holds at the timeout (from 18.5), for the
-  // two checkboxes' caption (from 27.0), and for the model's caption between its toast and its
-  // pick (from 28.5)
-  // and a second less after the next run's result (from 46.5, where nothing starts)
-  const W = t => t + (t >= 18.5 ? 2.4 : 0) + (t >= 27.0 ? 1.6 : 0) + (t >= 28.5 ? 1.0 : 0) - (t >= 46.5 ? 1.0 : 0);
-  warp(W);
-  const ask = W(27.4);              // "Asking the local model"; its caption 1.2 s on, the pick 1.2 s after
-  if (Math.abs(W(28.8) - ask - 2.4) > 1e-9) throw new Error('B4: the pick is not 2.4 s after the model is asked');
-  cap(ask + 1.2, ask + 5.4, `So it asks its <em>${GB} GB local model</em>.`);
-  beat(ask + 1.8, 'B4 it asks the local model');
-  beat(19.6, 'B3 each waits out the timeout');
-  return { blk, end: W(48.4) };
-}
-
-// Move every time on the timeline through W (a time at or after a point moves later), so a
-// story written in its first times gets room without retiming each line by hand.
-function warp(W) {
-  const w2 = p => [W(p[0]), W(p[1])];
-  for (const b of TL.beats) if (!b.real) b.t = W(b.t);
-  for (const c of TL.caps) { c.a = W(c.a); c.b = W(c.b); }
-  for (const k of ['focus', 'urls', 'edTitle', 'chrome']) for (const x of TL[k]) x[0] = W(x[0]);
-  for (const k of ['clicks', 'cur', 'press', 'badges']) for (const x of TL[k]) x.t = W(x.t);
-  for (const k of ['curOn', 'halo', 'montage', 'wide']) TL[k] = TL[k].map(w2);
-  for (const x of TL.fills) { x.a = W(x.a); x.b = W(x.b); x.until = W(x.until); }
-  for (const x of TL.checks) { x.t = W(x.t); x.until = W(x.until); }
-  for (const k of ['boxes', 'tags', 'keycaps', 'pstamps']) for (const x of TL[k]) x.t = w2(x.t);
-  for (const x of TL.reveals) { x.t = W(x.t); if (x.t1 != null) x.t1 = W(x.t1); }
-  for (const c of TL.callouts) {
-    c.t = w2(c.t);
-    if (c.leader != null) c.leader = W(c.leader);
-    for (const s of c.sets) { s.t = W(s.t); for (const k of ['ring', 'typed', 'shimmer']) if (s[k]) s[k] = w2(s[k]); }
-  }
-  TL.reloads = TL.reloads.map(W);
-  for (const b of TL.code) {
-    b.t0 = W(b.t0); b.t1 = W(b.t1);
-    for (const r of b.rows) {
-      for (const k of ['type', 'tint']) if (r[k]) r[k] = w2(r[k]);
-      if (r.appear != null) r.appear = W(r.appear);
-      for (const k of ['at', 'n']) if (Array.isArray(r[k])) for (const x of r[k]) x[0] = W(x[0]);
-    }
-    for (const x of b.hl) x[0] = W(x[0]);
-    for (const m of b.marks) { m[0] = W(m[0]); m[4] = W(m[4]); }
-    for (const ks of Object.values(b.tok)) for (const x of ks) x[0] = W(x[0]);
-  }
-  for (const f of TL.frames) { f.t = w2(f.t); f.pop = f.pop.map(w2); f.reloads = f.reloads.map(W); }
-  for (const r of TL.runs) {
-    r.t0 = W(r.t0); r.t1 = W(r.t1);
-    for (const k of ['cmd', 'prev']) if (r[k]) r[k][0] = W(r[k][0]);
-    for (const x of [...(r.keys || []), ...(r.clockCol || [])]) x[0] = W(x[0]);
-    if (r.stamp) r.stamp.t = W(r.stamp.t);
-    for (const x of r.receipts) x.t = W(x.t);
-    if (r.diagram) {
-      for (const row of r.diagram.rows) row.t = W(row.t);
-      for (const x of r.diagram.lit) x[0] = W(x[0]);
-      if (r.diagram.done != null) r.diagram.done = W(r.diagram.done);
-    }
-  }
-}
-
-// ---------- the montage (brief mode: one caption, one stamp, focal on the page) ----------
-function montageCookies(t0) {
-  const t1 = t0 + 4.2;
-  montage(t0, t1);
-  if (D.C_banner_up_after || !D.C_ok) throw new Error('C: the banner run did not pass');
-  run({ t0, t1, cmd: [t0, '$ python checkout.py'] });
-  frame({ id: 'm1', html: D.pages.v1, t: [t0, t1], popup: '#cc-wrap', pop: [[t0 - 1, t0 + 1.6]] });
-  url(t0, 'northwind.example/checkout');
-  codeBlock({ t0, t1, rows: openRows('page', { cookies: 'reject' }, 'page') });
-  cap(t0 + .2, t1 - .2, 'Also: cookie banners? It clicks “Reject all”.');
-  beat(t0 + .9, 'M1 cookie banner');
-  curOn(t0 + .9, t0 + 1.9); cur(t0 + .9, 'm1:#cc-wrap button', -10, 4); haloOn(t0 + 1.0, t0 + 1.8);
-  click(t0 + 1.3, 'm1:#cc-wrap button', C.purple); press(t0 + 1.3, 'm1:#cc-wrap button');
-  pstamp({ t: [t0 + 2.2, t1], kind: 'ok', html: '✓ Passed · banner rejected', frame: 'm1' });
-  beat(t0 + 3.4, 'M1 banner rejected');
-  return t1;
+  keys3.push([N + 3.0, D.E_seconds]);
+  run({ t0: N, t1: END, cmd: [N, '$ python checkout.py'], prev: [N, `first run after the redesign · ${secs(D.D_seconds)} s`],
+    keys: keys3, clockCol: [[N + 3.4, C.green]], stamp: { t: N + 3.4, kind: 'ok', html: '✓ Passed · used the saved repairs' } });
+  blk.hl.push([N + 1.2, 'L1', 1], [N + 1.9, 'L3', 1], [N + 2.5, 'L4', 1], [N + 3.2, 'L4', 0]);
+  curOn(N + 1.25, N + 3.0); cur(N + 1.2, 'v2:input[name=email]', -90, 4); cur(N + 1.75, 'v2:#opt-91c4', 2, 3); cur(N + 2.35, 'v2:.btn-x82hd', 120, 4);
+  click(N + 1.6, 'v2:input[name=email]', C.white); fill(N + 1.65, N + 1.9, 'v2:input[name=email]', 'ada@example.com');
+  click(N + 2.2, 'v2:#opt-91c4', C.white); check(N + 2.2, 'v2:#opt-91c4');
+  click(N + 2.8, 'v2:.btn-x82hd', C.white); press(N + 2.8, 'v2:.btn-x82hd');
+  focus(N + 3.4, 'run');
+  beat(N + 2.4, 'B4 the next run');
+  beat(N + 4.6, 'B4 passed with the saved repairs');
+  return { blk, end: END };
 }
 
 // ---------- draw state ----------
@@ -551,6 +449,7 @@ function measure() {
       if (!f.popEl) throw new Error('no popup ' + f.popup + ' in ' + f.id);
       f.popCard = f.popEl.firstElementChild;
       f.popEl.style.visibility = 'hidden';
+      if (f.popDisplay) f.popEl.style.display = f.popDisplay;
     }
     // the page camera: the form card lands at content (16, 120), unless the frame sets one
     if (!f.cam) {
@@ -999,7 +898,7 @@ function drawAnn(t) {
       // the leader: from the callout's near edge to the target's box, once the element is found
       const T = grow(c.T, 7), h = parseFloat(c.e.style.height);
       let x1, y1, x2, y2;
-      if (c.side === 'right') { x1 = c.x; y1 = clamp(T.y + T.h / 2, c.y + 18, c.y + h - 18); x2 = T.x + T.w; y2 = T.y + T.h / 2; }
+      if (c.side === 'right' || T.x + T.w < c.x) { x1 = c.x; y1 = clamp(T.y + T.h / 2, c.y + 18, c.y + h - 18); x2 = T.x + T.w; y2 = T.y + T.h / 2; }
       else if (c.side === 'below') { x1 = clamp(T.x + T.w / 2, c.x + 24, c.x + c.W - 24); y1 = c.y; x2 = x1; y2 = T.y + T.h; }
       else { x1 = clamp(T.x + T.w / 2, c.x + 24, c.x + c.W - 24); y1 = c.y + h; x2 = x1; y2 = T.y; }
       const L = Math.hypot(x2 - x1, y2 - y1), q = clamp(spring(t - c.leader, .35)) * (1 - clamp(spring(t - c.t[1], .3)));
@@ -1078,15 +977,13 @@ let EC = {};
 function buildEnd() {
   const e = el('div', 'card', `<div class="wm" style="font-size:112px"><b>mendwright</b></div>
 <div class="feat">
- <div><span class="ic" style="background:${C.blue}22;color:${C.blue}">◆</span>Repairs from memory first. No AI.</div>
- <div><span class="ic" style="background:${C.purple}22;color:${C.purple}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
- <div><span class="ic" style="background:${C.white}1c;color:${C.green}">✓</span>Every fix checked on the live page, then saved.</div>
- <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">PR</span>Confirmed fixes come back as a pull request.</div>
- <div><span class="ic" style="background:${C.amber}22;color:${C.amber}">▸</span>Cookie banners, popups, steps in any order.</div>
- <div><span class="ic tx" style="background:${C.white}1c;color:${C.white}">TS</span>Python and TypeScript share the saved fixes.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.white}">◆</span>Repairs from memory first, checked on the live page.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.white}">★</span>A ${GB} GB local model for the hard ones. No API key.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.green}">✓</span>Repairs your tests confirm come back as a pull request.</div>
+ <div><span class="ic" style="background:${C.white}1c;color:${C.white}">▸</span>Popups are closed, or answered by your own function.</div>
 </div>
 <div class="pills mono"><div class="pill"><span class="p">$</span>pip install mendwright</div><div class="pill"><span class="p">$</span>npm i mendwright</div></div>
-<div class="repo">github.com/saadbuilt/mendwright · Playwright &amp; Selenium · MIT</div>`, document.body);
+<div class="repo">github.com/saadbuilt/mendwright · Python and TypeScript · MIT</div>`, document.body);
   EC = { e, wm: e.children[0], feats: [...e.children[1].children], pills: e.children[2], repo: e.children[3] };
 }
 function drawEnd(t) {
@@ -1281,14 +1178,10 @@ window.ready = false;
 function cutMain() {
   hookCard(0, 4.2);
   TL.stageIn = 4.2;
-  const { blk, end } = mainStory();
-  let t = window.pullRequestBeat(end, blk);      // the repairs become a pull request
-  focus(t, 'code+page');                         // the montage: its code lines say how
-  t = montageCookies(t);
-  t = window.popupBeat(t);                       // an offer declined, a question left to you
-  t = window.montageSteps(t);
-  t = window.checkBeat(t);                       // mendwright check, as before that first run
-  t = window.typescriptBeat(t);                  // the same repairs from TypeScript
+  const { end } = mainStory();             // your test, the redesign, three repairs, the next run
+  let t = window.offerBeat(end);           // a promotion in the way is closed
+  t = window.confirmBeat(t);               // a dialog that needs an answer gets your function's
+  t = window.pullRequestBeat(t);           // the confirmed repairs come back as a pull request
   endCard(t, t + 6.2);
   TL.stageOut = t;
   TL.dur = t + 6.2;
