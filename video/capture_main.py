@@ -52,9 +52,9 @@ MODEL = 'mendwright-selector'
 SCRIPT = [('click', '#email'), ('type', 'ada@example.com'), ('check', '#accept-terms'), ('click', '#continue')]
 
 # The popup beats' scripts, run as written. The page the main script has is `page`.
-OFFER_SCRIPT = '''heal = mendwright.open(
-    page, dismiss=True)
-heal.page.click("#email")
+OFFER_SCRIPT = '''page = mendwright.open(
+    page, dismiss=True).page
+page.click("#email")
 '''
 CONFIRM_SCRIPT = '''heal = mendwright.open(page)
 
@@ -87,13 +87,12 @@ SUMMARY_V1 = '''<style>.wrap{display:grid;grid-template-columns:470px 280px;colu
 .sum{grid-column:2;grid-row:3;background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:20px 22px}
 .sum h2{font-size:16px;margin:0 0 14px}
 .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}
-.thumb{width:48px;height:48px;border:1px solid #d8d2c4;border-radius:8px;flex:none}
 .item .mt{color:#57606a;font-size:13.5px;margin-top:2px} .item .pr{margin-left:auto;font-weight:600}
 .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#3d434b}
 .tot{border-top:1px solid #e3ddd0;padding-top:12px;margin:12px 0 0;font-weight:700;color:#1f2328}
 .top{display:flex;justify-content:space-between;align-items:center} .top span{font-size:14px;font-weight:400;letter-spacing:0}</style>'''
 ASIDE_V1 = '''<aside class="sum"><h2>Order summary</h2>
-  <div class="item"><div class="thumb"></div><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
+  <div class="item"><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
   <div class="ln"><span>Subtotal</span><span>$129.00</span></div>
   <div class="ln"><span>Shipping</span><span>Free</span></div>
   <div class="ln tot"><span>Total</span><span>$129.00</span></div>
@@ -103,12 +102,11 @@ SUMMARY_V2 = '''<style>.x8k2{display:grid;grid-template-columns:500px 270px;colu
 .s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}
 .s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}
 .s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}
-.s4m .thumb{width:48px;height:48px;border:1px solid #e6e8ee;border-radius:10px;flex:none}
 .s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}
 .s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}
 .s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style>'''
 ASIDE_V2 = '''<aside class="s4m"><h3>Your order</h3>
-  <div class="item"><div class="thumb"></div><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
+  <div class="item"><div><div>Trail jacket</div><div class="mt">Size M</div></div><div class="pr">$129.00</div></div>
   <div class="ln"><span>Subtotal</span><span>$129.00</span></div>
   <div class="ln"><span>Shipping</span><span>Free</span></div>
   <div class="ln tot"><span>Total</span><span>$129.00</span></div>
@@ -398,6 +396,7 @@ def popup_runs(p, tmp, pages, saved):
     for name, root in (('offer', '#offer'), ('confirm', '#confirm-email-dialog')):
         folder = os.path.join(tmp, 'popup-' + name)
         shutil.copytree(saved, os.path.join(folder, '.mendwright'))
+        j0 = len(journal_of(os.path.join(folder, '.mendwright', 'overrides.json')))
         b, page = browser_page(p, {'/checkout': pages[name]})
         page.goto(ORIGIN + '/checkout')
         cwd = os.getcwd()
@@ -421,7 +420,11 @@ def popup_runs(p, tmp, pages, saved):
                                       'continued: window.mwContinued === true, '
                                       'email: document.querySelector("input[name=email]").value, '
                                       'terms: document.getElementById("opt-91c4").checked})'),
-                   heals=heals_of(scope['heal']), handled=[str(x) for x in scope['heal'].handled_interruptions])
+                   journal=journal_of(os.path.join(folder, '.mendwright', 'overrides.json'))[j0:])
+        # what the run repaired and handled, from its journal (the promotion's script keeps no
+        # Healer in a variable)
+        rec['heals'] = [e for e in rec['journal'] if e['event'] == 'heal.applied']
+        rec['handled'] = [e for e in rec['journal'] if e['event'] in ('flow.dismiss', 'flow.interrupt')]
         b.close()
     return out
 

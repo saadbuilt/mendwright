@@ -13,17 +13,17 @@
   "parameter_size": "1.5B"
  },
  "pages": {
-  "v1": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#f4f1ea;color:#1f2328}\n.top{background:#1f3a2e;color:#fff;padding:18px 36px;font-weight:700;font-size:21px;letter-spacing:.02em}\n.wrap{padding:30px 36px} h1{font-size:26px;margin:0 0 4px} .sub{color:#57606a;margin:0 0 22px;font-size:16px}\n.card{background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:24px 26px;max-width:470px}\nlabel.f{display:block;font-weight:600;font-size:15px;margin:0 0 7px}\ninput[type=email]{width:100%;padding:11px 12px;border:1px solid #c9c2b2;border-radius:6px;font-size:16px;margin-bottom:18px}\n.chk{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 22px}\n.chk input{width:19px;height:19px}\n#continue{background:#1f3a2e;color:#fff;border:0;border-radius:6px;padding:13px 20px;font-size:16px;font-weight:600}\n#back{background:none;border:0;color:#1f3a2e;margin-left:12px;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.wrap{display:grid;grid-template-columns:470px 280px;column-gap:28px;align-items:start}\n.wrap h1,.wrap .sub,.wrap .card{grid-column:1}\n.sum{grid-column:2;grid-row:3;background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:20px 22px}\n.sum h2{font-size:16px;margin:0 0 14px}\n.item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.thumb{width:48px;height:48px;border:1px solid #d8d2c4;border-radius:8px;flex:none}\n.item .mt{color:#57606a;font-size:13.5px;margin-top:2px} .item .pr{margin-left:auto;font-weight:600}\n.ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#3d434b}\n.tot{border-top:1px solid #e3ddd0;padding-top:12px;margin:12px 0 0;font-weight:700;color:#1f2328}\n.top{display:flex;justify-content:space-between;align-items:center} .top span{font-size:14px;font-weight:400;letter-spacing:0}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"top\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Northwind Outfitters<span style=\"background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Secure checkout</span></div>\n<div class=\"wrap\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h1 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Checkout</h1><p class=\"sub\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">1 item · Trail jacket · $129</p>\n<div class=\"card\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <label class=\"f\" for=\"email\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email</label>\n  <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"chk\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"accept-terms\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I accept the terms and conditions</label>\n  <button id=\"continue\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button id=\"back\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"sum\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Order summary</h2>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"thumb\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"></div><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n</body></html>",
-  "v2": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .thumb{width:48px;height:48px;border:1px solid #e6e8ee;border-radius:10px;flex:none}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"thumb\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"></div><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n</body></html>",
-  "offer": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .thumb{width:48px;height:48px;border:1px solid #e6e8ee;border-radius:10px;flex:none}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"thumb\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"></div><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n<div id=\"offer\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"offer-t\" style=\"position: fixed; inset: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgba(0, 0, 0, 0.5) !important; display: flex; align-items: center; justify-content: center; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"pop-card\" style=\"background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(255, 255, 255) !important; border-radius: 14px; padding: 26px 28px; width: 420px; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(107, 107, 107) !important; font-weight: 600; background-image: none !important; box-shadow: none !important;\">Northwind newsletter</div><div id=\"offer-t\" style=\"font-size: 23px; font-weight: 700; margin: 6px 0px 8px; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Get 15% off your first order</div><div style=\"color: rgb(0, 0, 0) !important; font-size: 15px; line-height: 1.45; margin: 0px 0px 16px; background-image: none !important; box-shadow: none !important;\">Sign up for early access to sales and new arrivals.</div><input type=\"email\" placeholder=\"Email address\" style=\"width: 100%; padding: 12px; border-width: 1px; border-style: solid; border-color: rgb(181, 181, 181) !important; border-image: initial; border-radius: 8px; font-size: 16px; margin: 0px 0px 12px; background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"><button type=\"button\" class=\"pop-yes\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim())\" style=\"width: 100%; padding: 13px; border: 0px; border-radius: 8px; font-size: 16px; font-weight: 600; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(0, 0, 0) !important; color: rgb(255, 255, 255) !important; box-shadow: none !important;\">Subscribe</button><button type=\"button\" class=\"pop-no\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());document.getElementById('offer').remove()\" style=\"width: 100%; margin-top: 6px; padding: 10px; border: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: initial; color: rgb(0, 0, 0) !important; font-size: 15px; box-shadow: none !important;\">No thanks</button></div></div></body></html>",
-  "confirm": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .thumb{width:48px;height:48px;border:1px solid #e6e8ee;border-radius:10px;flex:none}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"thumb\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"></div><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n<div id=\"confirm-email-dialog\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ce-t\" style=\"position: fixed; inset: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgba(0, 0, 0, 0.5) !important; align-items: center; justify-content: center; display: none; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"pop-card\" style=\"background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(255, 255, 255) !important; border-radius: 14px; padding: 26px 28px; width: 420px; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div id=\"ce-t\" style=\"font-size: 22px; font-weight: 700; margin: 0px 0px 8px; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Confirm your email address</div><div style=\"color: rgb(0, 0, 0) !important; font-size: 15px; line-height: 1.45; margin: 0px 0px 16px; background-image: none !important; box-shadow: none !important;\">We send your receipt and delivery updates to this address.</div><label for=\"confirm-email\" style=\"display: block; font-size: 14px; color: rgb(0, 0, 0) !important; margin: 0px 0px 7px; background-image: none !important; box-shadow: none !important;\">Email address</label><input id=\"confirm-email\" type=\"email\" placeholder=\"name@domain.com\" style=\"width: 100%; padding: 12px; border-width: 1px; border-style: solid; border-color: rgb(181, 181, 181) !important; border-image: initial; border-radius: 8px; font-size: 16px; margin: 0px 0px 12px; background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"><button type=\"button\" id=\"confirm-email-ok\" style=\"width: 100%; padding: 13px; border: 0px; border-radius: 8px; font-size: 16px; font-weight: 600; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(0, 0, 0) !important; color: rgb(255, 255, 255) !important; box-shadow: none !important;\">Confirm</button></div></div><script>(() => {const box = document.getElementById(\"opt-91c4\"), dlg = document.getElementById(\"confirm-email-dialog\");box.addEventListener(\"change\", () => { if (box.checked) dlg.style.display = \"flex\"; });document.getElementById(\"confirm-email-ok\").addEventListener(\"click\", () => {const a = document.getElementById(\"confirm-email\").value, b = document.querySelector(\"input[name=email]\").value;if (a && a === b) { window.mwConfirmed = a; dlg.remove(); } });document.querySelector(\".btn-x82hd\").addEventListener(\"click\", () => { window.mwContinued = true; });})();</script></body></html>"
+  "v1": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#f4f1ea;color:#1f2328}\n.top{background:#1f3a2e;color:#fff;padding:18px 36px;font-weight:700;font-size:21px;letter-spacing:.02em}\n.wrap{padding:30px 36px} h1{font-size:26px;margin:0 0 4px} .sub{color:#57606a;margin:0 0 22px;font-size:16px}\n.card{background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:24px 26px;max-width:470px}\nlabel.f{display:block;font-weight:600;font-size:15px;margin:0 0 7px}\ninput[type=email]{width:100%;padding:11px 12px;border:1px solid #c9c2b2;border-radius:6px;font-size:16px;margin-bottom:18px}\n.chk{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 22px}\n.chk input{width:19px;height:19px}\n#continue{background:#1f3a2e;color:#fff;border:0;border-radius:6px;padding:13px 20px;font-size:16px;font-weight:600}\n#back{background:none;border:0;color:#1f3a2e;margin-left:12px;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.wrap{display:grid;grid-template-columns:470px 280px;column-gap:28px;align-items:start}\n.wrap h1,.wrap .sub,.wrap .card{grid-column:1}\n.sum{grid-column:2;grid-row:3;background:#fff;border:1px solid #d8d2c4;border-radius:10px;padding:20px 22px}\n.sum h2{font-size:16px;margin:0 0 14px}\n.item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.item .mt{color:#57606a;font-size:13.5px;margin-top:2px} .item .pr{margin-left:auto;font-weight:600}\n.ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#3d434b}\n.tot{border-top:1px solid #e3ddd0;padding-top:12px;margin:12px 0 0;font-weight:700;color:#1f2328}\n.top{display:flex;justify-content:space-between;align-items:center} .top span{font-size:14px;font-weight:400;letter-spacing:0}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"top\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Northwind Outfitters<span style=\"background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Secure checkout</span></div>\n<div class=\"wrap\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h1 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Checkout</h1><p class=\"sub\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">1 item · Trail jacket · $129</p>\n<div class=\"card\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <label class=\"f\" for=\"email\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email</label>\n  <input id=\"email\" name=\"email\" type=\"email\" placeholder=\"you@example.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"chk\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"accept-terms\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I accept the terms and conditions</label>\n  <button id=\"continue\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button id=\"back\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"sum\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Order summary</h2>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n</body></html>",
+  "v2": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n</body></html>",
+  "offer": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n<div id=\"offer\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"offer-t\" style=\"position: fixed; inset: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgba(0, 0, 0, 0.5) !important; display: flex; align-items: center; justify-content: center; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"pop-card\" style=\"background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(255, 255, 255) !important; border-radius: 14px; padding: 26px 28px; width: 420px; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(107, 107, 107) !important; font-weight: 600; background-image: none !important; box-shadow: none !important;\">Northwind newsletter</div><div id=\"offer-t\" style=\"font-size: 23px; font-weight: 700; margin: 6px 0px 8px; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Get 15% off your first order</div><div style=\"color: rgb(0, 0, 0) !important; font-size: 15px; line-height: 1.45; margin: 0px 0px 16px; background-image: none !important; box-shadow: none !important;\">Sign up for early access to sales and new arrivals.</div><input type=\"email\" placeholder=\"Email address\" style=\"width: 100%; padding: 12px; border-width: 1px; border-style: solid; border-color: rgb(181, 181, 181) !important; border-image: initial; border-radius: 8px; font-size: 16px; margin: 0px 0px 12px; background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"><button type=\"button\" class=\"pop-yes\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim())\" style=\"width: 100%; padding: 13px; border: 0px; border-radius: 8px; font-size: 16px; font-weight: 600; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(0, 0, 0) !important; color: rgb(255, 255, 255) !important; box-shadow: none !important;\">Subscribe</button><button type=\"button\" class=\"pop-no\" onclick=\"(window.mwClicked = window.mwClicked || []).push(this.textContent.trim());document.getElementById('offer').remove()\" style=\"width: 100%; margin-top: 6px; padding: 10px; border: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: initial; color: rgb(0, 0, 0) !important; font-size: 15px; box-shadow: none !important;\">No thanks</button></div></div></body></html>",
+  "confirm": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Northwind Outfitters</title><style>\n*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;\n  height:100vh;padding-right:0}\n\nbody{background:#fbfbfd;color:#16181d}\n.nv{display:flex;justify-content:space-between;align-items:center;padding:16px 36px;border-bottom:1px solid #e6e8ee}\n.nv b{font-size:20px;color:#3b2a86} .nv span{color:#6e7781;font-size:14px}\n.x8k2{padding:30px 36px} .x8k2 h2{font-size:25px;margin:0 0 18px}\n.f9a1{background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:24px 26px;max-width:500px;\n  box-shadow:0 2px 10px rgba(30,30,60,.05)}\n.lbl{display:block;font-size:14px;color:#57606a;margin:0 0 7px}\n.f9a1 input[type=email]{width:100%;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-size:16px;margin-bottom:16px}\n.opt{display:flex;gap:10px;align-items:center;font-size:15.5px;margin:0 0 13px}\n.opt input{width:19px;height:19px}\n.btn-x82hd{margin-top:8px;width:100%;background:#3b2a86;color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600}\n.lnk-3k{margin-top:10px;width:100%;background:none;border:0;color:#3b2a86;font-size:15px}\n</style><style>body,button,input{font-family:Inter,\"Inter Variable\",\"Segoe UI\",system-ui,sans-serif}</style><style>.x8k2{display:grid;grid-template-columns:500px 270px;column-gap:28px;align-items:start}\n.x8k2 h2,.x8k2 .f9a1{grid-column:1}\n.s4m{grid-column:2;grid-row:2;background:#fff;border:1px solid #e6e8ee;border-radius:14px;padding:20px 22px}\n.s4m h3{font-size:15px;margin:0 0 14px;color:#57606a;font-weight:600}\n.s4m .item{display:flex;gap:12px;align-items:center;margin:0 0 16px;font-size:15px}\n.s4m .mt{color:#6e7781;font-size:13.5px;margin-top:2px} .s4m .pr{margin-left:auto;font-weight:600}\n.s4m .ln{display:flex;justify-content:space-between;font-size:15px;margin:0 0 9px;color:#57606a}\n.s4m .tot{border-top:1px solid #e6e8ee;padding-top:12px;margin:12px 0 0;font-weight:700;color:#16181d}</style></head><body style=\"background-color: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;\">\n<div class=\"nv\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-bottom-color: rgb(181, 181, 181) !important;\"><b style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Northwind</b><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Secure checkout</span></div>\n<div class=\"x8k2\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><h2 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your details</h2>\n<div class=\"f9a1\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\">\n  <span class=\"lbl\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Email address</span>\n  <input id=\"f-9x2k1\" name=\"email\" type=\"email\" placeholder=\"name@domain.com\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important; accent-color: rgb(0, 0, 0) !important;\">\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-77a1\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> Email me deals and news</label>\n  <label class=\"opt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><input type=\"checkbox\" id=\"opt-91c4\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"> I agree to the purchase terms</label>\n  <button class=\"btn-x82hd\" type=\"button\" style=\"background-color: rgb(0, 0, 0) !important; background-image: none !important; box-shadow: none !important; color: rgb(255, 255, 255) !important;\">Continue to payment</button>\n  <button class=\"lnk-3k\" type=\"button\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Back to cart</button>\n</div><aside class=\"s4m\" style=\"background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-color: rgb(181, 181, 181) !important;\"><h3 style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Your order</h3>\n  <div class=\"item\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Trail jacket</div><div class=\"mt\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(107, 107, 107) !important;\">Size M</div></div><div class=\"pr\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</div></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Subtotal</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n  <div class=\"ln\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Shipping</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Free</span></div>\n  <div class=\"ln tot\" style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; border-top-color: rgb(181, 181, 181) !important;\"><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Total</span><span style=\"background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">$129.00</span></div>\n</aside></div>\n<div id=\"confirm-email-dialog\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ce-t\" style=\"position: fixed; inset: 0px; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgba(0, 0, 0, 0.5) !important; align-items: center; justify-content: center; display: none; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div class=\"pop-card\" style=\"background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(255, 255, 255) !important; border-radius: 14px; padding: 26px 28px; width: 420px; box-shadow: none !important; color: rgb(0, 0, 0) !important;\"><div id=\"ce-t\" style=\"font-size: 22px; font-weight: 700; margin: 0px 0px 8px; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important;\">Confirm your email address</div><div style=\"color: rgb(0, 0, 0) !important; font-size: 15px; line-height: 1.45; margin: 0px 0px 16px; background-image: none !important; box-shadow: none !important;\">We send your receipt and delivery updates to this address.</div><label for=\"confirm-email\" style=\"display: block; font-size: 14px; color: rgb(0, 0, 0) !important; margin: 0px 0px 7px; background-image: none !important; box-shadow: none !important;\">Email address</label><input id=\"confirm-email\" type=\"email\" placeholder=\"name@domain.com\" style=\"width: 100%; padding: 12px; border-width: 1px; border-style: solid; border-color: rgb(181, 181, 181) !important; border-image: initial; border-radius: 8px; font-size: 16px; margin: 0px 0px 12px; background-color: rgb(255, 255, 255) !important; background-image: none !important; box-shadow: none !important; color: rgb(0, 0, 0) !important; accent-color: rgb(0, 0, 0) !important;\"><button type=\"button\" id=\"confirm-email-ok\" style=\"width: 100%; padding: 13px; border: 0px; border-radius: 8px; font-size: 16px; font-weight: 600; background-image: none !important; background-position: initial; background-size: initial; background-repeat: initial; background-attachment: initial; background-origin: initial; background-clip: initial; background-color: rgb(0, 0, 0) !important; color: rgb(255, 255, 255) !important; box-shadow: none !important;\">Confirm</button></div></div><script>(() => {const box = document.getElementById(\"opt-91c4\"), dlg = document.getElementById(\"confirm-email-dialog\");box.addEventListener(\"change\", () => { if (box.checked) dlg.style.display = \"flex\"; });document.getElementById(\"confirm-email-ok\").addEventListener(\"click\", () => {const a = document.getElementById(\"confirm-email\").value, b = document.querySelector(\"input[name=email]\").value;if (a && a === b) { window.mwConfirmed = a; dlg.remove(); } });document.querySelector(\".btn-x82hd\").addEventListener(\"click\", () => { window.mwContinued = true; });})();</script></body></html>"
  },
  "M_mendwright_v1": [
   {
    "verb": "click",
    "arg": "#email",
    "ok": true,
-   "seconds": 0.093,
+   "seconds": 0.09,
    "log": [],
    "log_at": []
   },
@@ -31,7 +31,7 @@
    "verb": "type",
    "arg": "ada@example.com",
    "ok": true,
-   "seconds": 0.014,
+   "seconds": 0.013,
    "log": [],
    "log_at": []
   },
@@ -39,7 +39,7 @@
    "verb": "check",
    "arg": "#accept-terms",
    "ok": true,
-   "seconds": 0.068,
+   "seconds": 0.069,
    "log": [],
    "log_at": []
   },
@@ -47,12 +47,12 @@
    "verb": "click",
    "arg": "#continue",
    "ok": true,
-   "seconds": 0.068,
+   "seconds": 0.067,
    "log": [],
    "log_at": []
   }
  ],
- "M_seconds": 0.243,
+ "M_seconds": 0.239,
  "M_heals": [],
  "M_fingerprints": {
   "#email": true,
@@ -65,19 +65,19 @@
    "verb": "click",
    "arg": "#email",
    "ok": true,
-   "seconds": 10.144,
+   "seconds": 10.295,
    "log": [
-    "mendwright: healed '#email': #email -> //input[@name='email'] (fingerprint, 0.1s)"
+    "mendwright: healed '#email': #email -> //input[@name='email'] (fingerprint, 0.0s)"
    ],
    "log_at": [
-    10.068
+    10.224
    ]
   },
   {
    "verb": "type",
    "arg": "ada@example.com",
    "ok": true,
-   "seconds": 0.036,
+   "seconds": 0.034,
    "log": [],
    "log_at": []
   },
@@ -85,28 +85,28 @@
    "verb": "check",
    "arg": "#accept-terms",
    "ok": true,
-   "seconds": 10.739,
+   "seconds": 10.516,
    "log": [
-    "mendwright: healed '#accept-terms': #accept-terms -> //input[@id='opt-91c4'] (LocalModelProvider, 0.5s)"
+    "mendwright: healed '#accept-terms': #accept-terms -> //input[@id='opt-91c4'] (LocalModelProvider, 0.4s)"
    ],
    "log_at": [
-    10.672
+    10.442
    ]
   },
   {
    "verb": "click",
    "arg": "#continue",
    "ok": true,
-   "seconds": 10.217,
+   "seconds": 10.283,
    "log": [
     "mendwright: healed '#continue': #continue -> //button[normalize-space()='Continue to payment'] (fingerprint, 0.0s)"
    ],
    "log_at": [
-    10.15
+    10.205
    ]
   }
  ],
- "D_seconds": 31.136,
+ "D_seconds": 31.128,
  "D_heals": [
   {
    "key": "#email",
@@ -163,12 +163,12 @@
  ],
  "D_journal": [
   {
-   "ts": "2026-11-01T19:03:07+00:00",
+   "ts": "2026-11-01T19:17:22+00:00",
    "event": "heal.requested",
    "key": "#email"
   },
   {
-   "ts": "2026-11-01T19:03:07+00:00",
+   "ts": "2026-11-01T19:17:22+00:00",
    "event": "heal.proposed",
    "key": "#email",
    "xpath": "//input[@name='email']",
@@ -176,11 +176,11 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T19:03:07+00:00",
+   "ts": "2026-11-01T19:17:22+00:00",
    "event": "heal.applied",
    "key": "#email",
    "provider": "fingerprint",
-   "latency_ms": 78,
+   "latency_ms": 47,
    "xpath": "//input[@name='email']",
    "old": [
     "#email"
@@ -188,36 +188,36 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T19:03:18+00:00",
+   "ts": "2026-11-01T19:17:33+00:00",
    "event": "heal.requested",
    "key": "#accept-terms"
   },
   {
-   "ts": "2026-11-01T19:03:18+00:00",
+   "ts": "2026-11-01T19:17:33+00:00",
    "event": "heal.proposed",
    "key": "#accept-terms",
    "xpath": "//input[@id='opt-91c4']",
    "reasoning": "local model picked candidate 2 of 2: input[checkbox] label=\"I agree to the purchase terms\" id=\"opt-91c4\" | in \"Your details\""
   },
   {
-   "ts": "2026-11-01T19:03:18+00:00",
+   "ts": "2026-11-01T19:17:33+00:00",
    "event": "heal.applied",
    "key": "#accept-terms",
    "provider": "LocalModelProvider",
    "model": "mendwright-selector",
-   "latency_ms": 500,
+   "latency_ms": 406,
    "xpath": "//input[@id='opt-91c4']",
    "old": [
     "#accept-terms"
    ]
   },
   {
-   "ts": "2026-11-01T19:03:28+00:00",
+   "ts": "2026-11-01T19:17:43+00:00",
    "event": "heal.requested",
    "key": "#continue"
   },
   {
-   "ts": "2026-11-01T19:03:28+00:00",
+   "ts": "2026-11-01T19:17:43+00:00",
    "event": "heal.proposed",
    "key": "#continue",
    "xpath": "//button[normalize-space()='Continue to payment']",
@@ -225,11 +225,11 @@
    "source": "fingerprint"
   },
   {
-   "ts": "2026-11-01T19:03:28+00:00",
+   "ts": "2026-11-01T19:17:43+00:00",
    "event": "heal.applied",
    "key": "#continue",
    "provider": "fingerprint",
-   "latency_ms": 16,
+   "latency_ms": 15,
    "xpath": "//button[normalize-space()='Continue to payment']",
    "old": [
     "#continue"
@@ -238,28 +238,28 @@
   }
  ],
  "D_winners": {
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-11-01T19:17:22+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:22+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
   "#continue": {
    "xpath": "//button[normalize-space()='Continue to payment']",
    "source": "heal",
-   "addedAt": "2026-11-01T19:03:28+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:28+00:00",
+   "addedAt": "2026-11-01T19:17:43+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:43+00:00",
    "status": "active"
   },
   "#accept-terms": {
    "xpath": "//input[@id='opt-91c4']",
    "source": "heal",
-   "addedAt": "2026-11-01T19:03:18+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:18+00:00",
+   "addedAt": "2026-11-01T19:17:33+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:33+00:00",
    "status": "active",
    "css": "#opt-91c4"
-  },
-  "#email": {
-   "xpath": "//input[@name='email']",
-   "source": "heal",
-   "addedAt": "2026-11-01T19:03:07+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:07+00:00",
-   "status": "active",
-   "css": "input[name=\"email\"]"
   }
  },
  "D_checked": [
@@ -278,7 +278,7 @@
    "verb": "click",
    "arg": "#email",
    "ok": true,
-   "seconds": 0.092,
+   "seconds": 0.087,
    "log": [],
    "log_at": []
   },
@@ -286,7 +286,7 @@
    "verb": "type",
    "arg": "ada@example.com",
    "ok": true,
-   "seconds": 0.019,
+   "seconds": 0.015,
    "log": [],
    "log_at": []
   },
@@ -294,7 +294,7 @@
    "verb": "check",
    "arg": "#accept-terms",
    "ok": true,
-   "seconds": 0.078,
+   "seconds": 0.083,
    "log": [],
    "log_at": []
   },
@@ -307,44 +307,44 @@
    "log_at": []
   }
  ],
- "E_seconds": 0.256,
+ "E_seconds": 0.252,
  "E_heals": [],
  "E_journal": [],
  "E_winners": {
+  "#email": {
+   "xpath": "//input[@name='email']",
+   "source": "heal",
+   "addedAt": "2026-11-01T19:17:22+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:44+00:00",
+   "status": "active",
+   "css": "input[name=\"email\"]"
+  },
   "#continue": {
    "xpath": "//button[normalize-space()='Continue to payment']",
    "source": "heal",
-   "addedAt": "2026-11-01T19:03:28+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:29+00:00",
+   "addedAt": "2026-11-01T19:17:43+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:44+00:00",
    "status": "active"
   },
   "#accept-terms": {
    "xpath": "//input[@id='opt-91c4']",
    "source": "heal",
-   "addedAt": "2026-11-01T19:03:18+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:29+00:00",
+   "addedAt": "2026-11-01T19:17:33+00:00",
+   "lastSucceededAt": "2026-11-01T19:17:44+00:00",
    "status": "active",
    "css": "#opt-91c4"
-  },
-  "#email": {
-   "xpath": "//input[@name='email']",
-   "source": "heal",
-   "addedAt": "2026-11-01T19:03:07+00:00",
-   "lastSucceededAt": "2026-11-01T19:03:29+00:00",
-   "status": "active",
-   "css": "input[name=\"email\"]"
   }
  },
  "popups": {
   "offer": {
-   "script": "heal = mendwright.open(\n    page, dismiss=True)\nheal.page.click(\"#email\")\n",
+   "script": "page = mendwright.open(\n    page, dismiss=True).page\npage.click(\"#email\")\n",
    "ok": true,
-   "seconds": 2.275,
+   "seconds": 2.217,
    "log": [
     "WARNING mendwright: dismissed a popup in the way of '#email': <div id=\"offer\" role=\"dialog\"> (\"NORTHWIND NEWSLETTER Get 15% off your first order Sign up fo…\") with “No thanks”, after Escape did not close it"
    ],
    "log_at": [
-    2.233
+    2.189
    ],
    "popup_up_after": false,
    "page": {
@@ -356,20 +356,51 @@
     "email": "",
     "terms": false
    },
+   "journal": [
+    {
+     "ts": "2026-11-01T19:17:46+00:00",
+     "event": "flow.dismiss",
+     "key": "<popup>",
+     "before": "#email",
+     "popup": "<div id=\"offer\" role=\"dialog\"> (\"NORTHWIND NEWSLETTER Get 15% off your first order Sign up fo…\")",
+     "outcome": "dismissed",
+     "how": "decline",
+     "label": "No thanks",
+     "tried": [
+      {
+       "how": "escape"
+      }
+     ]
+    }
+   ],
    "heals": [],
    "handled": [
-    "InterruptionEvent(key='<popup>', before='#email', popup='<div id=\"offer\" role=\"dialog\"> (\"NORTHWIND NEWSLETTER Get 15% off your first order Sign up fo…\")', how='decline', label='No thanks')"
+    {
+     "ts": "2026-11-01T19:17:46+00:00",
+     "event": "flow.dismiss",
+     "key": "<popup>",
+     "before": "#email",
+     "popup": "<div id=\"offer\" role=\"dialog\"> (\"NORTHWIND NEWSLETTER Get 15% off your first order Sign up fo…\")",
+     "outcome": "dismissed",
+     "how": "decline",
+     "label": "No thanks",
+     "tried": [
+      {
+       "how": "escape"
+      }
+     ]
+    }
    ]
   },
   "confirm": {
    "script": "heal = mendwright.open(page)\n\ndef confirm_email(page):\n    page.fill(\"#confirm-email\", \"ada@example.com\")\n    page.click(\"#confirm-email-ok\")\n\nheal.interrupt(\"confirm_email\",\n    \"#confirm-email-dialog\",\n    run=confirm_email)\npage = heal.page\npage.click(\"#email\")\npage.keyboard.type(\"ada@example.com\")\npage.check(\"#accept-terms\")\npage.click(\"#continue\")\n",
    "ok": true,
-   "seconds": 0.881,
+   "seconds": 0.392,
    "log": [
     "WARNING mendwright: handled interruption 'confirm_email' before '#continue' with confirm_email()"
    ],
    "log_at": [
-    0.851
+    0.357
    ],
    "popup_up_after": false,
    "page": {
@@ -379,9 +410,28 @@
     "email": "ada@example.com",
     "terms": true
    },
+   "journal": [
+    {
+     "ts": "2026-11-01T19:17:47+00:00",
+     "event": "flow.interrupt",
+     "key": "confirm_email",
+     "before": "#continue",
+     "action": "run",
+     "selector": "#confirm-email-dialog",
+     "function": "confirm_email"
+    }
+   ],
    "heals": [],
    "handled": [
-    "InterruptionEvent(key='confirm_email', before='#continue', popup=None, how=None, label=None)"
+    {
+     "ts": "2026-11-01T19:17:47+00:00",
+     "event": "flow.interrupt",
+     "key": "confirm_email",
+     "before": "#continue",
+     "action": "run",
+     "selector": "#confirm-email-dialog",
+     "function": "confirm_email"
+    }
    ]
   }
  }
