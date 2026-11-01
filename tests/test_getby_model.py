@@ -10,6 +10,10 @@ import pytest
 import mendwright
 from mendwright import AttentionRequired, facade, getby
 
+# get_by_* calls are Playwright's API, and the error a call that stays broken raises,
+# getby.GetByNotFound, is also Playwright's TimeoutError: CI's offline job has no Playwright.
+pytest.importorskip('playwright.sync_api')
+
 KEY = 'get_by_role("button", name="Sign in")'
 HEAL = "//button[@id='login']"
 PAGE = ("<html><body><main><form id='login-form'><label for='email'>Email</label>"
