@@ -11,6 +11,11 @@
 // handle its own interruption, dismiss no popup and skip the healer's mutex, which the step
 // that called it holds while it waits.
 //
+// heal.step() and heal.runSteps() run a flow whose steps the site may show in any order (see
+// steps.ts). The step whose function runs now lives in an async context too (STEP_CONTEXT):
+// a key found during it is saved with the step's name, and while it runs again, such a key
+// heals on the page the step showed on, whatever its address.
+//
 // Open shadow roots (see shadow.ts): each fingerprint read also reads where the element is,
 // and saves it as the key's shadowHosts, as the Python package does. A key last found inside
 // a shadow root is never healed by this package, so a look-alike on the page around its host
@@ -53,7 +58,11 @@ import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
 import { chainHosts, hostsOf, placeText, runTarget, type Target } from './shadow';
-import { expandPath, loadStore, type Candidate, type SelectorStore } from './store';
+import {
+  StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
+  type Step, type StepFunction, type StepOptions,
+} from './steps';
+import { expandPath, loadStore, type Candidate, type KeyMeta, type SelectorStore } from './store';
 import {
   VALUE_READS, expectation, expectations, refusalReason, refusedMessage, type ExpectValue, type Expectation,
 } from './values';
@@ -221,6 +230,21 @@ interface RunRecord {
 // own calls. Healer.runs has the same records, from every context.
 const RUN_CONTEXT = new AsyncLocalStorage<readonly RunRecord[]>();
 
+/** The step runSteps() runs now (Python's _RUNNING_STEP): the healer, the step's name, the
+ * path of the page it showed on (see flow.pagePath), and whether its function still runs. */
+interface RunningStep {
+  readonly healer: Healer;
+  readonly name: string;
+  readonly path: string | null;
+  running: boolean;
+}
+
+// The step whose function the code running now is part of, or null (see Healer.stepNow()). An
+// async context rather than a field, so that a lookup awaited next to runSteps(), in a
+// Promise.all, is not taken for part of the step. A run function of heal.interrupt() runs
+// with null here: it is part of no step (see Healer.runFunction()).
+const STEP_CONTEXT = new AsyncLocalStorage<RunningStep | null>();
+
 // What run functions threw (Python marks such an error _mendwright_run): it is thrown as it
 // is, and an AttentionRequired is never taken for a miss of the step the interruption was
 // handled for. A WeakSet, since an error may be frozen.
@@ -370,6 +394,8 @@ export class Healer {
   private readonly popupMutex = new Mutex();
   // The run functions of heal.interrupt() that run now, in any context (see awaitRuns()).
   private readonly runs: RunRecord[] = [];
+  // The steps heal.step() registered, by name, in the order registered (see steps.ts).
+  private readonly stepBook = new Map<string, Step>();
   private pageProxy: Page | Frame | null = null;
   /** @internal open({ dismiss: true }): dismiss popups nobody registered (see dismiss()). */
   dismissOn = false;
@@ -484,6 +510,176 @@ export class Healer {
     return presentNow(this.store, this.driver, key);
   }
 
+  // --- steps in any order: step() and runSteps() (see steps.ts) ------------------------------
+
+  /** Register a step of a flow whose steps the site may show in another order, on one page, or
+   * not at all, for runSteps(), and return fn. when is what shows the step is on the page, its
+   * landmark: one selector or a list, and any visible match counts. It is never healed, so pick
+   * one that stays, such as a heading's text. url is a pattern for the page's path, such as
+   * '/checkout/payment' or '*\/payment*', normalized as the page guard normalizes paths:
+   * instead of when, or as one more condition with it. last: true marks the step that ends the
+   * flow, such as placing the order; a flow has at most one. optional: true marks one that may
+   * not show at all, such as an upsell.
+   *
+   * fn gets heal.page, so its selectors heal as usual, and returns a promise, as an async
+   * function does. Registering a name again replaces its step, which keeps its place in the
+   * order. Steps stay on the healer for every later runSteps() call: for another flow, open a
+   * new healer. Throws TypeError or InvalidSelector at once for arguments that can never work. */
+  step<F extends StepFunction>(name: string, options: StepOptions, fn: F): F {
+    registerStep(this.stepBook, makeStep(name, options, fn));
+    return fn;
+  }
+
+  /** Run the steps registered with step() in the order the site shows them, each once, until
+   * the step with last: true ran (or, with no last step, every step that is not optional ran),
+   * and resolve to their names in the order they ran.
+   *
+   * Each time, it waits up to timeoutMs (default: the healer's) for a step that has not run to
+   * show, then awaits its function. Steps that show at the same time run in the order they were
+   * registered, and the last step only when no other shows. Registered interruptions the page
+   * shows meanwhile are handled, up to 3 in each wait.
+   *
+   * While a step runs, a key found during that step before heals on the page the step showed
+   * on, whatever its address, where the page guard would decline a page the key was never
+   * found on. Once the step's function goes to another page, such as with its own submit, and
+   * outside runSteps(), the guard is as before.
+   *
+   * Rejects with AttentionRequired when a step that ran is on the page again with no new step
+   * for the whole timeout (its submit probably failed, or the site added a step that shows part
+   * of it: it is never run twice), when no step shows (the message names the page and every
+   * landmark), and after 3 times as many step runs as there are steps; with TypeError when a
+   * step's function returns something that is not a promise. What a step's function throws is
+   * thrown as it is, after the flow.step journal event records it. */
+  async runSteps(options: RunStepsOptions = {}): Promise<string[]> {
+    const [timeoutMs, pollMs] = runArgs(this.stepBook, options, this.timeoutMs);
+    const flow = new StepRun(this.stepBook, this.coordinator, timeoutMs);
+    const page = this.page;
+    while (!flow.done()) {
+      flow.checkCap();
+      const [step, path] = await this.nextStep(flow, timeoutMs, pollMs);
+      flow.starting(step);
+      const started = performance.now();
+      const running: RunningStep = { healer: this, name: step.name, path, running: true };
+      const fn = step.fn;
+      try {
+        await STEP_CONTEXT.run(running, async () => {
+          const result = fn(page);
+          if (!isThenable(result)) throw new TypeError(plainMessage(step.name, result));
+          await result;
+        });
+      } catch (error) {
+        running.running = false;
+        flow.record(step, path, (performance.now() - started) / 1000, true, error);
+        throw error;
+      }
+      running.running = false;
+      flow.record(step, path, (performance.now() - started) / 1000);
+    }
+    return flow.finish();
+  }
+
+  /** Wait, up to timeoutMs, for a step that has not run to show, handling the registered
+   * interruptions the page shows meanwhile: [the step, the path of its page]. The page's
+   * address is read again after its landmarks, and they are looked at again when it changed
+   * meanwhile, so the step is not given the page it came from. A landmark that matches more
+   * elements than mendwright looks at is named in one WARNING per page. */
+  private async nextStep(flow: StepRun, timeoutMs: number, pollMs: number): Promise<[Step, string | null]> {
+    const deadline = performance.now() + timeoutMs;
+    const budget = newBudget();
+    const failed = new Set<string>();   // the interruptions whose action failed in this wait
+    for (;;) {
+      const url = this.driver.url();
+      const several = (name: string, selector: string, count: number, looked: number) => {
+        this.severalLandmark(name, selector, count, looked, url);
+      };
+      const shown: Step[] = [];
+      for (const step of flow.waiting()) {
+        if (await shows(this.driver, step, url, several)) shown.push(step);
+      }
+      if (shown.length) {
+        if (pagePath(this.driver.url()) === pagePath(url) || performance.now() >= deadline) {
+          return [StepRun.pick(shown), pagePath(url)];
+        }
+        continue;   // the page changed while its landmarks were looked at: look again
+      }
+      if (await this.interruptWaiting(budget, timeoutMs, pollMs, failed)) continue;
+      if (performance.now() >= deadline) {
+        const again: Step[] = [];
+        for (const step of flow.ranSteps()) {
+          if (await shows(this.driver, step, url)) again.push(step);
+        }
+        throw flow.stuck(again, pagePath(url));
+      }
+      await sleep(Math.max(pollMs, 20));
+    }
+  }
+
+  /** While runSteps() waits: handle the registered interruptions the page shows, one key at a
+   * time, under the healer's mutex as before an action, leaving out the keys in failed. A key
+   * whose action failed (a WARNING said so and nothing was handled, though the budget went
+   * down) is added to failed, so it is not tried again in this wait, and the others still are.
+   * True when one was handled. */
+  private async interruptWaiting(budget: Budget, timeoutMs: number, pollMs: number, failed: Set<string>): Promise<boolean> {
+    if (this.others(WAITING_STEP).every((item) => failed.has(item.key))) return false;
+    return this.turn(async () => {
+      let handled = false;
+      for (const item of this.others(WAITING_STEP)) {
+        if (failed.has(item.key)) continue;
+        const used = budget.used;
+        if (await this.handleInterruptions(WAITING_STEP, budget, timeoutMs, pollMs, item.key)) handled = true;
+        else if (budget.used > used) failed.add(item.key);
+      }
+      return handled;
+    });
+  }
+
+  /** The WARNING for a landmark of step name that matches count elements of which the first
+   * looked were looked at, none visible: once per step and page (Python's _several). */
+  private severalLandmark(name: string, selector: string, count: number, looked: number, url: string): void {
+    const seen = JSON.stringify(['landmark', name, pagePath(url)]);
+    if (this.severalSeen.has(seen)) return;
+    this.severalSeen.add(seen);
+    this.coordinator.emit('warning', severalMessage(name, selector, count, looked, 'landmark'));
+  }
+
+  /** The step runSteps() runs now on this healer, when the code running now is part of it, or
+   * null. Only in the async context its function runs in, and while it runs: a callback the
+   * function left behind, such as a timer, is not part of it once it ended, nor is a lookup
+   * awaited next to runSteps(), nor a run function of heal.interrupt(). */
+  private stepNow(): RunningStep | null {
+    const running = STEP_CONTEXT.getStore();
+    return running && running.healer === this && running.running ? running : null;
+  }
+
+  /** While runSteps() runs a step, and key was found on the page that step showed on (page),
+   * save the step's name with key (SelectorStore.setLastStep), so a later run lets key heal
+   * wherever that step shows. Not for a key found after the step's function went to another
+   * page: that page may be the next step's. */
+  private rememberStep(key: string, page: string | null): void {
+    const running = this.stepNow();
+    if (running && page && page === running.path && typeof this.store.setLastStep === 'function') {
+      this.store.setLastStep(key, running.name);
+    }
+  }
+
+  /** The pages the page guard compares for key: the ones saved with it, and, while runSteps()
+   * runs a step that key was found during before, this page (here) too when it is the page
+   * that step showed on (its landmark, its url) when it started. So a site that moved the step
+   * to another page or another place in the flow still heals the key there, and one INFO line
+   * says so when the page is new to the key. Once the step's function went to another page,
+   * such as with its own submit, that page may be the next step's, and nothing changes; nor
+   * outside runSteps(), or for a key never found during the step that runs. */
+  private stepPages(key: string, meta: KeyMeta, here: string | null): string[] {
+    const pages = [...meta.pages];
+    const running = this.stepNow();
+    if (!running || !here || here !== running.path || !meta.steps.includes(running.name)) return pages;
+    const last = meta.lastPage;
+    if (!pages.includes(here) && here !== last && (pages.length || last) && !this.coordinator.healAcrossPages) {
+      this.coordinator.emit('info', scopeMessage(key, running.name, here, last));
+    }
+    return [...pages, here];
+  }
+
   // --- run functions of heal.interrupt() --------------------------------------------------
 
   /** The records of this healer's run functions that the code running now is inside, and
@@ -531,22 +727,25 @@ export class Healer {
    * returns (Python's _run_function). While it runs, its own calls run in an async context
    * marked as inside it (RUN_CONTEXT, and this.runs for every context): they do not handle
    * item again, dismiss no popup and skip the healer's mutex (see turn()), and the other
-   * registered interruptions are still handled before their actions. A step in another
-   * context waits for it (see awaitRuns()). What it throws, and the TypeError for a function
-   * that returned something that is not a promise, gets one WARNING and a flow.interrupt
-   * event with outcome 'failed', and is thrown as it is, marked (RAISED_BY_RUN): the step it
-   * was handled for does not take an AttentionRequired from it for a miss of its own. */
+   * registered interruptions are still handled before their actions. It is part of no step
+   * runSteps() runs (STEP_CONTEXT is null in it): it may run during any step, so the keys it
+   * finds are not saved with the step, and the page guard is not widened for them. A step in
+   * another context waits for it (see awaitRuns()). What it throws, and the TypeError for a
+   * function that returned something that is not a promise, gets one WARNING and a
+   * flow.interrupt event with outcome 'failed', and is thrown as it is, marked
+   * (RAISED_BY_RUN): the step it was handled for does not take an AttentionRequired from it
+   * for a miss of its own. */
   private async runFunction(item: Interruption, target: string, before: string, fn: string): Promise<void> {
     const run = item.run as RunFunction;
     let finish!: () => void;
     const record: RunRecord = { healer: this, key: item.key, done: new Promise<void>((resolve) => (finish = resolve)) };
     this.runs.push(record);
     try {
-      await RUN_CONTEXT.run([...(RUN_CONTEXT.getStore() ?? []), record], async () => {
+      await RUN_CONTEXT.run([...(RUN_CONTEXT.getStore() ?? []), record], () => STEP_CONTEXT.run(null, async () => {
         const result = run(this.page);
         if (!isThenable(result)) throw new TypeError(runPlainMessage(item.key, fn, result));
         await result;
-      });
+      }));
     } catch (error) {
       try {
         this.coordinator.emit('warning', runFailedMessage(item.key, before, fn, error));
@@ -673,10 +872,13 @@ export class Healer {
     throw missed;
   }
 
+  /** The heal context: the URL, and the pages the page guard compares (this page among them
+   * while a step that key was found during runs, see stepPages()). */
   private flowContext(key: string): FlowContext {
     const url = this.driver.url();
     const meta = this.store.metaOf(key);
-    return { url, page: pagePath(url), lastPage: meta.lastPage, pages: [...meta.pages] };
+    const page = pagePath(url);
+    return { url, page, lastPage: meta.lastPage, pages: this.stepPages(key, meta, page) };
   }
 
   private async heal(key: string, missed: AttentionRequired, attempt: () => Promise<Locator>): Promise<Locator> {
@@ -776,11 +978,13 @@ export class Healer {
     }
   }
 
-  /** Save the page key's element was just found on, and its address. */
+  /** Save the page key's element was just found on, its address, and the step runSteps() runs
+   * now, if any (see rememberStep()), with at most one write of the store for all three. */
   private rememberPage(key: string): void {
     const url = this.driver.url();
     const page = pagePath(url);
     this.store.batch(() => {
+      this.rememberStep(key, page);
       if (page) this.store.setLastPage(key, page);
       if (page || !this.store.metaOf(key).lastPage) {
         const address = pageUrl(url);
@@ -863,16 +1067,19 @@ export class Healer {
   }
 
   /** Handle each registered interruption that the page shows now, other than before itself
-   * and one whose run function this is inside (see others()). True when one was handled.
+   * and one whose run function this is inside (see others()), or only the one registered as
+   * only. True when one was handled.
    * Throws InterruptionLoop when the step's budget is used up and one is still there, and
    * what a run function threw. A run function of this healer that runs in another context
    * is waited for first, and again when one started there while an interruption was looked
    * at, so that the look and the action come with no wait between them: a run function is
    * never called a second time while it runs, and nothing acts next to it. */
-  private async handleInterruptions(before: string, budget: Budget, timeoutMs: number, pollMs: number): Promise<boolean> {
+  private async handleInterruptions(before: string, budget: Budget, timeoutMs: number, pollMs: number,
+                                    only: string | null = null): Promise<boolean> {
     await this.awaitRuns();
     let handled = false;
     for (const item of this.others(before)) {
+      if (only !== null && item.key !== only) continue;   // runSteps() handles one key at a time
       let target = await this.interruptionTarget(item);
       while (target !== null && this.runsElsewhere().length) {
         await this.awaitRuns();

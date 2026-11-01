@@ -4,9 +4,10 @@
 // url()) and runs the browser-side code (browser/lib.ts, browser/popup.ts) inside the jsdom
 // window, as a page would.
 //
-// Selectors: 'xpath=...' and 'css=...' (what the driver passes). CSS pierces open shadow
-// roots, as Playwright's does, and locator().locator() looks inside the elements before it;
-// XPath does not reach into a shadow root. A page's HTML can declare shadow roots with
+// Selectors: 'xpath=...' and 'css=...' (what the driver passes), and either followed by
+// ' >> nth=<n>', the nth of its matches, as in Playwright. CSS pierces open shadow roots, as
+// Playwright's does, and locator().locator() looks inside the elements before it; XPath does
+// not reach into a shadow root. A page's HTML can declare shadow roots with
 // <template shadowrootmode="open|closed">, which become attached shadow roots, so
 // content() holds none of what they contain, as in a browser. Visibility: an element is
 // hidden when it or an ancestor has the hidden attribute, an inline display:none or
@@ -50,6 +51,12 @@
 //   as an animation does (data-click-removes-after-looks="<n>": until the page was looked at
 //   n more times), and data-click-raises then throws the error Playwright throws for a
 //   click whose navigation did not commit in time. page.clicked lists the elements clicked.
+//
+// Any page, with a layout or without: a click on an element runs data-click-shows="<css>",
+// which takes the inline display: none off what the CSS matches, and data-click-goes="<url>",
+// which loads the page page.site holds for that address (resolved against the current one),
+// as a link does, data-click-goes-after="<ms>" that long after the click, as a slow site does.
+// page.visits lists every address the page showed, in order.
 
 import { JSDOM } from 'jsdom';
 
@@ -498,6 +505,10 @@ export class FakePage {
   readonly keys: [string, string][] = [];
   /** ElementHandle clicks: the element, and the timeout passed. */
   readonly handleClicks: [Element, number | undefined][] = [];
+  /** address -> HTML: the pages a click on an element with data-click-goes loads. */
+  site: Record<string, string> = {};
+  /** Every address the page showed, in order. */
+  readonly visits: string[] = [];
   // What a click put off until the page was looked at n more times (data-click-removes-after-looks).
   private readonly pending: { left: number; run: () => void }[] = [];
   readonly keyboard = {
@@ -520,7 +531,15 @@ export class FakePage {
     if (this.layout) installLayout(this, dom.window, this.layout.width, this.layout.height);
     this.scrollY = 0;
     this.documents += 1;
+    this.visits.push(this.currentUrl);
     return dom;
+  }
+
+  /** Load the page this.site holds for url, as a link does. */
+  navigate(url: string): void {
+    const html = this.site[url];
+    if (html === undefined) throw new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at ' + url);
+    this.goto(html, url);
   }
 
   get document(): Document {
@@ -535,6 +554,12 @@ export class FakePage {
 
   /** What selector matches in the document, or inside scope (an element, not itself). */
   query(selector: string, scope: Element | null = null): Element[] {
+    const nth = /^([\s\S]*) >> nth=(-?\d+)$/.exec(selector);
+    if (nth) {
+      const all = this.query(nth[1], scope);
+      const at = Number(nth[2]) < 0 ? all.length + Number(nth[2]) : Number(nth[2]);
+      return all[at] ? [all[at]] : [];
+    }
     const doc = this.document;
     if (selector.startsWith('xpath=')) {
       const expression = selector.slice('xpath='.length);
@@ -628,8 +653,16 @@ export class FakePage {
     else if (looks !== null) this.pending.push({ left: Number(looks), run: removes });
     else removes();
     for (const target of targets('data-click-hides')) (target as HTMLElement).style.display = 'none';
+    for (const target of targets('data-click-shows')) (target as HTMLElement).style.removeProperty('display');
     for (const target of targets('data-click-reopens')) target.replaceWith(target.cloneNode(true));
     for (const target of targets('data-click-uncovers')) (target as HTMLElement).style.pointerEvents = 'none';
+    const goes = el.getAttribute('data-click-goes');
+    if (goes !== null) {
+      const url = new URL(goes, this.currentUrl).href;
+      const later = el.getAttribute('data-click-goes-after');
+      if (later !== null) setTimeout(() => this.navigate(url), Number(later)).unref();
+      else this.navigate(url);
+    }
     if (el.hasAttribute('data-click-raises')) {
       throw new Error('elementHandle.click: Timeout 1000ms exceeded.\nCall log:\n  - attempting click action\n  - '
         + 'performing click action\n  - click action done\n  - waiting for scheduled navigations to finish');

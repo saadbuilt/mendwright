@@ -15,7 +15,9 @@ const HEX = /^[0-9a-f]{16,}$/;
 const TOKEN = /^[a-z0-9_-]{16,}$/;
 const NO_PATH = ['about:', 'data:', 'blob:', 'javascript:'];
 
-function isId(part: string): boolean {
+/** Whether a part of a path looks like a record id (a number, a UUID, a long hex or token):
+ * pagePath() writes it as '*'. */
+export function isId(part: string): boolean {
   if (isDigits(part) || UUID.test(part) || HEX.test(part)) return true;
   return TOKEN.test(part) && [...part].filter((c) => /[0-9]/.test(c)).length >= 2 && /[a-z]/.test(part);
 }
@@ -209,16 +211,31 @@ function checkCloses(key: string, fn?: string | null): string {
     + "it, for example with action: 'press', args: ['Escape'], or a selector for its close button.";
 }
 
-export function severalMessage(name: string, selector: string, count: number, looked: number): string {
-  let text = 'interruption ' + pyRepr(name) + ' was skipped: its selector ' + pyRepr(selector)
-    + ' matches ' + count + ' elements, and ';
-  if (looked === 0) {
-    text += 'mendwright acts on a CSS or Playwright selector only when it matches one (an XPath is '
-      + 'narrowed to its first visible match).';
+/** The WARNING for an interruption (what 'interruption') or a step's landmark ('landmark', see
+ * steps.ts) that mendwright skipped because its selector matches count elements, of which it
+ * looked at the first looked (0: a CSS or Playwright selector that matches several is not
+ * acted on), none visible. It is the Python package's several_message() for a driver that
+ * does not count the visible matches: it names no selector built from one of them. */
+export function severalMessage(name: string, selector: string, count: number, looked: number,
+                               what: 'interruption' | 'landmark' = 'interruption'): string {
+  let text: string;
+  let use: string;
+  if (what === 'interruption') {
+    text = 'interruption ' + pyRepr(name) + ' was skipped: its selector ' + pyRepr(selector)
+      + ' matches ' + count + ' elements, and ';
+    if (looked === 0) {
+      text += 'mendwright acts on a CSS or Playwright selector only when it matches one (an XPath is '
+        + 'narrowed to its first visible match).';
+    } else {
+      text += 'mendwright looks at the first ' + looked + ' of them only, and none of those is visible.';
+    }
+    use = 'Use a selector that matches only the element to act on';
   } else {
-    text += 'mendwright looks at the first ' + looked + ' of them only, and none of those is visible.';
+    text = 'step ' + pyRepr(name) + ' did not show: its landmark ' + pyRepr(selector) + ' matches ' + count
+      + ' elements, and mendwright looks at the first ' + looked + ' of them only, and none of those is visible.';
+    use = 'Use a landmark that matches one element';
   }
-  return text + ' Use a selector that matches only the element to act on: its id or test id, its '
+  return text + ' ' + use + ': its id or test id, its '
     + 'role and name, as in role=button[name="Accept all"], its whole text, as in text="Accept all", '
     + "or an XPath of its tag and text, as in //button[normalize-space()='Accept all'].";
 }
@@ -278,7 +295,8 @@ export function clickMayHaveRun(error: unknown): boolean {
   return ACTION_RAN.test(text.toLowerCase()) || PAGE_WENT.test(text);
 }
 
-function listed(items: string[]): string {
+/** 'a', 'a and b', 'a, b and c' (the Python package's flow._listed). */
+export function listed(items: string[]): string {
   if (items.length < 2) return items.join('');
   return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
 }

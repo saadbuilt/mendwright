@@ -95,13 +95,21 @@ test('the popup scripts are self-contained: each is a function from its source t
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
     'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
-    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber']) {
+    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP']) {
     assert.ok(name in api, name);
   }
   assert.equal(api.DISMISS_KEY, '<popup>');
+  assert.equal(api.WAITING_STEP, '<next step>');
   assert.equal(api.parseMoney('1.299,00 €'), '1299.00');
-  // Types, which the build of this test checks: heal.interrupt()'s options and its run function.
+  // Types, which the build of this test checks: heal.interrupt()'s options and its run function,
+  // and heal.step()'s and heal.runSteps()'.
   const run: api.RunFunction = async () => undefined;
   const options: api.InterruptOptions = { run, role: 'dialog' };
   assert.equal(options.run, run);
+  const step: api.StepFunction = (page) => page.click('#place');
+  const stepOptions: api.StepOptions = { when: ['#card-number'], url: '/checkout/*', last: false, optional: true };
+  const runOptions: api.RunStepsOptions = { timeoutMs: null, pollMs: 50 };
+  assert.deepEqual([typeof step, stepOptions.optional, runOptions.pollMs], ['function', true, 50]);
+  assert.equal(typeof api.Healer.prototype.step, 'function');
+  assert.equal(typeof api.Healer.prototype.runSteps, 'function');
 });

@@ -29,6 +29,8 @@ export { setLogSink } from './log';
 export type { LogLevel, LogSink } from './log';
 export type { Interruption, InterruptionEvent, CookieChoice, InterruptOptions, RunFunction } from './interruptions';
 export { DISMISS_KEY } from './flow';
+export { WAITING_STEP } from './steps';
+export type { RunStepsOptions, StepFunction, StepOptions } from './steps';
 export { parseMoney, parseNumber } from './values';
 export type { ExpectValue, ValueName } from './values';
 

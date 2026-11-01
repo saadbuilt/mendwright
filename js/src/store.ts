@@ -93,6 +93,8 @@ type MetaField = typeof META_FIELDS[number];
 type Meta = Partial<Record<MetaField, unknown>>;
 
 export const MAX_PAGES = 5;
+/** How many step names setLastStep() keeps per key, most recent first. */
+export const MAX_STEPS = 5;
 const LIST_WAITING = ['proposed', 'accepted'];
 const MAX_LIST_HEALS = 3;
 const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts'] as const;
@@ -350,7 +352,7 @@ function mergeMeta(mine: Meta, theirs: Meta, base: Meta): Meta {
     else if (same(t, b)) value = m;
     else if (field === 'destructive') value = Boolean(m) || Boolean(t);
     else if (field === 'pages' || field === 'steps') {
-      const both = [...new Set([...pagesOf(m), ...pagesOf(t)])].slice(0, MAX_PAGES);
+      const both = [...new Set([...pagesOf(m), ...pagesOf(t)])].slice(0, field === 'pages' ? MAX_PAGES : MAX_STEPS);
       value = both.length ? both : undefined;
     } else value = m;
     if (value !== undefined && value !== null) out[field] = value;
@@ -626,6 +628,23 @@ export class SelectorStore {
       this.meta.set(key, { ...saved, lastPage: page, pages: [...pages] });
       const before = new Set(pagesOf(saved.pages));
       if (before.size !== pages.length || pages.some((p) => !before.has(p))) this.persist();
+    }
+  }
+
+  /** Record that key's element was just found while runSteps() ran the step named step (see
+   * steps.ts). steps keeps the last few distinct names, most recent first, and the file is
+   * written only when the set of names changes, as for setLastPage(). A name that is not a
+   * string, or '', is ignored. */
+  setLastStep(key: string, step: string | null): void {
+    if (typeof step !== 'string' || !step) return;
+    const e = this.entry(key);
+    const steps = [step, ...pagesOf(e.steps).filter((s) => s !== step)].slice(0, MAX_STEPS);
+    e.steps = steps;
+    const saved = this.meta.get(key) ?? {};
+    if (!same(saved.steps, steps)) {
+      this.meta.set(key, { ...saved, steps: [...steps] });
+      const before = new Set(pagesOf(saved.steps));
+      if (before.size !== steps.length || steps.some((s) => !before.has(s))) this.persist();
     }
   }
 

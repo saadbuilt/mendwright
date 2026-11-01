@@ -156,6 +156,64 @@ export function pySum(values: number[]): number {
   return f;
 }
 
+/** digits, the decimal digits of a number whose last kept digit is at the end of kept, and
+ * the digits after it in rest, rounded as Python rounds: to the nearest, and on an exact half
+ * to the even one. */
+function roundHalfEven(kept: string, rest: string): bigint {
+  const n = BigInt(kept || '0');
+  const first = rest.charCodeAt(0) - 48;
+  if (!rest || first < 5) return n;
+  if (first > 5 || /[1-9]/.test(rest.slice(1))) return n + 1n;
+  return n % 2n === 1n ? n + 1n : n;
+}
+
+/** format(x, '.<digits>f') in Python: x with that many digits after the point, rounded from
+ * its exact value, with an exact half to the even digit (toFixed() rounds it up). */
+export function pyFixed(x: number, digits: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = x < 0 || Object.is(x, -0) ? '-' : '';
+  // The exact digits of |x|, 100 of them after the point: every double a message or the
+  // journal formats ends well before that. From 1e21 on, a double is a whole number, and
+  // toFixed() writes it with an exponent.
+  const abs = Math.abs(x);
+  const [whole, fraction] = abs >= 1e21 ? [BigInt(abs).toString(), ''] : abs.toFixed(100).split('.');
+  const n = roundHalfEven(whole + fraction.slice(0, digits).padEnd(digits, '0'), fraction.slice(digits)).toString()
+    .padStart(digits + 1, '0');
+  return sign + (digits ? n.slice(0, -digits) + '.' + n.slice(-digits) : n);
+}
+
+/** round(x, digits) in Python, for a float: the double nearest to pyFixed(x, digits). */
+export function pyRound(x: number, digits: number): number {
+  return Number(pyFixed(x, digits));
+}
+
+/** format(x, 'g') in Python: 6 significant digits, rounded as Python rounds, without
+ * trailing zeros, and in exponent form (1e+06) when the exponent is below -4 or 6 or more. */
+export function pyFormatG(x: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = x < 0 || Object.is(x, -0) ? '-' : '';
+  if (x === 0) return sign + '0';
+  // 100 significant digits of |x|, its exact value as far as any double mendwright formats goes.
+  const [mantissa, power] = Math.abs(x).toExponential(99).split('e');
+  const all = mantissa.replace('.', '');
+  let exponent = Number(power);
+  let digits = roundHalfEven(all.slice(0, 6), all.slice(6)).toString();
+  if (digits.length > 6) {
+    digits = digits.slice(0, 6);   // 999999.5 rounds to 1000000: one more power of ten
+    exponent += 1;
+  }
+  if (exponent >= -4 && exponent < 6) {
+    const whole = exponent >= 0 ? digits.slice(0, exponent + 1) : '0';
+    const fraction = (exponent >= 0 ? digits.slice(exponent + 1) : '0'.repeat(-exponent - 1) + digits).replace(/0+$/, '');
+    return sign + whole + (fraction ? '.' + fraction : '');
+  }
+  const tail = digits.slice(1).replace(/0+$/, '');
+  return sign + digits[0] + (tail ? '.' + tail : '') + 'e' + (exponent < 0 ? '-' : '+')
+    + String(Math.abs(exponent)).padStart(2, '0');
+}
+
 /** str.isdigit() for a word mendwright split from a text (a run of decimal digits). */
 export function isDigits(s: string): boolean {
   return s.length > 0 && /^\p{Nd}+$/u.test(s);
