@@ -723,6 +723,9 @@ class HealCoordinator:
         if getby.is_key(selector_key):
             if not self.get_by_model:
                 return self._heal_get_by(selector_key, meta, broken_candidates)
+            if self.disabled:
+                # As _heal_get_by declines it: not as a call no model can be asked about.
+                return self._decline(selector_key, DISABLED_REASON, code='disabled')
             if meta.get('expectedRole') in (None, '', 'unknown'):
                 choices = getby.gate_roles(getby.parse(selector_key))   # it never matched
             meta = self._call_meta(selector_key, meta)

@@ -221,6 +221,20 @@ def test_disable_and_dry_run(tmp_path, make_page, stub_provider, monkeypatch):
     assert len(provider.bundles) == 1 and _journal(tmp_path)[-1]['code'] == 'disabled'
 
 
+def test_disable_declines_a_call_that_never_matched_as_disabled(tmp_path, make_page,
+                                                                stub_provider, monkeypatch):
+    # Not as a call no model can be asked about, which mendwright notify lists for a human.
+    monkeypatch.setenv('MENDWRIGHT_DISABLE', '1')
+    provider = stub_provider(HEAL)
+    heal = _open(_page(make_page), tmp_path, provider)
+    with pytest.raises(getby.GetByNotFound) as caught:
+        heal.page.get_by_text('Sign on').click()
+    assert facade.DISABLED_REASON in str(caught.value)
+    assert [e['code'] for e in _journal(tmp_path) if e['event'] == 'heal.declined'] == [
+        'disabled']
+    assert provider.bundles == []
+
+
 def test_no_provider_says_so(tmp_path, make_page):
     page = _matched_then(make_page, tmp_path, REDONE)
     with pytest.raises(getby.GetByNotFound) as caught:
