@@ -724,21 +724,44 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
     assert "  not healed (MENDWRIGHT_HEAL_GET_BY=0): heal.page.get_by_role()" in (
         capsys.readouterr().out)
 
-    # model: a model may heal a call too, also with the fingerprint tier off.
+    # model: a model may heal a call too, when a provider is configured and
+    # MENDWRIGHT_DISABLE is off; a call that never matched only when it is a get_by_role().
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "Model")
-    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
-    assert cli.main(["doctor"]) == 0
-    out = capsys.readouterr().out
-    lines = out.splitlines()
-    at = lines.index("get_by_* locators")
-    assert " ".join(line.strip() for line in lines[at + 1:at + 4]) == (
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-test")
+
+    def get_by_section():
+        assert cli.main(["doctor"]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        at = lines.index("get_by_* locators")
+        text = " ".join(line.strip() for line in lines[at + 1:lines.index("", at)])
+        assert cli.main(["doctor", "--json"]) == 0
+        return text, json.loads(capsys.readouterr().out)["get_by"]["heals"]
+
+    assert get_by_section() == (
         "healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call that matches "
         "nothing is healed from its fingerprint, or by the model provider when the fingerprint "
-        "does not heal it or the call never matched.")
-    assert cli.main(["doctor", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["get_by"] == {
-        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "model": True, "heals": True}
+        "does not heal it; a get_by_role() call that never matched, by the model provider.", True)
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert get_by_section() == (
+        "healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call that matches "
+        "nothing is healed by the model provider, since the fingerprint tier is off; a call that "
+        "never matched, only when it is a get_by_role() call.", True)
+    monkeypatch.setenv("MENDWRIGHT_DISABLE", "1")         # nothing heals at all
+    assert get_by_section() == (
+        "routed (MENDWRIGHT_HEAL_GET_BY=model), but MENDWRIGHT_DISABLE is on, so a get_by_* call "
+        "that breaks is reported, not healed.", False)
+    monkeypatch.delenv("MENDWRIGHT_DISABLE")
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.delenv("ANTHROPIC_MODEL")
+    assert get_by_section() == (
+        "routed (MENDWRIGHT_HEAL_GET_BY=model), but the fingerprint tier is off and no model "
+        "provider is configured, so a get_by_* call that breaks is reported, not healed.", False)
     monkeypatch.delenv("MENDWRIGHT_FINGERPRINT")
+    assert get_by_section() == (
+        "healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call that matches "
+        "nothing is healed from its fingerprint only, since no model provider is configured.",
+        True)
 
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "sometimes")
     assert cli.main(["doctor"]) == 0

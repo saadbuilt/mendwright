@@ -175,10 +175,12 @@ def _fingerprint_info():
     return {'enabled': True, 'source': 'default'}
 
 
-def _get_by_info():
+def _get_by_info(provider=None, fingerprint=None):
     """Whether mendwright.open() looks up and heals heal.page's get_by_* calls by default,
     what decides it, whether a model may heal one too (MENDWRIGHT_HEAL_GET_BY=model), and
-    whether one can heal: with the fingerprint tier on, or a model allowed to."""
+    whether one can heal: with the fingerprint tier on, or with a model allowed to, a model
+    provider configured and MENDWRIGHT_DISABLE off. provider and fingerprint are what
+    _provider_info() and _fingerprint_info() give, read again when not given."""
     from .facade import get_by_env
     from .getby import MODEL
     try:
@@ -189,8 +191,16 @@ def _get_by_info():
     enabled = problem is None and bool(env)
     model = env == MODEL
     source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and raw is not None else 'default'
+    fingerprint = fingerprint or _fingerprint_info()
+    asks = model and enabled and _model_heals(provider or _provider_info())
     return {'enabled': enabled, 'source': source, 'model': model,
-            'heals': enabled and (model or _fingerprint_info()['enabled'])}
+            'heals': enabled and (fingerprint['enabled'] or asks)}
+
+
+def _model_heals(provider):
+    """Whether mendwright.open() can ask a model provider: one is configured, and
+    MENDWRIGHT_DISABLE is off."""
+    return bool(provider.get('configured')) and not provider.get('disabled')
 
 
 def _provider_info():
@@ -387,14 +397,15 @@ def collect_doctor():
     import lxml.etree
     from . import __file__ as package_file
     libxml2 = '.'.join(str(p) for p in getattr(lxml.etree, 'LIBXML_VERSION', ()))
+    provider, fingerprint = _provider_info(), _fingerprint_info()
     return {
         'mendwright': {'version': _version(), 'path': os.path.dirname(package_file)},
         'python': {'version': sys.version.split()[0], 'executable': sys.executable},
         'lxml': {'version': getattr(lxml, '__version__', None), 'libxml2': libxml2 or None},
         'browser_libraries': _browser_libraries(),
-        'provider': _provider_info(),
-        'fingerprint': _fingerprint_info(),
-        'get_by': _get_by_info(),
+        'provider': provider,
+        'fingerprint': fingerprint,
+        'get_by': _get_by_info(provider, fingerprint),
         'store': _store_info(),
         'run': _run_info(),
         'env': _env_info(),
@@ -464,17 +475,34 @@ def _doctor_text(d):
 
     g = d.get('get_by') or {}
     lines.append('get_by_* locators')
-    if g.get('model'):
+    on = bool(f.get('enabled'))
+    asks = bool(g.get('model')) and _model_heals(d.get('provider') or {})
+    if g.get('heals') and g.get('model'):
+        if on and asks:
+            how = ('is healed from its fingerprint, or by the model provider when the fingerprint '
+                   'does not heal it; a get_by_role() call that never matched, by the model '
+                   'provider.')
+        elif asks:
+            how = ('is healed by the model provider, since the fingerprint tier is off; a call '
+                   'that never matched, only when it is a get_by_role() call.')
+        else:
+            how = ('is healed from its fingerprint only, since no model provider is '
+                   'configured.')
         lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call '
-                           'that matches nothing is healed from its fingerprint, or by the model '
-                           'provider when the fingerprint does not heal it or the call never '
-                           'matched.'))
+                           'that matches nothing ' + how))
     elif g.get('heals'):
         lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that '
                            'matches nothing is healed from its fingerprint, never by a model.'))
     elif g.get('enabled'):
-        lines.append(_wrap('routed (MENDWRIGHT_HEAL_GET_BY=1), but the fingerprint tier is off, '
-                           'so a get_by_* call that breaks is reported, not healed.'))
+        if f.get('source') == 'MENDWRIGHT_DISABLE':
+            why = 'MENDWRIGHT_DISABLE is on'
+        elif g.get('model'):
+            why = 'the fingerprint tier is off and no model provider is configured'
+        else:
+            why = 'the fingerprint tier is off'
+        lines.append(_wrap('routed (MENDWRIGHT_HEAL_GET_BY=' + ('model' if g.get('model') else '1')
+                           + '), but ' + why + ', so a get_by_* call that breaks is reported, '
+                           'not healed.'))
     else:
         why = 'default' if g.get('source') != 'MENDWRIGHT_HEAL_GET_BY' else 'MENDWRIGHT_HEAL_GET_BY=0'
         lines.append(_wrap('not healed (' + why + '): heal.page.get_by_role() and the other '
