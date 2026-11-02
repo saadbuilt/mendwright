@@ -80,8 +80,9 @@ class _Health:
     """Whether a remote store answered lately, for one kind of call: reads (get) or writes (put,
     delete), apart, so a store that refuses writes (a read-only role) is still read. After a
     failure, every store of this process on it waits FIRST seconds before it asks again, then
-    twice as long after each failure that follows, at most MOST seconds, with a little jitter;
-    a call that succeeds ends the wait. The start and the end of an outage wait in news until a
+    twice as long after each failure that follows, at most MOST seconds, each wait less a random
+    part of up to a fifth, so the workers of a fleet that all wait the most don't ask again at
+    the same moment; a call that succeeds ends the wait. The start and the end of an outage wait in news until a
     store of the process takes them for its journal (take), so each is said once, whichever call
     met it: a store's own, or one of the key records'."""
 
@@ -106,8 +107,10 @@ class _Health:
         """Note a failure, and the start of an outage when the store answered before."""
         with self._lock:
             self.failures += 1
-            pause = self.FIRST * 2 ** min(self.failures - 1, 16)
-            pause = min(self.MOST, pause * random.uniform(0.8, 1.2))    # jitter, then the cap
+            # The cap first, then the jitter, downward only: a wait never passes MOST, and
+            # waits at the cap still differ from worker to worker.
+            pause = min(self.MOST, self.FIRST * 2 ** min(self.failures - 1, 16))
+            pause *= random.uniform(0.8, 1.0)
             self.retry_at = self.clock() + pause
             if self.failures == 1:
                 self.since = self.clock()

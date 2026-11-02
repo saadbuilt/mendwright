@@ -5,6 +5,7 @@ ends, once each. Retry loops are bounded. Offline: a MemoryBackend behind a wrap
 demand, conftest's lxml FakePage and fake providers."""
 
 import json
+import random
 import time
 
 import pytest
@@ -84,18 +85,43 @@ def test_changes_wait_in_memory_and_go_with_a_write_once_the_store_answers(journ
     assert up['op'] == 'read' and up['after'] == 61
 
 
-@pytest.mark.parametrize('jitter', [0.8, 1.2])
+@pytest.mark.parametrize('jitter', [0.8, 1.0])
 def test_the_wait_after_failures_doubles_from_1_second_to_at_most_60(monkeypatch, jitter):
     from mendwright import remote
-    monkeypatch.setattr(remote.random, 'uniform', lambda low, high: jitter)
+    asked = []
+
+    def uniform(low, high):
+        asked.append((low, high))
+        return jitter
+    monkeypatch.setattr(remote.random, 'uniform', uniform)
     health = remote._Health('read')
     health.clock = Clock()
     waits = []
     for _ in range(10):
         health.failed(DOWN)
         waits.append(health.wait())
+    assert set(asked) == {(0.8, 1.0)}                     # the jitter only shortens a wait
     assert waits[0] == pytest.approx(jitter) and waits[1] == pytest.approx(2 * jitter)
-    assert waits[-1] == pytest.approx(60.0)               # the cap, whatever the jitter
+    assert waits[-1] == pytest.approx(60.0 * jitter)      # at the cap: 48 to 60 seconds
+
+
+def test_workers_that_wait_the_most_do_not_ask_the_store_again_together():
+    # With the jitter before the cap, every worker of a fleet waited exactly 60 seconds once
+    # the doubling passed about 75, and all asked the store again at the same moment.
+    from mendwright import remote
+    state = random.getstate()
+    random.seed(20261103)
+    try:
+        waits = []
+        for _ in range(2):
+            health = remote._Health('read')
+            health.clock = Clock()
+            for _ in range(10):
+                health.failed(DOWN)
+            waits.append(health.wait())
+    finally:
+        random.setstate(state)
+    assert all(48.0 <= w <= 60.0 for w in waits) and waits[0] != waits[1]
 
 
 @pytest.mark.parametrize('error', [
