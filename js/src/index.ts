@@ -6,9 +6,9 @@
 //
 // or, in Playwright Test, import { test, expect } from 'mendwright/test'.
 
-export { open, Healer, HealLocator, ACTIONS, READS, fingerprintSetting } from './healer';
-export type { HealEvent, LocatorOptions, OpenOptions, ExpectOption } from './healer';
-export { AttentionRequired, InvalidSelector, InterruptionLoop, StoreReadError } from './errors';
+export { open, Healer, HealLocator, ACTIONS, READS, fingerprintSetting, getBySetting } from './healer';
+export type { HealEvent, LocatorOptions, LocatorAllOptions, OpenOptions, ExpectOption } from './healer';
+export { AttentionRequired, GetByNotFound, InvalidSelector, InterruptionLoop, StoreReadError } from './errors';
 export { AnthropicProvider } from './providers/anthropic';
 export type { AnthropicOptions } from './providers/anthropic';
 export { OpenAICompatibleProvider } from './providers/openai';
@@ -27,6 +27,13 @@ export { RateLimiter } from './limits';
 export type { Guardrails } from './limits';
 export { setLogSink } from './log';
 export type { LogLevel, LogSink } from './log';
-export type { Interruption, InterruptionEvent, CookieChoice } from './interruptions';
+export type { Interruption, InterruptionEvent, CookieChoice, InterruptOptions, RunFunction } from './interruptions';
+export { DISMISS_KEY } from './flow';
+export { WAITING_STEP } from './steps';
+export type { RunStepsOptions, StepFunction, StepOptions } from './steps';
+export { parseMoney, parseNumber } from './values';
+export type { ExpectValue, ValueName } from './values';
+export { getByKey } from './getby';
+export type { GetByMethod } from './getby';
 
-export const version = '0.1.0';
+export const version = '0.2.0';

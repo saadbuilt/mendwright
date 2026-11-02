@@ -55,6 +55,44 @@ export function pyJson(v: unknown, ensureAscii = true): string {
   return 'null';
 }
 
+/** The order Python sorts str in: by code point, where JavaScript's default sort compares
+ * UTF-16 code units. */
+export function pyCompare(a: string, b: string): number {
+  if (a === b) return 0;
+  const left = Array.from(a);
+  const right = Array.from(b);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const x = left[i].codePointAt(0) as number;
+    const y = right[i].codePointAt(0) as number;
+    if (x !== y) return x - y;
+  }
+  return left.length - right.length;
+}
+
+/** sorted() of a list of str, as Python sorts it. */
+export function pySorted(values: Iterable<string>): string[] {
+  return [...values].sort(pyCompare);
+}
+
+/** JSON as Python's json.dumps(v, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+ * writes it: compact, keys in Python's order, non-ASCII as it is and control characters
+ * escaped. For the values mendwright hashes: strings, whole numbers, booleans, null, lists and
+ * objects. */
+export function pyJsonSorted(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'string') return jsonString(v, false);
+  if (Array.isArray(v)) return '[' + v.map(pyJsonSorted).join(',') + ']';
+  if (typeof v === 'object') {
+    const record = v as Record<string, unknown>;
+    return '{' + pySorted(Object.keys(record)).map((k) => jsonString(k, false) + ':' + pyJsonSorted(record[k])).join(',')
+      + '}';
+  }
+  return 'null';
+}
+
 /** JSON as Python's json.dumps(v, separators=(',', ':')) writes it: compact, with every
  * character outside ASCII escaped. The store file is written this way, so a file the
  * TypeScript and the Python package both write keeps one spelling. */
@@ -117,8 +155,9 @@ export function pyRepr(value: unknown): string {
   return out + quote;
 }
 
-// The characters str.isspace() is true for, which str.strip() takes off both ends.
-const PY_SPACE = '\t\n\x0b\x0c\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000';
+// The characters str.isspace() is true for, which str.strip() takes off both ends, and \s
+// matches in a Python regular expression of str (as the inside of a [...] class).
+export const PY_SPACE = '\t\n\x0b\x0c\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000';
 const PY_STRIP = new RegExp('^[' + PY_SPACE + ']+|[' + PY_SPACE + ']+$', 'g');
 
 /** str.strip() with no argument. */
@@ -131,6 +170,13 @@ const PY_RSTRIP = new RegExp('[' + PY_SPACE + ']+$');
 /** str.rstrip() with no argument. */
 export function pyRstrip(s: string): string {
   return s.replace(PY_RSTRIP, '');
+}
+
+const PY_LSTRIP = new RegExp('^[' + PY_SPACE + ']+');
+
+/** str.lstrip() with no argument. */
+export function pyLstrip(s: string): string {
+  return s.replace(PY_LSTRIP, '');
 }
 
 /** sum() of floats as CPython 3.12 and later add them: Neumaier's compensated summation,
@@ -146,6 +192,64 @@ export function pySum(values: number[]): number {
   }
   if (c && Number.isFinite(c)) f += c;
   return f;
+}
+
+/** digits, the decimal digits of a number whose last kept digit is at the end of kept, and
+ * the digits after it in rest, rounded as Python rounds: to the nearest, and on an exact half
+ * to the even one. */
+function roundHalfEven(kept: string, rest: string): bigint {
+  const n = BigInt(kept || '0');
+  const first = rest.charCodeAt(0) - 48;
+  if (!rest || first < 5) return n;
+  if (first > 5 || /[1-9]/.test(rest.slice(1))) return n + 1n;
+  return n % 2n === 1n ? n + 1n : n;
+}
+
+/** format(x, '.<digits>f') in Python: x with that many digits after the point, rounded from
+ * its exact value, with an exact half to the even digit (toFixed() rounds it up). */
+export function pyFixed(x: number, digits: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = x < 0 || Object.is(x, -0) ? '-' : '';
+  // The exact digits of |x|, 100 of them after the point: every double a message or the
+  // journal formats ends well before that. From 1e21 on, a double is a whole number, and
+  // toFixed() writes it with an exponent.
+  const abs = Math.abs(x);
+  const [whole, fraction] = abs >= 1e21 ? [BigInt(abs).toString(), ''] : abs.toFixed(100).split('.');
+  const n = roundHalfEven(whole + fraction.slice(0, digits).padEnd(digits, '0'), fraction.slice(digits)).toString()
+    .padStart(digits + 1, '0');
+  return sign + (digits ? n.slice(0, -digits) + '.' + n.slice(-digits) : n);
+}
+
+/** round(x, digits) in Python, for a float: the double nearest to pyFixed(x, digits). */
+export function pyRound(x: number, digits: number): number {
+  return Number(pyFixed(x, digits));
+}
+
+/** format(x, 'g') in Python: 6 significant digits, rounded as Python rounds, without
+ * trailing zeros, and in exponent form (1e+06) when the exponent is below -4 or 6 or more. */
+export function pyFormatG(x: number): string {
+  if (Number.isNaN(x)) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = x < 0 || Object.is(x, -0) ? '-' : '';
+  if (x === 0) return sign + '0';
+  // 100 significant digits of |x|, its exact value as far as any double mendwright formats goes.
+  const [mantissa, power] = Math.abs(x).toExponential(99).split('e');
+  const all = mantissa.replace('.', '');
+  let exponent = Number(power);
+  let digits = roundHalfEven(all.slice(0, 6), all.slice(6)).toString();
+  if (digits.length > 6) {
+    digits = digits.slice(0, 6);   // 999999.5 rounds to 1000000: one more power of ten
+    exponent += 1;
+  }
+  if (exponent >= -4 && exponent < 6) {
+    const whole = exponent >= 0 ? digits.slice(0, exponent + 1) : '0';
+    const fraction = (exponent >= 0 ? digits.slice(exponent + 1) : '0'.repeat(-exponent - 1) + digits).replace(/0+$/, '');
+    return sign + whole + (fraction ? '.' + fraction : '');
+  }
+  const tail = digits.slice(1).replace(/0+$/, '');
+  return sign + digits[0] + (tail ? '.' + tail : '') + 'e' + (exponent < 0 ? '-' : '+')
+    + String(Math.abs(exponent)).padStart(2, '0');
 }
 
 /** str.isdigit() for a word mendwright split from a text (a run of decimal digits). */
@@ -235,4 +339,27 @@ export function port(netloc: string): number | null {
  * comparing these strings, so both packages must write the same format. */
 export function nowIso(date: Date = new Date()): string {
   return date.toISOString().replace(/\.\d{3}Z$/, '+00:00');
+}
+
+const PY_SPLIT = new RegExp('[' + PY_SPACE + ']+');
+
+/** str.split() with no argument: the words between runs of what str.isspace() is true for. */
+export function pySplit(s: string): string[] {
+  return s.split(PY_SPLIT).filter(Boolean);
+}
+
+/** str(value or '') in Python: '' for a value Python reads as false (None, False, 0, '', an
+ * empty list), else its str(). */
+export function strOr(value: unknown): string {
+  return pyTruthy(value) ? pyStr(value) : '';
+}
+
+// The characters str.isdigit() is true for that are not decimal digits (\p{Nd}): those of
+// Numeric_Type=Digit, such as the superscripts ² and ³ and the circled ①, as Python 3.12
+// lists them (category No). ½ is not one.
+const PY_DIGIT = /[\p{Nd}\u{b2}-\u{b3}\u{b9}\u{1369}-\u{1371}\u{19da}\u{2070}\u{2074}-\u{2079}\u{2080}-\u{2089}\u{2460}-\u{2468}\u{2474}-\u{247c}\u{2488}-\u{2490}\u{24ea}\u{24f5}-\u{24fd}\u{24ff}\u{2776}-\u{277e}\u{2780}-\u{2788}\u{278a}-\u{2792}\u{10a40}-\u{10a43}\u{10e60}-\u{10e68}\u{11052}-\u{1105a}\u{1f100}-\u{1f10a}]/u;
+
+/** str.isdigit() for one character (a code point). */
+export function isDigitChar(c: string): boolean {
+  return PY_DIGIT.test(c);
 }

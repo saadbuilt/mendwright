@@ -3,7 +3,8 @@
 // registers one, and open({ cookies: 'reject' | 'accept' }) registers a ready-made one for
 // the consent banners of common consent managers. mendwright looks for them only when a
 // step needs help: when a lookup misses, before an action while the page shows one, and
-// when an action failed because something covered its element.
+// when an action failed because something covered its element. It then performs its action
+// (a click by default), or calls its run function, for one that needs a whole form.
 //
 // The preset's selectors are the Python package's, character for character:
 //
@@ -20,45 +21,77 @@
 //   or main. So a consent screen that is not about cookies (an OAuth "Allow", a terms step)
 //   is never clicked.
 
+import type { Page } from '@playwright/test';
+
 import { InvalidSelector } from './errors';
+import { valueText } from './flow';
+import { isKey, reservedKeyMessage } from './getby';
 import { pyRepr } from './py';
 import { roleChoices } from './roles';
-import { XPATH, checkSyntax, classify, isGetByCall, normalize, stripPrefix } from './selectors';
+import { XPATH, checkSyntax, classify, normalize, stripPrefix } from './selectors';
+import { IDENTIFIER } from './values';
 
 export const COOKIE_BANNER_KEY = 'cookie_banner';
 export const COOKIE_CHOICES = ['reject', 'accept'] as const;
 export type CookieChoice = typeof COOKIE_CHOICES[number];
 
+/** A function that handles an interruption itself, such as a sign-in form: it gets heal.page
+ * and returns a promise, as an async function does. */
+export type RunFunction = (page: Page) => PromiseLike<unknown>;
+
+/** What heal.interrupt(key, selector, options) takes: the action and its arguments (a click
+ * by default), the role the element must have, or run, a function that handles the
+ * interruption itself, in place of action and args. */
+export interface InterruptOptions {
+  action?: string;
+  args?: unknown[];
+  role?: string;
+  run?: RunFunction;
+}
+
 export interface Interruption {
   key: string;
   selectors: string[];
+  /** The action, or 'run' for one with a run function. */
   action: string;
   args: unknown[];
   roles: string[];
   /** An XPath that matches when any of the XPath selectors could, checked first. */
   probe: string | null;
   preset: CookieChoice | null;
+  /** The run function, which handles the interruption itself; the selectors only show that it
+   * is there. null for an action. */
+  run: RunFunction | null;
 }
 
+/** One interruption a healer handled: its key, and the step it was handled for.
+ *
+ * A popup that open({ dismiss: true }) dismissed is listed too, under the key '<popup>'
+ * (flow.DISMISS_KEY), with popup (how the log line names it, as dismiss.summary() does), how
+ * ('escape', 'close' or 'decline', as in the flow.dismiss journal event) and label (the label
+ * of the button that closed it, null for Escape). All three are null for a registered
+ * interruption. */
 export interface InterruptionEvent {
   key: string;
   before: string;
+  popup: string | null;
+  how: string | null;
+  label: string | null;
 }
 
 export const ACTIONS = ['click', 'dblclick', 'fill', 'type', 'press', 'pressSequentially', 'check', 'uncheck',
   'setChecked', 'selectOption', 'hover', 'tap', 'clear', 'focus', 'setInputFiles', 'dragTo'];
 
-/** Check heal.interrupt()'s arguments and build the Interruption. */
-export function makeInterruption(key: unknown, selector: unknown,
-                                 options: { action?: string; args?: unknown[]; role?: string } = {}): Interruption {
+/** Check heal.interrupt()'s arguments and build the Interruption. run, when given, is a
+ * function that handles the interruption itself, in place of action and args (see
+ * checkRun()). Throws TypeError or InvalidSelector, each naming the fix, before anything
+ * touches the page. */
+export function makeInterruption(key: unknown, selector: unknown, options: InterruptOptions = {}): Interruption {
   if (typeof key !== 'string' || !key.trim()) {
     throw new TypeError("mendwright: heal.interrupt() needs a key, a non-empty name such as 'cookies', got "
       + pyRepr(key) + '.');
   }
-  if (isGetByCall(key)) {
-    throw new TypeError('mendwright: ' + pyRepr(key) + ' is how the Python package names a heal.page.get_by_*() '
-      + 'call in the store, so heal.interrupt() cannot take it as a key. Pick another key.');
-  }
+  if (isKey(key)) throw new TypeError(reservedKeyMessage(key, 'heal.interrupt()'));
   const items = Array.isArray(selector) ? selector : [selector];
   if (!items.length) {
     throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', []) got an empty list. Pass the selector of '
@@ -74,18 +107,57 @@ export function makeInterruption(key: unknown, selector: unknown,
     }
     selectors.push(normalize(item as string));
   }
+  const roles = options.role !== undefined ? roleChoices(options.role) ?? [] : [];
+  const run = options.run;
+  if (run !== undefined && run !== null) {
+    checkRun(key, run, options.action, options.args);
+    return { key, selectors: [...new Set(selectors)], action: 'run', args: [], roles, probe: null, preset: null, run };
+  }
   const action = options.action ?? 'click';
   if (typeof action !== 'string' || !ACTIONS.includes(action)) {
     throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', ...) got action ' + pyRepr(action)
-      + ', which mendwright cannot run. Use one of: ' + ACTIONS.join(', ') + '.');
+      + ', which mendwright cannot run. Use one of: ' + ACTIONS.join(', ') + ', or run with a function that handles '
+      + 'the interruption itself.');
   }
   const args = options.args ?? [];
   if (!Array.isArray(args)) {
     throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', ...) takes args as an array, for example '
       + "{ action: 'press', args: ['Escape'] }.");
   }
-  const roles = options.role !== undefined ? roleChoices(options.role) ?? [] : [];
-  return { key, selectors: [...new Set(selectors)], action, args: [...args], roles, probe: null, preset: null };
+  return {
+    key, selectors: [...new Set(selectors)], action, args: [...args], roles, probe: null, preset: null, run: null,
+  };
+}
+
+/** heal.interrupt({ run })'s checks (Python's _check_run): run is a function, and comes
+ * without action or args. An async function is what it takes; one that returns something
+ * that is not a promise throws TypeError when the interruption is handled. */
+export function checkRun(key: string, run: unknown, action: unknown, args: unknown): asserts run is RunFunction {
+  if (typeof run !== 'function') {
+    throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', ..., { run }) takes the function that handles '
+      + 'the interruption, which gets the page, such as async function relogin(page) { ... }, got ' + valueText(run)
+      + '.');
+  }
+  const given: string[] = [];
+  if (action !== undefined && action !== null) given.push('action: ' + valueText(action));
+  if (args !== undefined && args !== null && (!Array.isArray(args) || args.length)) {
+    given.push('args: ' + valueText(args));
+  }
+  if (given.length) {
+    throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', ...) got run and ' + given.join(' and ')
+      + '. run does the whole interruption itself, so it takes no action or args: drop them, or drop run.');
+  }
+}
+
+/** How the log and the journal name a run function (Python's function_name()): its name,
+ * 'relogin', without the 'bound ' of a bound function, or '<anonymous>' for one with no name
+ * of its own, as Python names a lambda '<lambda>'. JavaScript names a function written in
+ * place after the option it was written for, so { run: async (page) => ... } is
+ * '<anonymous>' too, and so is a name that is not an identifier. */
+export function functionName(fn: unknown): string {
+  const name = (fn as { name?: unknown } | null)?.name;
+  const bare = typeof name === 'string' ? name.replace(/^(?:bound )+/, '') : '';
+  return bare !== 'run' && IDENTIFIER.test(bare) ? bare : '<anonymous>';
 }
 
 /** Selectors that each point at one of count matches of selector: the selector itself when
@@ -105,7 +177,7 @@ export function nthTargets(selector: string, count: number, limit = 5): string[]
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 // Punctuation in a label, both apostrophes included, so "Don't allow" reads as 'don t allow'.
-const PUNCT = ".,:;!?()[]'\u2019\u00d7-_/";
+export const PUNCT = ".,:;!?()[]'\u2019\u00d7-_/";
 
 const cls = (name: string) => "contains(concat(' ', normalize-space(@class), ' '), ' " + name + " ')";
 const ids = (...values: string[]) => values.map((i) => "@id='" + i + "'").join(' or ');
@@ -251,5 +323,5 @@ export function presetSelectors(choice: CookieChoice): string[] {
 export function cookiePreset(choice: CookieChoice): Interruption {
   const selectors = presetSelectors(choice);
   const probe = 'xpath=' + union(selectors.filter((s) => classify(s) === XPATH).map(stripPrefix));
-  return { key: COOKIE_BANNER_KEY, selectors, action: 'click', args: [], roles: [], probe, preset: choice };
+  return { key: COOKIE_BANNER_KEY, selectors, action: 'click', args: [], roles: [], probe, preset: choice, run: null };
 }

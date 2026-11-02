@@ -1,6 +1,7 @@
 // Pages and helpers for the real-browser tests. Each page is served by page.route() at an
 // address under https://shop.test, so nothing leaves the machine.
 
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -79,17 +80,55 @@ export function readStore(store: string): any {
   return JSON.parse(fs.readFileSync(store, 'utf-8'));
 }
 
-/** A model that answers with the given proposals, in order, and keeps what it was sent. */
+/** A model that answers with the given proposals, in order (an XPath, or a whole proposal with
+ * its fallbacks), and keeps what it was sent and the outcomes reported to it. */
 export class FakeModel implements HealProvider {
   readonly model = 'fake';
   readonly bundles: Bundle[] = [];
+  readonly outcomes: [string, string, boolean][] = [];
   lastError: string | null = null;
 
-  constructor(private readonly replies: string[]) {}
+  constructor(private readonly replies: (string | Proposal)[]) {}
 
   async propose(bundle: Bundle): Promise<Proposal | null> {
     this.bundles.push(bundle);
-    const xpath = this.replies.shift();
-    return xpath ? { xpath, fallbacks: [], reasoning: 'fake' } : null;
+    const reply = this.replies.shift();
+    if (!reply) return null;
+    return typeof reply === 'string' ? { xpath: reply, fallbacks: [], reasoning: 'fake' } : reply;
   }
+
+  reportOutcome(key: string, xpath: string, success: boolean): void {
+    this.outcomes.push([key, xpath, success]);
+  }
+}
+
+/** The repository's root, which holds the Python package. */
+export const REPO = path.resolve(__dirname, '..', '..', '..');
+
+let python: string | null | undefined;
+
+/** The Python command that imports mendwright from this repository (MENDWRIGHT_PYTHON, else
+ * python3 or python), or null. */
+export function pythonCommand(): string | null {
+  if (python !== undefined) return python;
+  python = null;
+  const env = { ...process.env, PYTHONPATH: REPO };
+  for (const command of process.env.MENDWRIGHT_PYTHON ? [process.env.MENDWRIGHT_PYTHON] : ['python3', 'python']) {
+    const result = spawnSync(command, ['-c', 'import lxml, mendwright'], { cwd: REPO, env, encoding: 'utf-8' });
+    if (result.status === 0) {
+      python = command;
+      break;
+    }
+  }
+  return python;
+}
+
+/** python -m mendwright args, the Python package's command line: [exit status, stdout, stderr]. */
+export function mendwrightCli(args: string[]): [number, string, string] {
+  const command = pythonCommand();
+  if (!command) throw new Error('no Python that imports mendwright from ' + REPO);
+  const result = spawnSync(command, ['-m', 'mendwright', ...args], {
+    cwd: REPO, encoding: 'utf-8', env: { ...process.env, PYTHONPATH: REPO, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+  });
+  return [result.status ?? -1, result.stdout, result.stderr];
 }

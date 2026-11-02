@@ -4,7 +4,7 @@ Self-healing selectors for Playwright Test.
 
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
-This is the first release of the TypeScript package, 0.1.0. It is a port of the [Python package](https://github.com/saadbuilt/mendwright) for Playwright Test, with its fingerprint scoring, its checks and its store file, but not yet everything the Python package does: see [Not in 0.1.0](#not-in-010).
+This is the TypeScript package 0.2.0, a port of the [Python package](https://github.com/saadbuilt/mendwright) for Playwright Test: its fingerprint scoring, its checks and its store file, and its runtime features, popups nobody registered, checks of what a read returns, interruptions that need a form, steps in any order, iframes, shadow roots, lists and `getBy*` calls. It has no command line of its own: the Python package's commands run on the store it writes (see [The command line](#the-command-line)). What it leaves out is listed in [Not in 0.2.0](#not-in-020).
 
 ## Install
 
@@ -30,7 +30,7 @@ test('sign up', async ({ page }) => {
 });
 ```
 
-The `page` fixture is then mendwright's page. `page.locator(selector)` and the page methods that take a selector (`click`, `dblclick`, `fill`, `check`, `uncheck`, `selectOption`, `press`, `type`, `hover`, `isChecked`, `textContent`, `innerText`, `getAttribute`, `inputValue`) heal, and each selector is also the key its heals are saved under. Everything else is the real page's: `goto`, `evaluate`, `route`, `expect(page)`, a locator built with options or chained from another one, and the `getBy*` locators.
+The `page` fixture is then mendwright's page. `page.locator(selector)` and the page methods that take a selector (`click`, `dblclick`, `fill`, `check`, `uncheck`, `selectOption`, `press`, `type`, `hover`, `isChecked`, `textContent`, `innerText`, `getAttribute`, `inputValue`) heal, and each selector is also the key its heals are saved under. Everything else is the real page's: `goto`, `evaluate`, `route`, `expect(page)`, a locator built with options or chained from another one, and the `getBy*` locators unless you pass `healGetBy: true` (see [getBy* locators](#getby-locators); with `dismiss: true` those get the interruption and popup checks, see [Popups nobody registered](#popups-nobody-registered)).
 
 A selector that stops matching is waited for 10 seconds (`timeoutMs`, or `MENDWRIGHT_TIMEOUT_MS`) before mendwright tries to heal it. Each applied heal prints one line to stderr:
 
@@ -58,6 +58,7 @@ test('accept the terms', async ({ page, heal }) => {
 - `optional: true` marks a step that may not be there: if its element doesn't appear, nothing is healed and its actions do nothing.
 - `intent` describes the element in words for the model, such as `'the terms checkbox in the signup form'`. With `role` and no selector, a model looks for the element on first use.
 - `selector` can be a list of selectors, tried in order. The selectors in your code always come first; when you change them, the old ones are kept as `superseded` and no longer tried.
+- `expectValue` says what a read must return when the element was found through a heal, such as `'money'`: see [Checking what a read returns](#checking-what-a-read-returns).
 
 The locator's actions are Playwright's, with the same arguments, and resolve the key first. `await locator.resolve()` resolves it without acting, then `locator.native` is the real Playwright `Locator` and `locator.present` says whether an optional step was there.
 
@@ -70,6 +71,134 @@ const heal = open(page);
 await heal.page.fill('#email', 'ada@example.com');
 await heal.locator('create', '#create-account', { role: 'button' }).click();
 ```
+
+## getBy* locators
+
+```ts
+const heal = open(page, { healGetBy: true });
+await heal.page.getByRole('button', { name: 'Sign in' }).click();   // healed when the button is renamed
+```
+
+`open(page, { healGetBy: true })` looks up and heals `getByRole()`, `getByText()`, `getByLabel()`, `getByPlaceholder()`, `getByAltText()`, `getByTitle()` and `getByTestId()` on `heal.page` the way `heal.page.locator(selector)` is, as the Python package's `heal_get_by=True` does. A call that matches nothing is healed from the fingerprint mendwright recorded when the call last matched, never by a model.
+
+`MENDWRIGHT_HEAL_GET_BY=1` turns it on for every healer that doesn't pass `healGetBy`, and `test.use({ mendwrightOptions: { healGetBy: true } })` for the fixtures. It is off by default. Off, `heal.page.getBy*` are Playwright's own locators, as before (with `dismiss: true`, guarded ones), and nothing about them is saved. `healGetBy: null` reads the variable, as leaving it out does; any other value than `true`, `false` or `null` throws `TypeError`, and so does a variable that isn't a flag such as `1` or `0`.
+
+What changes when it is on:
+
+- A call that matches nothing waits `timeoutMs` (10 seconds by default) before it is healed, not Playwright's 30 seconds or a timeout set with `page.setDefaultTimeout()`, which mendwright can't read. Pass `timeout` to the action for a slow page: it is the lookup's timeout too.
+- When the element can't be found or healed, the error is a `GetByNotFound`, which is Playwright's `errors.TimeoutError` and an `AttentionRequired` too, so `catch (e) { if (e instanceof errors.TimeoutError) ... }` still catches it. Its `name` is `'TimeoutError'`, as Playwright's is.
+- The registered interruptions are handled by the step, and logged and journaled before the call's key, such as `before 'get_by_role("button", name="Continue")'`.
+- The store gets a row for each call that matched, with its role, its pages and its fingerprint, as for any key.
+
+`MENDWRIGHT_DISABLE=1` leaves the calls looked up, and nothing heals.
+
+### The key
+
+A call is saved under a key written as the Python package writes it, so one store serves both packages:
+
+| Call on `heal.page` | Key |
+|---|---|
+| `getByRole('button', { name: 'Sign in' })` | `get_by_role("button", name="Sign in")` |
+| `getByRole('button', { name: 'Sign in', exact: false })` | `get_by_role("button", name="Sign in")` |
+| `getByRole('button', { name: 'Sign in', exact: true })` | `get_by_role("button", name="Sign in", exact=True)` |
+| `getByRole('heading', { name: 'Cart', level: 2 })` | `get_by_role("heading", name="Cart", level=2)` |
+| `getByRole('button', { name: /sign\s?in/i })` | `get_by_role("button", name=re.compile("sign\\s?in", re.IGNORECASE))` |
+| `getByRole('navigation')` | `get_by_role("navigation")` |
+| `getByRole('button', { exact: true })` | `get_by_role("button")` |
+| `getByText('Free shipping')` | `get_by_text("Free shipping")` |
+| `getByText('Say "hi"')` | `get_by_text("Say \"hi\"")` |
+| `getByLabel('Email', { exact: true })` | `get_by_label("Email", exact=True)` |
+| `getByPlaceholder('you@example.com')` | `get_by_placeholder("you@example.com")` |
+| `getByAltText('Logo')` | `get_by_alt_text("Logo")` |
+| `getByTitle('Close')` | `get_by_title("Close")` |
+| `getByTestId('login')` | `get_by_test_id("login")` |
+
+- `exact: false` and `includeHidden: false` are left out, and so is `exact: true` where it changes nothing: for a `RegExp`, and for `getByRole()` without `name`. The options of `getByRole()` come in the order `name`, `exact`, `level`, and an option whose value is `undefined` isn't there, as for Playwright.
+- Strings are written as JSON writes them, which is also a Python literal with the same value, with characters outside ASCII as they are. The text is kept as written, so a call that differs only in case or spacing is another key.
+- A `RegExp` is written as `re.compile("<source>", <flags>)`, its `i`, `m` and `s` flags as `re.IGNORECASE`, `re.MULTILINE` and `re.DOTALL`. Playwright sends the source to the browser in both packages, so the same source matches the same elements, but the Python package must read the key back, so a source its `re` module can't read the same way isn't a key here: a named group (`(?<name>...)`), a backreference, an escape of a letter other than `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\b`, `\B`, `\f`, `\n`, `\r`, `\t`, `\v`, `\xhh` and `\uhhhh` (such as `\c`, `\k`, `\p` or `\Z`), an inline flag, an empty class (`[]`, `[^]`), a range from or to a class such as `[\d-z]`, `[`, `--`, `&&`, `~~` or `||` inside a class, a `{` that isn't a quantifier, a character outside the Basic Multilingual Plane inside a class, and a lookbehind whose width varies, such as `(?<=a+)`.
+- In `overrides.json` and `journal.jsonl` the inner quotes are escaped by JSON, as in `"get_by_role(\"button\", name=\"Sign in\")"`. Log lines and errors show the key as it is.
+- A string written as a call is how mendwright names a `heal.page.getBy*()` call, so `heal.locator()`, `heal.locatorAll()` and `heal.interrupt()` throw `TypeError` for one as a key, and they and `heal.step({ when })` throw `InvalidSelector` for one as a selector. `heal.page.locator()` hands such a string to Playwright as written.
+
+`getByKey()` builds the key of a call, for `destructiveKeys`, `expectValues` and `heal.present()`. It takes Playwright's name of the method or the Python package's (`get_by_role`), and Playwright's arguments:
+
+```ts
+import { getByKey, open } from 'mendwright';
+
+const pay = getByKey('getByRole', 'button', { name: 'Pay' });   // 'get_by_role("button", name="Pay")'
+const heal = open(page, { healGetBy: true, destructiveKeys: [pay],
+                          expectValues: { [getByKey('getByTestId', 'total')]: 'money' } });
+```
+
+A key matches one call only: `destructiveKeys: [pay]` marks `heal.page.getByRole('button', { name: 'Pay' })`, and a test that writes `{ name: /pay/i }` or `exact: true` makes another key, which isn't marked. `destructiveKeys`, `expectValues` and `heal.present()` read a key written as the same call in another spelling, such as `"get_by_role('button', name='Pay')"`, as the call's key, and two spellings of one call in `expectValues` throw `TypeError`. They are read as the Python package reads them, but for a `\N{...}` escape, a whole number past `Number.MAX_SAFE_INTEGER` and a regular expression outside what both packages read (above), which no call here has a key for. A string that isn't a call, such as `"page.get_by_role('button', name='Pay')"` from a log line of the Python package, is a key of its own, and nothing a call does uses it: for one in `destructiveKeys` or `expectValues`, mendwright logs a WARNING that gives the call's key.
+
+Some calls are never keys. They go to Playwright as written, with one INFO line per healer and call:
+
+```text
+page.getByRole('checkbox', { name: 'Terms', checked: true }) is not healed: its checked option picks the element by its state, which a saved selector cannot keep. It goes to Playwright as written.
+```
+
+They are `getByRole()` with `checked`, `disabled`, `expanded`, `pressed` or `selected` (a heal is an XPath, which can't say "the checked one"), or with `includeHidden: true`; a call with an empty role, name or text; arguments that are not text, a `RegExp` or a whole number; a `RegExp` with flags other than `i`, `m` and `s`, or whose source the Python package can't read back (above); an option this version of mendwright doesn't read, such as Playwright's `description`; and a key longer than 1,000 characters.
+
+### When a call heals
+
+- Only when it matches nothing for `timeoutMs`.
+- Only from its fingerprint, which mendwright records each time the call matches one element while the fingerprint tier is on. So turn `healGetBy` on while the suite passes, and keep the store between CI runs. A call with no fingerprint in the store, one that never matched or matched only with the tier off, is not healed: a call that never matched is more often a mistake in the call than a redesign.
+- Never by a model, even one configured, so no page leaves your machine for a call. A call names its element by role and words, and when it breaks those are what changed: a model given the old call could only guess a new name. The fingerprint holds what survives a redesign, such as ids, test ids, names, classes and ancestors.
+- A call that matches several elements, one hidden element (unless its role is checkbox), or that the browser rejects, such as `level` on a button, is not broken. Playwright runs it as written and throws its own error: a strict mode violation, its wait and timeout, or the selector error. Nothing is saved and no saved heal is used, also when the call starts to match several elements while mendwright waits.
+- A saved heal answers only while the call matches nothing:
+
+| The call matches | A saved heal matches one element | What happens |
+|---|---|---|
+| one visible element (or one of role checkbox) | anything | the call's element |
+| nothing | yes | the heal's element, at once |
+| nothing | no | it waits `timeoutMs`, then heals from the fingerprint or throws |
+| several, one hidden, or the browser rejects it | anything | Playwright runs the call as written |
+
+- When the call matches nothing, the registered interruptions are handled before the wait: a modal cookie banner can hide the rest of the page from the accessibility tree, and `getByRole()` matches nothing until it is gone.
+
+A heal logs one line, and its journal events are those of any fingerprint heal:
+
+```text
+mendwright: healed 'get_by_role("button", name="Sign in")': get_by_role("button", name="Sign in") -> //button[@id='login'] (fingerprint, 0.0s)
+```
+
+When the call isn't healed, the line after `->` says why, for example:
+
+```text
+No matching element for: get_by_role("button", name="Sign in") (tried 1 candidate(s)).
+  -> mendwright heals a getBy* call only from the fingerprint it records each time the call matches one element, and 'get_by_role("button", name="Sign in")' has none in this store: it has not matched one element here while the fingerprint tier was on. A call that never matched is more often a mistake in the call than a redesign. Check its arguments against the page.
+```
+
+A fingerprint match that wasn't confident, or failed a check, ends with `mendwright asks no model to heal a getBy* call: the call names its element by role and words, and those are what changed, so a model could only guess. Change the call by hand.` The journal gets a `heal.declined` with the code `get_by`.
+
+A heal of a call goes through the checks of any fingerprint heal (see [What a heal must pass](#what-a-heal-must-pass)). For a `getByRole()` call, Playwright must also give the healed element the call's ARIA role, and the call's `level` when it has one, by its own matcher on the live page. mendwright's role is mostly the tag, so a `<button role="tab">` that is no longer a tab, or an `<a>` that lost its `href`, would pass it. One that Playwright doesn't give the role is refused with `live element role mismatch: Playwright does not give it the ARIA role 'tab'`, and one it can't be asked about is refused too.
+
+### What stays unhealed
+
+Only a call made directly on `heal.page` heals. These are Playwright's locators, or with `dismiss: true` guarded ones, and nothing about them is saved:
+
+- a call chained from a locator: `heal.page.getByRole(...).getByText(...)`, `heal.page.locator('#form').getByRole(...)`, or `locator(...)` after a call. The inner call matches inside the outer one's elements, and a heal is checked on the whole page, so it could land outside the container, on the Save button of another dialog.
+- `first()`, `last()` and `nth()`: the call matches several elements by design, and a heal can't keep "the second Save".
+- `filter()`, `and()` and `or()`, a second matcher that one saved XPath would drop.
+- `heal.page.frameLocator('#pay').getByRole(...)`. Open mendwright on the frame instead: `open(page.frame({ name: 'pay' })!, { healGetBy: true }).page.getByRole(...)` heals. A call that matches nothing on the page but matches inside an iframe throws, saying so; mendwright doesn't follow it there.
+- `heal.page.native.getBy*` and the page passed to `open()`.
+- a call that is never a key (above).
+
+`isVisible()`, `isHidden()`, `count()`, `waitFor()`, `all()` and `expect()` answer for the call as written, and so does a call passed as an argument, such as `dragTo(heal.page.getByRole(...))`. `isVisible()` of a call never answers from a heal, unlike `heal.page.locator(selector).isVisible()`: it is how a test asks whether the page shows something with that role and those words, and a heal of another element must not answer that. So `if (await page.getByRole('button', { name: 'Next' }).isVisible())` skips the branch once the button is renamed, while `page.getByRole('button', { name: 'Next' }).click()` heals. The reads that wait for the element, such as `innerText()` and `isChecked()`, heal like the actions, and with `expectValues` a read through a heal is checked. An action on the element the call itself found reports nothing to the heal canary; one on a heal's element does, as for any key.
+
+### Steps that may not be there
+
+- An optional step written as `try { ... } catch (e) { if (!(e instanceof errors.TimeoutError)) throw e; }` still works, since a miss throws a `TimeoutError`. But a call that has a fingerprint can be healed before that, when the fingerprint finds a confident match for the missing element, and the step then acts on it. Write an optional step as `heal.locator(key, selector, { optional: true })`, or through `heal.page.native`.
+- A step of your own on a cookie banner that mendwright handles, such as `page.getByRole('button', { name: 'Accept all' }).click()`, doesn't click it. While the banner shows, the call finds its button, the step handles the banner first, and the click then waits out Playwright's action timeout for a button that is gone and throws Playwright's `TimeoutError`. When the banner was handled earlier, the call matches nothing: the step waits `timeoutMs`, and the fingerprint tier, which recorded the banner's button when the call matched it, looks for it on a page without the banner, usually finds no confident match, and throws. Drop such a step, or write it as `heal.locator(key, selector)` with the interruption's key, which is skipped when the element isn't there.
+
+Each action or healed read of a call looks at the call first, in one round trip, two when it matches one element, then scrolls it into view: three more than Playwright's own call, as for `heal.page.locator(selector)`. The first lookup of a call on a healer also reads the element's role and fingerprint.
+
+Limits, as in the Python package:
+
+- A call whose element is inside an open shadow root heals only inside that shadow root, by the rules of [Shadow DOM](#shadow-dom).
+- `page.setDefaultTimeout()` isn't read: a missing call waits `timeoutMs`.
+- `getByTestId()` uses the test id attribute set with `selectors.setTestIdAttribute()`, and the key doesn't say which one.
+- `getByRole()` matches part of the name unless `exact: true`, so after a redesign the call itself can find a different element ("Save" matches "Save draft") without mendwright noticing: it doesn't second-guess the code's own match. Pass `exact: true` for a name that another control could contain.
 
 ## A model for what the fingerprint can't place
 
@@ -139,17 +268,308 @@ A heal is quarantined when an action on it fails in the browser, when `expect` r
 
 `test.use({ mendwrightStrict: true })` fails a test that passed only because a selector was healed. The heal is still saved and confirmed, so strict CI runs need a fresh store.
 
+## Checking what a read returns
+
+A heal passes the checks when the new element has the step's role and is the one visible match. For a read, that can still be the wrong element: after a redesign, a price selector can heal onto the rating next to the price, and a scraper saves 4.5 as the price. `expectValue` says what a read must return:
+
+```ts
+const price = await heal.locator('price', '#price', { expectValue: 'money' }).innerText();
+```
+
+When the element was found through a selector a heal saved, in this run or an earlier one, mendwright checks the value the read returns:
+
+- A value that passes is returned. It confirms a heal made in this run, as `expect` on an action does.
+- A value that fails quarantines the heal, and the read throws `AttentionRequired` instead of returning it. The same text is logged as a warning:
+
+  ```text
+  mendwright: 'price' was healed to //span[@class='rating'], and its innerText() there is '4.5', which is not money (expectValue: 'money'). The heal probably found another element, so mendwright quarantined it and did not return the value. The next lookup of 'price' heals it again, and cannot pick that element. If the value is right, change expectValue.
+  ```
+
+  The quarantine blocks the element, not only the selector, so neither the fingerprint tier nor the model can pick the rating again.
+
+A read through any other selector, such as the one in your code, is never checked: `expectValue` only ever refuses a heal. A price your own selector reads as "Call for price" comes back as it is.
+
+The reads it checks are `innerText()`, `textContent()`, `inputValue()` and `getAttribute()`, of `heal.locator()`, `heal.page`, `heal.page.locator()` and, with `healGetBy: true`, the `getBy*` calls of `heal.page`. Other reads, the actions, and what you run on `native` yourself are as before.
+
+| `expectValue` | Passes for |
+|---|---|
+| `'money'` | an amount with a currency sign or code before or after it, and nothing else: `$1,299.00`, `1.299,00 €`, `129 kr`, `CHF 12.50`, `USD 1299`, `$12.00 USD`, `R1,299.00`, `₹1,29,999.00`, `129,-`, `-$12`. The signs are the Unicode currency signs and `US$`, `C$` and the like; the codes are the common ISO 4217 codes and abbreviations such as `kr`, `zł`, `Kč`, `Ft`, `lei`, `Rs`, `R`, `RM` and `CHF`. A number without one, such as `1,299.00`, is not money: use `'number'` |
+| `'number'` | a number and nothing else, with an optional sign: `1,299.00`, `1.299,00`, `1 299,00`, `1'299.00`, `4.5`, `-3` |
+| `'integer'` | a number with no decimal part written: `1,299`, `12`, but not `12.00` |
+| `'percent'` | a number with `%` before or after it: `12%`, `12.5 %`, `%20` |
+| `'date'` | a calendar date (31/02/2026 is not one): `2026-10-15`, with or without a time (`2026-10-15T10:00`, `2026-10-15T10:00:00+02:00`, `2026-10-15 10:00`), `15/10/2026`, `10/15/2026`, `15.10.2026`, `2026年10月15日`, or with the month's name in English, German, French, Spanish, Italian, Dutch or Portuguese, such as `Oct 15, 2026`, `15. Oktober 2026` or `15 de octubre de 2026`, also after a weekday or before a time |
+| `'email'` | an email address, also as a `mailto:` link |
+| `'url'` | an `http` or `https` URL with a host, one that starts with `//`, or a path that starts with `/`, `./` or `../`, as `getAttribute('href')` gives for a relative link |
+| a `RegExp` | a value it finds a match in, as Python's `re.search()` does. Anchor it with `^` and `$` to match the whole value. Its `g` and `y` flags are left out, so its `lastIndex` is never read or moved |
+| a function | a value it returns something truthy for, or a promise of something truthy. It gets the value as a string, and one that throws or rejects refuses it |
+
+Numbers are read the way most locales write them. Commas, dots, spaces (non-breaking and narrow ones too) and apostrophes group the digits, in threes, or in India in twos before a last group of three (`1,29,999`). When a number has both `.` and `,`, the one that comes last is the decimal point, and a mark that comes more than once groups. A single `.` or `,` followed by exactly three digits, as in `1.299` or `1,299`, is read as a thousands separator, as in a price; `0,299`, `1234.567` and `1 299,500` have a decimal part. In an amount of a currency with three decimals (`KWD`, `BHD`, `OMR`, `JOD`, `TND`), that `.` is the decimal point, as those amounts are written: `KWD 1.250` is 1.250. That `,` could be either (`1,250 TND` is 1.250 in Tunisia and 1250 in English), so `parseMoney()` gives `null` for it, though it passes `'money'`. The value is read in its compatibility form, so fullwidth digits and the digits of other scripts count, and spaces around it don't. A value of `null`, such as `getAttribute()` of an attribute the element doesn't have, passes no check, and a function isn't called for it.
+
+The checks are the Python package's. This package's tests run both packages on a table of over 450 values, and compare the character classes they rest on (Python's `\d`, `\w` and `\s`, `str.casefold()` and the like) for every character Python's Unicode version knows.
+
+`parseMoney()` and `parseNumber()` read the value you got the same way. They give the amount as a string, as the Python package's `Decimal` prints it, so no digit is lost, or `null`:
+
+```ts
+import { parseMoney } from 'mendwright';
+
+parseMoney('1.299,00 €');   // '1299.00'
+parseMoney('129 kr');       // '129'
+parseMoney('4.5');          // null: no currency
+```
+
+The string keeps the trailing zeros, and writes a number below 0.000001 as Python does, such as `'1E-7'`. `Number()` reads both.
+
+`heal.page` takes no `expectValue`, so give the checks for its keys to `open()`, or to the fixtures with `test.use({ mendwrightOptions: { expectValues } })`. The key is the selector (for a `getBy*` call, the key `getByKey()` gives, see [getBy* locators](#getby-locators)):
+
+```ts
+const heal = open(page, { expectValues: { '#price': 'money', '#delivery': 'date' } });
+await heal.page.innerText('#price');   // checked when '#price' was found through a heal
+```
+
+The same object covers the keys of `heal.locator()`, and an `expectValue` passed to it wins over it. Neither is saved, so pass them on each run. A check that can never work, such as `'cash'` or a number, throws `TypeError` from `heal.locator()` or `open()`, before anything touches the page. A function written in place, as in `{ expectValue: (v) => ... }`, is called "the function" in messages; a named one by its name.
+
+In the journal, a refused read writes a `heal.canary` with `success: false` and `by: 'expect_value'` (for a heal made in this run) and a `heal.quarantine`, each with a `reason` such as `expect_value: innerText() is not money`, as the Python package writes them. The value itself is never written. A read that passes confirms a heal made in this run with a `heal.canary` whose `by` is `'expect_value'`.
+
 ## Cookie banners and other interruptions
 
 `open(page, { cookies: 'reject' })`, or `test.use({ mendwrightOptions: { cookies: 'reject' } })`, closes the consent banners of common consent managers without accepting: OneTrust, Cookiebot, Didomi, TrustArc, Usercentrics, Quantcast Choice, Osano, cookieconsent, CookieYes and Complianz, and, for others, a reject, decline or necessary-only button inside an element that is about cookies. `cookies: 'accept'` accepts them. It is off by default. The selectors are the Python package's, so a consent screen that isn't about cookies, such as an OAuth screen with Allow and Deny, is never clicked.
 
 `heal.interrupt(key, selector, { action, args })` registers a step of your own that can show up at any point, such as a newsletter modal. mendwright looks for these only when a step needs help: when a lookup misses, before an action of `heal.locator()` or `page` while the page shows one, and when such an action failed because something covered its element, after which the action is tried once more. At most 3 are handled for one step.
 
+### Interruptions that need a form
+
+```ts
+heal.interrupt('session_expired', '#session-expired', {
+  run: async function relogin(page) {
+    await page.fill('#relogin-user', 'ada@example.com');
+    await page.fill('#relogin-password', process.env.SHOP_PASSWORD!);
+    await page.click('#relogin-submit');
+  },
+});
+```
+
+Some interruptions take more than one click: a session-expired popup that asks you to sign in again, a form for your address or postcode, a confirmation with two fields. Pass the function that answers it as `run`, in place of `action` and `args`. mendwright calls it at the same moments as any interruption, when `selector` matches one visible element: when a lookup misses, before an action or the first read, and after an action was intercepted. It gets `heal.page`, so its own selectors heal as usual. The selector only shows that the interruption is there, so it can be the popup itself.
+
+- `run` is an async function, which mendwright awaits, or a function that returns a promise. One that returns anything else throws `TypeError` when the interruption is handled. `run` with `action` or `args`, a `run` that isn't a function and `heal.interrupt(key, null, { run })` throw `TypeError` at once, before anything touches the page.
+- Its own actions never handle its own interruption, which is still on the page while it fills it in, so it is never called from inside itself. They do handle the other registered interruptions, such as a cookie banner that opens over its form. With `dismiss: true`, no popup is dismissed while it runs, by its own actions or by any other step, and a dismissal another step had under way when it was called ends before it starts.
+- The step that called it waits for it. Another step of the same healer, such as one awaited next to it in `Promise.all()`, waits for it too before it looks up its element or handles an interruption, so the function is never called a second time while it runs. The function's own lookups and actions don't wait: the step they would wait for is the one waiting for them.
+- After it returns, mendwright waits for the element to go away, as after an action, and logs `handled interruption 'session_expired' before 'search' with relogin()`. The `flow.interrupt` journal event has `action: 'run'` and `function: 'relogin'`, the function's name. A function written in place, as in `{ run: async (page) => ... }`, takes its name from the option, so mendwright calls it `<anonymous>`, as the Python package calls a lambda `<lambda>`. An interruption still on the page after its function returned counts as handled all the same, so a step handles it at most 3 times and then throws `InterruptionLoop`, whose message names the function.
+- What it throws is thrown as it is, the same object, after one WARNING and a `flow.interrupt` event with `outcome: 'failed'` and the error's name in `error`. The step that called it stops there. An `AttentionRequired` from it isn't taken for a miss of that step, so nothing is healed or skipped.
+- A promise can't be cancelled, so nothing stops the function once it has started: a test that times out while it runs leaves it running.
+
+## Popups nobody registered
+
+```ts
+const heal = open(page, { dismiss: true });
+await heal.locator('email', '#email').fill('ada@example.com');   // a newsletter modal opened first
+```
+
+`open(page, { dismiss: true })`, or `test.use({ mendwrightOptions: { dismiss: true } })`, dismisses a popup that nobody registered when it is in the way of an action: a newsletter or discount modal, an app-install banner, a survey, a chat invite, or a consent banner when `cookies` isn't set. It is off by default, and then mendwright makes no browser call for it. The rules are the Python package's, and this package's tests run both packages on the same tables.
+
+mendwright acts only when the action's element is covered: before an action, when the browser says another element is on top at the middle of the element (`document.elementFromPoint`, into open shadow roots; an element below the window is scrolled into view first), and when an action fails because something covered its element. The registered interruptions come first, and while one the step handled is still on the page, popups are left alone. `focus()`, `setInputFiles()` and reads are not looked at.
+
+The element on top belongs to a popup when it is in a dialog (`role="dialog"` or `"alertdialog"`, `aria-modal="true"`, or an open `<dialog>`), or else in a fixed or sticky element that takes pointer events and covers at least a quarter of the window. A popup that holds the action's element, a header or toolbar that covers less, and the full-window layer with `pointer-events: none` that toast libraries put a toast in are left alone.
+
+For a popup, mendwright tries these in order, and after each looks again for up to 2 seconds (or the step's timeout, when that is shorter):
+
+1. Escape, but only while the keyboard focus is on the page's body or in the popup, not in an iframe, and never with `cookies: 'accept'`. Escape goes to the focused element, and every key listener of the page gets it.
+2. The popup's close button: one whose whole label is Close, or Close and what it closes (Close dialog, Close this banner, Close cart and the like), or an icon whose aria-label, or without one its title, is one of those. A bare ×, ✕ or X is never one.
+3. A decline button: one whose label says no thanks, not now, maybe later, later, not interested, or continue without and what it leaves out (accepting, an account, cookies and the like), with at most 4 harmless words more, as in "Remind me later". Skip, skip for now and dismiss count only in a popup whose own text reads as a promotion or onboarding (a newsletter, an offer, % off, get the app, a survey, a tour, welcome, cookies and the like). Reject, reject all and decline count only in a popup that speaks of cookies.
+
+mendwright never:
+
+- presses Escape or clicks anything on an alert dialog (`role="alertdialog"`, or a popup inside one), which asks for an answer
+- clicks a button of a popup that has a button that says cancel or keep (it gets Escape only), or a close, skip or dismiss button whose verb the popup's own text says, as Close in "Close your account?"
+- clicks a button whose label (its text, the text it hides, its value, aria-label, title, and the text its `aria-labelledby` names) says accept, agree, allow, subscribe, sign up, yes, ok, continue, buy, pay, order, save, submit, delete, remove, install, get, try or one of the other words of the Python package's list, each matched as the start of a word, or has a digit or a currency sign in it, as in "Skip the line - $9.99"
+- clicks a link that goes somewhere (only no `href`, `#` and `javascript:` code that does nothing go nowhere), a button in such a link or one that holds one, a disabled button, a label or a button in one, a button that holds a field, or a button that would submit or reset its form
+- clicks a radio, checkbox, switch, tab or option, or anything with `aria-checked`, `aria-pressed` or `aria-selected`, and it never types, checks or selects
+- with `cookies: 'accept'`, dismisses a popup that looks like a consent banner or has a button that says accept, agree, allow or consent, in English or another language: Escape, a close or a decline button could turn the consent down
+
+Right before a click, the page script checks that the button is still the one chosen, with every fact of it the same. One that changed is not clicked.
+
+A dismissed popup gets one WARNING, a `flow.dismiss` journal event with the Python package's fields (`key: '<popup>'`, `before`, `popup`, `outcome`, `how`, `label` and `tried`), and an entry `{ key: '<popup>', before, popup, how, label }` in `heal.handledInterruptions`, and then the action goes on, or a failed one is tried once more. `how` is `'escape'`, `'close'` or `'decline'`, and `label` is the button's, `null` for Escape. A registered interruption's entry has `null` in all three. `DISMISS_KEY` is `'<popup>'`.
+
+Each popup counts once toward the 3 interruptions a step may handle. A popup that comes back each time it is dismissed throws `InterruptionLoop` once the step has handled 3, after a `flow.stop` event with the code `popup_loop`. A popup mendwright can't dismiss is named in one WARNING and not tried again in that step, and the action goes ahead and fails with the browser's own error if the popup blocks it. When the action's element can't be looked at as before after a step (it left the page, or it is hidden now), or a click threw after it may have reached the page (a navigation it started did not commit in time), mendwright can't tell what that step did: it stops with a WARNING, writes a `flow.dismiss` event with `outcome: 'lost'`, and doesn't try a failed action again.
+
+With `dismiss: true`, the locators `heal.page` doesn't heal are guarded too: the `getBy*` locators (with `healGetBy: true`, those calls heal, and their actions get the same checks), a locator built with options, chained locators, `frameLocator()`, `and()`, `or()`, `first()`, `last()`, `nth()`, `filter()`, and the locators `heal.page.locator(selector).all()` gives. Their actions get the interruption and popup checks. They aren't healed and nothing about them is saved, `expect()` takes them, and `native` is the real locator. Log lines name their step after the calls that built it, in TypeScript, such as `"page.getByRole('button', { name: 'Continue' })"`. With `dismiss` off they are the real locators.
+
+What it can't do:
+
+- A popup that needs data before it closes, or whose only way out is a button mendwright never clicks, such as Subscribe or OK. Register the button you want with `heal.interrupt()`.
+- A popup that opens while Playwright waits on an action is found only when the action fails, after its timeout.
+- A popup that hides the element instead of covering it: the lookup then misses. Register it with `heal.interrupt()`, which is also handled when a lookup misses.
+- Actions on your own page or the locators you build from it, `page.mouse`, `page.keyboard` and `ElementHandle`s get no popup check.
+- In an iframe, mendwright looks in the element's own document: for a key found inside an iframe (see [Iframes](#iframes)), a popup inside that iframe is dismissed there, without Escape. A popup of the page around the iframe isn't.
+
+## Steps in any order
+
+```ts
+const heal = open(page);
+
+heal.step('shipping', { when: '#ship-name' }, async (page) => {   // what shows this step is on the page
+  await page.fill('#ship-name', 'Ada');
+  await page.click('#next');
+});
+heal.step('payment', { when: '#card-number' }, async (page) => {
+  await page.fill('#card-number', '4242 4242 4242 4242');
+  await page.click('#next');
+});
+heal.step('review', { when: 'text=Place order', last: true }, (page) => page.click('text=Place order'));
+
+await heal.runSteps();   // runs whichever step the site shows, each once, in any order, until the last one
+```
+
+The ids keep the example short. In a real flow, use something such as a heading as `when`, so that a renamed field still heals inside its step: a landmark is never healed.
+
+`heal.step(name, { when, url, last, optional }, fn)` registers one step of a flow, such as a checkout, a signup or a booking, whose steps the site may show in another order, put on one page, or leave out. It returns `fn`.
+
+- `when` is what shows the step is on the page, its landmark: one selector, or a list of them, and any visible match counts. A landmark that matches several elements counts when one of the first 5 is visible. When the step doesn't show, a landmark that matches more elements than mendwright looks at, none of those visible, is named in one WARNING per step and page.
+- `url` is a pattern for the page's path, such as `'/checkout/payment'` or `'*/payment*'`, instead of a landmark or as one more condition with it. It and the page's path are normalized as for the page guard: lower case, without empty parts, and parts that look like record ids read as `*`, so `'/orders/123/pay'` matches `/orders/987/pay`. `*` matches any characters, `/` included, `?` one character, and `[ab]` one of those, as in the Python package. A pattern that starts with `/` starts at the root of the path, and one that starts with `*` is kept as written, so `'*/payment*'` matches `/payment` and `/checkout/payment`. A page with no path, such as `about:blank` or the site root, matches no pattern.
+- `last: true` marks the step that ends the flow, such as placing the order. A flow has at most one, and it can't be optional. Give it to the final step of any flow that ends in a submit: then a step the site left out is named in a WARNING once the flow ends. With no last step, `runSteps()` waits for every step that isn't optional, so a step the site left out stops it with an error, after the steps that did show ran.
+- `optional: true` marks a step that may not show at all, such as an upsell.
+- `fn` gets `heal.page`, so its selectors heal as usual. It is an async function, or a function that returns a promise, such as `(page) => page.click('#place')`, and mendwright waits for that promise before it looks for the next step. A function that returns anything else makes `runSteps()` throw `TypeError`, and the journal records the step as failed: mendwright can't wait for calls it wasn't given.
+- Registering a name again replaces its step, which keeps its place in the order.
+- Steps stay on the healer for every later `runSteps()` call, so the same flow can run again. For another flow, open a new healer.
+- Arguments that can never work throw `TypeError` or `InvalidSelector` at once, before anything touches the page: options that aren't an object, an option it doesn't take (the function comes after the options, not as one of them), a `fn` that isn't a function, neither `when` nor `url`, an empty list, a `url` that isn't a path, a `last` or `optional` that isn't a boolean, `last: true` with `optional: true`, and a second last step. An XPath landmark the browser can't parse throws `InvalidSelector`, naming the step, the first time `runSteps()` looks at it.
+
+`heal.runSteps({ timeoutMs, pollMs })` runs the steps and resolves to their names in the order they ran:
+
+1. It waits, up to `timeoutMs` (by default the healer's), until a step that hasn't run yet shows: its landmark is visible, its URL pattern matches, or both when it has both. It looks every `pollMs` milliseconds (200 by default, at most every 20).
+2. It runs that step's function.
+3. It looks again. It stops after the last step ran. With no last step, it stops once every step that isn't optional ran, so an optional step that comes after them isn't waited for.
+
+Each step runs at most once. When several steps that haven't run show at the same time, as on a one-page checkout, they run in the order they were registered, and `runSteps()` looks again after each. The last step runs only when no other step that hasn't run shows, wherever it was registered.
+
+Landmarks are looked up with the browser's count and visibility only. They are never healed, and nothing is saved for them: a missing landmark is what a step that isn't on the page looks like. Pick ones that stay, such as a heading's text or a field's name, and that only that step's page shows. A landmark that every page shows, such as a Place order button in a sidebar, makes its step run as soon as no other step shows.
+
+While it waits, `runSteps()` handles the interruptions you registered, and the cookies preset, when the page shows them, as when a lookup misses. The log line and the `flow.interrupt` event name the step as `'<next step>'`, which is `WAITING_STEP`. It handles up to 3 interruptions in each wait, as for one action, and then throws `InterruptionLoop`. An interruption whose action fails is named in one WARNING and not tried again in that wait, and the others still are. With `dismiss: true`, a popup is dismissed by the step's own actions, as everywhere else: a popup over a landmark doesn't hide it, so the step runs, and its first action finds the popup in its way.
+
+When it can't tell what to do, `runSteps()` throws `AttentionRequired`, after a `flow.stop` journal event with a code:
+
+- `step_again`: a step that ran is on the page again, with no step that hasn't run for the whole `timeoutMs`. That is most often a submit that failed, such as a declined card, and running the step again could pay twice:
+
+  ```text
+  mendwright: 'payment' is on the page again after it ran, and no step that has not run showed on /checkout/payment within 10000 ms: its submit probably failed, for example because the card was declined or the site rejected a field. mendwright runs each step once, so it stopped instead of running 'payment' again. Look at the page for the site's message. Steps that ran: 'shipping', 'payment'.
+  ```
+
+- `step_moved`: a step that ran shows again, on another page than the one it ran on. The page changed, so its submit most likely worked, and the message says this is most often a step the site added that shows part of it, such as gift options under the Shipping heading.
+- `no_step`: no step shows within `timeoutMs`. The message names the page and every landmark it looked for. A step the site added needs a `heal.step()` of its own. When steps ran and none has `last: true`, the message also says that the site may have dropped one.
+- `step_cap`: it ran 3 times as many steps as were registered when it started. A step function that keeps registering new steps could otherwise keep the flow going.
+
+What a step's function throws is thrown as it is, after the journal records which step failed.
+
+Inside a step, a key's page is the step, not its URL. mendwright saves with each key the steps it was found during, as `steps` in the store next to `pages`, as the Python package does. While a step runs, a key found during that step before heals on the page the step showed on when it started, whatever its address, because the step's landmark, or its `url`, showed there that this is that step's page. So a field renamed in a step that also moved to another page heals there, where the page guard would decline it, and one INFO line says so. Once the step's function goes to another page, such as with its own Continue, that page may be the next step's, and the guard is as before there: a lookup that misses after the step's submit is not healed onto the next step's controls. For the same reason, a key is saved with a step only when it was found on the page the step showed on. The step lives in the async context its function runs in, so a lookup awaited next to `runSteps()` in a `Promise.all()`, a callback the function left behind once the step ended, and a run function of `heal.interrupt()` aren't part of it. A key never found during the step that runs is guarded as before, and so is every key outside `runSteps()`.
+
+What it reports:
+
+- one INFO line for each step it ran, with the page and the time it took
+- one WARNING when a step runs after steps registered behind it: `ran 'payment' before 'shipping': the site changed the order of the steps`
+- once the last step ran, one WARNING for each step that isn't optional and never showed, since the site may have dropped it, and one INFO line for each optional step that didn't show
+- a `flow.step` journal event for each step that ran, failed or never showed, with the Python package's fields: `key` (the step's name), `outcome` (`ran`, `failed`, or `missing` for a step that isn't optional and never showed), `error` (the error's name, for `failed`), `position` (1 for the first step that ran), `registered` (its place in the order the steps were registered), `page` and `seconds`
+
+None of this is a heal, so `mendwrightStrict` doesn't fail a test because the steps came in another order. A heal inside a step still does.
+
+## Iframes
+
+mendwright opened on the page works with iframes one level down, as the Python package does on Playwright.
+
+- **A selector that matches only inside an iframe.** When a key's own selector matches nothing on the page but exactly one element inside one iframe of the page, mendwright looks for it there from now on, with no model call. It saves the selector with its `xpath=` or `css=` prefix written out, and the iframe's selector as `frameXPath`, such as `iframe[id="consent-frame"]`. That selector is built from the iframe's id, name or title, or from its `src` up to the query, as `iframe[src^="/embed?"]`, so the query, which can hold a token, is never saved. A generated-looking id or name is skipped, and an iframe with none of these isn't followed: a bare `iframe` could match another iframe on a later page. The element there must pass the live check, one visible element of the key's role. It logs `found 'terms' inside the iframe ...` and counts as a heal with source `frame`, so its canary checks it and `mendwrightStrict` fails on it.
+- **A key last found inside an iframe.** When its selector breaks, the heal runs inside that iframe: the fingerprint tier scores the iframe's elements, a model gets the iframe's HTML and elements, and both checks run in the iframe, so an element that looks the same on the page around it is never picked. The new XPath is saved with the same `frameXPath` and its `xpath=` prefix written out, so it never shares a row in the store with the same XPath on the page, and only a quarantine made in that iframe blocks it. The fingerprint recorded while the key matched inside the iframe is used there. When the iframe is no longer on the page, the key heals on the page, as in the Python package.
+
+mendwright doesn't follow a key into an iframe, and says why in the `AttentionRequired`, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard` blocks heals, when the key is marked destructive, when the same lookup was quarantined or superseded before, when its selector matches in more than one iframe or more than one element there, when the iframe is inside another iframe, when nothing tells the iframe apart from the others on the page, for a Playwright engine selector (`text=`, `role=`), on a page the key was never found on (the page guard), and when the element there fails the live check. No model is asked then either.
+
+For an iframe inside another iframe, or to work inside an iframe yourself, open mendwright on its `Frame`:
+
+```ts
+const frame = page.frame({ name: 'consent' });   // or a Frame from page.frames()
+const consent = open(frame!);
+await consent.locator('terms', '#inner-terms', { role: 'checkbox' }).check();
+```
+
+## Shadow DOM
+
+mendwright works with elements inside open shadow roots, at any depth, as the Python package does on Playwright. XPath doesn't reach into a shadow root, and `page.content()` holds none of what one contains, so mendwright handles an element inside a shadow root by its place.
+
+- **Where the element is.** Each time a key's selector matches, mendwright reads the shadow hosts around its element, outermost first, and saves them as the key's `shadowHosts`, as the Python package saves them. Each host is saved as a CSS selector that matches it and nothing else where it sits: its tag with a test id, an id or a name that no other element of its tag there has, such as `my-app[id="root"]`, else a custom element's tag alone when it is the only one of its tag there, such as `settings-panel`, else `null`. A value that looks generated is skipped. When the element is found on the page itself, `shadowHosts` is removed.
+- **A key last found inside a shadow root.** When its selector breaks, the heal runs only inside that shadow root. mendwright enters it through the saved hosts: each must match exactly one element in the document or shadow root before it, and that element must have an open shadow root. The fingerprint tier and the model get that shadow root's HTML and the interactive elements in it, and nothing from the page around it: not the host, not the light DOM slotted into it, not the shadow roots inside it. The XPath they find is checked in that HTML as any heal is: one match of the key's role, not quarantined there. XPath doesn't run inside a shadow root, so mendwright then builds a CSS selector for the same element from a test id, an id, other attributes or class names, and that CSS goes through the live check inside the shadow root: one element there, with the key's role, visible. The heal is saved as the Playwright chain of the hosts and the CSS, with the hosts as its `shadowHosts`, and logged as `healed 'save' inside the shadow root of my-app[id="root"]: #save -> my-app[id="root"] >> [data-testid="save"] (fingerprint, 0.0s)`.
+- **A selector saved inside a shadow root** runs strictly there: its CSS through its hosts, and only a match inside that shadow root counts, never one in the host's light DOM, a shadow root inside it or another host with the same tag. That is checked when the key is looked up and again right before each action and read of the `HealLocator`, which waits for it up to the step's timeout and throws `AttentionRequired` when the page changed after the lookup and it never comes. When the Locator matches nothing at all, as after a Close button's click removed its dialog, `isVisible()` and `isHidden()` answer `false` and `true` at once, as Playwright's do. What you run on its `native` Locator yourself isn't checked.
+- **An XPath that matches only inside a shadow root.** When none of a key's selectors matches anything on the page or in an iframe, and one of them, an XPath, matches one element inside exactly one open shadow root, mendwright looks for it there from now on, with no model call, through a CSS form of that element, saved as a heal is. It goes through the live check like a heal, logs `found 'save' inside the shadow root of ...`, and counts as a heal with source `shadow`, so its canary checks it and `mendwrightStrict` fails on it. Playwright's CSS reaches into open shadow roots by itself, so only an XPath is followed. It is followed only for a key mendwright has no record of, or one last found in that same shadow root. A key last found on the page, in an iframe or in another shadow root heals where it was last found, and so does a key one of whose selectors still matches something on the page.
+
+mendwright refuses a heal of a key last found inside a shadow root, says why in the `AttentionRequired`, and doesn't look for the key on the page around the host instead, when one of its hosts is gone, matches more than one element or has a closed shadow root now, when a host on the way is one nothing tells apart, when the shadow root is inside an iframe (open mendwright on that frame, where its shadow roots work as described here), and for an element that only its text tells apart, which has no CSS form. A quarantine counts in its own place: a selector quarantined inside a shadow root blocks its element there under any CSS form, and says nothing about the page, and the other way round.
+
+mendwright doesn't follow a key into a shadow root, says why in the `AttentionRequired`, and asks no model, in dry run, under `MENDWRIGHT_DISABLE=1`, while a `guard` blocks heals, when the key is marked destructive, when the XPath matches in more than one shadow root or more than one element there, when a host on the way can't be told apart, when the same lookup was quarantined or superseded before, for an element no CSS selector tells apart, when the page has more than 200 open shadow roots or more than 2,000,000 characters of their HTML (mendwright reads no more), on a page the key was never found on (the page guard), and when the element fails the live check.
+
+Closed shadow roots are out of reach: the browser gives a script no handle on one, so their elements are never found, recorded or healed.
+
+When the Python package 0.9.0 has written the store, which drops every `shadowHosts`, the key's and each heal's, mendwright reads a heal's hosts back from its chain, so the heal still runs, and its key still heals, only inside its shadow root. A key that only your own selector found inside a shadow root has nothing left to say so, and until it matches again it heals on the page like any other key. Don't share a store with the Python package 0.9.0.
+
+## Lists
+
+`heal.locatorAll(key, selector, options)` gives the elements of a list, such as the cards of a product grid: a `HealLocator` for each element the list matches, in page order, as the Python package's `heal.locator_all()` does.
+
+```ts
+const cards = await heal.locatorAll('cards', '.product-card');
+const names = await Promise.all(cards.map((card) => card.native!.locator('h3').innerText()));
+```
+
+mendwright never uses a list that your own selectors don't match. An emptied list can't be told from a list whose selector broke: when every item of a cart moves to Saved for later, the page can be what a redesign that renamed the cart's rows would give, but for a class name or a heading's text. So such a lookup throws `AttentionRequired`, which names both possibilities, and a selector that broke in a redesign is fixed in your code.
+
+The options are `role` (the items' role, read from the first item when you leave it out), `timeoutMs` and `pollMs`, which mean what they mean for `heal.locator()`, and `optional` and `nonempty`. How a list is looked up:
+
+1. The key's selectors are tried in order, the one in your code first, then the others saved for the key. The first that matches one element or more gives the list, as written. A list is looked for on the page, not inside an iframe, and never through a selector saved inside a shadow root. Heals saved under the key are skipped: the key can also be that of `heal.locator()` or of a `heal.page` call, and a heal of the first card is not a heal of the cards.
+2. Each time one matches two or more elements, mendwright records a list fingerprint, once per healer and selector: the fingerprints of three of the items (the first, the middle and the last), the tags inside each of them (their shape), how many there were, and their nearest common container. It is saved as the key's `listFingerprint`, as the Python package saves it. Without `role`, the items' role is saved from the first item. The first lookup of a key saves its selector, its first success, its page and the list fingerprint in one write of `overrides.json`. A list of one element is not recorded: nothing repeats in it.
+3. When none matches and the key has a list fingerprint, mendwright waits up to `timeoutMs`, handles the registered interruptions the page shows, and throws `AttentionRequired`, also logged as a WARNING. Unless the call passes `nonempty: true`, it looks for no other list on the page, asks no model, even when one is configured, and saves nothing, so the next run throws again. A list that comes while it waits is used as it is.
+4. When none matches and the key has no list fingerprint, the result is `[]` at once, as `Locator.all()` gives it. So is a list passed `optional: true`, and any list while the fingerprint tier is off (`fingerprint: false`, `MENDWRIGHT_FINGERPRINT=0` or `MENDWRIGHT_DISABLE=1`), which records no list fingerprint.
+
+What a cart's lookup throws once every item moved to Saved for later, or once a redesign renamed its rows:
+
+```text
+No matching element for: cart (tried 1 candidate(s)).
+  -> 'cart' matched 3 elements when its list fingerprint was recorded, and none of its selectors matches now. Either the list is empty at this point, or its selector broke: mendwright can't tell the two apart, since the items of an emptied list can show in another list, such as a cart's in Saved for later, so it never heals a list that matches nothing. If the selector broke, change it in your code.
+```
+
+The elements' actions handle registered interruptions and popups (`dismiss: true`) as `heal.locator()`'s do, and confirm or quarantine nothing, and neither does an element's `confirm()`: no list is found through a heal, and a heal of one element under the same key, such as the one `page.innerText('.card')` made next to `heal.locatorAll('.card', '.card')`, is not the element's. The first read of any element handles the registered interruptions once for the whole list. Their reads are never checked against `expectValues`, and `heal.locatorAll()` takes no `expectValue`. `heal.page.locator(selector).all()` is Playwright's own: it never waits, heals or saves anything.
+
+`nonempty` other than `true` or `false`, and `nonempty: true` with `optional: true`, throw `TypeError` at once, before anything touches the page (the Python package raises `ValueError` for the second).
+
+### Lists that always have items
+
+`nonempty: true` says a list always has items at that point of your flow, such as the rows of a cart your test just filled:
+
+```ts
+await heal.locator('add', '#add-to-cart').click();
+const rows = await heal.locatorAll('cart', '.cart-item', { nonempty: true });
+```
+
+Don't pass it for a list that can be empty there: pass `optional: true`, or nothing. Add it while the list still works: mendwright records where the list sits and its heading the next time the list matches in a call with `nonempty: true`, and keeps recording them for that key in later calls with and without it. A list recorded before that can't be looked for, and its lookup says so.
+
+When none of the list's selectors matches, the lookup waits `timeoutMs` and handles interruptions, as any list lookup does, and also when mendwright has no list fingerprint for the key. If the list comes while it waits, it is used. Then mendwright looks for the list on the captured page, with the Python package's search: a group of 2 or more elements of the items' role that holds 2 of the 3 items it recorded, isn't under another heading or in another part of the page than the list was, isn't placeholders of a list that is still loading, and is visible on the live page, with an XPath without positions that matches it and nothing else. It never uses what it finds. It saves it in `overrides.json` as a proposed list heal, as the Python package saves one, and throws `AttentionRequired`:
+
+```text
+No matching element for: cart (tried 1 candidate(s)).
+  -> 'cart' matched 3 elements when its list fingerprint was recorded, under 'Shopping cart', in <section class="cart">, and none of its selectors matches now. nonempty: true says the list has items here, so mendwright looked for it and found 3 div elements, under 'Shopping cart', in <section class="cart">, that hold 3 of the 3 items it recorded: //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')] (as CSS: div.cart-row). mendwright never uses a list it finds, because the items of an emptied list can show in another list on the page. If this is the list, look at it with: mendwright lists. Accept it with: mendwright lists accept cart 8b5351a5. Then write it into your code with: mendwright fix --apply. If the list can be empty here, remove nonempty: true.
+```
+
+The commands are the Python package's (`pip install mendwright`), and get `--store "PATH"` when the store is not the default one. A WARNING says the same in one line, `mendwright: found a list for 'cart' (3 div elements under 'Shopping cart'): .cart-item -> //div[...] (0.1s). It is not used. Check it with: mendwright lists`, and the journal gets a `heal.held`. The proposal has the id the Python package gives it, the first 8 hex digits of a hash of what `mendwright lists` shows, so `mendwright lists accept cart 8b5351a5` accepts what you looked at. `mendwright fix` searches Python files only unless you name others, so write the new selector into your TypeScript with `mendwright fix --apply --glob "*.ts"`.
+
+mendwright never gives you, or acts on, a list it found, in that run or a later one, and not after you accept it either. After you accept it, the lookup still throws until the selector is in your code:
+
+```text
+No matching element for: cart (tried 1 candidate(s)).
+  -> 'cart' matched 3 elements when its list fingerprint was recorded, and none of its selectors matches now. You accepted a list heal for it on 2026-11-02 10:20:00 UTC, //div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')], which matches 3 elements now, but mendwright takes a list only from the selectors in your code. Write it there with: mendwright fix --apply. If the list can be empty here, remove nonempty: true.
+```
+
+When the selector a list heal replaced matches again, in any lookup of the key, with or without `nonempty: true`, a proposed list heal is no longer proposed (an INFO line), and an accepted one is quarantined, with a WARNING and a `heal.quarantine` event: the list was not broken, or the key is used on more than one page, and `mendwright fix` won't write it. One element of the old selector is enough. A proposal names the selectors it replaces, so a key used with another selector on another page doesn't end it. A healer that lives across `mendwright lists accept` or `reject` reads what they did before it looks again.
+
+What it refuses, each with the Python package's reason in the message: a key marked destructive, a list mendwright has never seen match 2 or more elements, a list that was inside a shadow root when it was recorded, a list recorded before a call with `nonempty: true`, a page the key was never found on, a key whose role is unknown, a `guard` that blocks heals, the fingerprint tier turned off (and what turned it off), every group being another list, groups that look like placeholders, no group that repeats, none visible, a best group that scores below 0.65, two groups that score alike, shapes that differ, too few of the recorded items in the group, no XPath without positions, a group picked by a word for a state the list didn't have (such as `completed`, `done` or `saved`), a list heal you rejected or one that takes its elements, and the live check. In dry run it checks what it finds and saves nothing. No model is asked about a list, with or without `nonempty: true`, and the hourly limit isn't touched. This package reads no seed files, so a list's selectors always come from your code, and the messages point to `mendwright fix`, never to a seed file as the Python package's can.
+
+Limits, as in the Python package: a list with one item now is not looked for, a list whose items change from run to run can't be found, and a redesign that puts the list under a new heading while the old one stays on the page, or in a new wrapper next to a look-alike, is refused as another list. The captured page is parsed by the browser where the Python package parses it with lxml: the tests compare the two on the Python package's 86 pages of emptied lists and redesigns, and get the same answer, scores and words on each, but a page that lxml reads differently, such as one with `<template>` or misnested tags, can give another answer.
+
 ## Store and journal
 
-Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`mendwrightStore`, or `MENDWRIGHT_STORE`; for `open()`, `storePath`, else `./.mendwright/overrides.json`), and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it. A leading `~` in any of these is your home directory, as in the Python package, so a CI workflow can set `MENDWRIGHT_STORE: ~/.cache/mendwright/overrides.json` for both packages. It is the Python package's file format, schema 2: a team that uses both packages can share one store, and the Python package's `mendwright report` lists what this package saved. Writes take a lock file and merge with what other processes wrote, so Playwright Test workers can share one store. What only the Python package uses stays in the file as it wrote it: list heals, and where a key's element is inside an iframe or an open shadow root (`frameXPath`, `shadowHosts`).
+Heals are saved in `.mendwright/overrides.json` next to the Playwright config (`mendwrightStore`, or `MENDWRIGHT_STORE`; for `open()`, `storePath`, else `./.mendwright/overrides.json`), and each request, proposal, rejection and outcome goes to `journal.jsonl` next to it. A leading `~` in any of these is your home directory, as in the Python package, so a CI workflow can set `MENDWRIGHT_STORE: ~/.cache/mendwright/overrides.json` for both packages. It is the Python package's file format, schema 2: a team that uses both packages can share one store, and the Python package's `mendwright report` lists what this package saved. Writes take a lock file and merge with what other processes wrote, so Playwright Test workers can share one store. A key followed into an iframe, or healed inside one, is saved as the Python package saves it, with the iframe's selector as `frameXPath`, so each package looks it up and heals it inside that iframe whichever saved it. A key followed into an open shadow root, or healed inside one, is saved as the Python package saves it too, as the chain of its hosts and a CSS selector with the hosts as `shadowHosts`, so each package looks it up and heals it inside that shadow root whichever saved it. A `heal.page.getBy*()` call is saved under the key the Python package writes for it, such as `get_by_role("button", name="Sign in")`, so each package heals a call from the fingerprint the other recorded, and uses the heals the other saved for it. List fingerprints and list heals are saved as the Python package saves them, so each package reads the other's: the Python package's `mendwright lists` shows a list heal this package found, with the id this package gave it, and `mendwright lists accept` accepts it, and a list heal the Python package found or accepted is kept through this package's writes and waits for `mendwright fix` here as it does there. The `getBy` field the Python package 0.11 saves with a heal of a `get_by_*` call is kept too, and so is any field of a row or a key's entry that this package doesn't know, as the file has it, so a write of this package never drops what a later version of either package saves. This package reads only `overrides.json` in its folder: the per-key records the Python package 0.11 keeps in `keys/` next to it are left alone, and a store URL, such as the `s3://` and `https://` stores the Python package 0.11 reads, is refused with a `TypeError` that names `storePath`, `mendwrightStore` or `MENDWRIGHT_STORE` and quotes nothing of the URL: this package keeps its store in a local file.
 
-The journal has the Python package's events, with the same fields: each line has the id of the run that wrote it in `run` (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`), a heal that was not tried or did not apply is a `heal.declined` with the Python package's `code` and the `reason` (a key last found inside a shadow root or an iframe, where this package does not heal, is `shadow` or `frame`, and `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`, which `mendwright notify` counts as not repaired on purpose), and an interruption that kept coming back is a `flow.stop` with the code `interruption_loop`. So the Python package's `mendwright notify` posts the summary of a run of this package as it does its own. A `MENDWRIGHT_RUN_ID` that is not 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-` is ignored, with one warning from `open()`.
+The journal has the Python package's events, with the same fields: each line has the id of the run that wrote it in `run` (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`), a heal that was not tried or did not apply is a `heal.declined` with the Python package's `code` and the `reason` (a `getBy*` call its fingerprint could not heal is `get_by`, a key last found inside a shadow root that mendwright cannot heal in, or found only inside one that mendwright did not follow it into, is `shadow`, and a key found only inside an iframe that mendwright did not follow it into is `frame`, both `dry_run` or `disabled` in dry run and under `MENDWRIGHT_DISABLE=1`, which `mendwright notify` counts as not repaired on purpose), a key followed into an iframe is a `heal.applied` with the `provider` and `source` `frame` and the iframe's selector in `frame`, a heal inside an open shadow root has the hosts of that shadow root in `shadow`, and a key followed into one is a `heal.applied` with the `provider` and `source` `shadow`, an interruption that kept coming back is a `flow.stop` with the code `interruption_loop`, with `dismiss: true` a popup is a `flow.dismiss`, and one that kept coming back a `flow.stop` with the code `popup_loop`, and `runSteps()` writes a `flow.step` for each step that ran, failed or never showed, and a `flow.stop` with the code `step_again`, `step_moved`, `no_step` or `step_cap` when it stops. A list lookup that throws is a `heal.declined` with the code `list_empty`, or with `nonempty: true` `list_not_found` when nothing could be proposed (or the code of a check every heal has, such as `destructive` or `page_guard`) and `list_waits_fix` when a list heal you accepted isn't in your code yet. A lookup with `nonempty: true` that looked for the list writes a `heal.requested`, then a `heal.proposed` or `heal.rejected`, with `list: true`, and a list heal saved for you to check is a `heal.held` with its `xpath`, `css`, `id`, `items`, `label`, `differs`, `old` and `page`. An accepted list heal whose old selector matches again is a `heal.quarantine` with `list: true`, and the Python package's `mendwright lists accept` writes the `heal.accepted`. So the Python package's `mendwright notify` posts the summary of a run of this package as it does its own. A `MENDWRIGHT_RUN_ID` that is not 1 to 100 letters, digits, `.`, `_`, `:`, `/` or `-` is ignored, with one warning from `open()`.
 
 ## Settings
 
@@ -160,30 +580,58 @@ The journal has the Python package's events, with the same fields: each line has
 | `timeoutMs` | `MENDWRIGHT_TIMEOUT_MS` | 10000 |
 | `dryRun` (check proposals, apply none) | `MENDWRIGHT_DRY_RUN` | off |
 | `fingerprint` | `MENDWRIGHT_FINGERPRINT` | on |
+| `healGetBy` (heal `heal.page.getBy*` calls, see [getBy* locators](#getby-locators)) | `MENDWRIGHT_HEAL_GET_BY` | off |
 | `journal` (where the events go) | `MENDWRIGHT_RUN_ID` (the run id of each line) | `journal.jsonl` next to the store; the run id on GitHub Actions is `gh-<run id>.<attempt>`, else none |
-| `destructiveKeys`, `guard`, `healAcrossPages`, `cookies`, `ratePerKeyPerHour`, `rateGlobalPerHour`, `log` | | |
+| `destructiveKeys`, `guard`, `healAcrossPages`, `cookies`, `dismiss`, `expectValues`, `ratePerKeyPerHour`, `rateGlobalPerHour`, `log` | | |
 
 `MENDWRIGHT_DISABLE=1` resolves selectors but never heals or calls a provider, even one passed as `provider`. The fixtures take `mendwrightProvider`, `mendwrightStore`, `mendwrightOptions` (any other `open()` option), `mendwrightPage` and `mendwrightStrict` through `test.use()`.
 
-## Not in 0.1.0
+## The command line
+
+This package has no command line. The Python package's commands read and write the same store, so a team that writes its tests in TypeScript runs them with [pipx](https://pipx.pypa.io/), with no Python project of its own. They need the Python package 0.10.0 or later, which reads the `shadowHosts` this package saves: `pipx run mendwright` takes the latest release, and `pipx run --spec "mendwright>=0.10" mendwright ...` says so. Each takes the store with `--store`: `.mendwright/overrides.json` next to your Playwright config, unless `mendwrightStore` or `MENDWRIGHT_STORE` puts it elsewhere.
+
+```bash
+pipx run mendwright report --store .mendwright/overrides.json                   # what was healed, and where
+pipx run mendwright fix --store .mendwright/overrides.json --glob "*.ts"        # what fix would write: a dry run
+pipx run mendwright fix --apply --store .mendwright/overrides.json --glob "*.ts"
+pipx run mendwright lists --store .mendwright/overrides.json                    # list heals that wait for you
+pipx run mendwright notify --store .mendwright/overrides.json                   # a run's summary, to MENDWRIGHT_WEBHOOK_URL
+```
+
+`mendwright fix` searches Python files only unless you name others, so pass `--glob "*.ts"`, and `--glob "*.tsx"` or another for each other kind of file your selectors are in. A pattern without a `/` is matched against the file's name, in every folder `fix` searches (`--path`, the current folder by default); `--glob "**/*.ts"` is matched against the path, and misses the files at the top of that folder. It writes back only heals your tests confirmed. In a TypeScript file it reads the file line by line, leaves comments alone, and replaces a string in single, double or backtick quotes whose whole value is the old selector, in the quotes the new selector needs: `page.fill('#email', ...)` becomes `page.fill("//input[@id='user-email']", ...)`. It does so wherever such a string is, a constant that holds the selector included, and the tests of this package check that the file it writes still parses. It never rewrites a `heal.page.getBy*()` call: it lists the call with its healed selector instead. When `heal.locator()` passed two selectors that both broke, both are replaced by the healed one, which `heal.locator()` then tries once.
+
+`mendwright check`, the drift check before a run, opens a browser with the Python package's Playwright, so it needs both. In a virtual environment:
+
+```bash
+python -m venv .mw && . .mw/bin/activate
+pip install "mendwright[playwright]" && python -m playwright install chromium
+mendwright check --store .mendwright/overrides.json --base-url https://staging.example.com
+```
+
+The GitHub Action that opens a pull request with confirmed heals works the same way. Upload `.mendwright/overrides.json` and `.mendwright/journal.jsonl` from your Playwright job, as the Python package's guide shows for a pytest job, and pass the files to search with its `globs` input, `globs: "*.ts"`. Its `working-directory` and `store` inputs say where your code and the store are, when the Playwright config isn't at the root of the repository. See [CI](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#ci) in the Python package's guide.
+
+## Not in 0.2.0
 
 These are in the Python package and not in this one yet:
 
 - Selenium. This package works with Playwright only.
-- `dismiss`: dismissing popups nobody registered.
-- `heal.step()` and `heal.run_steps()`, for steps the site shows in another order.
-- `heal.locator_all()` and list fingerprints.
-- Healing `getBy*` locators. They go to Playwright unhealed.
-- `mendwright check`, the drift check before a run.
-- `mendwright fix`, which writes confirmed heals back into your code, and the GitHub Action that opens a pull request with them.
+- A command line: `mendwright report`, `fix`, `check`, `lists` and `notify`, and the GitHub Action, are the Python package's, and work on this package's store (see [The command line](#the-command-line)). So is `heal.drift()`, the drift check from a test of your own.
+- The Python package 0.11's stores at a URL (`s3://`, `https://`) and its coordination of many workers: one heal of a key for all of them, declines they share, and the per-key records it keeps in `keys/`. This package keeps a local `overrides.json`, which it shares with the Python package, and each process heals for itself.
+- The Python package 0.11's `heal_get_by='model'` and the `get_by` call it suggests next to a heal: here a `getBy*` call heals from its fingerprint only, and a heal saves no suggested call, though one the Python package saved is kept.
+- `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` and `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`: the hourly limits are the `ratePerKeyPerHour` and `rateGlobalPerHour` options of `open()` here.
+- The Python package 0.11's check of a saved heal on the page where a lookup uses it: there, a heal whose element doesn't have the key's role on this page (or a destructive key's text, or a `get_by_role()` call's ARIA role) isn't used, and is journaled as `heal.refused`. This package uses a saved heal that matches one visible element, as the Python package 0.10 did, and only warns when the element's role differs from the `role` you passed.
+- The Python package 0.11's other ways of sharing a store: a healer that takes in, while it is open, the heals and quarantines other processes saved (this package reads them when it opens the store and each time it writes it), reused declines of a model (`MENDWRIGHT_DECLINE_TTL_SECONDS`), read-only workers (`MENDWRIGHT_STORE_READ_ONLY`), and writes of last successes and fingerprints at most every 5 minutes (this package writes them at once).
 
-And, compared with the Python package's `heal.locator()` and `heal.interrupt()`:
+And, compared with the Python package's `heal.locator()`, `heal.locator_all()`, `heal.interrupt()` and `heal.step()`:
 
-- An iframe is not followed into: a selector that matches only inside an iframe is not looked up there, and no heal is made inside one. A heal the Python package saved inside an iframe is used, but a key last found inside an iframe is not healed when it breaks (after the checks for a key marked destructive and the page guard, which decline it first).
-- No heal is made inside an open shadow root. Each time a key's selector matches, where its element is gets saved as the key's `shadowHosts`, as the Python package saves it, and a key last found inside a shadow root is not healed when it breaks, so an element that looks the same on the page around its host is never picked. A heal the Python package saved inside a shadow root runs as the Python package runs it: its CSS through its hosts, and only a match inside that shadow root counts, never one in the host's light DOM, a shadow root inside it or another host. That is checked when the key is looked up and again right before each action and read of the `HealLocator`, except that `isVisible()` and `isHidden()` answer `false` and `true` at once when the Locator matches nothing at all, as Playwright's do; what you run on its `native` Locator yourself isn't checked. When the Python package 0.9.0 has written the store, which drops every `shadowHosts`, the key's and each heal's, a heal's chain still names its hosts, so that key is still not healed; a key that only your own selector found inside a shadow root has nothing left to say so until it matches again. Don't share a store with the Python package 0.9.0.
-- `expect_value` (checking what a read returns), and `run` functions for interruptions that need a form.
-- Interruptions are not registered with `page.addLocatorHandler()`, so they are handled before the steps mendwright routes only, not before a `getBy*` or chained locator's actions.
+- Iframes are followed one level down only (see [Iframes](#iframes)): a selector that matches only in an iframe inside another iframe is not looked up there, and a key is healed inside an iframe directly in the page. For an iframe deeper down, open mendwright on its frame: `open(page.frame({ name: 'consent' })!)`. A key last found inside a shadow root in an iframe is healed only by mendwright opened on that frame, as the next item says.
+- Open shadow roots work as with the Python package on Playwright (see [Shadow DOM](#shadow-dom)): a key heals inside the shadow root it was last found in, and only an XPath is followed into one, since Playwright's CSS reaches into open shadow roots by itself. As in the Python package, a key last found inside a shadow root in an iframe heals only when mendwright is opened on that frame, `open(page.frame({ name: 'consent' })!)`, and closed shadow roots are out of reach.
+- Interruptions are not registered with `page.addLocatorHandler()`, so they are handled before the steps mendwright routes only (with `healGetBy: true`, the `getBy*` calls of `heal.page` too), not before a chained locator's actions, or a `getBy*` locator's without `healGetBy`, unless `dismiss: true` guards them.
+- A `getBy*` call with a `RegExp` is a key only when its source is one the Python package's `re` module reads back the same way (see [The key](#the-key)), a narrower set than the Python package itself takes: a call with any other `RegExp` goes to Playwright unhealed. Of the spellings of a call the Python package reads, a `\N{...}` escape and a whole number past `Number.MAX_SAFE_INTEGER` are not read here.
+- The WARNING for an interruption or a landmark whose selector matches several elements gives general advice: it doesn't say how many of them are visible, nor name a selector built from the one visible match, as the Python package's does.
+- An XPath that can't be parsed is found by the browser, the first time it runs, not when it is passed: for a landmark, that is when `runSteps()` first looks at it.
 - Gemini, Bedrock, LiteLLM and the gateway as providers, and seed files.
+- The list heals a lookup with `nonempty: true` found are checked, accepted and rejected with the Python package's command line, `mendwright lists`, and written into your code with its `mendwright fix --glob "*.ts"`: this package has no command line. The fixtures don't say at the end of a run how many list heals wait for you to check them, as the Python package's pytest plugin does.
 - A page whose cleaned HTML is longer than 60,000 characters is cut at the end for a hosted model, instead of having unrelated parts left out, so the element can be cut off. A heal of such a page can't use a position such as `[2]`.
 
 ## Links
