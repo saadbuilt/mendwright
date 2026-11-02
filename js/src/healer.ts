@@ -20,7 +20,9 @@
 // element is, and saves it as the key's shadowHosts, as the Python package does. A key last
 // found inside a shadow root heals only inside it, entered strictly through its hosts, never on
 // the page around its host, where a look-alike can be, and is refused when that shadow root
-// cannot be entered now. A heal saved inside one runs strictly there.
+// cannot be entered now. A heal saved inside one runs strictly there. A key whose own XPath
+// matches nothing on the page but one element inside one open shadow root is followed there,
+// through a CSS form of that element, with no model call (followIntoShadow).
 //
 // Iframes one level down (see frames.ts and scope.ts): a key whose own selector matches
 // nothing on the page but one element inside one iframe is followed there, with no model call
@@ -64,9 +66,11 @@ import { autoProvider } from './providers/detect';
 import { pyLen, pyRepr, pySlice } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
-import { driverShadowed, healPlace, shadowUnreachable, type HealScope } from './scope';
-import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
-import { placeText, runTarget, type Target } from './shadow';
+import { driverShadowed, followAllowed, healPlace, shadowUnreachable, type HealScope } from './scope';
+import { CSS, XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
+import {
+  placeText, runTarget, shadowFound, shadowMessage, shadowPlan, shadowText, type ShadowFound, type Target,
+} from './shadow';
 import {
   StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
   type Step, type StepFunction, type StepOptions,
@@ -99,9 +103,11 @@ const ABSENT_ANSWERS: ReadonlyMap<string, boolean> = new Map([['isVisible', fals
 /** One heal a healer applied: the key, the selectors that had stopped matching, the new
  * selector (an XPath, or inside an open shadow root the chain of its hosts and a CSS
  * selector), the canary result (null while unconfirmed), and where it came from:
- * 'fingerprint' (no model call), 'model', 'intent', or 'frame' for a key whose own selector
- * matched only inside an iframe and is looked up there from now on (no model call; old is
- * that selector, and new the selector saved in the iframe). */
+ * 'fingerprint' (no model call), 'model', 'intent', 'frame' for a key whose own selector
+ * matched only inside an iframe and is looked up there from now on, or 'shadow' for one whose
+ * own XPath matched only inside an open shadow root and is looked up there through a CSS form
+ * of its element (no model call for these two; old is that selector, and new the selector
+ * saved there). */
 export interface HealEvent {
   key: string;
   old: string[];
@@ -800,8 +806,10 @@ export class Healer {
           this.coordinator.journal.event('flow.skip', { key, reason: skip });
           return { native: null, healed: null, hosts: null };
         }
-        // Its own selector may match inside an iframe now; only then is anything healed.
-        const followed = await this.followIntoFrame(key, error, attempt);
+        // Its own selector may match inside an iframe or an open shadow root now; only then is
+        // anything healed.
+        const followed = (await this.followIntoFrame(key, error, attempt))
+          ?? (await this.followIntoShadow(key, error, attempt));
         native = followed ?? (await this.heal(key, error, attempt));
       }
       this.checkHealedTarget(key);
@@ -1016,6 +1024,129 @@ export class Healer {
                     why: string | null): never {
     const reason = frameMessage(key, selector, frames, why);
     this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('frame'));
+    throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
+  }
+
+  // --- following a key's own selector into an open shadow root (see shadow.ts) --------------
+
+  /** After key missed on the page, and in no iframe: when none of its own selectors matches
+   * anything on the page, and one of them matches one element inside one open shadow root of
+   * the page, look for it there from now on, and return the retried lookup (the Python
+   * package's Healer._follow_into_shadow). Playwright's CSS reaches into open shadow roots by
+   * itself, so only an XPath is followed: it runs inside no shadow root, so it is evaluated in
+   * each root's HTML, and its element is looked up through a CSS form of it, saved as the chain
+   * of the hosts and the CSS with the hosts as its shadowHosts. No model is asked: the selector
+   * is the key's own, and only its place changed. It counts as a heal with source 'shadow'.
+   * Only a key mendwright has no record of, or one last found in that same shadow root, is
+   * followed (scope.followAllowed); any other heals where it was last found. Returns null when
+   * no selector of the key may be followed into a shadow root.
+   *
+   * Throws AttentionRequired, the miss with why it was not followed, for the refusals of
+   * shadow.shadowPlan, on a page the key was never found on (the page guard), while a guard
+   * blocks heals, and when no CSS form of the element passes the live check there. */
+  private async followIntoShadow(key: string, missed: AttentionRequired,
+                                 attempt: () => Promise<Locator>): Promise<Locator | null> {
+    const matches = await this.shadowMatches(key);
+    if (!matches.length) return null;
+    const [selector, found, root] = this.pickShadow(key, missed, matches);
+    this.frameGuard(key, missed);
+    const why = await this.shadowFollow(key, selector, root);
+    if (why) this.shadowStop(key, missed, selector, found, why);
+    return attempt();
+  }
+
+  /** [selector, found, cut] for each of key's own selectors on the page that a follow may take
+   * into open shadow roots (the Python package's Healer._shadow_matches): it matches inside them
+   * (see shadow.shadowFound), where the key may be followed (scope.followAllowed). A CSS
+   * selector is never one: Playwright's CSS pierces, so what it matches there it matches on
+   * the page. [] when any of the key's selectors on the page matches something there (one
+   * whose count throws counts as a match): the key's element may be that one. */
+  private async shadowMatches(key: string): Promise<[string, ShadowFound[], boolean][]> {
+    const selectors = frameCandidates(this.store, key);
+    const read = (docs: string[], xpath: string) => this.driver.lib('cssFormsEach', { htmls: docs, xpath });
+    const matches: [string, ShadowFound[], boolean][] = [];
+    for (const selector of selectors) {
+      let roots;
+      let cut: boolean;
+      try {
+        if (classify(selector) === CSS) continue;
+        [roots, cut] = await this.driver.shadowMatches(selector);
+      } catch {
+        continue;
+      }
+      const found = await shadowFound(selector, roots, read);
+      if (found.length && followAllowed(this.store, key, found)) matches.push([selector, found, cut]);
+    }
+    if (matches.length) {
+      for (const selector of selectors) {
+        let count: number;
+        try {
+          count = await this.driver.count(selector);
+        } catch {
+          return [];
+        }
+        if (count !== 0) return [];
+      }
+    }
+    return matches;
+  }
+
+  /** From the key's selectors that match inside shadow roots ([selector, found, cut]), the
+   * first one that can be followed, as [selector, found, the shadow root] (see
+   * shadow.shadowPlan). Throws the AttentionRequired of the first refusal when none can. */
+  private pickShadow(key: string, missed: AttentionRequired,
+                     matches: [string, ShadowFound[], boolean][]): [string, ShadowFound[], ShadowFound] {
+    const coordinator = this.coordinator;
+    const rules = {
+      disabled: coordinator.disabled, dryRun: coordinator.dryRun, destructive: this.store.metaOf(key).destructive,
+      status: (selector: string) => this.store.status(key, selector),
+    };
+    let refused: [string, ShadowFound[], string] | null = null;
+    for (const [selector, found, cut] of matches) {
+      const [root, why] = shadowPlan(key, selector, found, cut, rules);
+      if (root !== null) return [selector, found, root];
+      if (refused === null) refused = [selector, found, why as string];
+    }
+    const [selector, found, why] = refused as [string, ShadowFound[], string];
+    return this.shadowStop(key, missed, selector, found, why);
+  }
+
+  /** Check the guard, then each CSS form of root inside its shadow root on the live page
+   * (exactly one visible element of the key's role, not quarantined or superseded), and save
+   * the first that passes there, as the chain of the hosts and the CSS with the hosts as its
+   * shadowHosts, record it as a heal and wait for its canary. '' when key was followed, else
+   * why not. */
+  private async shadowFollow(key: string, selector: string, root: ShadowFound): Promise<string> {
+    if (!this.coordinator.guard()) return 'a transaction guard is currently blocking heals';
+    const hosts = root.hosts as string[];
+    const shadowed = driverShadowed(this.driver, hosts);
+    if (shadowed === null) return 'nothing tells one of the shadow hosts on the way apart';
+    const meta = this.store.metaOf(key);
+    let why = 'no CSS selector for it passed';
+    for (const css of root.forms) {
+      const saved = shadowText(hosts, css);
+      const status = this.store.status(key, saved);
+      if (status === 'quarantined' || status === 'superseded') continue;
+      const reason = await liveReason(shadowed, css, meta);
+      if (reason) {
+        why = "its element there failed mendwright's checks (" + reason + ')';
+        continue;
+      }
+      this.store.addCandidate(key, saved, { source: 'heal', frameXPath: '', shadowHosts: hosts });
+      this.coordinator.recordShadow(key, selector, saved, hosts);
+      this.coordinator.pending.set(key, saved);
+      return '';
+    }
+    return why;
+  }
+
+  /** Record and throw the AttentionRequired for a key found only inside a shadow root that
+   * mendwright did not follow it into: a heal.declined with the code 'shadow' ('dry_run' and
+   * 'disabled' on purpose), and the miss with why (shadow.shadowMessage). */
+  private shadowStop(key: string, missed: AttentionRequired, selector: string, found: ShadowFound[],
+                     why: string): never {
+    const reason = shadowMessage(key, selector, found, why);
+    this.coordinator.decline(key, reason, 'warning', null, this.coordinator.placeCode('shadow'));
     throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
   }
 

@@ -8,7 +8,8 @@
 // (frameMatches) and gives a driver on the Frame of one iframe (framed), which a heal inside
 // that iframe reads through. For open shadow roots (see shadow.ts) it reads what the shadow
 // root that a key's hosts lead to holds (shadowHtml, shadowInventory), which a heal inside it
-// reads through a ShadowDriver (scope.ts).
+// reads through a ShadowDriver (scope.ts), and the open shadow roots of the page an XPath may
+// match in (shadowMatches).
 //
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
 
@@ -23,7 +24,7 @@ import { frameOptions, frameSelector, type FrameMatch } from './frames';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
-import { hostCss, savedHosts, type Hosts } from './shadow';
+import { hostCss, rootsOf, savedHosts, shadowArg, type Hosts, type ShadowMatch } from './shadow';
 
 export type PageLike = Page | Frame;
 
@@ -31,17 +32,17 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // The helpers of mendwrightLib() the driver calls by name. Only these names are ever put
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
-  'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'cssForms', 'collectHtml',
-  'xpathAt', 'outsideAt']);
+  'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'shadowRoots',
+  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
-  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'cssForms'
-  | 'collectHtml' | 'xpathAt' | 'outsideAt';
+  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'shadowRoots'
+  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt';
 
 // The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
 // nothing of the live page. A page that enforces Trusted Types refuses a plain string to
 // DOMParser, so these get mendwright's own policy there (see PlaywrightDriver.lib).
 const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths', 'cssForms',
-  'collectHtml', 'xpathAt', 'outsideAt']);
+  'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt']);
 const TRUSTED_TYPES = 'mendwright:trusted-types';
 
 /** True for a helper of the page library that reads only the HTML string it is given, never
@@ -577,6 +578,23 @@ export class PlaywrightDriver {
       return [];
     }
     return inventoryRows(raw, limit);
+  }
+
+  /** [roots, cut]: the open shadow roots of this page or frame, at any depth, that a CSS
+   * selector matches something in (with how many elements), or, for an XPath, every one with
+   * its HTML, for mendwright to evaluate it in (see shadow.rootsOf; the Python package's
+   * shadow_matches). One round trip. [[], false] for an engine selector, or a read that
+   * failed. A malformed selector throws InvalidSelector. */
+  async shadowMatches(selector: string): Promise<[ShadowMatch[], boolean]> {
+    const arg = shadowArg(selector);
+    if (arg === null) return [[], false];
+    let raw: unknown;
+    try {
+      raw = await this.lib('shadowRoots', arg);
+    } catch {
+      return [[], false];
+    }
+    return rootsOf(raw);
   }
 
   // --- popups, for open({ dismiss: true }) (see dismiss.ts) ---------------------------------

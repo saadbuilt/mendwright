@@ -16,8 +16,8 @@
 // shadow hosts and a CSS selector with the hosts. The scope is passed along, never set on the
 // coordinator, so two heals that run at once never read each other's document. A key last
 // found inside a shadow root is never healed without its scope (outsideShadow). A key's own
-// selector followed into an iframe is recorded here too (recordFrame), as a heal with source
-// 'frame'.
+// selector followed into an iframe or a shadow root is recorded here too (recordFrame,
+// recordShadow), as a heal with source 'frame' or 'shadow'.
 
 import { buildBundle, redact } from './capture';
 import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
@@ -43,6 +43,10 @@ export const FINGERPRINT_PROVIDER = 'fingerprint';
  * looked up there from now on (see Healer.followIntoFrame): no model and no new selector, only
  * a new place. */
 export const FRAME_PROVIDER = 'frame';
+/** The provider and source of a key's own selector that matched only inside an open shadow
+ * root and is looked up there from now on, as a CSS form of its element (see
+ * Healer.followIntoShadow): no model is asked. */
+export const SHADOW_PROVIDER = 'shadow';
 export const DISABLED_REASON = 'healing is turned off by MENDWRIGHT_DISABLE=1, so the selector was not repaired. '
   + 'Unset MENDWRIGHT_DISABLE to let mendwright heal again.';
 export const GUARD_REASON = 'a transaction guard is currently blocking heals (a payment or registration submission '
@@ -185,8 +189,9 @@ export class HealCoordinator {
 
   /** @internal The code of a heal refused for where the key's element is (code): a key last
    * found inside a shadow root that cannot be healed in ('shadow'), or one found only inside
-   * an iframe it was not followed into ('frame'). 'disabled' under MENDWRIGHT_DISABLE=1 and
-   * 'dry_run' in dry run, declines on purpose, as the Python package gives them. */
+   * an iframe or a shadow root it was not followed into ('frame', 'shadow'). 'disabled' under
+   * MENDWRIGHT_DISABLE=1 and 'dry_run' in dry run, declines on purpose, as the Python package
+   * gives them. */
   placeCode(code: DeclineCode): DeclineCode {
     return this.disabled ? 'disabled' : this.dryRun ? 'dry_run' : code;
   }
@@ -414,6 +419,19 @@ export class HealCoordinator {
     this.emit('warning', 'healed ' + pyRepr(key) + where + ': ' + was + ' -> ' + applied + timing);
   }
 
+  /** Journal, remember and log that the key's own selector old matched only inside the open
+   * shadow root that hosts lead to, and is saved there as alt from now on, the chain of the
+   * hosts and a CSS selector (the Python package's record_shadow). It counts as a heal with
+   * source 'shadow': strict mode fails on it, and the canary checks it. */
+  recordShadow(key: string, old: string, alt: string, hosts: string[]): void {
+    this.journal.event('heal.applied', { key, xpath: alt, old: [old], provider: SHADOW_PROVIDER, model: null,
+                                         latency_ms: 0, source: SHADOW_PROVIDER, shadow: [...hosts] });
+    this.healReasons.delete(key);
+    this.heals.push({ key, old: [old], new: alt, confirmed: null, source: SHADOW_PROVIDER });
+    this.emit('warning', 'found ' + pyRepr(key) + ' inside ' + placeText(hosts) + ': ' + old + ' matches nothing on the '
+      + 'page, so it is looked up there as ' + alt + ' from now on');
+  }
+
   /** Journal, remember and log that the key's own selector old matched only inside the iframe
    * frame, and is saved there as alt from now on (the Python package's record_frame). It counts
    * as a heal with source 'frame': strict mode fails on it, and the canary checks it. */
@@ -437,12 +455,12 @@ export class HealCoordinator {
   }
 
   /** The canary: report a heal's outcome, and quarantine a heal whose check failed. A heal
-   * from the fingerprint tier, or a key followed into an iframe, is not reported to the
-   * provider, which did not propose it. by says what decided it ('test', 'expect', 'confirm'
-   * or 'action'). */
+   * from the fingerprint tier, or a key followed into an iframe or a shadow root, is not
+   * reported to the provider, which did not propose it. by says what decided it ('test',
+   * 'expect', 'confirm' or 'action'). */
   confirm(key: string, xpath: string, success: boolean, options: { reason?: string; by?: string; test?: string } = {}): void {
     const heal = [...this.heals].reverse().find((h) => h.key === key && h.new === xpath && h.confirmed === null);
-    if (!heal || (heal.source !== FINGERPRINT_PROVIDER && heal.source !== FRAME_PROVIDER)) {
+    if (!heal || ![FINGERPRINT_PROVIDER, FRAME_PROVIDER, SHADOW_PROVIDER].includes(heal.source)) {
       try {
         this.provider.reportOutcome?.(key, xpath, success);
       } catch {

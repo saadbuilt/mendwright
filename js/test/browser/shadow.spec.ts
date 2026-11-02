@@ -286,3 +286,100 @@ for (const [name, html] of [
     expect(model.bundles).toEqual([]);
   });
 }
+
+// --- following a key's own XPath into a shadow root -----------------------------------------------
+
+const XPATH = "//button[@id='save']";
+
+test('an XPath that matches only inside a shadow root is followed there, through a CSS form of its element', async ({ page }) => {
+  await serve(page, { '/shop': shop(inside('save')) });
+  const store = tempStore('shadow-follow');
+  const lines: string[] = [];
+  const model = new FakeModel([]);
+  const heal = open(page, { provider: model, storePath: store, timeoutMs: 300, log: (_level, message) => lines.push(message) });
+  await heal.locator('save', XPATH, { role: 'button' }).click();
+  expect(await clicked(page)).toBe('save');
+  expect(heal.heals.map((h) => [h.source, h.old, h.new])).toEqual([['shadow', [XPATH], CHAIN]]);
+  expect(model.bundles).toEqual([]);
+  expect(lines).toContain("found 'save' inside the shadow root of " + HOST + ': ' + XPATH + ' matches nothing on the '
+    + 'page, so it is looked up there as ' + CHAIN + ' from now on');
+  expect(readStore(store).selectors.save.candidates.find((c: any) => c.xpath === CHAIN).shadowHosts).toEqual([HOST]);
+  expect(journal(store).filter((e) => e.event === 'heal.applied').map((e) => [e.provider, e.source, e.shadow]))
+    .toEqual([['shadow', 'shadow', [HOST]]]);
+
+  // Confirmed, the next run finds it there at once.
+  heal.confirmAll(true);
+  await page.evaluate(() => { delete (window as any).clicked; });
+  const rerun = open(page, { provider: null, storePath: store, timeoutMs: 300 });
+  await rerun.locator('save', XPATH, { role: 'button' }).click();
+  expect(await clicked(page)).toBe('save');
+  expect(rerun.heals).toEqual([]);
+});
+
+test('an XPath is followed into the inner one of nested shadow roots, through all their hosts', async ({ page }) => {
+  await serve(page, { '/shop': mounted([
+    ['my-app', button('outer-copy', 'outer') + '<settings-panel></settings-panel>'],
+    ['settings-panel', button('save', 'inner')],
+  ], LOOKALIKE + '<my-app id="root"></my-app>') });
+  const heal = open(page, { provider: null, storePath: tempStore('shadow-follow-nested'), timeoutMs: 300 });
+  await heal.locator('save', XPATH, { role: 'button' }).click();
+  expect(await clicked(page)).toBe('inner');
+  expect(heal.heals.map((h) => [h.source, h.new])).toEqual([['shadow', HOST + ' >> settings-panel >> [data-testid="save"]']]);
+});
+
+test('an XPath that matches in two shadow roots is not followed, and says why', async ({ page }) => {
+  await serve(page, { '/shop': mounted([['/my-app', inside('save')], ['/other-app', inside('save')]],
+    '<my-app id="root"></my-app><other-app></other-app>') });
+  const model = new FakeModel(["//button[@data-testid='save']"]);
+  const heal = open(page, { provider: model, storePath: tempStore('shadow-follow-two'), timeoutMs: 300 });
+  const error = await heal.locator('save', XPATH, { role: 'button' }).click().catch((e) => e);
+  expect(error).toBeInstanceOf(AttentionRequired);
+  expect(String(error.message)).toContain("'save' is inside a shadow root: " + XPATH + ' matches nothing on the page, but '
+    + 'matches inside the shadow root of ' + HOST + ' (and 1 more). mendwright did not look for it there, because it '
+    + 'matches in more than one shadow root, and did not ask a model to heal it.');
+  expect(await clicked(page)).toBeUndefined();
+  expect(model.bundles).toEqual([]);
+  expect(heal.heals).toEqual([]);
+});
+
+for (const where of ['another host with the same tag', 'a shadow root inside it'] as const) {
+  test('a key last found in one shadow root is not followed into ' + where + ', and heals in its own', async ({ page }) => {
+    await serve(page, { '/shop': shop(inside('save')) });
+    const store = tempStore('shadow-follow-elsewhere');
+    await open(page, { provider: null, storePath: store, timeoutMs: 300 }).locator('save', XPATH, { role: 'button' })
+      .click({ expect: () => true });
+    await open(page, { provider: null, storePath: store, timeoutMs: 300 }).locator('save', XPATH, { role: 'button' }).resolve();
+    // The button is renamed in its shadow root, and a look-alike with its old id is elsewhere.
+    const renamed = '<div class="panel"><button id="save-2" data-testid="save-btn" type="button" '
+      + 'onclick="window.clicked = \'save-2\'">Save</button></div>';
+    await serve(page, { '/shop': where === 'a shadow root inside it'
+      ? mounted([['my-app', renamed + '<inner-box></inner-box>'], ['inner-box', button('save', 'nested')]],
+        LOOKALIKE + '<my-app id="root"></my-app>')
+      : mounted([['/my-app[id="root"]', renamed], ['/my-app[id="other"]', button('save', 'sibling')]],
+        LOOKALIKE + '<my-app id="root"></my-app><my-app id="other"></my-app>') });
+    await page.evaluate(() => { delete (window as any).clicked; });
+    const heal = open(page, { provider: null, storePath: store, timeoutMs: 300 });
+    await heal.locator('save', XPATH, { role: 'button' }).click();
+    expect(await clicked(page)).toBe('save-2');
+    expect(heal.heals.map((h) => [h.source, h.new])).toEqual([['fingerprint', HOST + ' >> [data-testid="save-btn"]']]);
+  });
+}
+
+// The page's own submit button, and a newsletter component whose shadow root holds another.
+const SEND = '<form onsubmit="return false"><input name="email"><button type="submit" id="send" '
+  + 'onclick="window.clicked = \'page\'">Send</button></form>';
+const SUBSCRIBE = '<button type="submit" onclick="window.clicked = \'widget\'">Subscribe</button>';
+
+test('a CSS selector that matches on the page is never followed into a shadow root', async ({ page }) => {
+  // Playwright's CSS pierces: with the component there, the selector matches 2 elements, one of
+  // them on the page, and 'send' heals on the page, where it was found.
+  await serve(page, { '/shop': '<!doctype html><html><body>' + SEND + '</body></html>' });
+  const store = tempStore('shadow-follow-css');
+  await open(page, { provider: null, storePath: store, timeoutMs: 300 }).locator('send', 'button[type="submit"]',
+    { role: 'button' }).click({ expect: () => true });
+  await serve(page, { '/shop': mounted([['news-letter', SUBSCRIBE]], SEND + '<news-letter></news-letter>') });
+  const heal = open(page, { provider: null, storePath: store, timeoutMs: 300 });
+  await heal.locator('send', 'button[type="submit"]', { role: 'button' }).click();
+  expect(await clicked(page)).toBe('page');
+  expect(heal.heals.map((h) => h.source)).not.toContain('shadow');
+});

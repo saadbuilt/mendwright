@@ -8,9 +8,9 @@
 // statically_hidden, gate's static check (validation.validate), capture.clean_html, the
 // driver's describe() and inventory(), the candidate list and XPaths of the local selector
 // model (candidates.py), the CSS forms of a healed element (css.css_selectors), and the
-// scripts that read open shadow roots (drivers.base ENTER_JS, PLACE_JS, SHADOW_HTML_JS and
-// SHADOW_INVENTORY_JS). Text rules follow the Python ones: lengths and cuts count code
-// points, and str.strip() strips what Python's strips.
+// scripts that read open shadow roots (drivers.base ENTER_JS, PLACE_JS, SHADOW_HTML_JS,
+// SHADOW_INVENTORY_JS and SHADOW_ROOTS_JS). Text rules follow the Python ones: lengths and
+// cuts count code points, and str.strip() strips what Python's strips.
 //
 // policy, when given, is mendwright's own Trusted Types policy in this document (see the
 // driver): the helpers that parse an HTML string pass the string through it, because a page
@@ -518,6 +518,39 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
   const shadowInventory = (arg: { hosts: string[]; limit: number }) => {
     const root = enter(document, arg.hosts);
     return root ? inventoryIn(arg.limit, root) : null;
+  };
+  // SHADOW_ROOTS_JS: every open shadow root of the document, at any depth, in document order,
+  // with the selectors of its hosts, outermost first (see hostsOf). With arg.css, the roots css
+  // matches something in, and how many elements (count). Without it, each root's innerHTML
+  // (html), for an XPath that mendwright evaluates in it. At most arg.limit roots, and
+  // arg.budget characters of HTML; cut says some were left out.
+  const shadowRoots = (arg: { css: string | null; limit: number; budget: number }) => {
+    const roots: { hosts: (string | null)[]; count?: number; html?: string }[] = [];
+    let cut = false;
+    let size = 0;
+    const walk = (scope: any, chain: (string | null)[]) => {
+      for (const el of Array.from(scope.querySelectorAll('*')) as Element[]) {
+        if (cut) return;
+        const root = el.shadowRoot;
+        if (!root) continue;
+        const here = chain.concat([hostSelector(el)]);
+        if (arg.css !== null) {
+          const n = root.querySelectorAll(arg.css).length;
+          if (n) {
+            if (roots.length >= arg.limit) { cut = true; return; }
+            roots.push({ hosts: here, count: n });
+          }
+        } else {
+          const html = root.innerHTML;
+          size += html.length;
+          if (roots.length >= arg.limit || size > arg.budget) { cut = true; return; }
+          roots.push({ hosts: here, html: html });
+        }
+        walk(root, here);
+      }
+    };
+    walk(document, []);
+    return { roots: roots, cut: cut };
   };
 
   // --- capture.clean_html ---------------------------------------------------------------
@@ -1240,6 +1273,9 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
     if (hits === null) return null;
     return { count: hits.length, forms: hits.length === 1 ? cssSelectors(hits[0], doc, arg.limit) : [] };
   };
+  // cssForms() of xpath in each of htmls, in one round trip.
+  const cssFormsEach = (arg: { htmls: string[]; xpath: string }) =>
+    arg.htmls.map((html) => cssForms({ html: html, xpath: arg.xpath }));
 
   // --- the fingerprint tier in a shadow root (fingerprint.find on its HTML) -----------------
   // A shadow root's elements are scored in its HTML as a document, as the Python package scores
@@ -1270,12 +1306,12 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
 
   return {
     roleOf: roleOf, rawOf: rawOf, recordRaw: recordRaw, staticallyHidden: staticallyHidden, hostsOf: hostsOf,
-    placed: placed, shadowHtml: shadowHtml, shadowInventory: shadowInventory,
+    placed: placed, shadowHtml: shadowHtml, shadowInventory: shadowInventory, shadowRoots: shadowRoots,
     stableClasses: stableClasses, generatedId: generatedId, generated: generated, xpathFor: xpathFor,
     collect: collect, outside: outside, validate: validate, describe: describe, inventory: inventory,
     cleanHtml: cleanHtml, featuresOf: featuresOf, featureLine: featureLine, fingerprintLine: fingerprintLine,
     candidates: candidates, indexOfMatch: indexOfMatch, robustXpaths: robustXpaths, xpathLiteral: xpathLiteral,
-    meaningfulClass: meaningfulClass, cssSelectors: cssSelectors, cssForms: cssForms,
+    meaningfulClass: meaningfulClass, cssSelectors: cssSelectors, cssForms: cssForms, cssFormsEach: cssFormsEach,
     collectHtml: collectHtml, xpathAt: xpathAt, outsideAt: outsideAt,
   };
 }

@@ -200,3 +200,18 @@ export function shadowUnreachable(key: string, hosts: string[]): string {
     + 'closed shadow root. mendwright heals the key only inside that shadow root, never on the page outside it, so it '
     + 'did not heal it. Fix the selector in your code.';
 }
+
+/** Whether key may be followed into the shadow roots of found (see shadow.shadowFound) by
+ * where its element was last found (the Python package's facade.follow_allowed): anywhere
+ * when mendwright has no record of that (no selector of the key matched, and no shadowHosts
+ * are saved); else only into the one shadow root it was last found in, when found is that one
+ * alone. A key last found on the page or in an iframe heals there instead, and one last found
+ * in another shadow root, in that one. */
+export function followAllowed(store: SelectorStore, key: string, found: { hosts: Hosts }[]): boolean {
+  const { frame, hosts, why } = healPlace(store, key);
+  if (frame || why) return false;
+  if (hosts.length) {
+    return found.length === 1 && found[0].hosts.length === hosts.length && found[0].hosts.every((h, i) => h === hosts[i]);
+  }
+  return latestSuccess(store, key) === null;
+}
