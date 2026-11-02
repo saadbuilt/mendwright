@@ -245,10 +245,35 @@ def _nearest_existing(folder):
     return current or None
 
 
+def _remote_store_info(value):
+    """_store_info() for a store URL: the store as mendwright names it, never contacted, and
+    the folder of this machine's journal (see facade.journal_dir)."""
+    from .backends.url import store_url
+    from .facade import READ_ONLY_VAR, _env_flag, journal_dir
+    try:
+        url, error = store_url(value), None
+    except ValueError as exc:
+        url, error = None, str(exc)
+    folder = journal_dir()
+    checked = folder if os.path.isdir(folder) else _nearest_existing(folder)
+    try:
+        read_only = bool(_env_flag(READ_ONLY_VAR))
+    except ValueError:
+        read_only = False
+    return {'path': url, 'source': 'MENDWRIGHT_STORE', 'remote': True, 'exists': None,
+            'folder': folder, 'folder_exists': os.path.isdir(folder),
+            'writable': bool(checked) and os.access(checked, os.W_OK), 'checked': checked,
+            'keys': None, 'journal': os.path.isfile(os.path.join(folder, 'journal.jsonl')),
+            'read_only': read_only, 'error': error}
+
+
 def _store_info():
     """The store path open() would use, and whether its folder can be written. Creates
-    nothing."""
+    nothing. A store URL is not contacted (see _remote_store_info)."""
+    from .backends.url import is_store_url
     env_value = os.environ.get('MENDWRIGHT_STORE')
+    if is_store_url(env_value):
+        return _remote_store_info(env_value)
     raw = env_value or DEFAULT_STORE_PATH
     path = os.path.abspath(os.path.expanduser(raw))
     folder = os.path.dirname(path)
@@ -284,6 +309,8 @@ def _env_info():
         elif name.upper() == 'MENDWRIGHT_RUN_ID':
             from .journal import valid_run_id
             out[name] = value if valid_run_id(value) else repr(value)   # no escape reaches a terminal
+        elif name.upper() == 'MENDWRIGHT_STORE' and _store_url_shown(value) is not None:
+            out[name] = _store_url_shown(value)
         elif name.upper() in _SHOWN_VALUES:
             # A secret pasted into the wrong variable stays hidden. A variable's own value is
             # safe to print, even when its name reads as a secret's (MENDWRIGHT_AUTH_HEADER).
@@ -293,9 +320,28 @@ def _env_info():
     return out
 
 
+def _store_url_shown(value):
+    """MENDWRIGHT_STORE as doctor shows it when it is a store URL: as mendwright names the
+    store, or a note for one it refuses, which can hold a credential. None for a path."""
+    from .backends.url import is_store_url, store_url
+    if not is_store_url(value):
+        return None
+    try:
+        return store_url(value)
+    except ValueError:
+        return '(a store URL mendwright refuses, value hidden)'
+
+
 def _settings_problems():
     from .facade import _env_timeout
     problems = []
+    from .backends.url import is_store_url, store_url
+    store = os.environ.get('MENDWRIGHT_STORE')
+    if is_store_url(store):
+        try:
+            store_url(store)
+        except ValueError as exc:
+            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc))
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
                  'MENDWRIGHT_SUGGEST_GET_BY', 'MENDWRIGHT_STORE_READ_ONLY'):
         problem, _ = _flag_problem(name)
@@ -440,6 +486,11 @@ def _doctor_text(d):
 
     s = d['store']
     lines.append('Store (where mendwright.open() saves heals)')
+    if s.get('remote'):
+        lines.extend(_remote_store_lines(s))
+        _doctor_run_lines(lines, d)
+        _doctor_env_lines(lines, d)
+        return lines
     origin = ('from MENDWRIGHT_STORE' if s['source'] == 'MENDWRIGHT_STORE'
               else 'default, relative to this folder; set MENDWRIGHT_STORE to change it')
     lines.append('  ' + s['path'])
@@ -462,6 +513,32 @@ def _doctor_text(d):
     else:
         lines.append('  ' + str(s['checked'] or s['folder']) + ' is NOT writable, so heals '
                      'stay in memory. Set MENDWRIGHT_STORE to a writable path.')
+    _doctor_run_lines(lines, d)
+    _doctor_env_lines(lines, d)
+    return lines
+
+
+def _remote_store_lines(s):
+    """doctor's lines for a remote store (see _remote_store_info)."""
+    if s['error']:
+        return ['  MENDWRIGHT_STORE is a store URL mendwright refuses: ' + s['error'] + '.']
+    lines = ['  ' + s['path'],
+             '  (a remote store, from MENDWRIGHT_STORE; doctor does not contact it, and '
+             'mendwright report, fix, check, lists and notify do not read it yet)']
+    if s['read_only']:
+        lines.append('  read-only worker (MENDWRIGHT_STORE_READ_ONLY): heals are adopted from '
+                     'it, never written to it')
+    journal = os.path.join(s['folder'], 'journal.jsonl')
+    lines.append('  the journal of this machine: ' + journal + (
+        ' (MENDWRIGHT_JOURNAL_DIR)' if os.environ.get('MENDWRIGHT_JOURNAL_DIR')
+        else ' (set MENDWRIGHT_JOURNAL_DIR to change it)'))
+    if not s['writable']:
+        lines.append('  ' + str(s['checked'] or s['folder']) + ' is NOT writable, so the '
+                     'journal is not written. Set MENDWRIGHT_JOURNAL_DIR to a writable folder.')
+    return lines
+
+
+def _doctor_run_lines(lines, d):
     run = d.get('run') or {}
     if run.get('id'):
         lines.append('  run id for the journal: ' + run['id'] + (
@@ -472,6 +549,8 @@ def _doctor_text(d):
                      'events)')
     lines.append('')
 
+
+def _doctor_env_lines(lines, d):
     lines.append('Environment')
     if d['env']:
         for name, value in d['env'].items():
@@ -483,7 +562,6 @@ def _doctor_text(d):
         lines.append('Problems')
         for problem in d['problems']:
             lines.append(_wrap(problem))
-    return lines
 
 
 def cmd_doctor(args):
@@ -844,9 +922,60 @@ def _report_md(r):
     return lines
 
 
+def remote_refusal(command, value):
+    """The one line `mendwright <command>` prints for value, the store it was given, when that is
+    a store URL (see mendwright.remote): the commands that read a store file do not read a remote
+    store yet, and how to download one and run the command on the copy. None for a local path.
+    The line never quotes a URL mendwright refuses, which can hold a credential."""
+    from .backends.url import is_store_url, store_url
+    if not is_store_url(value):
+        return None
+    head = 'mendwright ' + command + ': '
+    try:
+        url = store_url(value)
+    except ValueError as exc:
+        return head + str(exc) + '.'
+    if url == 'memory:':
+        return (head + 'memory: is a store in the memory of one process, which this command '
+                'cannot read. Pass --store with the path of a store file.')
+    copy = _copy_path()
+    if url.startswith('s3://'):
+        how = 'aws s3 cp ' + url + 'overrides.json ' + copy
+    else:
+        how = ('curl -fsS -o ' + copy + ' -H "Authorization: Bearer $MENDWRIGHT_STORE_TOKEN" '
+               + url + 'overrides.json')
+    if command in ('lists accept', 'lists reject'):
+        then = ('mendwright lists --store ' + copy + ' to see its list heals; accept or reject '
+                'them where the store is written, not on a copy')
+    else:
+        then = 'mendwright ' + command + ' --store ' + copy
+    return (head + "remote stores aren't supported by this command yet (" + url + '). Download '
+            'the store next to this machine\'s journal and run the command on the copy: ' + how
+            + ', then ' + then + '.')
+
+
+def _copy_path():
+    """Where remote_refusal() suggests a copy of a remote store: overrides.json in the folder
+    of this machine's journal of a remote store (see facade.journal_dir), relative to here when
+    it is under here."""
+    from .facade import journal_dir
+    folder = journal_dir()
+    try:
+        relative = os.path.relpath(folder)
+    except ValueError:      # another drive on Windows
+        relative = folder
+    if not relative.startswith('..'):
+        folder = relative
+    return os.path.join(folder, 'overrides.json').replace('\\', '/')
+
+
 def _find_store(command, args):
     """The store path for `mendwright <command>` (--store, MENDWRIGHT_STORE or the default),
-    or None after printing why there is none."""
+    or None after printing why there is none (for a store URL, see remote_refusal)."""
+    refusal = remote_refusal(command, args.store or os.environ.get('MENDWRIGHT_STORE'))
+    if refusal is not None:
+        _err(refusal)
+        return None
     path = (os.path.abspath(os.path.expanduser(args.store)) if args.store
             else default_store_path())
     if os.path.isfile(path):
@@ -1084,6 +1213,9 @@ def cmd_notify(args, *, http=None, sleep=None, clock=None):
             _out('::warning title=mendwright notify::' + _escape_command(text))
         return 1 if args.fail_on_error else 0
 
+    refusal = remote_refusal('notify', args.store or env.get('MENDWRIGHT_STORE'))
+    if refusal is not None:
+        return refuse(refusal)
     store = (os.path.abspath(os.path.expanduser(args.store)) if args.store
              else default_store_path())
     journal = os.path.join(os.path.dirname(store), 'journal.jsonl')
@@ -1713,7 +1845,8 @@ def _lists_edit(args, path, action):
 def cmd_lists(args):
     if getattr(args, 'action_store', None):
         args.store = args.action_store          # the action's --store wins
-    path = _find_store('lists', args)
+    action = getattr(args, 'lists_command', None)
+    path = _find_store('lists ' + action if action in ('accept', 'reject') else 'lists', args)
     if path is None:
         return 1
     action = getattr(args, 'lists_command', None)
