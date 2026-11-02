@@ -185,6 +185,52 @@ def test_a_heal_saved_while_the_model_answers_is_adopted_not_saved_twice(tmp_pat
     assert sorted(c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']) == sorted([CODE, HEALED])
 
 
+def test_a_destructive_flag_another_worker_saves_during_a_heal_stops_it(tmp_path, make_page,
+                                                                       stub_provider):
+    # B read the key's meta when its heal started. Another worker marks the key destructive
+    # before B's heal looks at the file again: B asks no model and saves nothing.
+    _warm(make_page, tmp_path, stub_provider)
+    _pa, a = _open(make_page, tmp_path, stub_provider(None), html=V1)
+    marked = []
+
+    def guard():
+        if not marked:
+            marked.append(True)
+            a.locator(KEY, CODE, role='checkbox', destructive=True)
+        return True
+    provider = stub_provider(HEALED)
+    pb, b = _open(make_page, tmp_path, provider, guard=guard)
+    with pytest.raises(AttentionRequired, match='marked as a destructive control'):
+        b.locator(KEY, CODE).check()
+    assert provider.bundles == [] and pb.actions == [] and b.heals == []
+    assert {c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']} == {CODE}
+    assert [e['code'] for e in _journal(tmp_path, 'heal.declined')] == ['destructive']
+
+
+def test_a_destructive_flag_saved_while_the_model_answers_stops_the_heal(tmp_path, make_page,
+                                                                         stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    _pa, a = _open(make_page, tmp_path, stub_provider(None), html=V1)
+
+    class Marking:
+        """A model that answers after another worker marked the key destructive."""
+        bundles = []
+
+        def propose(self, bundle):
+            Marking.bundles.append(bundle)
+            a.locator(KEY, CODE, role='checkbox', destructive=True)
+            return {'xpath': HEALED, 'fallbacks': [], 'reasoning': 'slow'}
+
+        def report_outcome(self, key, xpath, success):
+            pass
+    pb, b = _open(make_page, tmp_path, Marking())
+    with pytest.raises(AttentionRequired, match='marked as a destructive control'):
+        b.locator(KEY, CODE).check()
+    assert len(Marking.bundles) == 1 and pb.actions == [] and b.heals == []
+    assert {c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']} == {CODE}
+    assert not _journal(tmp_path, 'heal.applied')
+
+
 def _fingerprint():
     from mendwright.fingerprint import of_element
     import lxml.html

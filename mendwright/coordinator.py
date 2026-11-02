@@ -501,6 +501,19 @@ class HealCoordinator:
                          exc_info=True)
             return None
 
+    def _marked_now(self, selector_key):
+        """A decline when the store marks the key destructive now, else None: a flag another
+        worker saved after this heal read the key's meta, which the refresh of _look_again
+        took in. Such a key is never healed, so neither the fingerprint tier nor the model
+        is asked."""
+        try:
+            destructive = bool(self.store.meta(selector_key).get('destructive'))
+        except Exception:
+            return None
+        if not destructive:
+            return None
+        return self._decline(selector_key, _destructive_message(selector_key), code='destructive')
+
     def _emit(self, level, message):
         """Send one diagnostic line to log= when it was given, else to the logger."""
         sink = self.log
@@ -717,6 +730,9 @@ class HealCoordinator:
         adopted = self._look_again(selector_key, broken_candidates)
         if adopted:
             return adopted
+        marked = self._marked_now(selector_key)
+        if marked is not None:
+            return marked
         # Or the model already said, about this page, that nothing here fits.
         reused = self._reused_decline(selector_key, broken_candidates, context)
         if reused is not None:
@@ -742,6 +758,9 @@ class HealCoordinator:
             adopted = self._look_again(selector_key, broken_candidates)
             if adopted:
                 return adopted
+            marked = self._marked_now(selector_key)
+            if marked is not None:
+                return marked
             if unavailable:
                 # note says why the fingerprint did not heal; the provider's reason says
                 # what to set so a model can try.
@@ -831,6 +850,9 @@ class HealCoordinator:
             adopted = self._look_again(selector_key, broken_candidates)
             if adopted:
                 return adopted
+            marked = self._marked_now(selector_key)
+            if marked is not None:
+                return marked
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath,
@@ -904,6 +926,9 @@ class HealCoordinator:
         adopted = self._look_again(selector_key, broken_candidates)
         if adopted:
             return adopted
+        marked = self._marked_now(selector_key)
+        if marked is not None:
+            return marked
         applied, note, _requested = self._fingerprint_tier(
             selector_key, meta, broken_candidates, self.html_provider(), self.clock())
         if applied is not None:
@@ -944,6 +969,9 @@ class HealCoordinator:
         adopted = self._look_again(selector_key, broken_candidates)
         if adopted:
             return adopted, '', True
+        marked = self._marked_now(selector_key)
+        if marked is not None:
+            return marked, '', True
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
                                 frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts,
                                 twin=self._wants_twin(selector_key))
