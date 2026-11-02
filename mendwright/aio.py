@@ -1582,6 +1582,7 @@ class AsyncHealer:
                 matches.append((selector, frames))
         if not matches:
             return _NOT_FOLLOWED
+        await _in_thread(core._store_stop, key, exc)    # it may read the store again
         selector, frames, frame, alt = core._pick_frame(key, exc, matches, opener)
         core._frame_guard(key, exc, await _url(self._driver))
         # In a worker thread: the guard and the live check reach the page through the bridge.
@@ -1619,6 +1620,7 @@ class AsyncHealer:
                     return _NOT_FOLLOWED
             except Exception:
                 return _NOT_FOLLOWED
+        await _in_thread(core._store_stop, key, exc)    # it may read the store again
         selector, found, root = core._pick_shadow(key, exc, matches)
         core._frame_guard(key, exc, await _url(self._driver))
         why = await _in_thread(core._shadow_follow, key, selector, root, self.coordinator.driver)

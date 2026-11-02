@@ -3229,6 +3229,18 @@ class Healer:
                 refused = (selector, frames, alt)
         self._frame_stop(key, exc, refused[0], refused[1], opener, refused[2])
 
+    def _store_stop(self, key, exc):
+        """Raise as try_heal() declines (code 'store') when the store could not be read (see
+        HealCoordinator._store_refusal): a follow into an iframe or a shadow root would
+        decide with the empty copy of it, not knowing the quarantines and destructive flags
+        saved there. It may read the store again, so the async healer calls it in a worker
+        thread."""
+        __tracebackhide__ = True
+        unread = self.coordinator._store_refusal(key)
+        if unread:
+            self.coordinator._decline(key, unread, code='store')
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + unread) from exc
+
     def _frame_guard(self, key, exc, url):
         """Raise like the page guard when key was never found on this page."""
         __tracebackhide__ = True
@@ -3259,12 +3271,13 @@ class Healer:
         asked: the selector is the key's own, and only the place changed. It counts as a
         heal with source 'frame' (strict mode fails on it, the canary checks it).
 
-        Not followed, with AttentionRequired saying why: dry run, MENDWRIGHT_DISABLE=1 or a
-        guard that blocks heals, a key marked destructive, a match in several iframes or
-        several elements, an iframe inside another iframe, an iframe nothing tells apart
-        from the others, a Playwright engine selector, a lookup quarantined before, a page
-        the key was never found on (the page guard), or an element that fails the live
-        check. Returns _NOT_FOLLOWED when no selector of the key matches in an iframe."""
+        Not followed, with AttentionRequired saying why: a store that could not be read (see
+        _store_stop), dry run, MENDWRIGHT_DISABLE=1 or a guard that blocks heals, a key
+        marked destructive, a match in several iframes or several elements, an iframe inside
+        another iframe, an iframe nothing tells apart from the others, a Playwright engine
+        selector, a lookup quarantined before, a page the key was never found on (the page
+        guard), or an element that fails the live check. Returns _NOT_FOLLOWED when no
+        selector of the key matches in an iframe."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
@@ -3279,6 +3292,7 @@ class Healer:
                 matches.append((selector, frames))
         if not matches:
             return _NOT_FOLLOWED
+        self._store_stop(key, exc)
         selector, frames, frame, alt = self._pick_frame(key, exc, matches, 'mendwright.open')
         self._frame_guard(key, exc, self._url())
         why = self._frame_follow(key, selector, frame, alt, self._driver)
@@ -3483,11 +3497,11 @@ class Healer:
         followed. A key one of whose selectors matches something on the page (several
         elements, or a hidden one) is not followed, and neither is a key last found on the
         page, in an iframe or in another shadow root (follow_allowed): it heals where it was
-        last found, as any key does. Not followed, with AttentionRequired saying why: the
-        refusals of _shadow_plan, a page the key was never found on (the page guard), a
-        guard that blocks heals, or an element that fails the live check. Returns
-        _NOT_FOLLOWED when no selector of the key may be followed into a shadow root (see
-        _shadow_matches)."""
+        last found, as any key does. Not followed, with AttentionRequired saying why: a store
+        that could not be read (see _store_stop), the refusals of _shadow_plan, a page the
+        key was never found on (the page guard), a guard that blocks heals, or an element
+        that fails the live check. Returns _NOT_FOLLOWED when no selector of the key may be
+        followed into a shadow root (see _shadow_matches)."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'shadow_matches', None)
         if not callable(finder):
@@ -3495,6 +3509,7 @@ class Healer:
         matches = self._shadow_matches(key, finder)
         if not matches:
             return _NOT_FOLLOWED
+        self._store_stop(key, exc)
         selector, found, root = self._pick_shadow(key, exc, matches)
         self._frame_guard(key, exc, self._url())
         why = self._shadow_follow(key, selector, root, self._driver)

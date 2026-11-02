@@ -980,6 +980,14 @@ class _Preview:
         _decide(k, 'refused', None, miss + '. A run would not heal it: ' + reason,
                 self.core.store, dry_run)
 
+    def _unread(self, k, miss, dry_run):
+        """Healer._store_stop(), without saving: True when it refused the key's follow because
+        the store could not be read (the snapshot keeps the reason, and never reads again)."""
+        unread = self.shadow._store_refusal(k.key)
+        if unread:
+            self._refused(k, miss, unread, dry_run)
+        return bool(unread)
+
     def _frame(self, k, miss, dry_run):
         """Healer._follow_into_frame(), without saving: True when it decided the key."""
         core, shadow, finder = self.core, self.shadow, self.frames.frame_matches
@@ -997,6 +1005,8 @@ class _Preview:
                 matches.append((selector, found))
         if not matches:
             return False
+        if self._unread(k, miss, dry_run):
+            return True
         plan, refused = None, None
         for selector, found in matches:
             frame, alt = core._frame_plan(k.key, selector, found, coordinator=shadow)
@@ -1044,6 +1054,8 @@ class _Preview:
         matches = core._shadow_matches(k.key, finder, self.driver)
         if not matches:
             return False
+        if self._unread(k, miss, dry_run):
+            return True
         plan, refused = None, None
         for selector, found, cut in matches:
             root, why = core._shadow_plan(k.key, selector, found, cut, coordinator=shadow)

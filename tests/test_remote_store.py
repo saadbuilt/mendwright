@@ -280,6 +280,114 @@ def test_a_store_that_cannot_be_read_refuses_heals_and_code_selectors_still_work
     assert backend.writes() == []                       # never written over
 
 
+def _unread(setup, seed_path=None):
+    """(store, backend): a store that could not be read when it opened, over a store whose
+    overrides.json setup(a store that could) wrote. Its copy holds the seed alone."""
+    inner = MemoryBackend()
+    writer = load_store(None, inner)
+    setup(writer)
+    assert writer.flush()
+    backend = Faulty(inner)
+    backend.fail['get'] = Unavailable('memory: could not reach the store')
+    store = load_store(seed_path, backend)
+    assert store.unread
+    return store, backend
+
+
+def _read_again(store, backend):
+    """The store answers again, and its wait after the failure is over."""
+    backend.fail.pop('get')
+    _health(store.remote_place, 'read').retry_at = 0.0
+
+
+def _terms_destructive(store):
+    store.set_meta('terms', role='checkbox', destructive=True)
+
+
+def _terms_quarantined_in_the_iframe(store):
+    from test_frame_follow import FRAME
+    store.set_meta('terms', role='checkbox')
+    store.add_candidate('terms', 'css=#inner-terms', frame_xpath=FRAME)
+    store.quarantine('terms', 'css=#inner-terms')
+
+
+@pytest.mark.parametrize('setup, saved_says', [
+    (_terms_destructive, 'marked as a destructive control'),
+    (_terms_quarantined_in_the_iframe, 'that lookup is quarantined'),
+], ids=['destructive', 'quarantined-lookup'])
+def test_a_store_that_cannot_be_read_follows_no_key_into_an_iframe(setup, saved_says,
+                                                                   stub_provider, tmp_path):
+    # The follow would decide with the empty copy: a key the store marks destructive, or a
+    # lookup in the iframe it quarantined, would be followed and acted on.
+    from test_frame_follow import INNER, TwoDocs
+    store, backend = _unread(setup)
+    page = TwoDocs(INNER)
+    heal = _open(page, store, tmp_path, stub_provider(None))
+    with pytest.raises(AttentionRequired) as info:
+        heal.locator('terms', '#inner-terms', role='checkbox', poll_ms=0).check()
+    assert 'could not read the store ' + store.remote_place in str(info.value)
+    assert page.actions == [] and heal.heals == [] and heal.pending() == {}
+    [declined] = [e for e in _journal(tmp_path) if e['event'] == 'heal.declined']
+    assert declined['code'] == 'store'
+    # Once the store is read, what it holds decides.
+    _read_again(store, backend)
+    with pytest.raises(AttentionRequired, match=saved_says):
+        _open(page, store, tmp_path, stub_provider(None)).locator(
+            'terms', '#inner-terms', role='checkbox', poll_ms=0)
+    assert page.actions == [] and backend.writes() == []
+
+
+def test_a_store_that_cannot_be_read_follows_no_key_into_a_shadow_root(make_shadow_driver,
+                                                                       stub_provider, tmp_path):
+    from test_shadow_heal import V1 as SHADOW
+    store, backend = _unread(lambda s: s.set_meta('save', role='button', destructive=True))
+    driver = make_shadow_driver(SHADOW)
+    heal = _open(driver, store, tmp_path, stub_provider(None))
+    with pytest.raises(AttentionRequired, match='could not read the store'):
+        heal.locator('save', '#save', role='button', poll_ms=0).click()
+    assert driver.actions == [] and heal.heals == []
+    _read_again(store, backend)
+    with pytest.raises(AttentionRequired, match='marked as a destructive control'):
+        _open(driver, store, tmp_path, stub_provider(None)).locator('save', '#save',
+                                                                    role='button', poll_ms=0)
+    assert driver.actions == []
+
+
+def test_the_async_healer_follows_no_key_while_the_store_cannot_be_read(make_shadow_page,
+                                                                        tmp_path):
+    import asyncio
+
+    import mendwright.aio
+    from test_aio import AsyncDocs, _two_docs
+    from test_shadow_heal import V1 as SHADOW, AsyncShadowPage
+    frames, _ = _unread(_terms_destructive)
+    shadows, _ = _unread(lambda s: s.set_meta('save', role='button', destructive=True))
+    page = make_shadow_page(SHADOW)
+
+    async def main():
+        framed = await mendwright.aio.open(AsyncDocs(_two_docs()), store=frames, timeout_ms=0)
+        with pytest.raises(AttentionRequired, match='could not read the store'):
+            await framed.locator('terms', '#inner-terms', role='checkbox', poll_ms=0)
+        shadowed = await mendwright.aio.open(AsyncShadowPage(page), store=shadows, timeout_ms=0)
+        with pytest.raises(AttentionRequired, match='could not read the store'):
+            await shadowed.locator('save', "//button[@id='save']", role='button', poll_ms=0)
+        return framed.heals + shadowed.heals
+
+    assert asyncio.run(main()) == [] and page.actions == []
+
+
+def test_drift_says_a_store_that_cannot_be_read_follows_no_key(stub_provider, tmp_path):
+    from test_frame_follow import INNER, TwoDocs
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {'terms': {
+        'expectedRole': 'checkbox', 'candidates': [{'xpath': '#inner-terms', 'source': 'seed'}]}}}),
+        encoding='utf-8')
+    store, _ = _unread(_terms_destructive, str(seed))
+    heal = _open(TwoDocs(INNER), store, tmp_path, stub_provider(None), heal_across_pages=True)
+    [k] = heal.drift(['terms'], timeout_ms=0).keys
+    assert k.verdict == 'refused' and 'could not read the store ' + store.remote_place in k.reason
+
+
 def test_a_body_that_is_not_a_selector_file_is_not_an_empty_store(make_page, stub_provider,
                                                                    tmp_path):
     backend = MemoryBackend()
