@@ -302,7 +302,7 @@ def test_a_store_read_later_takes_in_all_it_holds_and_heals_again(make_page, stu
     backend.fail['get'] = [Unavailable('memory: not now')]
     store = load_store(None, backend)
     assert store.unread
-    _health(store.remote_place).retry_at = 0.0      # the wait after the failure is over
+    _health(store.remote_place, 'read').retry_at = 0.0     # its wait after the failure is over
     provider = stub_provider(HEALED)
     page = make_page(V2, url=URL)
     _open(page, store, tmp_path, provider).locator(KEY, CODE).check()

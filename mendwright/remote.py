@@ -33,6 +33,7 @@ every heal is checked live on the page that uses it, and the journal stays on th
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
 import math
@@ -76,18 +77,24 @@ def place_of(backend):
 # --- an outage of a store, for every store of the process on it ----------------------------------
 
 class _Health:
-    """Whether a remote store answered lately. After a failure, every store of this process on
-    it waits FIRST seconds before it asks again, then twice as long after each failure that
-    follows, at most MOST seconds, with a little jitter; a call that succeeds ends the wait."""
+    """Whether a remote store answered lately, for one kind of call: reads (get) or writes (put,
+    delete), apart, so a store that refuses writes (a read-only role) is still read. After a
+    failure, every store of this process on it waits FIRST seconds before it asks again, then
+    twice as long after each failure that follows, at most MOST seconds, with a little jitter;
+    a call that succeeds ends the wait. The start and the end of an outage wait in news until a
+    store of the process takes them for its journal (take), so each is said once, whichever call
+    met it: a store's own, or one of the key records'."""
 
     FIRST = 1.0
     MOST = 60.0
 
-    def __init__(self):
+    def __init__(self, kind):
+        self.kind = kind
         self._lock = threading.Lock()
         self.failures = 0
         self.retry_at = 0.0
         self.since = None
+        self.news = []
         self.clock = time.monotonic
 
     def wait(self):
@@ -95,93 +102,90 @@ class _Health:
         with self._lock:
             return max(0.0, self.retry_at - self.clock()) if self.failures else 0.0
 
-    def failed(self):
-        """Note a failure: True when it starts an outage (the store answered before)."""
+    def failed(self, exc):
+        """Note a failure, and the start of an outage when the store answered before."""
         with self._lock:
             self.failures += 1
             pause = min(self.MOST, self.FIRST * 2 ** min(self.failures - 1, 16))
-            self.retry_at = self.clock() + pause * random.uniform(0.8, 1.2)
+            pause *= random.uniform(0.8, 1.2)
+            self.retry_at = self.clock() + pause
             if self.failures == 1:
                 self.since = self.clock()
-                return True
-            return False
+                self.news.append(('down', self.kind, exc, pause))
 
     def answered(self):
-        """Note a success: the seconds the outage it ends lasted, or None when there was none."""
+        """Note a success, and the end of an outage when there was one."""
         with self._lock:
             if not self.failures:
-                return None
+                return
             lasted = self.clock() - (self.since if self.since is not None else self.clock())
             self.failures, self.retry_at, self.since = 0, 0.0, None
-            return lasted
+            self.news.append(('up', self.kind, None, lasted))
+
+    def take(self):
+        """The starts and ends of outages nobody said yet, oldest first; they are cleared."""
+        with self._lock:
+            news, self.news = self.news, []
+            return news
 
 
 _HEALTH = {}
 _HEALTH_LOCK = threading.Lock()
 
 
-def _health(place):
+def _health(place, kind):
     with _HEALTH_LOCK:
-        found = _HEALTH.get(place)
+        found = _HEALTH.get((place, kind))
         if found is None:
-            found = _HEALTH[place] = _Health()
+            found = _HEALTH[(place, kind)] = _Health(kind)
         return found
 
 
 class _Guarded:
-    """A StoreBackend that asks the store only when its _Health allows: while the store waits
-    after a failure, a call raises Unavailable at once, with no request. A call that fails with
-    any BackendError but Conflict starts or extends the wait; any answer ends it. news() says
-    whether this thread's last call started or ended an outage, for the journal."""
+    """A StoreBackend that asks the store only when its _Health allows: while reads (or
+    writes) wait after a failure, a read (or a write) raises Unavailable at once, with no
+    request. A call that fails with any BackendError but Conflict starts or extends the wait;
+    any answer ends it. news() gives the outages nobody said yet, for the journal."""
 
     def __init__(self, backend, place):
         self.backend = backend
         self.place = place
-        self.health = _health(place)
-        self._news = threading.local()
+        self.reads = _health(place, 'read')
+        self.writes = _health(place, 'write')
 
     def describe(self):
         return self.backend.describe()
 
     def get(self, name, *, if_none_match=None):
-        return self._call(lambda: self.backend.get(name, if_none_match=if_none_match))
+        return self._call(self.reads, lambda: self.backend.get(name, if_none_match=if_none_match))
 
     def put(self, name, body, *, if_match=None, create_only=False):
-        return self._call(lambda: self.backend.put(name, body, if_match=if_match,
-                                                   create_only=create_only))
+        return self._call(self.writes, lambda: self.backend.put(name, body, if_match=if_match,
+                                                                create_only=create_only))
 
     def delete(self, name, *, if_match=None):
-        return self._call(lambda: self.backend.delete(name, if_match=if_match))
+        return self._call(self.writes, lambda: self.backend.delete(name, if_match=if_match))
 
-    def _call(self, action):
-        self._news.value = None
-        wait = self.health.wait()
+    def _call(self, health, action):
+        wait = health.wait()
         if wait:
-            raise Unavailable(self.place + ': the store did not answer a moment ago, so '
-                              'mendwright waits %d s before it asks again' % math.ceil(wait))
+            raise Unavailable(self.place + ': the store failed a moment ago, so mendwright waits '
+                              '%d s before it asks it again' % math.ceil(wait))
         try:
             result = action()
         except Conflict:
-            self._answered()
+            health.answered()
             raise
         except BackendError as exc:
-            if self.health.failed():
-                self._news.value = ('down', exc)
+            health.failed(exc)
             raise
-        self._answered()
+        health.answered()
         return result
 
-    def _answered(self):
-        lasted = self.health.answered()
-        if lasted is not None:
-            self._news.value = ('up', lasted)
-
     def news(self):
-        """('down', error) when this thread's last call started an outage of the store, ('up',
-        seconds) when it ended one, else None; it is cleared."""
-        found = getattr(self._news, 'value', None)
-        self._news.value = None
-        return found
+        """('down', kind, error, seconds to the next try) and ('up', kind, None, seconds it
+        lasted) of the outages of this store nobody said yet; they are cleared."""
+        return self.reads.take() + self.writes.take()
 
 
 # --- overrides.json as this process last read it ----------------------------------------------
@@ -199,19 +203,20 @@ class _Doc:
         self.data = None
         self.seen = None
         self.error = None
-        self.read_at = None
+        self.read_at = None         # clock() when the last read started, for max_age
+        self.read_turn = None       # its turn (_TURNS): which calls asked before it started
 
     def latest(self, backend, place, known, max_age, clock, destructive_keys):
         """(data, version), as SelectorStore._latest() gives them. A read that started after
         this call did will do, and so will one that started less than max_age seconds before it;
         else this call asks the store, with if_none_match, so an unchanged store costs a 304.
         Raises the store's error, or StoreReadError for a body that is not a selector file."""
-        asked = clock()
+        asked, asked_at = next(_TURNS), clock()
         with self.lock:
-            fresh = self.read_at is not None and (
-                self.read_at >= asked or (max_age and asked - self.read_at < max_age))
+            fresh = self.read_turn is not None and (
+                self.read_turn > asked or (max_age and asked_at - self.read_at < max_age))
             if not fresh:
-                started = clock()
+                turn, started = next(_TURNS), clock()
                 read = backend.get(OVERRIDES, if_none_match=self.seen)
                 if not read.not_modified:
                     self.seen, self.error = read.version, None
@@ -225,7 +230,7 @@ class _Doc:
                             self.error = exc
                         else:
                             self.version, self.data = read.version, (data if native else None)
-                self.read_at = started
+                self.read_turn, self.read_at = turn, started
             if self.error is not None:
                 raise StoreReadError(str(self.error))
             if self.version is None:
@@ -244,6 +249,9 @@ class _Doc:
 
 _DOCS = {}
 _DOCS_LOCK = threading.Lock()
+# Increasing numbers that order the calls of _Doc.latest() and the reads they make: a read that
+# started after a call asked has a higher one (a clock can give two calls the same time).
+_TURNS = itertools.count()
 
 
 def _doc(place):
@@ -334,24 +342,17 @@ class RemoteSelectorStore(SelectorStore):
         return _writes('remote:' + self.remote_place)
 
     def _latest(self, known, max_age=0.0):
-        self._news(None, None)
         try:
-            found = _doc(self.remote_place).latest(self.backend, self.remote_place, known,
-                                                   max_age, self._clock, self._destructive_keys)
-        except BackendError as exc:
-            self._news(exc, 'read')
-            raise
-        self._news(None, 'read')
-        return found
+            return _doc(self.remote_place).latest(self.backend, self.remote_place, known,
+                                                  max_age, self._clock, self._destructive_keys)
+        finally:
+            self._news()
 
     def _disk(self):
-        self._news(None, None)
         try:
             read = self.backend.get(OVERRIDES)
-        except BackendError as exc:
-            self._news(exc, 'read')
-            raise
-        self._news(None, 'read')
+        finally:
+            self._news()
         return _parse(None if read.body is None else _text(read.body, self.remote_place),
                       self.remote_place + OVERRIDES, self._destructive_keys)
 
@@ -430,15 +431,16 @@ class RemoteSelectorStore(SelectorStore):
         docstring). Raises when the store cannot be read or written, and Conflict when other
         writers won CAS_TRIES times."""
         place, doc = self.remote_place, _doc(self.remote_place)
-        self._news(None, None)
+        try:
+            self._cas(place, doc)
+        finally:
+            self._news()
+
+    def _cas(self, place, doc):
         for attempt in range(self.CAS_TRIES):
             if attempt:
                 self._sleep(random.uniform(0, self.CAS_PAUSE))
-            try:
-                read = self.backend.get(OVERRIDES)
-            except BackendError as exc:
-                self._news(exc, 'write')
-                raise
+            read = self.backend.get(OVERRIDES)
             # A body that is not a selector file raises here: it is never replaced.
             disk, native = _parse(None if read.body is None else _text(read.body, place),
                                   place + OVERRIDES, self._destructive_keys)
@@ -449,7 +451,6 @@ class RemoteSelectorStore(SelectorStore):
                     self._remember_base(payload)
                     self._version, self._key_versions = read.version, {}
                     self._unsaved = False
-                    self._news(None, 'write')
                     return
                 body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
                 # The merge base moves to the version just merged: should another writer win,
@@ -463,16 +464,12 @@ class RemoteSelectorStore(SelectorStore):
                     version = self.backend.put(OVERRIDES, body, if_match=read.version)
             except Conflict:
                 continue
-            except BackendError as exc:
-                self._news(exc, 'write')
-                raise
             with self._mutex:
                 self._remember_base(payload)
                 self._version, self._key_versions = version, {}
                 self._unsaved = False
             doc.wrote(read.version, version,
                       _parse(body.decode('utf-8'), place + OVERRIDES, self._destructive_keys)[0])
-            self._news(None, 'write')
             return
         raise Conflict(place + OVERRIDES + ' kept changing under ' + str(self.CAS_TRIES)
                        + ' writes; this store keeps its change in memory and writes it with '
@@ -480,28 +477,25 @@ class RemoteSelectorStore(SelectorStore):
 
     # --- failures -----------------------------------------------------------------------------
 
-    def _news(self, exc, op):
-        """Journal and log the start or the end of an outage of the store, when this thread's
-        last call to it started or ended one (once per process, see _Guarded.news). op None
-        only clears what an earlier call left."""
-        news = self.backend.news() if isinstance(self.backend, _Guarded) else None
-        if news is None or op is None:
-            return
-        kind, detail = news
-        if kind == 'down':
-            wait = self.backend.health.wait()
-            logger.warning(
-                'mendwright: the store %s did not answer (%s). mendwright keeps working: reads use '
-                'the copy it has, and changes wait in memory and are written once the store '
-                'answers. It asks again in %d s.', self.remote_place, _said(detail),
-                math.ceil(wait))
-            _journal(self.journal, 'store.unavailable', store=self.remote_place, op=op,
-                     error=type(detail).__name__, reason=str(detail), retry_in=math.ceil(wait))
-        else:
-            logger.warning('mendwright: the store %s answers again, after %d s.',
-                           self.remote_place, round(detail))
-            _journal(self.journal, 'store.available', store=self.remote_place, op=op,
-                     after=round(detail))
+    def _news(self):
+        """Log and journal the starts and ends of outages of the store that no store of the
+        process said yet (see _Health), once each."""
+        news = self.backend.news() if isinstance(self.backend, _Guarded) else ()
+        for kind, op, detail, seconds in news:
+            if kind == 'down':
+                logger.warning(
+                    'mendwright: could not %s the store %s (%s). mendwright keeps working: reads '
+                    'use the copy it has, and changes wait in memory and are written once the '
+                    'store takes them. It asks again in %d s.', op, self.remote_place,
+                    _said(detail), math.ceil(seconds))
+                _journal(self.journal, 'store.unavailable', store=self.remote_place, op=op,
+                         error=type(detail).__name__, reason=str(detail),
+                         retry_in=math.ceil(seconds))
+            else:
+                logger.info('mendwright: the store %s answers %ss again, after %d s.',
+                            self.remote_place, op, round(seconds))
+                _journal(self.journal, 'store.available', store=self.remote_place, op=op,
+                         after=round(seconds))
 
     def _persist_failed(self, exc):
         detail = _said(exc)
@@ -593,6 +587,7 @@ def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_on
         except (BackendError, StoreReadError) as exc:
             override, native, version, error = _empty(), False, None, exc
     if error is not None:
+        guarded.news()      # mendwright.open() says it, as store.unavailable with op open
         unread = _unread_reason(place, error)
     store = RemoteSelectorStore(merge(seed, override), guarded, place, destructive_keys,
                                 seed=seed, override=override if native else None,
