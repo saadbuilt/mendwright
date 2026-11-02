@@ -22,7 +22,7 @@ Provider: ScriptedProvider, a canned reply (--scripted): no model call, nothing 
 WARNING mendwright: handled interruption 'cookies' before 'accept_terms'
 WARNING mendwright: healed 'accept_terms': #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (ScriptedProvider, 0.0s)
 WARNING mendwright: did not heal 'pay': 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
-Done: 1 repaired (checked on the live page and confirmed by the retried step), 1 refused, 1 interruption handled, 1 model call.
+Done: 1 repaired (checked on the live page and confirmed by the retried step), 1 refused, 1 interruption handled, 1 scripted reply.
 ```
 
 With your own provider, the second line names it and its model, and the heal line ends with its name and how long the call took. The WARNING lines are the ones mendwright logs in any run (see [Logging](../../docs/guide.md#logging)).

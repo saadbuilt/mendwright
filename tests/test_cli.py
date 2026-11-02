@@ -60,8 +60,9 @@ DEMO_LINES = [
     "WARNING mendwright: healed 'accept_terms': #accept-terms -> " + HEALED_XPATH
     + " (ScriptedProvider, Ns)",
     PAY_REFUSED,
+    # The scripted reply is no model call, as the line above says.
     "Done: 1 repaired (checked on the live page and confirmed by the retried step), "
-    "1 refused, 1 interruption handled, 1 model call.",
+    "1 refused, 1 interruption handled, 1 scripted reply.",
 ]
 
 NO_PROVIDER_ERR = [
@@ -180,8 +181,10 @@ LIVE_PROVIDER_LINE = ("Provider: LiveStub, model stub-model, from your environme
 
 
 def _live_lines():
+    # A live provider's propose() is a model call.
     return ([DEMO_LINES[0], LIVE_PROVIDER_LINE] + DEMO_LINES[2:3]
-            + [DEMO_LINES[3].replace("(ScriptedProvider, ", "(LiveStub, ")] + DEMO_LINES[4:])
+            + [DEMO_LINES[3].replace("(ScriptedProvider, ", "(LiveStub, ")] + DEMO_LINES[4:5]
+            + [DEMO_LINES[5].replace("1 scripted reply.", "1 model call.")])
 
 
 class Terminal:

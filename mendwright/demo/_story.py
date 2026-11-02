@@ -117,7 +117,8 @@ class StoryResult:
     pay_refused: bool = False       # the pay heal was refused: the key is marked destructive
     pay_model_calls: int = 0        # model calls spent on pay (must stay 0)
     banner_handled: bool = False    # the v2 cookie banner was handled as an interruption
-    model_calls: int = 0
+    model_calls: int = 0            # the provider's propose() calls
+    scripted: bool = False          # the provider was ScriptedProvider: its calls ask no model
     store_path: str = ''
     problems: list = field(default_factory=list)
 
@@ -227,6 +228,7 @@ def story(page, store_path, *, timeout_ms=0, poll_ms=0, provider=None):
     result = StoryResult(store_path=store_path)
     if provider is None:
         provider = ScriptedProvider({TERMS_KEY: SCRIPTED_REPLY})
+    result.scripted = isinstance(provider, ScriptedProvider)
     asked = _recorded(provider)
     # fingerprint=False: the story shows a model's heal. With the fingerprint tier on (the
     # default), the checkbox would heal from its recorded fingerprint before any model call.
@@ -308,13 +310,16 @@ def _summary(result):
         repaired = '1 repaired (checked on the live page, not confirmed by the retried step)'
     else:
         repaired = '0 repaired'
+    # A ScriptedProvider's reply is canned: the header line said no model is called.
+    asked = (_count(result.model_calls, 'scripted reply', 'scripted replies') if result.scripted
+             else _count(result.model_calls, 'model call'))
     return ('Done: ' + repaired + ', ' + str(1 if result.pay_refused else 0) + ' refused, '
             + _count(1 if result.banner_handled else 0, 'interruption') + ' handled, '
-            + _count(result.model_calls, 'model call') + '.')
+            + asked + '.')
 
 
-def _count(n, noun):
-    return str(n) + ' ' + noun + ('' if n == 1 else 's')
+def _count(n, noun, nouns=None):
+    return str(n) + ' ' + (noun if n == 1 else nouns or noun + 's')
 
 
 class SetupError(Exception):
