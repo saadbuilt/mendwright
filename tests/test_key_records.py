@@ -164,3 +164,25 @@ def test_the_store_file_never_holds_coordination(tmp_path, make_page, stub_provi
     assert 'lease' not in text and 'attempts' not in text and 'declines' not in text
     record = json.loads((tmp_path / key_record_name('go')).read_text(encoding='utf-8'))
     assert len(record['attempts']) == 1 and 'lease' not in record    # given back
+
+
+def test_two_heals_of_a_key_in_one_process_never_share_its_lease(tmp_path):
+    # One process heals the key on two pages at once (two page signatures). The second must
+    # not take the first one's lease over, or its release would end it while the first heal
+    # runs, and another process would heal that page too.
+    import time
+
+    from mendwright.fleet import LEASE_TTL, OWNER, _lead_across_processes, _release
+    records = records_for(load_store(None, str(tmp_path / 'overrides.json')))
+
+    def lead(signature):
+        return _lead_across_processes(records, 'k', signature, time.monotonic() + 1.0,
+                                      time.monotonic, time.sleep)
+    assert lead('page-one') is True
+    assert lead('page-two') is False                    # it heals without the lease
+    assert records.take('k', 'page-two', OWNER, time.time(), LEASE_TTL) is False
+    state, lease = records.look('k', time.time())
+    assert state == 'live' and lease['sig'] == 'page-one'
+    assert records.take('k', 'page-one', 'other-host/1/abc', time.time(), LEASE_TTL) is False
+    _release(records, 'k')                              # the first heal is done
+    assert records.look('k', time.time()) == ('none', None)

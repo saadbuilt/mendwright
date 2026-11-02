@@ -509,12 +509,14 @@ class KeyRecords:
         return ('live' if ends > now else 'expired'), lease
 
     def take(self, key, signature, owner, now, ttl):
-        """Take key's lease for (owner, signature) when there is none, it is owner's, or it
-        has expired. True when owner holds it now. Racing processes: exactly one gets it (a
-        compare-and-swap)."""
+        """Take key's lease for (owner, signature) when there is none, it is owner's for the
+        same signature, or it has expired. True when owner holds it now. Racing processes:
+        exactly one gets it (a compare-and-swap). A live lease owner holds for another
+        signature is another heal of the key in that process, of another page: it stays."""
         def change(record):
             lease = record.get('lease')
-            if isinstance(lease, dict) and lease.get('owner') not in (None, owner):
+            if isinstance(lease, dict) and (lease.get('owner') not in (None, owner)
+                                            or lease.get('sig') != signature):
                 try:
                     live = float(lease.get('at')) + float(lease.get('ttl')) > now
                 except (TypeError, ValueError):
@@ -722,9 +724,11 @@ def _lead_across_processes(records, key, signature, deadline, clock, pause):
             if not waited and records.decline_of(record, signature, now) is not None:
                 return False        # another process's decline of this page: reuse it
             state, lease = records.lease_of(record, now)
-            if state == 'live' and lease.get('owner') != OWNER:
+            if state == 'live' and (lease.get('owner') != OWNER or lease.get('sig') != signature):
                 if lease.get('sig') != signature or clock() >= deadline:
-                    return False    # another page's heal, or no time left: heal alone
+                    # Another page's heal, of another process or of this one (whose lease
+                    # this heal must not take over or end), or no time left: heal alone.
+                    return False
                 if not waited:
                     waited = True
                     FLIGHTS._lease_waiting(1)
@@ -779,7 +783,7 @@ async def _lead_across_processes_async(records, key, signature, deadline, clock,
             if not waited and records.decline_of(record, signature, now) is not None:
                 return False        # another process's decline of this page: reuse it
             state, lease = records.lease_of(record, now)
-            if state == 'live' and lease.get('owner') != OWNER:
+            if state == 'live' and (lease.get('owner') != OWNER or lease.get('sig') != signature):
                 if lease.get('sig') != signature or clock() >= deadline:
                     return False
                 if not waited:
