@@ -78,8 +78,8 @@ import { NullProvider, type HealProvider } from './providers/base';
 import { autoProvider } from './providers/detect';
 import { pyRepr } from './py';
 import {
-  THROUGH, noMatchMessage, peekVisible, present as presentNow, presentGetBy, requireVisible, resolve, resolveGetBy,
-  splitRunnable,
+  THROUGH, noMatchMessage, peekVisible, present as presentNow, presentGetBy, refusedMessage as reuseRefusedMessage,
+  requireVisible, resolve, resolveGetBy, splitRunnable,
 } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { driverShadowed, followAllowed, healPlace, shadowUnreachable, type HealScope } from './scope';
@@ -483,6 +483,10 @@ export class Healer {
   healGetBy = false;
   // The getBy* calls of heal.page that are never keys, logged once each (see noteGetBy()).
   private readonly getByNoted = new Set<string>();
+  // Saved selectors a lookup did not use because their element failed the reuse check (see
+  // refusedReuse()): [key, page, selector] journaled, and [key, page] logged.
+  private readonly refusals = new Set<string>();
+  private readonly refusalsLogged = new Set<string>();
 
   constructor(page: PageLike, driver: PlaywrightDriver, store: SelectorStore, coordinator: HealCoordinator,
               timeoutMs: number) {
@@ -640,7 +644,9 @@ export class Healer {
       const attempt = (wait: number = timeout) => {
         const given = first;
         first = null;
-        return resolveGetBy(this.store, this.driver, key, { timeoutMs: wait, pollMs, first: given });
+        return resolveGetBy(this.store, this.driver, key, {
+          timeoutMs: wait, pollMs, first: given, refused: (k, c, reason) => this.refusedReuse(k, c, reason),
+        });
       };
       let native: Locator | typeof THROUGH;
       try {
@@ -1308,7 +1314,7 @@ export class Healer {
       this.prime(key, plan);
       const firstWait = this.interruptions.has(key) && this.handled.has(key) ? 0 : plan.timeoutMs;
       const attempt = (wait: number = plan.timeoutMs) => resolve(this.store, this.driver, key,
-        { timeoutMs: wait, pollMs: plan.pollMs });
+        { timeoutMs: wait, pollMs: plan.pollMs, refused: (k, c, reason) => this.refusedReuse(k, c, reason) });
       let native: Locator;
       try {
         native = await this.resolveStep(key, () => attempt(firstWait), plan);
@@ -2238,6 +2244,27 @@ export class Healer {
       return !(await this.present(key));
     } catch {
       return true;
+    }
+  }
+
+  /** @internal A lookup did not use candidate, a selector a heal or a seed file saved, because
+   * the element it matches on this page failed the reuse check (see resolver.Reuse): heal.refused
+   * is journaled once per key, page and selector, and one WARNING logged per key and page.
+   * Nothing is quarantined, and neither the heal canary nor what waits for it is touched: the
+   * selector may be right on other pages (the Python package's Healer._refused_reuse). */
+  refusedReuse(key: string, candidate: Candidate, reason: string): void {
+    try {
+      const page = pagePath(this.driver.url());
+      const journaled = JSON.stringify([key, page, candidate.xpath]);
+      if (this.refusals.has(journaled)) return;
+      this.refusals.add(journaled);
+      this.coordinator.journal.event('heal.refused', { key, xpath: candidate.xpath, source: candidate.source, reason, page });
+      const logged = JSON.stringify([key, page]);
+      if (this.refusalsLogged.has(logged)) return;
+      this.refusalsLogged.add(logged);
+      this.coordinator.emit('warning', reuseRefusedMessage(key, candidate, page, reason));
+    } catch {
+      // a broken log line or journal must not break a lookup
     }
   }
 

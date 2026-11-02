@@ -8,6 +8,10 @@ import { CSS, XPATH, classify, stripPrefix } from './selectors';
 import { pyRepr } from './py';
 
 export const GATE_ROLES = ['button', 'checkbox', 'radio', 'link', 'input', 'combobox'] as const;
+/** The roles of the controls a run acts on. A selector found on an element of one of them for a
+ * key of another (or the other way round) is the wrong element; another tag on a key that is
+ * only read (a span that became a div) is not counted (see gate.reuseReason). */
+export const CONTROL_ROLES: ReadonlySet<string> = new Set<string>([...GATE_ROLES, 'textarea']);
 /** role="..." values the gate takes as they are. */
 export const GATE_ROLE_ATTRS = ['checkbox', 'button', 'link', 'combobox', 'radio'];
 /** ARIA widget roles on a non-native element, mapped to the gate role of the native control. */

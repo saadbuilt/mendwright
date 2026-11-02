@@ -29,11 +29,22 @@
 // XPath: one not quarantined or superseded, and the live check inside the shadow root,
 // through the ShadowDriver. The first that passes is saved as the chain of the hosts and the
 // CSS, with the hosts as its shadowHosts. An element no CSS form tells apart is refused.
+//
+// A selector saved by a heal or a seed file, rather than passed by the code, is checked again on
+// the page each time a lookup would use it (reuseReason(), run by resolver.ts once the selector
+// matches one element, visible unless the key is a checkbox): the element's role against the
+// key's role (the one locator() was given or the store holds, never a guess) when either is a
+// control's, its text when the key is destructive and has expected text, and, for the key of a
+// getByRole() call, its ARIA role. A page variant can put the element a heal was made for and
+// another control under the same selector: //input[@name='terms'], saved on a checkbox, also
+// matches an <input type="submit" name="terms"> (the Python package's gate.reuse_reason).
 
 import { cssXpath } from './css';
 import { TrustedTypesRefused, type ItemRow, type PlaywrightDriver } from './driver';
 import { ROLE_UNREADABLE, parse, roleMismatch, type GetByCall } from './getby';
 import type { Proposal } from './prompt';
+import { PY_SPACE, pyStrip } from './py';
+import { CONTROL_ROLES } from './roles';
 import type { HealDriver } from './scope';
 import { CSS, XPATH, classify, frameSpelling, hasPosition, isBrittle, normalize, stripPrefix } from './selectors';
 import { formsRead, hostsOf, shadowText, splitText, type Hosts } from './shadow';
@@ -93,6 +104,71 @@ export async function liveReason(driver: HealDriver, xpath: string, meta: Pick<K
     return '';
   } catch {
     return NOT_LIVE;
+  }
+}
+
+const SPACES = new RegExp('[' + PY_SPACE + ']+', 'g');
+
+/** The text of an element as the gate compares it: runs of whitespace made one space, and the
+ * ends stripped, as Python's re.sub(r'\s+', ' ', text).strip() does (validation._norm). */
+function textNorm(text: unknown): string {
+  return pyStrip((typeof text === 'string' ? text : '').replace(SPACES, ' '));
+}
+
+/** '' when the element describe() read (live) has the key's role, and for a destructive key one
+ * of its expected texts, else the reason it does not. A role that is unknown is not compared
+ * (the Python package's gate._element_reason).
+ *
+ * reuse true is the reuse check's version: a role counts only when the key's role or the
+ * element's is a control's (CONTROL_ROLES), since a key that is only read may find its span
+ * turned into a div, and a destructive key with no expected text has no text checked. */
+export function elementReason(live: { role?: unknown; text?: unknown },
+                              meta: Partial<Pick<KeyMeta, 'expectedRole' | 'expectedText' | 'destructive'>>,
+                              reuse = false): string {
+  const want = meta.expectedRole;
+  const got = live.role;
+  if (want && want !== 'unknown' && got !== want
+      && (!reuse || CONTROL_ROLES.has(want) || (typeof got === 'string' && CONTROL_ROLES.has(got)))) {
+    return 'live element role mismatch: got ' + String(got) + ' want ' + String(want);
+  }
+  if (meta.destructive) {
+    const texts = new Set((meta.expectedText ?? []).map(textNorm));
+    if ((texts.size || !reuse) && !texts.has(textNorm(live.text))) {
+      return 'live action text mismatch: ' + textNorm(live.text);
+    }
+  }
+  return '';
+}
+
+/** The check of a selector a heal or a seed file saved, once it matches one element on the live
+ * page (visible unless the key's role is checkbox), before a lookup uses it: '' when the element
+ * may be used, else the reason it is not used on this page (the Python package's
+ * gate.reuse_reason). frame and hosts say where the selector runs, as runTarget() gives them.
+ *
+ * The element is read with describe() (one round trip): it must have the key's role in meta
+ * (pass 'unknown' while the role is only a guess) and, for a destructive key with expected text,
+ * one of those texts. For the key of a getByRole() call (call), the browser must also give it the
+ * call's ARIA role (driver.roleMatch). Only an answer that says no refuses it: an element the
+ * driver cannot read (a read that fails, an element that went away meanwhile) is used as it was
+ * before this check, on its count and visibility. This fails open, where liveReason() fails
+ * closed: the selector was checked when it was saved. */
+export async function reuseReason(driver: PlaywrightDriver, selector: string,
+                                  meta: Partial<Pick<KeyMeta, 'expectedRole' | 'expectedText' | 'destructive'>>,
+                                  frame: string | null = null, hosts: string[] | null = null,
+                                  call: GetByCall | null = null): Promise<string> {
+  try {
+    const live = await driver.describe(selector, frame, hosts);
+    if (live && typeof live === 'object') {
+      const reason = elementReason(live, meta, true);
+      if (reason) return reason;
+    }
+    if (call !== null && call.method === 'get_by_role' && typeof driver.roleMatch === 'function') {
+      const ok = await driver.roleMatch(selector, call.value as string, call.level, frame, hosts);
+      if (ok === false) return roleMismatch(call);
+    }
+    return '';
+  } catch {
+    return '';
   }
 }
 
