@@ -209,3 +209,17 @@ def test_different_store_files_have_their_own_budget(tmp_path, make_page, stub_p
                            store_path=os.path.join(str(tmp_path), '.', 'a.json'),
                            rate_per_key_per_hour=1)
     assert same.coordinator.guardrails.rate_limiter is a.coordinator.guardrails.rate_limiter
+
+
+def test_every_variable_mendwright_reads_is_unset_for_each_test():
+    # A developer's shell with one of them set, such as MENDWRIGHT_SUGGEST_GET_BY=1, changed
+    # what the tests saw: every heal saved a twin.
+    import pathlib
+    import re
+
+    from conftest import _ENV_SETTINGS
+    package = pathlib.Path(mendwright.__file__).parent
+    read = set()
+    for path in package.rglob('*.py'):
+        read |= set(re.findall(r'\bMENDWRIGHT_[A-Z_]+[A-Z]\b', path.read_text(encoding='utf-8')))
+    assert sorted(read - set(_ENV_SETTINGS)) == []
