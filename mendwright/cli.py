@@ -52,7 +52,7 @@ _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RU
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
                  'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_SUGGEST_GET_BY',
                  'MENDWRIGHT_RUN_ID', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR',
-                 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR')
+                 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'MENDWRIGHT_DECLINE_TTL_SECONDS')
 # MENDWRIGHT_* variables that hold a URL whose path or query can be a secret (a webhook's
 # path is its key): doctor shows scheme and host only.
 _ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY', 'MENDWRIGHT_WEBHOOK_URL')
@@ -315,6 +315,11 @@ def _settings_problems():
             rate_setting(rate)
         except ValueError as exc:
             problems.append(str(exc))
+    from .fleet import decline_ttl_setting
+    try:
+        decline_ttl_setting()
+    except ValueError as exc:
+        problems.append(str(exc))
     from .journal import run_id, run_id_problem
     bad = run_id()[2]
     if bad is not None:

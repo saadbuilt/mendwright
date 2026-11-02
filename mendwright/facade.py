@@ -71,6 +71,7 @@ from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, fra
 from .shadow import (MISSING, ShadowHost, as_document, chain_hosts, driver_shadowed, hosts_of,
                      place_text, saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
+from .fleet import decline_ttl_setting, page_signature, single_flight
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 
@@ -499,10 +500,23 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._expect_values = checks
     healer._heal_get_by = heal_get_by
     get_by_modes(coord, heal_get_by, suggest_get_by)
+    coord.look_again = _weak_look(healer, lambda h, key, broken: h._look_again(key, broken))
     if preset is not None:
         healer._interruptions[preset.key] = preset
         healer._watch(preset)
     return healer
+
+
+def _weak_look(healer, look):
+    """The coordinator's look_again for healer (see HealCoordinator._look_again):
+    look(healer, key, broken), through a weak reference, so the coordinator does not keep
+    the healer alive (live_healers() is a weak set)."""
+    ref = weakref.ref(healer)
+
+    def look_again(key, broken):
+        found = ref()
+        return look(found, key, broken) if found is not None else None
+    return look_again
 
 
 def get_by_modes(coordinator, heal_get_by, suggest_get_by):
@@ -605,6 +619,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     # MENDWRIGHT_DISABLE=1 swaps in a provider that declines, which the coordinator's heal
     # path reads; the flag also stops a key being followed into an iframe.
     coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
+    # How long a model's decline of a key on a page is reused (see mendwright.fleet).
+    coord.decline_ttl = decline_ttl_setting()
     # What turned the fingerprint tier off, for the refusal of a list looked up with
     # nonempty=True (see Healer._nonempty_blocked).
     coord.fingerprint_off_by = None if fingerprint else off_by
@@ -1120,6 +1136,13 @@ class Healer:
         # _get_by_locator). The calls that are never keys, logged once each (_note_get_by).
         self._heal_get_by = False
         self._get_by_noted: set = set()
+        # Saved selectors a lookup did not use because their element failed the reuse check
+        # (see _refused_reuse): (key, page, selector) journaled, and (key, page) logged.
+        self._refusals: set = set()
+        self._refusals_logged: set = set()
+        # The clock and sleep of a locator() lookup's poll (resolver.resolve). Tests replace them.
+        self._clock = time.monotonic
+        self._sleep = time.sleep
         _register(self)
 
     @property
@@ -1204,16 +1227,18 @@ class Healer:
     def _peek_visible(self, key):
         """For heal.page's is_visible(): True when the first of key's stored selectors that
         matches one element shows it visible right now. Like Playwright's is_visible(): no
-        wait, no heal, no scrolling, and nothing recorded in the store."""
-        from .resolver import _match_handle, _require_visible, _split_runnable
+        wait, no heal, no scrolling, and nothing recorded in the store. A selector the code did
+        not pass counts only when its element passes the reuse check (resolver.Reuse)."""
+        from .resolver import Reuse, _match_handle, _require_visible, _split_runnable
         require_visible = _require_visible(self.store, key)
         runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
+        reuse = Reuse(self.store, key)
         for candidate in runnable:
             try:
                 native = _match_handle(self._driver, candidate, require_visible)
             except Exception:
                 continue
-            if native is not None:
+            if native is not None and reuse.check(self._driver, candidate) == '':
                 try:
                     return bool(driver_act_on(self._driver, native, 'is_visible'))
                 except Exception:
@@ -1376,7 +1401,9 @@ class Healer:
             # (see ActionProxy._before_read). A run= function called inside the handler
             # would have only the scroll's timeout.
             with self._overlays.handling():
-                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
+                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms,
+                               refused=self._refused_reuse, monotonic=self._clock,
+                               sleep=self._sleep)
 
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -1396,9 +1423,10 @@ class Healer:
                 if native is _NOT_FOLLOWED:
                     native = self._follow_into_shadow(key, exc, attempt)
                 if native is _NOT_FOLLOWED:
-                    native = self._heal(key, exc, attempt)
+                    native = self._heal(key, exc, attempt, timeout)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
@@ -1468,7 +1496,8 @@ class Healer:
                 # Playwright's overlay handlers stay out of the lookup, as in locator().
                 with self._overlays.handling():
                     return resolve_get_by(self.store, self._driver, key, timeout_ms=wait,
-                                          poll_ms=poll_ms, first=first.pop() if first else None)
+                                          poll_ms=poll_ms, first=first.pop() if first else None,
+                                          refused=self._refused_reuse)
 
             try:
                 try:
@@ -1479,7 +1508,7 @@ class Healer:
                     if _raised_by_run(exc):
                         raise
                     self._get_by_frames(key, exc, 'mendwright.open')
-                    native = self._heal(key, exc, attempt)
+                    native = self._heal(key, exc, attempt, timeout)
             except InterruptionLoop:
                 raise   # the page is blocked: a heal would not help
             except AttentionRequired as exc:
@@ -1489,6 +1518,7 @@ class Healer:
             if native is THROUGH:
                 return self._get_by_through(key, target, timeout, getby.STARTED_TO_MATCH)
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, None)
         self._remember_page(key)
@@ -2885,6 +2915,83 @@ class Healer:
             self.coordinator._emit(logging.WARNING,
                                    nothing_matched_message(key, mine, preset, framed))
 
+    def _look_again(self, key, broken, driver=None, url=None):
+        """The coordinator's look_again (see HealCoordinator._look_again), right after
+        store.refresh() before a heal's fingerprint tier or model call: the first heal of key
+        that another worker saved since this store read the file (store.arrived), that is not
+        among the selectors that just missed, and that matches one element here passing the
+        reuse check, is adopted (HealCoordinator.adopt). Returns its selector, or None.
+        driver is the page's sync driver (the async healer passes its SyncBridge, and url, a
+        callable for the page's address)."""
+        from .resolver import Reuse, _match_handle, _target
+        store, driver = self.store, self._driver if driver is None else driver
+        arrived = getattr(store, 'arrived', None)
+        if not callable(arrived):
+            return None
+        tried = {c.get('xpath') for c in broken or () if isinstance(c, dict)}
+        rows = [c for c in store.candidates(key) if c.get('source') == 'heal'
+                and c.get('xpath') not in tried and arrived(key, c.get('xpath'))]
+        if not rows:
+            return None
+        runnable, _errors = _split_runnable(key, rows, driver)
+        require_visible = _require_visible(store, key)
+
+        def refused(k, candidate, reason):
+            self._refused_reuse(k, candidate, reason, url() if callable(url) else None)
+        reuse = Reuse(store, key, refused)
+        for candidate in runnable:
+            try:
+                if _match_handle(driver, candidate, require_visible) is None:
+                    continue
+            except InvalidSelector:
+                continue
+            verdict = reuse.check(driver, candidate)
+            if verdict:
+                reuse.refuse(candidate, verdict)
+                continue
+            try:
+                driver.scroll_into_view(*_target(candidate))
+            except Exception:
+                pass
+            self.coordinator.adopt(key, candidate['xpath'], old=broken)
+            return candidate['xpath']
+        return None
+
+    def _adopt_winner(self, key):
+        """After a lookup: when the selector that matched is a heal another worker saved after
+        this store read the file (store.arrived), which a refresh during the lookup brought
+        in, adopt it (HealCoordinator.adopt), once: it is this worker's unconfirmed heal from
+        now on."""
+        winner = self.store.last_success(key)
+        if not winner or winner.get('source') != 'heal':
+            return
+        arrived = getattr(self.store, 'arrived', None)
+        try:
+            if callable(arrived) and arrived(key, winner.get('xpath')):
+                self.coordinator.adopt(key, winner['xpath'])
+        except Exception:
+            logger.debug('mendwright: could not adopt the heal of %r', key, exc_info=True)
+
+    def _refused_reuse(self, key, candidate, reason, url=None):
+        """A lookup did not use candidate, a selector a heal or a seed file saved, because the
+        element it matches on this page failed the reuse check (resolver.Reuse): journal
+        heal.refused once per key, page and selector, and log one WARNING per key and page.
+        Nothing is quarantined: the selector may be right on other pages. url is the page's
+        address, read here when it is not given (the async healer reads it itself)."""
+        from .resolver import refused_message
+        page = page_path(self._url() if url is None else url)
+        xpath = candidate.get('xpath')
+        if (key, page, xpath) in self._refusals:
+            return
+        self._refusals.add((key, page, xpath))
+        coordinator = self.coordinator
+        journal_event(coordinator.journal, 'heal.refused', key, xpath=xpath,
+                      source=candidate.get('source'), reason=reason, page=page)
+        if (key, page) in self._refusals_logged:
+            return
+        self._refusals_logged.add((key, page))
+        coordinator._emit(logging.WARNING, refused_message(key, candidate, page, reason))
+
     def _url(self):
         try:
             return self._driver.url() or ''
@@ -3152,8 +3259,12 @@ class Healer:
         framed = driver_framed(self._driver, frame)
         return HealScope(frame=frame, driver=framed) if framed is not None else None
 
-    def _heal(self, key, exc, attempt):
-        """Heal through the coordinator after attempt() raised exc, then retry attempt()."""
+    def _heal(self, key, exc, attempt, timeout=None):
+        """Heal through the coordinator after attempt() raised exc, then retry attempt().
+
+        At most one worker of this process heals (store file, key, page) at a time (see
+        mendwright.fleet.single_flight): the others wait for it, at most the step's timeout,
+        then adopt its heal or reuse its decline, or make their own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
         pending = [exc]
 
@@ -3164,14 +3275,29 @@ class Healer:
 
         context = self._flow_context(key, self._url())
         scope = self._heal_scope(key)
-        if scope is None:
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
-        # The key was last found inside an iframe or a shadow root: capture, check and save
-        # the heal there, or refuse it.
-        with scope.entered(self.coordinator):
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
+
+        def heal():
+            if scope is None:
+                return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                         self.store.meta(key), context)
+            # The key was last found inside an iframe or a shadow root: capture, check and
+            # save the heal there, or refuse it.
+            with scope.entered(self.coordinator):
+                return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                         self.store.meta(key), context)
+
+        timeout = self.timeout_ms if timeout is None else timeout
+        return single_flight(self.store, key, self._signature(key, context), heal,
+                             timeout / 1000.0)
+
+    def _signature(self, key, context):
+        """The page signature of a heal of key here (see mendwright.fleet.page_signature):
+        the page, and the selectors of key that just missed."""
+        try:
+            selectors = [c.get('xpath') for c in self.store.candidates(key)]
+        except Exception:
+            selectors = []
+        return page_signature((context or {}).get('page'), selectors)
 
     # --- following a key's own selector into an open shadow root -----------------------
 

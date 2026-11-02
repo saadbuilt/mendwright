@@ -225,7 +225,8 @@ def test_a_control_of_another_role_is_wrong_role(make_page, stub_provider, tmp_p
                                                              'broken')
     assert k.reason == ("#submit matches one visible element, but it is a div, and 'submit' is "
                         'a button. A run acts on it all the same: mendwright compares roles '
-                        'only for heals. Check the selector in your code.')
+                        'only for selectors a heal or a seed file saved. Check the selector in '
+                        'your code.')
     assert k.fails() and k.fails(fail_on='unhealable')
 
 

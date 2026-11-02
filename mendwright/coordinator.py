@@ -73,6 +73,9 @@ FRAME_PROVIDER = 'frame'
 # The source of a key's own selector that matched only inside an open shadow root and is now
 # looked up there, as CSS (see Healer._follow_into_shadow and mendwright.shadow).
 SHADOW_PROVIDER = 'shadow'
+# What an adopted heal is called in the log: a heal another worker saved since this store
+# read the file, used here after the live check (see HealCoordinator.adopt).
+ADOPTED = 'adopted'
 
 
 def _no_fingerprint(selector_key):
@@ -117,6 +120,42 @@ def _canary_call(method, *args, by=None, test=None, **kwargs):
     them. Every canary report goes through here, so a confirm_pending(), confirm() or
     journal canary() replaced by code written for 0.8.0 still gets each call, once."""
     return method(*args, **kwargs, **_accepted(method, by=by, test=test))
+
+
+def _cap_full(guardrails, selector_key):
+    """guardrails.full(key): which cap refused the heal, or None for guardrails that can't
+    say (a custom one)."""
+    full = getattr(guardrails, 'full', None)
+    try:
+        return full(selector_key) if callable(full) else None
+    except Exception:
+        return None
+
+
+def rate_cap_message(selector_key, why):
+    """Why a heal attempt was refused by the hourly rate/spend cap, in plain words: what was
+    not done (no model was asked), which cap is full (why is guardrails.full()'s answer, or
+    None), and the variables that set the caps."""
+    kind, count, cap = why if isinstance(why, tuple) and len(why) == 3 else (None, None, None)
+    if kind == 'per_key':
+        full = ("this process already made " + str(count) + ' heal attempts for it in the last '
+                'hour, and rate_per_key_per_hour is ' + str(cap))
+    elif kind == 'shared':
+        full = ('the workers that share this store already made ' + str(count) + ' heal attempts '
+                'for it in the last hour, and rate_per_key_per_hour is ' + str(cap))
+    elif kind == 'global':
+        full = ("this process already made " + str(count) + ' heal attempts for all its keys in '
+                'the last hour, and rate_global_per_hour is ' + str(cap))
+    elif kind == 'calls':
+        full = 'this run already made the ' + str(cap) + ' heal calls its spend cap allows'
+    elif kind == 'cost':
+        full = "the provider's cost ceiling of this run's spend cap is reached"
+    else:
+        full = 'the hourly cap of heal attempts is reached'
+    return ("mendwright did not ask the model to repair '" + selector_key + "': " + full
+            + ' (the rate/spend cap of a direct provider; each attempt makes up to 2 model '
+            'calls). It fails closed, and asks again once older attempts drop out of the hour. '
+            'MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR set the caps.')
 
 
 def _destructive_message(selector_key):
@@ -326,6 +365,19 @@ class HealCoordinator:
         # as a proposed list heal, oldest first: {'key', 'xpath', 'id', 'label', 'count'}. None
         # was used; the pytest plugin lists them at the end of a run.
         self.held = []
+        # (key, xpath) of the heals another worker saved that this coordinator adopted (see
+        # adopt): pending like its own, never reported to its provider, not in self.heals.
+        self.adopted = set()
+        # look_again(key, broken_candidates): set by mendwright.open() to look on the page
+        # for a heal another worker saved, after store.refresh() (see _look_again). It
+        # returns the selector it adopted, or None.
+        self.look_again = None
+        # Seconds a model's decline of a key on a page is reused (see _reused_decline):
+        # mendwright.open() sets MENDWRIGHT_DECLINE_TTL_SECONDS here; 0 (a coordinator used
+        # on its own) asks the model every time. wallclock gives the times declines are kept
+        # with (time.time(), so another process reads them the same); tests replace it.
+        self.decline_ttl = 0
+        self.wallclock = time.time
 
     @contextlib.contextmanager
     def scoped(self, driver, frame_xpath, shadow_hosts=None):
@@ -398,6 +450,52 @@ class HealCoordinator:
                    + frame + ': ' + old + ' matches nothing on the page, so it is looked up '
                    'in that iframe from now on')
 
+    def adopt(self, selector_key, xpath, old=None):
+        """Use xpath, a heal another worker saved after this store read the file, as this
+        coordinator's own unconfirmed heal: it waits in pending for the canary (the next
+        action confirms or quarantines it, expect= and confirm() too), so no fingerprint is
+        recorded through it until then, and it is journaled as heal.adopted with the
+        selectors that missed (old), when known. It is not reported to this coordinator's
+        provider, which did not propose it, and not listed in self.heals: the worker that
+        made it lists it. A heal is adopted once per coordinator. Returns True when it was
+        adopted now."""
+        if (selector_key, xpath) in self.adopted:
+            return False
+        self.adopted.add((selector_key, xpath))
+        self.pending[selector_key] = xpath
+        self.heal_reasons.pop(selector_key, None)
+        old = _old_selectors(old) if old else None
+        journal_event(self.journal, 'heal.adopted', selector_key, xpath=xpath, old=old)
+        was = ''
+        if old:
+            was = old[0] + (' (+' + str(len(old) - 1) + ' more)' if len(old) > 1 else '') + ' -> '
+        self._emit(logging.WARNING, 'adopted a heal of ' + repr(selector_key) + ' another worker '
+                   'saved: ' + was + xpath + '. It passed the live check on this page, and the '
+                   'next action confirms it or quarantines it.')
+        return True
+
+    def _look_again(self, selector_key, broken_candidates):
+        """Before the fingerprint tier and before a model call: take in what other workers
+        saved for the key since this store read the file (store.refresh), and look for a heal
+        among it on the page (look_again, which mendwright.open() sets: the live check of a
+        lookup, then adopt()). Returns the selector adopted, or None. A store without
+        refresh(), and a coordinator used on its own, adopt nothing."""
+        refresh = getattr(self.store, 'refresh', None)
+        if callable(refresh):
+            try:
+                refresh(selector_key)
+            except Exception:
+                pass
+        look = self.look_again
+        if not callable(look):
+            return None
+        try:
+            return look(selector_key, broken_candidates) or None
+        except Exception:
+            logger.debug('mendwright: could not look for a heal another worker saved',
+                         exc_info=True)
+            return None
+
     def _emit(self, level, message):
         """Send one diagnostic line to log= when it was given, else to the logger."""
         sink = self.log
@@ -410,15 +508,93 @@ class HealCoordinator:
             logger.log(level, 'mendwright: ' + message)
 
     def _decline(self, selector_key, reason, level=logging.WARNING, logged=None, *,
-                 code='other'):
+                 code='other', **fields):
         """Record why a heal did not apply (for resolve_with_heal to surface), log it, journal
-        it as heal.declined with ``code`` (one of DECLINE_CODES), and return the falsy value
-        try_heal uses for 'not applied'. ``logged`` is a shorter reason for the log line,
-        when the full one was already logged elsewhere."""
+        it as heal.declined with ``code`` (one of DECLINE_CODES) and any other fields (cached
+        for a decline reused, see _reused_decline), and return the falsy value try_heal uses
+        for 'not applied'. ``logged`` is a shorter reason for the log line, when the full one
+        was already logged elsewhere."""
         self.heal_reasons[selector_key] = reason
         self._emit(level, 'did not heal ' + repr(selector_key) + ': ' + str(logged or reason))
-        journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason)
+        journal_event(self.journal, 'heal.declined', selector_key, code=code, reason=reason,
+                      **fields)
         return False
+
+    def _shared_budget(self, selector_key):
+        """Count this model attempt in the key's record for every process of this host (see
+        mendwright.fleet.KeyRecords.spend): None when it fits rate_per_key_per_hour, else
+        ('shared', attempts, cap) for the message. No guardrails, no per-key cap, a store with
+        no records and a record that cannot be read or written leave it to this process's
+        caps."""
+        from .fleet import records_for
+        limiter = getattr(self.guardrails, 'rate_limiter', None)
+        cap = getattr(limiter, 'per_key_per_hour', None)
+        if self.guardrails is None or not isinstance(cap, int) or isinstance(cap, bool):
+            return None
+        records = records_for(self.store)
+        if records is None:
+            return None
+        try:
+            ok, count = records.spend(selector_key, cap, self.wallclock())
+        except Exception:
+            logger.debug('mendwright: could not count the attempt in the key record',
+                         exc_info=True)
+            return None
+        return None if ok else ('shared', count, cap)
+
+    def _decline_ident(self, selector_key, broken_candidates, context):
+        """(store file, key, page signature) a decline of this heal is kept and looked up
+        under (see mendwright.fleet), or None when declines are not reused here."""
+        from .fleet import page_signature, store_name
+        if not self.decline_ttl:
+            return None
+        name = store_name(self.store)
+        if name is None:
+            return None
+        page = context.get('page') if isinstance(context, dict) else None
+        return name, selector_key, page_signature(page, _old_selectors(broken_candidates))
+
+    def _reused_decline(self, selector_key, broken_candidates, context):
+        """A model's decline of this key on this page, given here or by another worker
+        within MENDWRIGHT_DECLINE_TTL_SECONDS: declined again with its reason and code, and
+        cached=True in the journal, with no model call and no budget spent. None when there
+        is none."""
+        from .fleet import DECLINES, records_for, reused_note
+        ident = self._decline_ident(selector_key, broken_candidates, context)
+        if ident is None:
+            return None
+        now = self.wallclock()
+        row = DECLINES.get(*ident, now)
+        records = records_for(self.store) if row is None else None
+        if records is not None:
+            try:
+                row = records.decline(selector_key, ident[2], now)    # another process's
+            except Exception:
+                row = None
+            if row is not None:
+                DECLINES.put(*ident, row['code'], row['reason'], row['at'],
+                             row['until'] - row['at'])
+        if row is None:
+            return None
+        reason = row['reason'] + reused_note(row['at'], now, self.decline_ttl)
+        return self._decline(selector_key, reason, code=row['code'], cached=True)
+
+    def _remember_decline(self, selector_key, broken_candidates, context, code, reason):
+        """Keep the model's decline (code not_here or gate) for other workers and the next
+        lookups (see mendwright.fleet.DECLINES)."""
+        from .fleet import DECLINES, REUSED_DECLINES, records_for
+        ident = self._decline_ident(selector_key, broken_candidates, context)
+        if ident is None or code not in REUSED_DECLINES:
+            return
+        now = self.wallclock()
+        DECLINES.put(*ident, code, reason, now, self.decline_ttl)
+        records = records_for(self.store)
+        if records is not None:
+            try:
+                records.keep_decline(selector_key, ident[2], code, reason, now, self.decline_ttl)
+            except Exception:
+                logger.debug('mendwright: could not keep the decline in the key record',
+                             exc_info=True)
 
     def _outside_shadow(self, selector_key):
         """Why a heal of the key may not run here, or '': this coordinator heals on the page
@@ -509,6 +685,14 @@ class HealCoordinator:
                                  code='role_unknown')
         if not self.guard():
             return self._decline(selector_key, GUARD_REASON, code='guard')
+        # Another worker may have saved a heal of this key since this store read the file.
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted
+        # Or the model already said, about this page, that nothing here fits.
+        reused = self._reused_decline(selector_key, broken_candidates, context)
+        if reused is not None:
+            return reused
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -526,6 +710,10 @@ class HealCoordinator:
                                                               broken_candidates, html, started)
             if applied is not None:
                 return applied
+            # Before any model call: another worker's heal may have come in meanwhile.
+            adopted = self._look_again(selector_key, broken_candidates)
+            if adopted:
+                return adopted
             if unavailable:
                 # note says why the fingerprint did not heal; the provider's reason says
                 # what to set so a model can try.
@@ -538,12 +726,16 @@ class HealCoordinator:
         # attempt == one slot), mirroring the gateway's server-side needs_human.
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
             self.journal.rejected(selector_key, reason='rate/spend cap')
-            return self._decline(selector_key,
-                "the direct-mode rate/spend cap for '" + selector_key + "' was reached, so "
-                "mendwright stopped (fail-closed). Wait for the hourly window to reset, or raise "
-                "the cap via mendwright.open(rate_per_key_per_hour=..., rate_global_per_hour=...) "
-                "or MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR.",
-                code='rate_limit')
+            return self._decline(selector_key, rate_cap_message(selector_key,
+                                                                _cap_full(self.guardrails,
+                                                                          selector_key)),
+                                 code='rate_limit')
+        # The per-key cap holds for every process of this host on this store together.
+        shared = self._shared_budget(selector_key)
+        if shared is not None:
+            self.journal.rejected(selector_key, reason='rate/spend cap')
+            return self._decline(selector_key, rate_cap_message(selector_key, shared),
+                                 code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:
             self.journal.requested(selector_key)
@@ -575,11 +767,14 @@ class HealCoordinator:
                     self.journal.rejected(selector_key, reason='no proposal', error=error)
                     # The model found no element on this page that fits, or was not sure
                     # which: the providers end that sentence with NOT_HERE_HINT, so the code
-                    # does not depend on its wording.
-                    return self._decline(selector_key,
-                        type(self.provider).__name__ + " returned no selector for '"
-                        + selector_key + "': " + error,
-                        code='not_here' if NOT_HERE_HINT in error else 'no_proposal')
+                    # does not depend on its wording. Only that answer is kept for other
+                    # workers: a failure of the provider (network, rate limit, key) is not.
+                    code = 'not_here' if NOT_HERE_HINT in error else 'no_proposal'
+                    reason = (type(self.provider).__name__ + " returned no selector for '"
+                              + selector_key + "': " + error)
+                    self._remember_decline(selector_key, broken_candidates, context, code,
+                                           reason)
+                    return self._decline(selector_key, reason, code=code)
                 self.journal.rejected(selector_key, reason='no proposal')
                 return self._decline(selector_key,
                     "the model returned no usable selector for '" + selector_key + "'. Try a "
@@ -603,6 +798,11 @@ class HealCoordinator:
                     "dry-run mode is on, so the proposal for '" + selector_key + "' was checked "
                     "but not applied. Turn off dry_run to let mendwright apply and retry.",
                     level=logging.INFO, code='dry_run')
+            # Another worker may have saved a heal while the model answered: use it (after
+            # the live check) instead of saving a second one.
+            adopted = self._look_again(selector_key, broken_candidates)
+            if adopted:
+                return adopted
             applied, reason = apply(self.store, selector_key, proposal, html, meta,
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath,
@@ -617,11 +817,12 @@ class HealCoordinator:
             self.journal.rejected(selector_key, xpath=proposal.get('xpath'), reason=reason,
                                   source=tag)
             bundle = dict(bundle, rejectedXpath=proposal.get('xpath'), rejectReason=reason)
-        self._decline(selector_key,
-            "no selector the model proposed for '" + selector_key + "' passed mendwright's local "
-            "gate (last reason: " + str(reason) + "). The gate requires a non-brittle xpath that "
-            "matches exactly one element of the expected role and is present on the live page.",
-            code='gate')
+        reason = ("no selector the model proposed for '" + selector_key + "' passed "
+                  "mendwright's local gate (last reason: " + str(reason) + "). The gate requires "
+                  "a non-brittle xpath that matches exactly one element of the expected role and "
+                  "is present on the live page.")
+        self._remember_decline(selector_key, broken_candidates, context, 'gate', reason)
+        self._decline(selector_key, reason, code='gate')
         return None
 
     def _call_meta(self, selector_key, meta):
@@ -672,6 +873,9 @@ class HealCoordinator:
                                  code='role_unknown')
         if not self.guard():
             return self._decline(selector_key, GUARD_REASON, code='guard')
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted
         applied, note, _requested = self._fingerprint_tier(
             selector_key, meta, broken_candidates, self.html_provider(), self.clock())
         if applied is not None:
@@ -707,6 +911,11 @@ class HealCoordinator:
                 "checked but not applied. Turn off dry_run to let mendwright apply and retry.",
                 level=logging.INFO, code='dry_run'), '', True
         proposal = {'xpath': match.xpath, 'fallbacks': [], 'reasoning': reasoning}
+        # Another worker may have saved its heal while this one scored the page: use that
+        # one (after the live check) instead of saving a second copy.
+        adopted = self._look_again(selector_key, broken_candidates)
+        if adopted:
+            return adopted, '', True
         applied, reason = apply(self.store, selector_key, proposal, html, meta, driver=self.driver,
                                 frame_xpath=self.frame_xpath, shadow_hosts=self.shadow_hosts,
                                 twin=self._wants_twin(selector_key))
@@ -1220,8 +1429,10 @@ class HealCoordinator:
         when given, so mendwright fix can say what confirmed each heal it writes back."""
         heal = next((h for h in reversed(self.heals) if h['key'] == selector_key
                      and h['new'] == xpath and h['confirmed'] is None), None)
-        if heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER,
-                                                      SHADOW_PROVIDER):
+        if (selector_key, xpath) in getattr(self, 'adopted', ()):
+            pass    # another worker's heal: this provider did not propose it
+        elif heal is None or heal.get('source') not in (FINGERPRINT_PROVIDER, FRAME_PROVIDER,
+                                                        SHADOW_PROVIDER):
             try:
                 self.provider.report_outcome(selector_key, xpath, success)
             except Exception:

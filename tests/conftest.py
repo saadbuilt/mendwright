@@ -595,6 +595,7 @@ _ENV_SETTINGS = (
     'MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE',
     'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID',
     'MENDWRIGHT_WEBHOOK_URL', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR',
+    'MENDWRIGHT_DECLINE_TTL_SECONDS',
     'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL',
@@ -611,6 +612,39 @@ def _no_mendwright_env(monkeypatch):
     shell out."""
     for name in _ENV_SETTINGS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_fleet_state():
+    """The process-wide tables of mendwright.fleet and mendwright.store: no test sees the
+    declines another test's model gave, or the soft writes it left waiting (its files are
+    temporary)."""
+    from mendwright import fleet, store
+    yield
+    fleet.DECLINES.clear()
+    store.SOFT.clear()
+
+
+class SoftClock:
+    """The clock of the writes that can wait (mendwright.store.SOFT): advance(seconds) moves
+    it on, so a test sees a soft change written when it is due without waiting for it."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def soft_clock(monkeypatch):
+    from mendwright import store
+    clock = SoftClock()
+    monkeypatch.setattr(store.SOFT, 'clock', clock)
+    return clock
 
 
 @pytest.fixture(autouse=True)

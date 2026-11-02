@@ -74,7 +74,8 @@ from .exceptions import AttentionRequired
 from .fingerprint import valid as valid_fingerprint
 from .lists import valid as valid_list
 from .dismiss import NOT_LOOKED_AT, parse_probe, popup_of
-from .facade import _dismiss_choice, _get_by_choice, get_by_modes, get_by_setting, suggest_setting
+from .facade import (_dismiss_choice, _get_by_choice, _weak_look, get_by_modes, get_by_setting,
+                     suggest_setting)
 from .facade import RATE_GLOBAL_DEFAULT, RATE_PER_KEY_DEFAULT, _RateDefault
 from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, ActionProxy, Healer,
                      HealEvent, LOCATOR_READS, Role, Selector, _IN_RUN, _NOT_FOLLOWED, _batched,
@@ -83,12 +84,15 @@ from .facade import (_register, _unregister, _USAGE_ERRORS, DEFAULT_TIMEOUT_MS, 
                      _overlay_owner, _raised_by_run, _removable, _reraise, _setup,
                      HealScope, follow_allowed, heal_place, moved_message, shadow_found,
                      shadow_unreachable, ABSENT_ANSWERS)
+from .fleet import single_flight_async
 from .flow import (InterruptionLoop, absent_message, is_interception_error, is_stale_error,
                    page_path, rejected_selector_message, run_plain_message)
 from .interruptions import Budget, function_name
 from .limits import Guardrails
-from .resolver import (THROUGH, _no_match_message, _require_visible, _split_runnable,
-                       _target)
+from .gate import reuse_reason_async
+from .resolver import (THROUGH, Reuse, _again, _no_match_message, _require_visible,
+                       _split_runnable, _target, _used, from_code, refresh_every, refresh_key,
+                       reuse_meta)
 from .selectors import CSS, XPATH, InvalidSelector, classify
 from .shadow import driver_shadowed
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
@@ -495,6 +499,9 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._core._expect_values = checks
     healer._core._heal_get_by = heal_get_by
     get_by_modes(coord, heal_get_by, suggest_get_by)
+    # The heal runs in a worker thread: it looks at the page through the SyncBridge.
+    coord.look_again = _weak_look(healer, lambda h, key, broken: h._core._look_again(
+        key, broken, driver=bridge, url=bridge.url))
     if preset is not None:
         healer._core._interruptions[preset.key] = preset
         await healer._watch(preset)
@@ -544,6 +551,17 @@ async def _url(driver):
         return await _awaited(url())
     except Exception:
         return ''
+
+
+async def _reuse_verdict(driver, store, key, candidate, call):
+    """resolver.Reuse.check(), awaited: '' for a candidate a lookup may use (one from the
+    code, or a saved one whose element passes gate.reuse_reason_async()), else the reason it
+    is not used here."""
+    if from_code(candidate):
+        return ''
+    selector, frame_chain = _target(candidate)
+    return await reuse_reason_async(driver, selector, reuse_meta(store, key), frame_chain,
+                                    call=call)
 
 
 class AsyncHealer:
@@ -626,12 +644,14 @@ class AsyncHealer:
         async with self._turn():
             require_visible = _require_visible(self.store, key)
             runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
+            call = getby.parse(key)
             for candidate in runnable:
                 try:
                     native = await _match_handle(self._driver, candidate, require_visible)
                 except Exception:
                     continue
-                if native is not None:
+                if native is not None and await _reuse_verdict(
+                        self._driver, self.store, key, candidate, call) == '':
                     try:
                         return bool(await _act_on(self._driver, native, 'is_visible'))
                     except Exception:
@@ -890,9 +910,12 @@ class AsyncHealer:
             require_visible = _require_visible(store, key)
             candidates = store.candidates(key)
             runnable, errors = _split_runnable(key, candidates, self._driver)
+            call = getby.parse(key)
             for candidate in runnable:
                 try:
-                    if await _match_handle(self._driver, candidate, require_visible) is not None:
+                    if (await _match_handle(self._driver, candidate, require_visible) is not None
+                            and await _reuse_verdict(self._driver, store, key, candidate,
+                                                     call) == ''):
                         return True
                 except InvalidSelector as exc:
                     errors.append(exc.for_key(key))
@@ -1024,7 +1047,8 @@ class AsyncHealer:
             if native is _NOT_FOLLOWED:
                 native = await self._follow_into_shadow(key, exc, attempt)
             if native is _NOT_FOLLOWED:
-                native = await self._heal(key, exc, attempt)
+                native = await self._heal(key, exc, attempt, timeout)
+        core._adopt_winner(key)
         await self._check_healed_target(key)
         await self._learn(key, roles)
         core._remember_page(key, await _url(self._driver))
@@ -1074,7 +1098,7 @@ class AsyncHealer:
                 if _raised_by_run(exc):
                     raise
                 await self._get_by_frames(key, exc)
-                native = await self._heal(key, exc, attempt)
+                native = await self._heal(key, exc, attempt, timeout)
         except InterruptionLoop:
             raise   # the page is blocked: a heal would not help
         except AttentionRequired as exc:
@@ -1083,6 +1107,7 @@ class AsyncHealer:
             raise getby.not_found_error(exc) from exc
         if native is THROUGH:
             return self._get_by_through(proxy, target, getby.STARTED_TO_MATCH)
+        core._adopt_winner(key)
         await self._check_healed_target(key)
         await self._learn(key, None)
         core._remember_page(key, await _url(self._driver))
@@ -1128,6 +1153,7 @@ class AsyncHealer:
         candidates = store.candidates(key)
         runnable, errors = _split_runnable(
             key, [c for c in candidates if c.get('xpath') != key], driver)
+        reuse, call, every = Reuse(store, key), getby.parse(key), refresh_every(store)
         deadline = self._clock() + timeout_ms / 1000.0
         while True:
             try:
@@ -1154,15 +1180,31 @@ class AsyncHealer:
                     runnable.remove(candidate)
                     errors.append(exc.for_key(key))
                     continue
-                if handle is not None:
-                    try:
-                        await driver.scroll_into_view(*_target(candidate))
-                    except Exception:
-                        pass
-                    store.record_success(key, candidate['xpath'])
-                    return handle
+                if handle is None:
+                    continue
+                verdict = await _reuse_verdict(driver, store, key, candidate, call)
+                if verdict:
+                    runnable.remove(candidate)
+                    reuse.refuse(candidate, verdict)
+                    await self._refused_reuse(key, candidate, verdict)
+                    continue
+                if not _used(store, key, candidate):
+                    runnable.remove(candidate)
+                    continue
+                try:
+                    await driver.scroll_into_view(*_target(candidate))
+                except Exception:
+                    pass
+                store.record_success(key, candidate['xpath'])
+                return handle
+            if refresh_key(store, key, every):
+                candidates, runnable, errors = _again(store, key, driver, reuse,
+                                                      keep=lambda c: c.get('xpath') != key)
+                if runnable:
+                    continue        # what another worker saved: try it now (the call first)
             if self._clock() >= deadline:
-                raise AttentionRequired(_no_match_message(key, candidates, errors))
+                raise AttentionRequired(_no_match_message(key, candidates, errors,
+                                                          reuse.reasons))
             await self._sleep(poll_ms / 1000.0)
 
     async def _present_get_by(self, key):
@@ -1176,9 +1218,12 @@ class AsyncHealer:
             return count == 1 and (not require_visible or bool(visible))
         runnable, _errors = _split_runnable(key, [c for c in self.store.candidates(key)
                                                   if c.get('xpath') != key], self._driver)
+        call = getby.parse(key)
         for candidate in runnable:
             try:
-                if await _match_handle(self._driver, candidate, require_visible) is not None:
+                if (await _match_handle(self._driver, candidate, require_visible) is not None
+                        and await _reuse_verdict(self._driver, self.store, key, candidate,
+                                                 call) == ''):
                     return True
             except InvalidSelector:
                 continue
@@ -1444,8 +1489,11 @@ class AsyncHealer:
 
     async def _resolve(self, key, timeout_ms, poll_ms):
         """mendwright.resolver.resolve(), awaited: the candidates in the same order, bad
-        selectors dropped (InvalidSelector at once when none can run), the first unique
-        (visible) match returned and recorded, AttentionRequired at the deadline."""
+        selectors dropped (InvalidSelector at once when none can run), a saved selector used
+        only when its element passes the reuse check, the store's file looked at again before
+        a saved selector is used and after each poll that matched nothing (read-through), the
+        first unique (visible) match returned and recorded, AttentionRequired at the
+        deadline."""
         store, driver = self.store, self._driver
         candidates = store.candidates(key)
         if not candidates:
@@ -1454,6 +1502,7 @@ class AsyncHealer:
         if not runnable:
             raise errors[0]
         require_visible = _require_visible(store, key)
+        reuse, call, every = Reuse(store, key), getby.parse(key), refresh_every(store)
         deadline = self._clock() + timeout_ms / 1000.0
         while True:
             for candidate in list(runnable):
@@ -1465,16 +1514,48 @@ class AsyncHealer:
                     if not runnable:
                         raise errors[0] from None
                     continue
-                if handle is not None:
-                    try:
-                        await driver.scroll_into_view(*_target(candidate))
-                    except Exception:
-                        pass
-                    store.record_success(key, candidate['xpath'])
-                    return handle
+                if handle is None:
+                    continue
+                verdict = await _reuse_verdict(driver, store, key, candidate, call)
+                if verdict:
+                    runnable.remove(candidate)
+                    reuse.refuse(candidate, verdict)
+                    await self._refused_reuse(key, candidate, verdict)
+                    if not runnable:
+                        raise AttentionRequired(_no_match_message(key, candidates, errors,
+                                                                  reuse.reasons))
+                    continue
+                if not _used(store, key, candidate):
+                    runnable.remove(candidate)
+                    if not runnable:
+                        break
+                    continue
+                try:
+                    await driver.scroll_into_view(*_target(candidate))
+                except Exception:
+                    pass
+                store.record_success(key, candidate['xpath'])
+                return handle
+            if refresh_key(store, key, every):
+                candidates, runnable, errors = _again(store, key, driver, reuse)
+                if runnable:
+                    continue        # what another worker saved: try it now
+            if not runnable:
+                if errors and not reuse.reasons:
+                    raise errors[0]
+                raise AttentionRequired(_no_match_message(key, candidates, errors,
+                                                          reuse.reasons))
             if self._clock() >= deadline:
-                raise AttentionRequired(_no_match_message(key, candidates, errors))
+                raise AttentionRequired(_no_match_message(key, candidates, errors,
+                                                          reuse.reasons))
             await self._sleep(poll_ms / 1000.0)
+
+    async def _refused_reuse(self, key, candidate, reason):
+        """Healer._refused_reuse(), with the page's address awaited."""
+        try:
+            self._core._refused_reuse(key, candidate, reason, await _url(self._driver))
+        except Exception:
+            pass    # a broken log line or journal must not break a lookup
 
     async def _follow_into_frame(self, key, exc, attempt):
         """Healer._follow_into_frame(), with the frame lookups awaited and the live check
@@ -1567,11 +1648,15 @@ class AsyncHealer:
             return None
         return HealScope(frame=frame, driver=SyncBridge(framed, asyncio.get_running_loop()))
 
-    async def _heal(self, key, exc, attempt):
+    async def _heal(self, key, exc, attempt, timeout=None):
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
-        attempt() on the event loop. The coordinator reaches the page through SyncBridge."""
+        attempt() on the event loop. The coordinator reaches the page through SyncBridge.
+
+        Single-flight as on the sync Healer (mendwright.fleet.single_flight_async): a
+        follower awaits the leader on the event loop, at most the step's timeout, so it holds
+        no worker thread while it waits; then it adopts the leader's heal or reuses its
+        decline, or makes its own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
-        meta = self.store.meta(key)
         context = self._core._flow_context(key, await _url(self._driver))
         missed = [exc]
 
@@ -1583,13 +1668,22 @@ class AsyncHealer:
             return None
 
         scope = await self._heal_scope(key)
-        if scope is None:
-            await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta, context)
-        else:
-            # The key was last found inside an iframe or a shadow root: capture, check and
-            # save the heal there, or refuse it.
-            await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta, context)
-        return await attempt()
+
+        async def heal():
+            meta = self.store.meta(key)      # now: a follower heals after its wait
+            if scope is None:
+                await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta,
+                                 context)
+            else:
+                # The key was last found inside an iframe or a shadow root: capture, check and
+                # save the heal there, or refuse it.
+                await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta,
+                                 context)
+            return await attempt()
+
+        timeout = self.timeout_ms if timeout is None else timeout
+        return await single_flight_async(self.store, key, self._core._signature(key, context),
+                                         heal, timeout / 1000.0)
 
     async def _learn(self, key, roles):
         """Healer._learn(), with describe() awaited."""
