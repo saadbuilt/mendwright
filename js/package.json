@@ -1,6 +1,6 @@
 {
   "name": "mendwright",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-healing selectors for Playwright Test. When a selector breaks, mendwright finds the element again from a saved fingerprint or asks a model, checks the new selector against the live page, and retries the step.",
   "license": "MIT",
   "author": "saadbuilt",
