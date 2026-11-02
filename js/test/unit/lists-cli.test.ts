@@ -1,8 +1,9 @@
 // A list heal this package proposes, checked and accepted with the Python package's command
 // line, run from this repository: mendwright lists shows it with the id this package gave it,
 // mendwright lists accept takes it, and then this package's lookup throws that it waits for
-// mendwright fix, which sees it in a TypeScript file. The same page gives the same proposal in
-// both packages, and a proposal the Python package made and accepted is kept and named here too.
+// mendwright fix, which sees it in a TypeScript file; mendwright lists reject is read by the
+// healer that lived across it. The same page gives the same proposal in both packages, and a
+// proposal the Python package made and accepted is kept and named here too.
 
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
@@ -99,10 +100,11 @@ describe('the Python package\'s command line and a proposal this package made', 
         + 'selectors matches now. You accepted a list heal for it on ' + whenText(row.acceptedAt) + ', ' + ROWS
         + ', which matches 3 elements now, but mendwright takes a list only from the selectors in your code. Write it '
         + 'there with: mendwright fix --apply' + flag + '. If the list can be empty here, remove nonempty: true.';
-      const held = journalOf(w.dir).filter((e) => e.event === 'heal.held').length;
+      const looked = () => journalOf(w.dir).filter((e) => e.event === 'heal.requested' || e.event === 'heal.held').length;
+      const before = looked();
       assert.equal(await raised(w.open({ provider: model })), waits);
       assert.equal(await raised(heal), waits);
-      assert.equal(journalOf(w.dir).filter((e) => e.event === 'heal.held').length, held);   // nothing looked for again
+      assert.equal(looked(), before);   // nothing looked for again, by the fresh healer or the one across the accept
       assert.deepEqual(journalOf(w.dir).filter((e) => e.event === 'heal.declined').slice(-2).map((e) => [e.code, e.reason]),
         [['list_waits_fix', waits.slice(NO_MATCH.length)], ['list_waits_fix', waits.slice(NO_MATCH.length)]]);
       assert.equal(rowOf(w, ROWS).status, 'accepted');   // this package's writes kept the acceptance
@@ -155,6 +157,33 @@ describe('a list heal this package retired', { skip: needsPython() }, () => {
     const [again, , refused] = cli(['lists', 'accept', 'cart', pid, '--store', w.storePath]);
     assert.equal(again, 1);
     assert.ok(refused.includes("mendwright lists: 'cart' has no list heal to check."), refused);
+  });
+});
+
+describe('a list heal rejected with the Python package\'s command line', { skip: needsPython() }, () => {
+  test('is refused by the healer that lived across the reject, and never proposed again', async () => {
+    const { w, heal, model, pid } = await proposal();
+    const held = journalOf(w.dir).filter((e) => e.event === 'heal.held').length;
+    const [rejected, , err] = cli(['lists', 'reject', 'cart', pid, '--store', w.storePath]);
+    assert.equal(rejected, 0, err);
+    assert.equal(rowOf(w, ROWS).status, 'quarantined');
+    const file = fs.readFileSync(w.storePath, 'utf-8');
+    const written = fs.statSync(w.storePath).mtimeMs;
+    // The healer that proposed it still holds the row as proposed: it reads the reject before
+    // it looks again, so the list gate refuses the group, and the row stays rejected.
+    const message = await raised(heal);
+    assert.ok(message.includes('the group it found, ' + ROWS + ", failed mendwright's list checks (it is a list heal "
+      + 'you rejected, or one mendwright quarantined'), message);
+    assert.equal(rowOf(w, ROWS).status, 'quarantined');
+    assert.equal(journalOf(w.dir).filter((e) => e.event === 'heal.held').length, held);
+    // Never proposed again: the store is as the reject left it, and not written.
+    assert.equal(fs.readFileSync(w.storePath, 'utf-8'), file);
+    assert.equal(fs.statSync(w.storePath).mtimeMs, written);
+    const declined = journalOf(w.dir).filter((e) => e.event === 'heal.declined');
+    assert.equal(declined[declined.length - 1].code, 'list_not_found');
+    const [, out] = cli(['lists', '--store', w.storePath]);
+    assert.ok(out.includes('No list heal waits for you to check it.'), out);
+    assert.deepEqual(model.calls, []);
   });
 });
 
