@@ -127,12 +127,6 @@ This is for the workers that heal, so they read and write. Replace `BUCKET` and 
       "Resource": "arn:aws:s3:::BUCKET/PREFIX/*"
     },
     {
-      "Sid": "DeleteKeyRecordsOnly",
-      "Effect": "Allow",
-      "Action": "s3:DeleteObject",
-      "Resource": "arn:aws:s3:::BUCKET/PREFIX/keys/*"
-    },
-    {
       "Sid": "MissingObjectsAre404",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
@@ -146,8 +140,7 @@ This is for the workers that heal, so they read and write. Replace `BUCKET` and 
 What each statement does:
 
 - **GetObject and PutObject** cover the whole prefix: `overrides.json` and the key records.
-- **DeleteObject** covers only `keys/`, so a worker can never delete `overrides.json`.
-  - A conditional delete (`If-Match` with an ETag) also needs `s3:GetObject` on the object. The first statement grants that.
+- **No DeleteObject:** mendwright deletes nothing, so a worker can never delete `overrides.json` or a record. Give it to whoever cleans up `keys/` by hand.
 - **ListBucket** makes a missing object a 404.
   - Without it, S3 answers a GET of an object that doesn't exist yet with 403 instead of 404, so a fresh store reports Denied.
   - AWS documents that rule, but not how a prefix condition on ListBucket changes it. One reported test saw 404 for a missing object under the granted prefix.
