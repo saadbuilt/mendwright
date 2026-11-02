@@ -102,6 +102,18 @@ describe('an XPath that matches only inside one open shadow root', () => {
     assert.deepEqual(model.outcomes, []);
   });
 
+  test('after its first CSS form was quarantined there, is followed through the next one, as the Python package does',
+    async () => {
+      const w = world(V1);
+      await w.open().locator('save', XPATH, { role: 'button' }).click({ expect: () => false });
+      assert.deepEqual(healRows(w), [[CHAIN, [HOST], 'quarantined']]);
+      const heal = w.open();
+      await heal.locator('save', XPATH, { role: 'button' }).click();
+      assert.deepEqual(heal.heals.map((h) => [h.source, h.new]), [['shadow', HOST + ' >> #save']]);
+      assert.equal(last(w).id, 'save');
+      assert.deepEqual(healRows(w).sort(), [[HOST + ' >> #save', [HOST], 'active'], [CHAIN, [HOST], 'quarantined']]);
+    });
+
   test('stays in the inner one of nested shadow roots, through all their hosts', async () => {
     const w = world(page(LOOKALIKE + shadow(LOOKALIKE + shadow(SAVE_V1, '<settings-panel>'))));
     const heal = w.open();
