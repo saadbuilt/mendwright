@@ -38,7 +38,8 @@ jobs:
       - name: ruff check
         run: ruff check --output-format=github .
 
-  # The offline suite needs only lxml and pytest. No browser, network or vendor SDK.
+  # The offline suite: lxml and pytest, cssselect, and boto3 with moto for the S3 store tests
+  # (moto answers in the process, so nothing reaches AWS). No browser and no outside network.
   test:
     name: test (py${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
