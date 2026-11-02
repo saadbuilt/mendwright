@@ -22,7 +22,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-`[dev]` installs pytest, ruff, build and twine.
+`[dev]` installs pytest, cssselect, ruff, build and twine, and boto3 and moto for the S3 store tests, which skip without them.
 Keep the quotes around `".[dev]"`; zsh treats the brackets as a glob otherwise.
 
 For the real-browser tests, also install the browser libraries and Playwright's browsers:
@@ -44,8 +44,8 @@ patchright and camoufox are optional: `pip install patchright` then `python -m p
 python -m pytest
 ```
 
-This needs no network, API key or browser, and takes about 10 seconds.
-One or two tests skip on purpose: one needs a live gateway, and a POSIX-only one skips on Windows.
+This needs no network, API key or browser, and takes a few minutes.
+Tests that need Playwright, Selenium, pytest-xdist, pytest-rerunfailures, a live gateway or POSIX skip without them.
 
 `pyproject.toml` sets `addopts = "-m 'not browser' -p no:mendwright"`.
 The first part leaves out the browser tests.
@@ -56,7 +56,7 @@ The fixtures in `tests/conftest.py` cover most cases:
 
 - `make_page`: a `FakePage`, an lxml-backed page shaped like a Playwright page.
 - `stub_provider`: a `StubProvider` that returns a fixed proposal and records what it was sent.
-- Autouse fixtures that unset `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_DRY_RUN` and `MENDWRIGHT_DISABLE`, and reset the shared rate limiters.
+- Autouse fixtures that unset the `MENDWRIGHT_*`, provider and GitHub Actions variables a shell may set, and reset the shared rate limiters, the reused declines, the soft writes and the remote stores' shared state.
 
 Providers take an injected `http=` transport; `tests/test_providers.py` shows the pattern.
 
