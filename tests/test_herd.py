@@ -333,7 +333,9 @@ def test_a_follower_stops_waiting_at_the_cap_then_tries_itself(tmp_path, make_pa
     # This process's cap, or the key record's, which counts the workers of every process:
     # whichever the last two followers, racing, reach first.
     assert ' made 3 heal attempts for it in the last hour, and rate_per_key_per_hour is 3' in refused
-    assert 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR' in refused and 'rate/spend cap' in refused
+    # The rate was passed to open(), where the variable changes nothing.
+    assert 'The rate_per_key_per_hour= passed to mendwright.open() sets this cap.' in refused
+    assert 'MENDWRIGHT_RATE' not in refused and 'rate/spend cap' in refused
 
 
 def test_a_leader_waits_for_another_processes_lease_past_its_step_timeout(

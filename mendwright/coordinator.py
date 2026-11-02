@@ -132,12 +132,18 @@ def _cap_full(guardrails, selector_key):
         return None
 
 
-def rate_cap_message(selector_key, why):
+def rate_cap_message(selector_key, why, sources=None):
     """Why a heal attempt was refused by the hourly rate/spend cap, in plain words: what was
     not done (no model was asked), which cap is full (why is guardrails.full()'s answer, or
-    None), and the variables that set the caps."""
+    None), when it asks again, and what sets that cap. sources says what set each rate
+    ({'per_key': ..., 'global': ...}, a sentence each, see facade.rate_sources), or None when
+    it can't say (a coordinator built on its own)."""
     kind, count, cap = why if isinstance(why, tuple) and len(why) == 3 else (None, None, None)
-    if kind == 'per_key':
+    rate = kind in ('per_key', 'shared', 'global')
+    if rate and cap == 0:
+        full = (('rate_global_per_hour' if kind == 'global' else 'rate_per_key_per_hour')
+                + ' is 0, which lets no model attempt through')
+    elif kind == 'per_key':
         full = ("this process already made " + str(count) + ' heal attempts for it in the last '
                 'hour, and rate_per_key_per_hour is ' + str(cap))
     elif kind == 'shared':
@@ -152,10 +158,23 @@ def rate_cap_message(selector_key, why):
         full = "the provider's cost ceiling of this run's spend cap is reached"
     else:
         full = 'the hourly cap of heal attempts is reached'
-    return ("mendwright did not ask the model to repair '" + selector_key + "': " + full
+    text = ("mendwright did not ask the model to repair '" + selector_key + "': " + full
             + ' (the rate/spend cap of a direct provider; each attempt makes up to 2 model '
-            'calls). It fails closed, and asks again once older attempts drop out of the hour. '
-            'MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR set the caps.')
+            'calls). ')
+    if kind in ('calls', 'cost'):
+        # A SpendCap counts one run: nothing drops out of it, and no variable sets it.
+        return text + ('It fails closed for the rest of this run. The SpendCap of the '
+                       'guardrails passed to mendwright.open() sets it.')
+    text += ('It fails closed.' if rate and cap == 0 else
+             'It fails closed, and asks again once older attempts drop out of the hour.')
+    if not sources:
+        return text + (' MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR '
+                       'set the caps of mendwright.open().')
+    if rate:
+        said = [sources.get('global' if kind == 'global' else 'per_key')]
+    else:
+        said = list(dict.fromkeys((sources.get('per_key'), sources.get('global'))))
+    return ' '.join([text] + [s for s in said if s])
 
 
 def _picked_role(meta, choices, proposal, html):
@@ -805,23 +824,23 @@ class HealCoordinator:
         # counted in the key's record, where the per-key cap holds for every process on this
         # store together; only then in this process. So an attempt the shared budget refuses
         # spends none of this process's slots, for this key or for its others.
+        sources = getattr(self, 'rate_sources', None)
         if self.guardrails is not None:
             full = _cap_full(self.guardrails, selector_key)
             if full is not None:
                 self.journal.rejected(selector_key, reason='rate/spend cap')
-                return self._decline(selector_key, rate_cap_message(selector_key, full),
+                return self._decline(selector_key, rate_cap_message(selector_key, full, sources),
                                      code='rate_limit')
         shared = self._shared_budget(selector_key)
         if shared is not None:
             self.journal.rejected(selector_key, reason='rate/spend cap')
-            return self._decline(selector_key, rate_cap_message(selector_key, shared),
+            return self._decline(selector_key, rate_cap_message(selector_key, shared, sources),
                                  code='rate_limit')
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
             self.journal.rejected(selector_key, reason='rate/spend cap')
-            return self._decline(selector_key, rate_cap_message(selector_key,
-                                                                _cap_full(self.guardrails,
-                                                                          selector_key)),
-                                 code='rate_limit')
+            return self._decline(selector_key, rate_cap_message(
+                selector_key, _cap_full(self.guardrails, selector_key), sources),
+                code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:
             self.journal.requested(selector_key)

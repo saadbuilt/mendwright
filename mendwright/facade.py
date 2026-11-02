@@ -391,6 +391,21 @@ def rate_setting(rate):
     return value
 
 
+def rate_sources(guardrails, per_key, per_hour, entry='mendwright.open()'):
+    """What sets each of open()'s two rates, as the sentence the message of a heal a full cap
+    stops ends with (see coordinator.rate_cap_message): {'per_key': ..., 'global': ...}. Its
+    environment variable when the rate was not passed; the argument when it was, since the
+    variable then changes nothing; the guardrails when they were passed, since the rates then
+    change nothing."""
+    if guardrails is not None:
+        said = 'The guardrails passed to ' + entry + ' set the caps.'
+        return {'per_key': said, 'global': said}
+    return {kind: (default.var + ' sets this cap.' if isinstance(rate, _RateDefault) else
+                   'The ' + default.param + '= passed to ' + entry + ' sets this cap.')
+            for kind, rate, default in (('per_key', per_key, RATE_PER_KEY_DEFAULT),
+                                        ('global', per_hour, RATE_GLOBAL_DEFAULT))}
+
+
 def _shared_limiter(name, per_key, per_hour):
     """The rate limiter of every Healer of this process on the store named name (a local
     file's normalized absolute path, or a remote store's URL) with these caps."""
@@ -578,6 +593,7 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
         timeout_ms = _env_timeout()
     if timeout_ms is None:
         timeout_ms = DEFAULT_TIMEOUT_MS
+    sources = rate_sources(guardrails, rate_per_key_per_hour, rate_global_per_hour, entry)
     rate_per_key_per_hour = rate_setting(rate_per_key_per_hour)
     rate_global_per_hour = rate_setting(rate_global_per_hour)
     if dry_run is None:
@@ -653,6 +669,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
     # How long a model's decline of a key on a page is reused (see mendwright.fleet).
     coord.decline_ttl = decline_ttl_setting()
+    # What set each rate, for the message of a heal a full cap stops (rate_cap_message).
+    coord.rate_sources = sources
     # What turned the fingerprint tier off, for the refusal of a list looked up with
     # nonempty=True (see Healer._nonempty_blocked).
     coord.fingerprint_off_by = None if fingerprint else off_by

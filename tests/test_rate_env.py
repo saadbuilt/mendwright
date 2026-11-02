@@ -71,7 +71,10 @@ def test_zero_lets_no_model_attempt_through(tmp_path, make_page, stub_provider, 
     with pytest.raises(AttentionRequired, match='rate/spend cap') as exc:
         healer.locator('go', BROKEN, role='button')
     assert provider.bundles == []
-    assert 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR' in str(exc.value)
+    assert str(exc.value).endswith(
+        "mendwright did not ask the model to repair 'go': rate_per_key_per_hour is 0, which lets "
+        'no model attempt through (the rate/spend cap of a direct provider; each attempt makes up '
+        'to 2 model calls). It fails closed. MENDWRIGHT_RATE_PER_KEY_PER_HOUR sets this cap.')
 
 
 @pytest.mark.parametrize('raw', ['ten', '-1', '2.5', 'unlimited'])
@@ -158,3 +161,49 @@ def test_a_refusal_by_the_shared_budget_spends_none_of_this_process_slots(
     assert b_model.bundles == []
     b.locator('stop', "//button[@id='stop-gone']", role='button').click()    # healed
     assert len(b_model.bundles) == 1 and b.heals[-1].new == "//button[@id='c']"
+
+
+def _refused_twice(heal, first='a', second='a'):
+    """The last line of the error of a heal the cap stops: a first broken key uses the one
+    attempt the caps allow, and the second is refused."""
+    with pytest.raises(AttentionRequired):
+        heal.locator(first, "//button[@id='gone-" + first + "']", role='button')
+    with pytest.raises(AttentionRequired) as caught:
+        heal.locator(second, "//button[@id='gone-" + second + "']", role='button')
+    return str(caught.value).splitlines()[-1]
+
+
+def test_the_cap_message_names_the_variable_of_a_rate_not_passed(tmp_path, make_page,
+                                                                  stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', '1')
+    heal = mendwright.open(make_page(GO), provider=stub_provider(None), fingerprint=False,
+                           store_path=str(tmp_path / 'o.json'), timeout_ms=0)
+    text = _refused_twice(heal)
+    assert 'rate_per_key_per_hour is 1' in text
+    assert text.endswith('It fails closed, and asks again once older attempts drop out of the '
+                         'hour. MENDWRIGHT_RATE_PER_KEY_PER_HOUR sets this cap.')
+
+
+def test_the_cap_message_names_the_argument_of_a_rate_passed_to_open(tmp_path, make_page,
+                                                                     stub_provider, monkeypatch):
+    # The variable changes nothing then: naming it would send you to the wrong place.
+    monkeypatch.setenv('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', '100')
+    heal = mendwright.open(make_page(GO), provider=stub_provider(None), fingerprint=False,
+                           rate_global_per_hour=1, store_path=str(tmp_path / 'o.json'),
+                           timeout_ms=0)
+    text = _refused_twice(heal, 'a', 'b')
+    assert 'rate_global_per_hour is 1' in text and 'MENDWRIGHT_RATE' not in text
+    assert text.endswith('The rate_global_per_hour= passed to mendwright.open() sets this cap.')
+
+
+def test_the_spend_cap_message_says_it_holds_for_the_run(tmp_path, make_page, stub_provider):
+    from mendwright.limits import Guardrails, RateLimiter, SpendCap
+    guard = Guardrails(RateLimiter(per_key_per_hour=None, global_per_hour=None),
+                       SpendCap(max_calls=1))
+    heal = mendwright.open(make_page(GO), provider=stub_provider(None), guardrails=guard,
+                           store_path=str(tmp_path / 'o.json'), timeout_ms=0, fingerprint=False)
+    text = _refused_twice(heal, 'a', 'b')
+    assert 'this run already made the 1 heal calls its spend cap allows' in text
+    assert text.endswith('It fails closed for the rest of this run. The SpendCap of the guardrails '
+                         'passed to mendwright.open() sets it.')
+    assert 'hour' not in text.split('model calls).')[-1] and 'MENDWRIGHT_RATE' not in text
