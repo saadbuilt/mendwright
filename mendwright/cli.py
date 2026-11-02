@@ -52,7 +52,8 @@ _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RU
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
                  'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_SUGGEST_GET_BY',
                  'MENDWRIGHT_RUN_ID', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR',
-                 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'MENDWRIGHT_DECLINE_TTL_SECONDS')
+                 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'MENDWRIGHT_DECLINE_TTL_SECONDS',
+                 'MENDWRIGHT_STORE_READ_ONLY', 'MENDWRIGHT_JOURNAL_DIR')
 # MENDWRIGHT_* variables that hold a URL whose path or query can be a secret (a webhook's
 # path is its key): doctor shows scheme and host only.
 _ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY', 'MENDWRIGHT_WEBHOOK_URL')
@@ -296,7 +297,7 @@ def _settings_problems():
     from .facade import _env_timeout
     problems = []
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
-                 'MENDWRIGHT_SUGGEST_GET_BY'):
+                 'MENDWRIGHT_SUGGEST_GET_BY', 'MENDWRIGHT_STORE_READ_ONLY'):
         problem, _ = _flag_problem(name)
         if problem:
             problems.append(problem)

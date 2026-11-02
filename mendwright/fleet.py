@@ -598,7 +598,9 @@ _RECORDS_LOCK = threading.Lock()
 def records_for(store):
     """The KeyRecords of store's file (see the comment above LEASE_TTL), or None for a store
     without a file, or one that never writes (read_only). A remote store's records are
-    keys/<hash>.json next to its overrides.json, in its backend (mendwright.remote)."""
+    keys/<hash>.json next to its overrides.json, in its backend (mendwright.remote). For a
+    read-only worker's store (writes False), a view that reads them and writes nothing
+    (ReadOnlyRecords)."""
     from .backends import OVERRIDES
     from .backends.file import FileBackend
     if getattr(store, 'read_only', False) is True:
@@ -617,7 +619,42 @@ def records_for(store):
                 prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
                 found = KeyRecords(FileBackend(folder), prefix)
             _RECORDS[name] = found
-        return found
+    if getattr(store, 'writes', True) is False:
+        return ReadOnlyRecords(found)
+    return found
+
+
+class ReadOnlyRecords:
+    """The key records of a read-only worker's store: it reads the leases and the declines
+    other workers keep, so it waits for another worker's heal of a page and reuses a decline,
+    and writes nothing. take() and every other change raise Denied: such a worker heals without
+    a lease (see _lead_across_processes), counts its attempts in its process only, and keeps its
+    declines in this process."""
+
+    def __init__(self, records):
+        self._records = records
+        self.prefix, self.poll = records.prefix, records.poll
+
+    def name(self, key):
+        return self._records.name(key)
+
+    def read(self, key):
+        return self._records.read(key)
+
+    lease_of = staticmethod(KeyRecords.lease_of)
+    decline_of = staticmethod(KeyRecords.decline_of)
+
+    def look(self, key, now):
+        return self._records.look(key, now)
+
+    def decline(self, key, signature, now):
+        return self._records.decline(key, signature, now)
+
+    def _refuse(self, *args, **kwargs):
+        from .backends import Denied
+        raise Denied('a read-only worker writes no key record')
+
+    update = take = renew = release = spend = keep_decline = _refuse
 
 
 class _Renewer:

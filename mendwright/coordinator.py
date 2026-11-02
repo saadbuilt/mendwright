@@ -433,7 +433,7 @@ class HealCoordinator:
         from .shadow import place_text
         self.journal.applied(selector_key, xpath=new, old=[old], provider=SHADOW_PROVIDER,
                              model=None, latency_ms=0, source=SHADOW_PROVIDER,
-                             shadow=list(hosts))
+                             shadow=list(hosts), **self._kept())
         self.heal_reasons.pop(selector_key, None)
         self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
                            'source': SHADOW_PROVIDER})
@@ -446,7 +446,8 @@ class HealCoordinator:
         the iframe ``frame`` and is now saved there as ``new``. It counts as a heal (strict
         mode fails on it, and the canary checks it) with source 'frame'."""
         self.journal.applied(selector_key, xpath=new, old=[old], provider=FRAME_PROVIDER,
-                             model=None, latency_ms=0, source=FRAME_PROVIDER, frame=frame)
+                             model=None, latency_ms=0, source=FRAME_PROVIDER, frame=frame,
+                             **self._kept())
         self.heal_reasons.pop(selector_key, None)
         self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
                            'source': FRAME_PROVIDER})
@@ -1112,7 +1113,7 @@ class HealCoordinator:
                           latency_ms=int(round(seconds * 1000)), xpath=match.xpath, css=css,
                           id=evidence['id'], list=True, items=match.count, label=now['label'],
                           differs=evidence['differs'], old=old, page=evidence['page'],
-                          source=FINGERPRINT_PROVIDER)
+                          source=FINGERPRINT_PROVIDER, **self._kept())
         self.held.append({'key': selector_key, 'xpath': match.xpath, 'id': evidence['id'],
                           'label': now['label'], 'count': match.count})
         role = meta.get('expectedRole')
@@ -1384,7 +1385,8 @@ class HealCoordinator:
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
-                             source=source if source != 'model' else None, **where)
+                             source=source if source != 'model' else None, **where,
+                             **self._kept())
         self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
         self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
                            'new': applied, 'confirmed': None, 'source': source})
@@ -1439,7 +1441,19 @@ class HealCoordinator:
             from .shadow import place_text
             where = ' inside ' + place_text(self.shadow_hosts)
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + where + ': ' + was + ' -> '
-                   + applied + timing)
+                   + applied + timing + self._kept_note())
+
+    def _kept(self):
+        """{'saved': False} for a journal event of a change this worker keeps in memory, as a
+        read-only worker does (see SelectorStore.writes), else {}."""
+        return {'saved': False} if getattr(self.store, 'writes', True) is False else {}
+
+    def _kept_note(self):
+        """What a log line of such a change adds."""
+        if not self._kept():
+            return ''
+        return ('; kept in memory for this process, since this worker does not write the store '
+                '(MENDWRIGHT_STORE_READ_ONLY)')
 
     def confirm(self, selector_key, xpath, success, reason=None, *, by=None, test=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
@@ -1466,7 +1480,7 @@ class HealCoordinator:
             heal['confirmed'] = bool(success)
         if not success:
             self.store.quarantine(selector_key, xpath)
-            self.journal.quarantine(selector_key, xpath=xpath, reason=reason)
+            self.journal.quarantine(selector_key, xpath=xpath, reason=reason, **self._kept())
 
     def is_pending(self, selector_key, xpath):
         """True when xpath is the heal of selector_key this process applied and has not

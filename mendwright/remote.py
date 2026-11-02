@@ -304,9 +304,9 @@ class RemoteSelectorStore(SelectorStore):
     CAS_PAUSE = 0.2
 
     def __init__(self, data, backend, place, destructive_keys=frozenset(), seed=None,
-                 override=None, *, read_only=False, version=None, unread=None):
+                 override=None, *, read_only=False, version=None, unread=None, writes=True):
         super().__init__(data, place, destructive_keys, seed, override, read_only=read_only,
-                         file_version=version)
+                         file_version=version, writes=writes)
         # backend is a _Guarded around the StoreBackend; place names the store.
         self.backend = backend
         self.remote_place = place
@@ -399,14 +399,14 @@ class RemoteSelectorStore(SelectorStore):
     def flush(self):
         """SelectorStore.flush(), and a write that failed is made again too. True when nothing
         waits any more."""
-        if self._read_only:
+        if not self.writes:
             return True
         if self._soft_waiting or self._unsaved:
             self._persist_override()
         return SOFT.flush(self._soft_path(), sleep=self._sleep) and not self._unsaved
 
     def _persist_override(self):
-        if self._read_only:
+        if not self.writes:
             return
         state = self._batch
         if getattr(state, 'depth', 0):
@@ -542,7 +542,8 @@ def _unread_reason(place, exc):
             'Selectors in your code and seed files still work.')
 
 
-def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_only=False):
+def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_only=False,
+                      writes=True):
     """A RemoteSelectorStore over a local seed file (None for none, as load_store() takes it)
     and a remote store: a store URL (s3://bucket/prefix/, https://host/path/, memory:, see
     mendwright.backends.url) or a StoreBackend.
@@ -550,7 +551,8 @@ def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_on
     A URL no backend takes raises ValueError, without quoting it, and an s3:// URL without
     boto3 ImportError. A store that cannot be reached, refuses the credentials, or holds an
     overrides.json that is not a selector file is not an error: the store starts from the seed
-    alone, refuses every heal (heal_refusal), and reads the store again when it looks at it."""
+    alone, refuses every heal (heal_refusal), and reads the store again when it looks at it.
+    writes=False: a read-only worker's store (see SelectorStore.writes)."""
     from .backends.url import backend_for, store_url
     if isinstance(store, str):
         place = store_url(store)            # raises ValueError for a URL nothing takes
@@ -592,7 +594,7 @@ def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_on
     store = RemoteSelectorStore(merge(seed, override), guarded, place, destructive_keys,
                                 seed=seed, override=override if native else None,
                                 read_only=read_only, version=version if native else None,
-                                unread=unread)
+                                unread=unread, writes=writes)
     if error is not None:
         store.unread_error = type(error).__name__
     if unread is None and native:

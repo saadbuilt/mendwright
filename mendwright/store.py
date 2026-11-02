@@ -837,11 +837,14 @@ class SelectorStore:
     refresh_every = 1.0
 
     def __init__(self, data, override_path, destructive_keys=frozenset(), seed=None,
-                 override=None, *, read_only=False, file_version=None):
+                 override=None, *, read_only=False, file_version=None, writes=True):
         self._data = data
         # read_only: changes stay in memory, and the file is never locked, read or written
         # again (see _persist_override).
         self._read_only = bool(read_only)
+        # writes=False: the file is read, and refresh() takes in what other workers save, but
+        # it is never written, nor its key records: changes stay in memory (see writes).
+        self._writes = bool(writes)
         # The version (see file_version) of the override file every key in memory was last
         # merged with: the file load_store() read, or the one this store last wrote. key ->
         # the version refresh() last merged that key with, when newer.
@@ -1197,6 +1200,18 @@ class SelectorStore:
     def read_only(self):
         """True for a store that never writes its file (see load_store(read_only=True))."""
         return self._read_only
+
+    @property
+    def writes(self):
+        """Whether this store writes its file and its key records. False for a read-only
+        worker (load_store(writes=False), MENDWRIGHT_STORE_READ_ONLY=1): it takes in the heals
+        and quarantines other workers save, as any store, and keeps its own changes in memory,
+        for this process only. A read_only store writes nothing either."""
+        return self._writes and not self._read_only
+
+    @writes.setter
+    def writes(self, value):
+        self._writes = bool(value)
 
     def snapshot(self):
         """An independent copy of this store in memory, with read_only=True: what is done
@@ -1585,7 +1600,7 @@ class SelectorStore:
         memory for the store's next write. rows {xpath: lastSucceededAt} and the key's soft
         metadata also go to SOFT, which writes them at exit if this store is gone before it
         wrote them."""
-        if self._read_only:
+        if not self.writes:
             return
         meta = {f: v for f, v in self._meta.get(key, {}).items() if f in SOFT_META}
         path = self._soft_path()
@@ -1607,15 +1622,15 @@ class SelectorStore:
     def flush(self):
         """Write now the soft changes that wait (see SOFT_EVERY): this store's own, and those
         other stores of this process left for its file. True when nothing waits any more."""
-        if self._read_only:
+        if not self.writes:
             return True
         if self._soft_waiting:
             self._persist_override()
         return SOFT.flush(self._soft_path(), sleep=self._sleep)
 
     def _persist_override(self):
-        if self._read_only:
-            return      # no lock file, no read, no write (see read_only)
+        if not self.writes:
+            return      # no lock file, no read, no write (see read_only and writes)
         state = self._batch
         if getattr(state, 'depth', 0):
             state.wanted = True     # written when the batch ends (see batch)
@@ -1657,7 +1672,7 @@ class SelectorStore:
         file before it waits for this process's turn to write and again when it has it, so of
         the stores of a process that save one change at once, the first writes it. In a batch,
         the look is made when the batch ends. False when nothing was written for it."""
-        if self._read_only:
+        if not self.writes:
             return False
         state = self._batch
         if getattr(state, 'depth', 0):
@@ -2227,7 +2242,8 @@ def _is_remote(override_path):
                for name in ('get', 'put', 'delete', 'describe'))
 
 
-def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False):
+def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False,
+               writes=True):
     """A SelectorStore over a read-only seed file and a writable override file.
 
     seed_path=None means no seed. A seed path that does not exist raises
@@ -2239,12 +2255,16 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
     read_only=True gives a store that never writes the override file: changes stay in
     memory (`mendwright check` reads its store this way).
 
+    writes=False gives a store for a read-only worker (see SelectorStore.writes): it reads
+    the override file and takes in what other workers save, and never writes it.
+
     override_path may also be a store URL (s3://bucket/prefix/, https://host/path/, memory:)
     or a StoreBackend: the override file is then overrides.json there (see
     mendwright.remote.load_remote_store), and the seed file stays a local file."""
     if _is_remote(override_path):
         from .remote import load_remote_store
-        return load_remote_store(seed_path, override_path, destructive_keys, read_only=read_only)
+        return load_remote_store(seed_path, override_path, destructive_keys, read_only=read_only,
+                                 writes=writes)
     override_path = _expand(override_path)
     if seed_path is None:
         seed = _empty()
@@ -2261,4 +2281,4 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
     # has inferred metadata, not metadata someone set.
     return SelectorStore(merge(seed, override), override_path, destructive_keys, seed=seed,
                          override=override if native else None, read_only=read_only,
-                         file_version=version if native else None)
+                         file_version=version if native else None, writes=writes)

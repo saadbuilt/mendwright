@@ -229,6 +229,9 @@ DEFAULT_TIMEOUT_MS = 10000
 # local store keeps its journal next to its file.
 JOURNAL_DIR_VAR = 'MENDWRIGHT_JOURNAL_DIR'
 DEFAULT_JOURNAL_DIR = './.mendwright'
+# A read-only worker: MENDWRIGHT_STORE_READ_ONLY=1 makes open() read the store and take in what
+# other workers save, and never write it or its key records (see SelectorStore.writes).
+READ_ONLY_VAR = 'MENDWRIGHT_STORE_READ_ONLY'
 
 
 def journal_dir():
@@ -613,10 +616,13 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
                 'no model provider is configured (see the ' + entry + ' warning, or run '
                 'mendwright doctor)'))
 
+    read_only = _env_flag(READ_ONLY_VAR)
     if store is None:
         # No seed, plus any previously-healed overrides at store_path (a file, or a store URL:
         # see mendwright.remote).
-        store = load_store(None, store_path, destructive_keys)
+        store = load_store(None, store_path, destructive_keys, writes=not read_only)
+    elif read_only and getattr(store, 'writes', False):
+        store.writes = False        # a read-only worker never writes, whatever store it has
     place = getattr(store, 'remote_place', None)
     if isinstance(place, str) and place:
         # A remote store: the journal stays on this machine, and the rate limit is per store.
