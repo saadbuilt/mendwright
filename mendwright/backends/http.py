@@ -81,6 +81,9 @@ def folder_url(url) -> tuple[str, bool]:
     path = parts.path or '/'
     if not path.endswith('/'):
         path += '/'
+    # A path that is not ASCII goes in a request as UTF-8, percent-encoded, as a browser
+    # sends it; what is already percent-encoded stays as it is.
+    path = quote(path, safe="/%:@!$&'()*+,;=-._~")
     return scheme + '://' + netloc + path, loopback
 
 

@@ -432,9 +432,24 @@ def test_http_a_loopback_store_never_goes_through_a_proxy(client, stub, monkeypa
     ('http://localhost:8787/x/', 'http://localhost:8787/x/'),
     ('http://127.0.0.1/', 'http://127.0.0.1/'),
     ('http://[::1]:8787/store/', 'http://[::1]:8787/store/'),
+    # A path that is not ASCII is percent-encoded, as UTF-8; one already encoded stays.
+    ('https://store.example.com/équipe/', 'https://store.example.com/%C3%A9quipe/'),
+    ('https://store.example.com/%C3%A9quipe/', 'https://store.example.com/%C3%A9quipe/'),
 ])
 def test_http_takes_https_anywhere_and_http_on_loopback(url, place):
     assert HttpBackend(url).describe() == place
+
+
+def test_http_a_store_url_with_a_path_that_is_not_ascii_is_asked_for_encoded(stub, monkeypatch):
+    # http.client sends only ASCII: the store opened with a raw UnicodeEncodeError.
+    from mendwright import load_store
+    from mendwright.backends.url import store_url
+    url = stub.url + 'café/'
+    assert store_url(url) == stub.url + 'caf%C3%A9/'
+    monkeypatch.setenv('MENDWRIGHT_STORE_TOKEN', TOKEN)
+    stub.answer(404)
+    store = load_store(None, url)
+    assert store.unread is None and stub.requests[0][:2] == ('GET', '/caf%C3%A9/overrides.json')
 
 
 @pytest.mark.parametrize('url', [
