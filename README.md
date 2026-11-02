@@ -194,7 +194,7 @@ A port for Playwright Test is on npm. It has this package's fingerprint scoring,
 import { test, expect } from 'mendwright/test';   // instead of '@playwright/test'
 ```
 
-It does less than the Python package for now (no `dismiss`, `expect_value`, iframe or shadow-root repairs yet). See [js/README.md](https://github.com/saadbuilt/mendwright/blob/main/js/README.md).
+It does less than the Python package for now (no Selenium, remote stores, one heal for many workers or model repairs of `getBy*` calls yet), and it uses this package's commands on its store. See [js/README.md](https://github.com/saadbuilt/mendwright/blob/main/js/README.md).
 
 ## A model that runs on your machine
 
