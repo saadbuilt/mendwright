@@ -2156,8 +2156,9 @@ When the leader is done, each waiting worker:
 - **fails with the model's own reason** when the model looked at the page and gave no usable heal, with no model call (see [Declines are reused](#declines-are-reused)).
 - **makes its own attempt**, under the usual caps, after anything else: a rate limit, a failure of the provider, a dry run.
 
-A worker waits no longer than its step's own `timeout_ms`, then makes its own attempt under the usual caps.
-So keep `timeout_ms` above your model's usual answer time. The default, 10 seconds, is. With `timeout_ms` of 100 ms and a model that takes 2 seconds, every worker stops waiting before the leader has its answer, and heals alone, as before.
+A worker waits for the leader as long as the leader is at work, whatever its step's own `timeout_ms`: a worker that stopped sooner would only ask the model the same question again.
+The wait is capped at 60 seconds (`mendwright.fleet.FOLLOW_CAP`). After that, a worker makes its own attempt under the usual caps.
+A leader in another process is at work while it renews its lease. When that process dies, its lease runs out 15 seconds after the last renewal, and one waiting worker takes the heal over.
 
 Only the leader spends the hourly budget. An attempt still makes up to 2 model calls.
 `rate_per_key_per_hour` counts the attempts of every process on the machine together, and `rate_global_per_hour` those of one process.
@@ -2251,7 +2252,7 @@ Measured with 1000 threads in one process, or 16 processes of 10 threads, on one
 | 16 processes of 10 threads, the model heals | 48 calls, 112 failures | 1 call, 159 adopted |
 | 16 processes of 10 threads, the model finds nothing | 48 calls, 112 failures | 1 call, 159 with the model's reason |
 
-With `timeout_ms=100`, shorter than the model's answer, the workers stop waiting first and heal alone, so the thread herds make as many model calls as before: 3 with the caps, 1000 without. Without the caps, a worker still uses the heal another worker saved while it waited for its own answer: 2 writes where there were 1001. 1000 threads that heal from the fingerprint all finish before the first of them has saved, and save their own heals as before. 16 processes of 10 threads make 3 calls in all where they made 48, since the per-key cap counts every process, and so get 157 failures where they got 112; their fingerprint heal is made once, with 2 writes where there were 179.
+A shorter `timeout_ms`, even one below the model's answer time, gives the same counts: the workers wait for the leader whatever their step's timeout (see [One heal for many workers](#one-heal-for-many-workers)).
 
 ## CI
 

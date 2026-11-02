@@ -12,14 +12,16 @@ import concurrent.futures
 import itertools
 import json
 import threading
+import time
 
 import pytest
 
 import mendwright
 import mendwright.aio
+import mendwright.fleet as fleet
 import mendwright.store as store_module
-from mendwright import AttentionRequired
-from mendwright.fleet import FLIGHTS, page_signature
+from mendwright import AttentionRequired, load_store
+from mendwright.fleet import FLIGHTS, page_signature, records_for
 from test_aio import AsyncFakePage
 
 URL = 'https://shop.test/checkout'
@@ -177,15 +179,61 @@ def test_the_async_healer_follows_on_its_event_loop(tmp_path, make_page, stub_pr
     assert all(page.actions[-1][:2] == ('xpath=' + HEALED, 'check') for page in pages)
 
 
-def test_a_follower_waits_no_longer_than_its_step_then_tries_itself(tmp_path, make_page,
-                                                                     stub_provider):
+def test_a_follower_waits_for_the_leader_past_its_step_timeout(tmp_path, make_page,
+                                                               stub_provider, monkeypatch):
+    # A step timeout of 200 ms and a model that answers later: the followers still wait for
+    # the leader (at most FOLLOW_CAP), so there is one model call, not one per worker.
+    _warm(make_page, tmp_path, stub_provider)
+    waits = []
+    real_wait = FLIGHTS.wait
+
+    def wait(flight, timeout):
+        waits.append(timeout)
+        return real_wait(flight, timeout)
+    monkeypatch.setattr(FLIGHTS, 'wait', wait)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    workers = []
+    for _ in range(N):
+        page = make_page(V2, url=URL)
+        heal = mendwright.open(page, provider=Blocking(calls, release, changed),
+                               store_path=_store(tmp_path), timeout_ms=200, fingerprint=False)
+        heal._clock = _instant()
+        workers.append((page, heal))
+    errors = []
+
+    def run(heal):
+        try:
+            heal.locator(KEY, CODE).check()
+        except Exception as exc:        # noqa: BLE001 - reported below
+            errors.append(exc)
+    threads = [threading.Thread(target=run, args=(heal,)) for _page, heal in workers]
+    for thread in threads:
+        thread.start()
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
+    assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+    assert waits == [fleet.FOLLOW_CAP] * (N - 1) and fleet.FOLLOW_CAP == 60.0
+    release.set()
+    for thread in threads:
+        thread.join(60)
+    assert not any(t.is_alive() for t in threads) and errors == []
+    events = _journal(tmp_path)
+    assert len(calls) == 1
+    assert _count(events, 'heal.adopted') == N - 1
+    assert _count(events, 'heal.declined', code='rate_limit') == 0
+    assert all(page.actions[-1][:2] == ('xpath=' + HEALED, 'check') for page, _h in workers)
+
+
+def test_a_follower_stops_waiting_at_the_cap_then_tries_itself(tmp_path, make_page,
+                                                                stub_provider, monkeypatch):
+    monkeypatch.setattr(fleet, 'FOLLOW_CAP', 0.2)
     _warm(make_page, tmp_path, stub_provider)
     calls, release, changed = [], threading.Event(), threading.Condition()
     workers = []
     for _ in range(4):
         page = make_page(V2, url=URL)
         heal = mendwright.open(page, provider=Blocking(calls, release, changed),
-                               store_path=_store(tmp_path), timeout_ms=200, fingerprint=False,
+                               store_path=_store(tmp_path), timeout_ms=60000, fingerprint=False,
                                rate_per_key_per_hour=3)
         heal._clock = _instant()
         workers.append(heal)
@@ -203,8 +251,8 @@ def test_a_follower_waits_no_longer_than_its_step_then_tries_itself(tmp_path, ma
     threads = [threading.Thread(target=run, args=(heal,)) for heal in workers]
     for thread in threads:
         thread.start()
-    # The leader blocks. Each follower stops waiting after its 200 ms and tries itself, under
-    # the normal caps: two more attempts fit the per-key cap of 3, the last is refused.
+    # The leader blocks. Each follower stops waiting at the cap (200 ms here) and tries itself,
+    # under the normal caps: two more attempts fit the per-key cap of 3, the last is refused.
     with changed:
         assert changed.wait_for(lambda: len(calls) == 3 and len(outcomes) == 1, 60)
     release.set()
@@ -217,6 +265,35 @@ def test_a_follower_waits_no_longer_than_its_step_then_tries_itself(tmp_path, ma
     assert ('this process already made 3 heal attempts for it in the last hour, and '
             'rate_per_key_per_hour is 3') in refused
     assert 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR' in refused and 'rate/spend cap' in refused
+
+
+def test_a_leader_waits_for_another_processes_lease_past_its_step_timeout(
+        tmp_path, make_page, stub_provider, monkeypatch):
+    # Another process holds the key's lease for this page and heals it. This process's leader
+    # waits while that lease lives, though its step's timeout of 100 ms passed long before,
+    # then uses the heal that process saved: no model call of its own.
+    _warm(make_page, tmp_path, stub_provider)
+    records = records_for(load_store(None, _store(tmp_path)))
+    owner = 'other-host/1/abc'
+    records.take(KEY, page_signature('/checkout', [CODE]), owner, time.time(), 15)
+    pauses = []
+
+    def pause(seconds):
+        pauses.append(seconds)
+        time.sleep(0.05)
+        if len(pauses) == 6:        # 300 ms on: the other process saved its heal and is done
+            load_store(None, _store(tmp_path)).add_candidate(KEY, HEALED)
+            records.release(KEY, owner)
+    monkeypatch.setattr(FLIGHTS, '_pause', pause)
+    provider = stub_provider(None)
+    page = make_page(V2, url=URL)
+    heal = mendwright.open(page, provider=provider, store_path=_store(tmp_path), timeout_ms=100,
+                           fingerprint=False)
+    heal._clock = _instant()
+    heal.locator(KEY, CODE).check()
+    assert len(pauses) == 6 and provider.bundles == []
+    assert page.actions[-1][:2] == ('xpath=' + HEALED, 'check')
+    assert _count(_journal(tmp_path), 'heal.adopted') == 1
 
 
 def test_a_nested_lookup_in_the_leaders_thread_does_not_wait_for_itself():

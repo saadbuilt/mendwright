@@ -7,11 +7,12 @@ workers. When a key breaks for many of them at once (a deploy that renamed a fie
 a thousand parallel tests or scrapers), this module makes them heal it once:
 
 - Single-flight in a process (single_flight, single_flight_async): the first worker to
-  reach the heal of (store file, key, page signature) leads it. The others wait for it,
-  never longer than their step's own timeout, then adopt the leader's heal (store.refresh()
-  and the live check on their own page, see HealCoordinator.adopt) or reuse its decline. A
-  follower whose wait runs out makes its own attempt under the normal caps. A follower on the
-  async healer awaits an asyncio future on its event loop, so it holds no worker thread.
+  reach the heal of (store file, key, page signature) leads it. The others wait for it as
+  long as it is at work, at most FOLLOW_CAP seconds whatever their step's own timeout, then
+  adopt the leader's heal (store.refresh() and the live check on their own page, see
+  HealCoordinator.adopt) or reuse its decline. A follower whose wait runs out makes its own
+  attempt under the normal caps. A follower on the async healer awaits an asyncio future on
+  its event loop, so it holds no worker thread.
 
 - Declines a worker reuses (DECLINES): when the model looked at a page and gave no usable
   heal (it said no element fits, code not_here, or nothing it proposed passed the checks,
@@ -34,9 +35,9 @@ import threading
 import time
 
 __all__ = ['page_signature', 'FLIGHTS', 'Flights', 'Flight', 'single_flight',
-           'single_flight_async', 'store_name', 'DECLINES', 'Declines', 'REUSED_DECLINES',
-           'DECLINE_TTL_DEFAULT', 'decline_ttl_setting', 'KeyRecords', 'records_for',
-           'LEASE_TTL', 'OWNER']
+           'single_flight_async', 'FOLLOW_CAP', 'store_name', 'DECLINES', 'Declines',
+           'REUSED_DECLINES', 'DECLINE_TTL_DEFAULT', 'decline_ttl_setting', 'KeyRecords',
+           'records_for', 'LEASE_TTL', 'OWNER']
 
 
 # --- the page signature -------------------------------------------------------------------------
@@ -213,30 +214,39 @@ class Flights:
 # Every single-flight in this process goes through this one registry.
 FLIGHTS = Flights()
 
+# Seconds a worker waits at most for the heal another worker leads (of the same store file,
+# key and page signature: the leader in its own process, or another process while that one
+# holds the key's lease) before it makes its own attempt. The step's own timeout_ms does not
+# bound the wait: a worker that stopped waiting would make the same model call itself, and the
+# leader's answer comes no later than its own would. A leader that dies is found out sooner,
+# when its lease goes LEASE_TTL seconds without a renewal.
+FOLLOW_CAP = 60.0
 
-def single_flight(store, key, signature, heal, timeout_s, *, clock=time.monotonic):
+
+def single_flight(store, key, signature, heal, *, clock=time.monotonic):
     """heal(), at most one at a time per (store file, key, page signature) in this process,
     and across the processes of this host.
 
     The first caller leads: it runs heal(), the whole heal and the retry of the step, and the
     flight ends when that returns or raises, so its heal, its first success and its decline
     are in the store (and the decline cache) before a follower wakes. A follower waits for
-    it, at most timeout_s seconds (the step's own timeout), then runs heal() itself: that
-    adopts the leader's heal or reuses its decline when they fit (see
+    it as long as it is at work, at most FOLLOW_CAP seconds whatever its step's timeout, then
+    runs heal() itself: that adopts the leader's heal or reuses its decline when they fit (see
     HealCoordinator.try_heal), else makes its own attempt under the normal caps. Followers
     that wake together adopt in parallel. Before it heals, the leader takes the key's lease
     for the other processes (see the comment above LEASE_TTL), or waits for the process that
-    holds it, at most timeout_s seconds too. A store with no file (store_name) heals alone."""
+    holds it while that one renews it, at most FOLLOW_CAP seconds too. A store with no file
+    (store_name) heals alone."""
     name = store_name(store)
     if name is None:
         return heal()
     flight, leader = FLIGHTS.begin((name, key, signature))
     if not leader:
-        FLIGHTS.wait(flight, timeout_s)
+        FLIGHTS.wait(flight, FOLLOW_CAP)
         return heal()
     try:
         records = records_for(store)
-        held = _lead_across_processes(records, key, signature, clock() + timeout_s, clock,
+        held = _lead_across_processes(records, key, signature, clock() + FOLLOW_CAP, clock,
                                       FLIGHTS._pause)
         try:
             return heal()
@@ -247,21 +257,21 @@ def single_flight(store, key, signature, heal, timeout_s, *, clock=time.monotoni
         FLIGHTS.finish(flight)
 
 
-async def single_flight_async(store, key, signature, heal, timeout_s, *, clock=time.monotonic):
+async def single_flight_async(store, key, signature, heal, *, clock=time.monotonic):
     """single_flight() for the async healer: heal is a coroutine function, a follower awaits
-    the leader on its event loop (Flights.wait_async), and a leader that waits for the lease
-    of another process awaits too."""
+    the leader on its event loop (Flights.wait_async), at most FOLLOW_CAP seconds as well, and
+    a leader that waits for the lease of another process awaits too."""
     name = store_name(store)
     if name is None:
         return await heal()
     flight, leader = FLIGHTS.begin((name, key, signature))
     if not leader:
-        await FLIGHTS.wait_async(flight, timeout_s)
+        await FLIGHTS.wait_async(flight, FOLLOW_CAP)
         return await heal()
     try:
         records = records_for(store)
-        held = await _lead_across_processes_async(records, key, signature, clock() + timeout_s,
-                                                  clock)
+        held = await _lead_across_processes_async(records, key, signature,
+                                                  clock() + FOLLOW_CAP, clock)
         try:
             return await heal()
         finally:
@@ -369,9 +379,10 @@ def reused_note(at, now, ttl):
 # - The lease makes single-flight work across processes: the in-process leader of a heal
 #   takes it (a compare-and-swap, so exactly one process gets it) and holds it while it heals,
 #   renewed every LEASE_RENEW seconds by a thread of its process. A process whose leader finds
-#   the live lease of another process for the same page waits, at most its step's timeout,
-#   then adopts that heal or reuses that decline. A lease nobody renewed for LEASE_TTL
-#   seconds belongs to a process that died: exactly one waiter takes it over.
+#   the live lease of another process for the same page waits while that one renews it, at
+#   most FOLLOW_CAP seconds, then adopts that heal or reuses that decline. A lease nobody
+#   renewed for LEASE_TTL seconds belongs to a process that died: exactly one waiter takes it
+#   over.
 # - attempts holds the times of the model attempts made for the key in the last hour, by every
 #   process: rate_per_key_per_hour holds for all of them together.
 # - declines holds the model's declines of the key per page signature, with their TTL (see

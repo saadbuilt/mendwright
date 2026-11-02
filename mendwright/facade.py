@@ -1423,7 +1423,7 @@ class Healer:
                 if native is _NOT_FOLLOWED:
                     native = self._follow_into_shadow(key, exc, attempt)
                 if native is _NOT_FOLLOWED:
-                    native = self._heal(key, exc, attempt, timeout)
+                    native = self._heal(key, exc, attempt)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
         self._adopt_winner(key)
@@ -1508,7 +1508,7 @@ class Healer:
                     if _raised_by_run(exc):
                         raise
                     self._get_by_frames(key, exc, 'mendwright.open')
-                    native = self._heal(key, exc, attempt, timeout)
+                    native = self._heal(key, exc, attempt)
             except InterruptionLoop:
                 raise   # the page is blocked: a heal would not help
             except AttentionRequired as exc:
@@ -3259,12 +3259,13 @@ class Healer:
         framed = driver_framed(self._driver, frame)
         return HealScope(frame=frame, driver=framed) if framed is not None else None
 
-    def _heal(self, key, exc, attempt, timeout=None):
+    def _heal(self, key, exc, attempt):
         """Heal through the coordinator after attempt() raised exc, then retry attempt().
 
         At most one worker of this process heals (store file, key, page) at a time (see
-        mendwright.fleet.single_flight): the others wait for it, at most the step's timeout,
-        then adopt its heal or reuse its decline, or make their own attempt."""
+        mendwright.fleet.single_flight): the others wait for it while it works, at most
+        fleet.FOLLOW_CAP seconds whatever the step's timeout, then adopt its heal or reuse its
+        decline, or make their own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
         pending = [exc]
 
@@ -3286,9 +3287,7 @@ class Healer:
                 return resolve_with_heal(resolve_fn, self.coordinator, key,
                                          self.store.meta(key), context)
 
-        timeout = self.timeout_ms if timeout is None else timeout
-        return single_flight(self.store, key, self._signature(key, context), heal,
-                             timeout / 1000.0)
+        return single_flight(self.store, key, self._signature(key, context), heal)
 
     def _signature(self, key, context):
         """The page signature of a heal of key here (see mendwright.fleet.page_signature):
