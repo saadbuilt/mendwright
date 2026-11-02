@@ -223,3 +223,35 @@ def test_a_heal_comes_before_a_reused_decline(tmp_path, make_page, stub_provider
     second._page.set_html(V2)
     second.locator(KEY, CODE).check()            # adopts the heal: no decline, no call
     assert len(calls) == 1 and second.pending() == {KEY: "//input[@data-testid='tos-optin']"}
+
+
+def _checkout(body):
+    return ('<html><body><main><h1>Checkout</h1><form id="checkout"><label for="email">Email'
+            '</label><input id="email" name="email" type="email">' + body + '<button id="pay" '
+            'type="submit">Pay now</button></form></main></body></html>')
+
+
+def test_a_decline_leaves_the_fingerprint_tier_to_heal_another_variant_of_the_page(
+        tmp_path, make_page, stub_provider):
+    # Two variants of one page path share its signature. On the first the consent moved away,
+    # and the model said so; on the second it was redesigned, and the fingerprint tier, which
+    # asks no model, heals it.
+    path = _store(tmp_path)
+
+    def healer(html, provider):
+        return mendwright.open(make_page(html, url=URL, fingerprints=True), provider=provider,
+                               store_path=path, timeout_ms=0, fingerprint=True)
+    healer(_checkout('<label><input id="accept-terms" name="terms" type="checkbox"><span>I '
+                     'accept the terms and conditions</span></label>'), stub_provider(None)
+           ).locator(KEY, CODE, role='checkbox').check()
+    declining = stub_provider(None, last_error=NOT_HERE)
+    with pytest.raises(AttentionRequired):
+        healer(GONE, declining).locator(KEY, CODE).check()
+    assert len(declining.bundles) == 1
+    model = stub_provider(None)
+    redesigned = healer(_checkout(
+        '<fieldset class="legal"><label class="control"><input type="checkbox" name="agreement" '
+        'id="mui-generated-8842" data-testid="legal-consent"><span>I accept the terms and '
+        'conditions</span></label></fieldset>'), model)
+    redesigned.locator(KEY, CODE).check()
+    assert [h.source for h in redesigned.heals] == ['fingerprint'] and model.bundles == []

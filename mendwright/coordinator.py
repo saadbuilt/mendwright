@@ -761,10 +761,6 @@ class HealCoordinator:
         marked = self._marked_now(selector_key)
         if marked is not None:
             return marked
-        # Or the model already said, about this page, that nothing here fits.
-        reused = self._reused_decline(selector_key, broken_candidates, context)
-        if reused is not None:
-            return reused
         started = self.clock()
         html, requested = None, False
         # 'intent' when the key had no selector at all and the model looks for it from its
@@ -797,6 +793,12 @@ class HealCoordinator:
                     'instead. ' + unavailable,
                     logged=(note + ', and ' + summary) if summary else None,
                     code=self._unavailable_code())
+        # Or the model already said, about this page, that nothing here fits. Looked at
+        # after the fingerprint tier, which asks no model: two variants of a page share its
+        # signature, and the tier may heal on this one.
+        reused = self._reused_decline(selector_key, broken_candidates, context)
+        if reused is not None:
+            return reused
         # Direct-mode budget: fail closed when the rate/spend cap is reached (one heal
         # attempt == one slot), mirroring the gateway's server-side needs_human. This
         # process's caps are looked at first, which spends nothing; then the attempt is

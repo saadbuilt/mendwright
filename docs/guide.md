@@ -2196,7 +2196,7 @@ No matching element for: accept_terms (tried 1 candidate(s)).
 - The journal gets a `heal.declined` with the same code and `"cached": true`.
 - A heal another worker saves still wins over a reused decline.
 - A failure of the provider itself (a network error, a rate limit, a bad key) is never kept: asking again can work.
-- A reused decline skips the fingerprint tier too: the worker that asked the model ran it on the same page signature first.
+- A reused decline doesn't skip the fingerprint tier, which asks no model: two variants of one page share its signature, and the tier may heal the key on this one.
 
 ### What is checked when a saved heal is used
 
