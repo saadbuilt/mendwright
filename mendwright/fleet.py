@@ -269,7 +269,8 @@ def single_flight(store, key, signature, heal, *, clock=time.monotonic):
 async def single_flight_async(store, key, signature, heal, *, clock=time.monotonic):
     """single_flight() for the async healer: heal is a coroutine function, a follower awaits
     the leader on its event loop (Flights.wait_async), at most FOLLOW_CAP seconds as well, and
-    a leader that waits for the lease of another process awaits too."""
+    a leader that waits for the lease of another process awaits too. The key record's reads
+    and writes of a remote store run in a worker thread (see _off_loop)."""
     name = store_name(store)
     if name is None:
         return await heal()
@@ -281,13 +282,14 @@ async def single_flight_async(store, key, signature, heal, *, clock=time.monoton
         if DECLINES.get(name, key, signature, time.time()) is not None:
             return await heal()     # a decline kept for this page: no lease (see single_flight)
         records = records_for(store)
+        remote = getattr(store, 'remote_place', None) is not None
         held = await _lead_across_processes_async(records, key, signature,
-                                                  clock() + FOLLOW_CAP, clock)
+                                                  clock() + FOLLOW_CAP, clock, remote=remote)
         try:
             return await heal()
         finally:
             if held:
-                _release(records, key)
+                await _off_loop(remote, _release, records, key)
     finally:
         FLIGHTS.finish(flight)
 
@@ -746,16 +748,28 @@ def _release(records, key):
         pass        # it expires on its own
 
 
-async def _lead_across_processes_async(records, key, signature, deadline, clock):
-    """_lead_across_processes() on an event loop: it awaits between looks. A look at the
-    record is one small file read."""
+async def _off_loop(remote, fn, *args):
+    """fn(*args), a call on the key records: in a worker thread for a remote store, where each
+    is a network request that would hold up the event loop, and every other task on it, up to
+    its timeout; on the loop for a local file, where each is one small file read or write."""
+    if not remote:
+        return fn(*args)
+    from .aio import _in_thread
+    return await _in_thread(fn, *args)
+
+
+async def _lead_across_processes_async(records, key, signature, deadline, clock, *,
+                                       remote=False):
+    """_lead_across_processes() on an event loop: it awaits between looks, and for a remote
+    store (remote=True) each read and write of the record runs in a worker thread (see
+    _off_loop)."""
     from .backends import BackendError, Conflict
     if records is None:
         return False
     waited = False
     try:
         while True:
-            record, _version = records.read(key)
+            record, _version = await _off_loop(remote, records.read, key)
             now = time.time()
             if not waited and records.decline_of(record, signature, now) is not None:
                 return False        # another process's decline of this page: reuse it
@@ -771,7 +785,8 @@ async def _lead_across_processes_async(records, key, signature, deadline, clock)
             if state == 'none' and waited:
                 return False
             try:
-                if records.take(key, signature, OWNER, time.time(), LEASE_TTL):
+                if await _off_loop(remote, records.take, key, signature, OWNER, time.time(),
+                                   LEASE_TTL):
                     RENEWER.add(records, key)
                     return True
             except Conflict:

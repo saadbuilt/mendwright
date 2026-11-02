@@ -801,7 +801,7 @@ class AsyncHealer:
             except Exception:
                 count = 0
             if count:
-                self.store.record_success(key, candidate['xpath'])
+                await self._store_work(self.store.record_success, key, candidate['xpath'])
                 return candidate['xpath'], count
         return None
 
@@ -822,8 +822,8 @@ class AsyncHealer:
         once saves costs one write of the store, as there."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        with _batched(self.store):
-            core._prime(key, roles, code, None, None)
+        with self._batched():
+            await self._store_work(core._prime, key, roles, code, None, None)
             found = await self._list_look(key, core._list_runnable(key))
             if found is not None:
                 return await self._list_found(key, roles, found, nonempty)
@@ -841,18 +841,18 @@ class AsyncHealer:
             if nonempty:
                 return await self._list_nonempty_missing(key, roles, exc)
             raise core._list_missing(key, exc) from exc
-        with _batched(self.store):
+        with self._batched():
             return await self._list_found(key, roles, found, nonempty)
 
     async def _list_found(self, key, roles, found, place=False):
         """Healer._list_found(), awaited."""
         core = self._core
         selector, count = found
-        core._remember_page(key, await _url(self._driver))
+        await self._store_work(core._remember_page, key, await _url(self._driver))
         placed = bool(place) or core._list_placed(key)
         if core._list_target(key, selector, count, placed):
             await self._keep_list(key, selector, roles, placed)
-        core._retire_lists(key, selector, count)
+        await self._store_work(core._retire_lists, key, selector, count)
         if callable(_member(self._driver, 'handles')):
             return list(await _awaited(self._driver.handles(selector)))
         return [await _awaited(self._driver.handle(selector))]
@@ -871,7 +871,8 @@ class AsyncHealer:
                     lfp = await _awaited(self._driver.list_fingerprint(selector))
             except Exception:
                 lfp = None
-        self._core._keep_list(key, selector, roles, lfp if valid_list(lfp) else None, place)
+        await self._store_work(self._core._keep_list, key, selector, roles,
+                               lfp if valid_list(lfp) else None, place)
 
     async def _list_nonempty_missing(self, key, roles, exc):
         """Healer._list_nonempty_missing(), with the page reads awaited on the event loop
@@ -882,7 +883,7 @@ class AsyncHealer:
         reason = core._nonempty_blocked(key)
         if reason:
             raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + reason) from exc
-        core._reload_lists(key)
+        await self._store_work(core._reload_lists, key)
         for row in core._list_rows(key):
             if row.get('status') == 'accepted':
                 count = await self._count_live(row.get('xpath'))
@@ -890,7 +891,7 @@ class AsyncHealer:
                     raise core._waits_for_fix(key, exc, row, count) from exc
         outcome = await _in_thread(core._propose_list, key, exc, await _url(self._driver))
         if outcome.kind == 'came':
-            with _batched(self.store):
+            with self._batched():
                 found = await self._list_look(key, core._list_runnable(key))
                 if found is not None:
                     self.coordinator.came(key, found[0])
@@ -1032,7 +1033,7 @@ class AsyncHealer:
         runs it: see _turn). Returns _ABSENT for a step that was skipped."""
         __tracebackhide__ = True  # pytest shows the caller
         core = self._core
-        core._prime(key, roles, code, text, destructive, intent)
+        await self._store_work(core._prime, key, roles, code, text, destructive, intent)
         first_wait = core._first_wait(key, timeout)
 
         async def attempt(wait=timeout):
@@ -1058,7 +1059,7 @@ class AsyncHealer:
         core._adopt_winner(key)
         await self._check_healed_target(key)
         await self._learn(key, roles)
-        core._remember_page(key, await _url(self._driver))
+        await self._store_work(core._remember_page, key, await _url(self._driver))
         await self._remember_fingerprint(key)
         return native
 
@@ -1091,7 +1092,7 @@ class AsyncHealer:
         early = state[0] == 0 and bool(core._others(key)) and await self._interrupt(
             key, budget, timeout, poll_ms)
         first = [None if early else state]
-        core._prime(key, None, [key], None, None)
+        await self._store_work(core._prime, key, None, [key], None, None)
 
         async def attempt(wait=timeout):
             return await self._resolve_get_by(key, wait, poll_ms, first.pop() if first else None)
@@ -1117,7 +1118,7 @@ class AsyncHealer:
         core._adopt_winner(key)
         await self._check_healed_target(key)
         await self._learn(key, None)
-        core._remember_page(key, await _url(self._driver))
+        await self._store_work(core._remember_page, key, await _url(self._driver))
         await self._remember_fingerprint(key)
         proxy._native = native
         proxy._healed = core._healed(key)
@@ -1176,7 +1177,7 @@ class AsyncHealer:
                     await driver.scroll_into_view(key)
                 except Exception:
                     pass
-                store.record_success(key, key)
+                await self._store_work(store.record_success, key, key)
                 return await driver.handle(key)
             if state[0] >= 1:
                 return THROUGH
@@ -1195,16 +1196,16 @@ class AsyncHealer:
                     reuse.refuse(candidate, verdict)
                     await self._refused_reuse(key, candidate, verdict)
                     continue
-                if not _used(store, key, candidate):
+                if not await self._store_work(_used, store, key, candidate):
                     runnable.remove(candidate)
                     continue
                 try:
                     await driver.scroll_into_view(*_target(candidate))
                 except Exception:
                     pass
-                store.record_success(key, candidate['xpath'])
+                await self._store_work(store.record_success, key, candidate['xpath'])
                 return handle
-            if refresh_key(store, key, every):
+            if await self._store_work(refresh_key, store, key, every):
                 candidates, runnable, errors = _again(store, key, driver, reuse,
                                                       keep=lambda c: c.get('xpath') != key)
                 if runnable:
@@ -1490,7 +1491,7 @@ class AsyncHealer:
         else:
             # A heal saved before the key was marked: by says why, so mendwright notify
             # does not call the repair wrong.
-            self.store.quarantine(key, xpath)
+            await self._store_work(self.store.quarantine, key, xpath)
             coordinator.journal.quarantine(key, xpath=xpath, by='destructive')
         raise _healed_target_error(key, xpath, core._locked(key))
 
@@ -1532,7 +1533,7 @@ class AsyncHealer:
                         raise AttentionRequired(_no_match_message(key, candidates, errors,
                                                                   reuse.reasons))
                     continue
-                if not _used(store, key, candidate):
+                if not await self._store_work(_used, store, key, candidate):
                     runnable.remove(candidate)
                     if not runnable:
                         break
@@ -1541,9 +1542,9 @@ class AsyncHealer:
                     await driver.scroll_into_view(*_target(candidate))
                 except Exception:
                     pass
-                store.record_success(key, candidate['xpath'])
+                await self._store_work(store.record_success, key, candidate['xpath'])
                 return handle
-            if refresh_key(store, key, every):
+            if await self._store_work(refresh_key, store, key, every):
                 candidates, runnable, errors = _again(store, key, driver, reuse)
                 if runnable:
                     continue        # what another worker saved: try it now
@@ -1556,6 +1557,24 @@ class AsyncHealer:
                 raise AttentionRequired(_no_match_message(key, candidates, errors,
                                                           reuse.reasons))
             await self._sleep(poll_ms / 1000.0)
+
+    async def _store_work(self, fn, *args):
+        """fn(*args), a call that reads or writes the store: in a worker thread for a remote
+        store (see mendwright.remote), whose reads and writes are network requests that would
+        hold up the event loop, and every other task on it, for as long as each takes, up to
+        its timeout; on the loop for a local file. A step's calls run under the healer's lock
+        (see _turn), one at a time and in order."""
+        if getattr(self.store, 'remote_place', None) is None:
+            return fn(*args)
+        return await _in_thread(fn, *args)
+
+    def _batched(self):
+        """_batched(self.store) for a local file: what a list lookup saves costs one write.
+        Nothing for a remote store, whose writes run in worker threads (see _store_work),
+        where a batch of the event loop's thread would not hold them back."""
+        if getattr(self.store, 'remote_place', None) is None:
+            return _batched(self.store)
+        return contextlib.nullcontext()
 
     async def _refused_reuse(self, key, candidate, reason):
         """Healer._refused_reuse(), with the page's address awaited."""
@@ -1699,7 +1718,7 @@ class AsyncHealer:
         todo = core._learn_todo(key, roles)
         if todo is None:
             return
-        core._learn_from(key, roles, todo, await self._describe_winner(key))
+        await self._store_work(core._learn_from, key, roles, todo, await self._describe_winner(key))
 
     async def _remember_fingerprint(self, key):
         """Healer's fingerprint recording after a match, with the read awaited."""
@@ -1717,7 +1736,8 @@ class AsyncHealer:
                                                              **options))
             except Exception:
                 fp = None
-        core._keep_fingerprint(key, target, fp if valid_fingerprint(fp) else None)
+        await self._store_work(core._keep_fingerprint, key, target,
+                               fp if valid_fingerprint(fp) else None)
 
     async def _describe_winner(self, key):
         target = self._core._winner_target(key)
@@ -1755,7 +1775,7 @@ class AsyncHealer:
                 await _in_thread(functools.partial(_canary_call, coordinator.confirm_pending,
                                                    key, ok, reason, healed, by='expect_value'))
             elif not ok:
-                self.store.quarantine(key, healed)
+                await self._store_work(self.store.quarantine, key, healed)
                 coordinator.journal.quarantine(key, xpath=healed, reason=reason)
         if ok:
             return value

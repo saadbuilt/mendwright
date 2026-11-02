@@ -324,6 +324,6 @@ It runs against memory, the reference server and S3 under moto. To check another
 
 - **The command line** doesn't read a remote store yet: download it first (see [The command line](#the-command-line)). The GitHub Action and its cache work on a local store only.
 - **The TypeScript package** in `js/` reads and writes a local store only.
-- **The async healer** reads a remote store in a worker thread when it opens, and heals in one, but a step's own requests run on the event loop, as a local store's file reads and writes do: its look at the store (a conditional GET, at most once a second per process) and its writes (a new key's selector and role, a first success).
+- **The async healer** makes each request to a remote store in a worker thread: its reads and writes, and the key record's lease, which a worker waiting for another machine's heal reads four times a second for up to 60 seconds. The event loop goes on meanwhile, but the step waits for each request, up to its timeout while the store doesn't answer. What a list lookup saves goes in a write per change there, where a local store saves it in one.
 - **Clocks:** a lease is judged by each machine's clock (see [How workers share it](#how-workers-share-it)).
 - **One object:** the whole store is one `overrides.json`, read once per change and written whole. A store of 10,000 keys is about 7 MB.

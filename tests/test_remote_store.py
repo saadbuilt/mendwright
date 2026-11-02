@@ -5,6 +5,7 @@ lxml FakePage and fake providers; no model is called and nothing leaves the proc
 
 import json
 import logging
+import threading
 import uuid
 
 import pytest
@@ -415,7 +416,7 @@ def test_a_quarantine_the_store_holds_survives_a_worker_that_opened_during_an_ou
         async def look():
             heal = await mendwright.aio.open(AsyncFakePage(page), store=store, timeout_ms=0,
                                              fingerprint=False)
-            await (await heal.locator(KEY, CODE, role=ROLE)).check()
+            await heal.locator(KEY, CODE, role=ROLE).check()
 
         def check():
             asyncio.run(look())
@@ -530,3 +531,50 @@ def test_a_snapshot_of_a_store_that_could_not_be_read_never_asks_again():
     assert snapshot.heal_refusal(KEY) == store.unread
     assert snapshot.refresh(KEY) is False
     assert len(backend.calls) == asked
+
+
+# --- the async healer -------------------------------------------------------------------------
+
+class Threads(Faulty):
+    """Faulty that also notes the thread of each call."""
+
+    def __init__(self, inner=None):
+        super().__init__(inner)
+        self.threads = []
+
+    def get(self, name, *, if_none_match=None):
+        self.threads.append(('get', name, threading.get_ident()))
+        return super().get(name, if_none_match=if_none_match)
+
+    def put(self, name, body, *, if_match=None, create_only=False):
+        self.threads.append(('put', name, threading.get_ident()))
+        return super().put(name, body, if_match=if_match, create_only=create_only)
+
+
+def test_the_async_healer_makes_no_store_request_on_its_event_loop(make_page, stub_provider,
+                                                                   tmp_path):
+    # Each one is a network request to S3 or an HTTP server, which would hold up every other
+    # task on the loop for as long as it takes, up to its timeout.
+    import asyncio
+
+    import mendwright.aio
+    from test_lists import _Page
+    backend = Threads()
+    _warm(backend.inner, make_page, tmp_path, stub_provider)
+    page = make_page(V2 + "<ul><li class='card'>A</li><li class='card'>B</li></ul>", url=URL)
+
+    async def main():
+        heal = await mendwright.aio.open(_Page(page), store=load_store(None, backend),
+                                         provider=stub_provider(HEALED), timeout_ms=0)
+        backend.threads.clear()
+        await heal.locator(KEY, CODE, role=ROLE).check()       # a heal, with a lease
+        assert heal.heals and heal.heals[-1].new == HEALED
+        heal.store.refresh_every = 1e-9         # each look at the store asks it
+        await heal.locator(KEY, CODE, role=ROLE).check()       # through the heal
+        await heal.locator_all('cards', "//li[@class='card']")
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(main())
+    asked = [(op, name) for op, name, _ in backend.threads]
+    assert ('put', OVERRIDES) in asked and any(name.startswith('keys/') for _, name in asked)
+    assert [(op, name) for op, name, thread in backend.threads if thread == loop_thread] == []
