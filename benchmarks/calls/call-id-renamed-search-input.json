@@ -1,0 +1,8 @@
+{
+  "id": "call-id-renamed-search-input",
+  "category": "id_renamed",
+  "description": "The step is the call get_by_placeholder(\"Search products\"). The header search box's placeholder now reads \"Search 10,000+ products\", and the product list has a \"Search brands\" box.",
+  "pages": "id-renamed-search-input",
+  "call": "get_by_placeholder(\"Search products\")",
+  "truth": "//header//input[@name='q']"
+}

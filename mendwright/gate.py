@@ -27,14 +27,47 @@ coordinator refuses them first.
 A list found for heal.locator_all(..., nonempty=True) (see mendwright.lists) has a live check
 of its own, list_live_reason(): two or more elements on the live page, each of the items'
 role, and at least one of them visible. It is never used, only proposed, but a person reads
-it as a list that is on the page."""
+it as a list that is on the page.
+
+A selector saved by a heal or a seed file, rather than passed by the code, is checked again on
+the page each time a lookup would use it (reuse_reason(), run by mendwright.resolver once the
+selector matches one element, visible unless the key is a checkbox): the element's role
+against the key's role (the one locator(role=) passed or the store holds, never a guess) when
+either is a control's, its text when the key is destructive and has expected text, and, for
+the key of a get_by_role() call, its ARIA role. A page variant can put the element a heal was
+made for and another control under the same selector: //input[@name='terms'], saved on a
+checkbox, also matches an <input type="submit" name="terms">."""
+
+import inspect
 
 from .drivers.base import driver_role_match
 from .getby import ROLE_UNREADABLE, role_mismatch
+from .roles import CONTROL_ROLES
 from .validation import _norm
 
 NOT_LIVE = 'passed static validation but not uniquely present on the live page'
 UNREADABLE = 'could not read the live element, so its role could not be checked'
+
+
+def _element_reason(live, meta, reuse=False):
+    """'' when the element driver.describe() read (live) has the key's role, and for a
+    destructive key one of its expected texts, else the reason it does not. A role that is
+    unknown is not compared.
+
+    reuse=True is the reuse check's version: a role counts only when the key's role or the
+    element's is a control's (roles.CONTROL_ROLES), since a key that is only read may find its
+    span turned into a div, and a destructive key with no expected text has no text checked
+    (a heal of such a key fails that check)."""
+    want = meta.get('expectedRole')
+    got = live.get('role')
+    if want and want != 'unknown' and got != want and (
+            not reuse or want in CONTROL_ROLES or got in CONTROL_ROLES):
+        return 'live element role mismatch: got ' + str(got) + ' want ' + str(want)
+    if meta.get('destructive'):
+        texts = {_norm(t) for t in (meta.get('expectedText') or ())}
+        if (texts or not reuse) and _norm(live.get('text')) not in texts:
+            return 'live action text mismatch: ' + _norm(live.get('text'))
+    return ''
 
 
 def live_reason(driver, xpath, meta, frame_chain=(), call=None):
@@ -54,14 +87,9 @@ def live_reason(driver, xpath, meta, frame_chain=(), call=None):
             live = driver.describe(xpath, frame_chain)
             if not isinstance(live, dict):
                 return UNREADABLE
-            want = meta.get('expectedRole')
-            if want and want != 'unknown' and live.get('role') != want:
-                return ('live element role mismatch: got ' + str(live.get('role'))
-                        + ' want ' + str(want))
-            if meta.get('destructive'):
-                texts = {_norm(t) for t in (meta.get('expectedText') or ())}
-                if _norm(live.get('text')) not in texts:
-                    return 'live action text mismatch: ' + _norm(live.get('text'))
+            reason = _element_reason(live, meta)
+            if reason:
+                return reason
         if call is not None and call.method == 'get_by_role':
             ok = driver_role_match(driver, xpath, call.value, call.level, frame_chain)
             if ok is None:
@@ -80,6 +108,65 @@ def live_reason(driver, xpath, meta, frame_chain=(), call=None):
 def live_match(driver, xpath, meta, frame_chain=()):
     """True if xpath passes the live check (see live_reason)."""
     return not live_reason(driver, xpath, meta, frame_chain)
+
+
+def reuse_reason(driver, selector, meta, frame_chain=(), call=None):
+    """The check of a selector a heal or a seed file saved, once it matches one element on
+    the live page (visible unless the key's role is checkbox), before a lookup uses it: ''
+    when the element may be used, else the reason it is not used on this page.
+
+    The element is read with driver.describe() (one round trip): it must have the key's role
+    in meta (pass 'unknown' while the role is only a guess) and, for a destructive key with
+    expected text, one of those texts. For the key of a get_by_role() call (call), the browser
+    must also give it the call's ARIA role (driver.role_match). Only an answer that says no
+    refuses it: an element the driver cannot read (no describe() or role_match(), a read that
+    fails, an element that went away meanwhile) is used as it was before this check, on its
+    count and visibility, so a driver that cannot describe elements keeps working."""
+    meta = meta or {}
+    try:
+        if callable(getattr(driver, 'describe', None)):
+            live = driver.describe(selector, frame_chain)
+            if isinstance(live, dict):
+                reason = _element_reason(live, meta, reuse=True)
+                if reason:
+                    return reason
+        if call is not None and call.method == 'get_by_role':
+            if driver_role_match(driver, selector, call.value, call.level, frame_chain) is False:
+                return role_mismatch(call)
+        return ''
+    except Exception:
+        return ''
+
+
+async def _awaited(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def reuse_reason_async(driver, selector, meta, frame_chain=(), call=None):
+    """reuse_reason() for an async driver (mendwright.aio), with each read awaited."""
+    meta = meta or {}
+    try:
+        describe = getattr(driver, 'describe', None)
+        if callable(describe):
+            live = await _awaited(describe(selector, frame_chain))
+            if isinstance(live, dict):
+                reason = _element_reason(live, meta, reuse=True)
+                if reason:
+                    return reason
+        if call is not None and call.method == 'get_by_role':
+            method = getattr(driver, 'role_match', None)
+            if callable(method):
+                try:
+                    ok = await _awaited(method(selector, call.value, call.level, frame_chain))
+                except Exception:
+                    ok = None
+                if ok is False:
+                    return role_mismatch(call)
+        return ''
+    except Exception:
+        return ''
 
 
 # list_live_reason()'s reason when the live page could not be read (fail closed).

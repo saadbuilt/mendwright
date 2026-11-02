@@ -29,6 +29,7 @@ While the version starts with 0, a minor release can change the public API.
 - The entries of `heal.handledInterruptions` have `popup`, `how` and `label`, which are `null` for a registered interruption, as the Python package's `InterruptionEvent` has them.
 - The registered interruptions an action or a read handles are handled under the healer's lock, as a lookup's are and as on the Python package's async healer, so two steps awaited together never handle one at once.
 - A string is read as a `getBy*` call written out, such as `get_by_role("button", name="Go")`, by a reader of Python's call syntax that runs nothing, as the Python package reads one, where a pattern took any text of that shape. So `heal.locator()`, `heal.locatorAll()` and `heal.interrupt()` refuse as a key just the strings the Python package refuses, with its message, and they and `heal.step({ when })` refuse one as a selector, with a message that names `open(page, { healGetBy: true })`. A stored candidate written as a call, as the Python package's seed files can hold, runs as that call.
+- The store keeps the `getBy` field the Python package saves with a heal of a `get_by_*` call since its 0.11.0 (a suggested call for `mendwright fix`) when it writes `overrides.json`, and takes in one another process saved, as it does `css`. This package never runs it.
 
 ## [0.1.0] - 2026-11-01
 

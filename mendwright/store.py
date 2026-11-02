@@ -12,7 +12,10 @@ sees it, and so is where the key's element was last found (``set_last_page``: la
 and pages; ``set_last_url``: lastUrl, the page's address with its record ids masked, see
 mendwright.flow.page_url, and ``set_meta(shadow_hosts=...)``: shadowHosts, the shadow hosts
 around it, see mendwright.shadow) and the steps of run_steps() it was found during
-(``set_last_step``: steps). A candidate inside an open shadow root has shadowHosts too.
+(``set_last_step``: steps). A candidate inside an open shadow root has shadowHosts too, and
+a heal saved with its get_by twin has getBy (see client.get_by_twin): a get_by_* call that
+matched the healed element when the heal was made, which mendwright fix suggests and nothing
+runs. A process before 0.11 reads such a file as before and drops getBy when it writes it.
 The file stays schema 2; the fields are optional. A key is destructive when the seed says
 so, when it is in ``destructive_keys``, or when ``set_meta`` marked it.
 ``set_meta(destructive=False)`` only clears the last of these. A key of ``destructive_keys``
@@ -50,7 +53,7 @@ from pathlib import Path
 from . import getby
 from .fingerprint import valid as _valid_fingerprint
 from .flow import page_url
-from .lists import valid as _valid_list_fingerprint
+from .lists import placed as _placed_list, valid as _valid_list_fingerprint
 from .roles import infer_role  # noqa: F401  (re-exported: mendwright.store.infer_role)
 from .selectors import frame_spelling
 from .shadow import saved_hosts, text_hosts
@@ -117,7 +120,11 @@ def merge(seed, override):
     return out
 
 
-_PLACE_FIELDS = ('frameXPath', 'css', 'shadowHosts')
+# The fields of a candidate that say where it runs or what it stands for, merged three ways
+# (see _merge_place): its iframe, its CSS form and shadow hosts, and its get_by twin (getBy,
+# a get_by_* call that matched the healed element when the heal was made, see
+# client.get_by_twin). css and getBy are saved for mendwright fix and never run.
+_PLACE_FIELDS = ('frameXPath', 'css', 'shadowHosts', 'getBy')
 
 
 def _place_value(c, field):
@@ -128,7 +135,8 @@ def _place_value(c, field):
 
 
 def _place(c):
-    """(frameXPath, css, shadowHosts) of a candidate, '' for each one it doesn't have."""
+    """(frameXPath, css, shadowHosts, getBy) of a candidate, '' for each one it doesn't
+    have."""
     return tuple(_place_value(c, field) for field in _PLACE_FIELDS)
 
 
@@ -138,7 +146,7 @@ def _row_state(c):
 
 
 def _merge_place(local, theirs, base):
-    """Three-way merge of a candidate's frameXPath, css and shadowHosts (see
+    """Three-way merge of a candidate's frameXPath, css, shadowHosts and getBy (see
     SelectorStore._absorb). base is what the store last read or wrote, or None when it
     never saw the row."""
     for i, field in enumerate(_PLACE_FIELDS):
@@ -167,13 +175,40 @@ def _read_text(path, sleep=None):
     """The file's text, or None when it does not exist. A PermissionError (on Windows,
     another process replacing the file at that moment) is retried with a short backoff
     and raised if it persists. A file that is not UTF-8 raises StoreReadError."""
+    return _read_text_versioned(path, sleep)[0]
+
+
+def file_version(st):
+    """The version of a file from its os.stat() or os.fstat() result: (inode, mtime in
+    nanoseconds, size). Every write of a store file replaces it (a new inode), so a change
+    gives a new version; versions are compared only for equality."""
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def stat_version(path):
+    """The version of the file at path (see file_version), or None when it does not exist.
+    Other OS errors are raised."""
+    try:
+        return file_version(os.stat(str(path)))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _read_text_versioned(path, sleep=None):
+    """(text, version) of the file at path, or (None, None) when it does not exist. The
+    version is read from the open handle the text is read from (os.fstat), so the two
+    always go together: a writer replaces the file, and the handle keeps the old one. Errors
+    as _read_text()."""
     sleep = sleep or time.sleep
     delay = 0.01
     for attempt in range(_READ_TRIES):
         try:
-            return Path(path).read_text(encoding='utf-8-sig')
+            with Path(path).open('rb') as fh:
+                version = file_version(os.fstat(fh.fileno()))
+                raw = fh.read()
+            return raw.decode('utf-8-sig'), version
         except (FileNotFoundError, NotADirectoryError):
-            return None
+            return None, None
         except PermissionError:
             if attempt == _READ_TRIES - 1:
                 raise
@@ -184,7 +219,7 @@ def _read_text(path, sleep=None):
                 'mendwright: ' + str(path) + ' is not UTF-8 text (' + str(exc) + '). Save it '
                 'as UTF-8 (PowerShell 5 writes UTF-16 with > and Out-File), or delete it.'
             ) from None
-    return None  # not reached
+    return None, None  # not reached
 
 
 def _respell_frame_heals(data):
@@ -331,7 +366,56 @@ def _read(path, destructive_keys=frozenset(), *, sleep=None):
     """(schema-2 data, True if the file itself was schema 2). A missing (or blank) file is
     an empty store. Raises StoreReadError for a file that is not valid JSON or not a
     selector file, and PermissionError when the file stays unreadable."""
-    text = _read_text(path, sleep)
+    return _parse(_read_text(path, sleep), path, destructive_keys)
+
+
+def _read_versioned(path, destructive_keys=frozenset(), *, sleep=None):
+    """_read() and the version of what it read (see file_version): (data, native, version),
+    version None for a missing file."""
+    text, version = _read_text_versioned(path, sleep)
+    data, native = _parse(text, path, destructive_keys)
+    return data, native, version
+
+
+# The override files this process parsed for SelectorStore.refresh(): path -> (version,
+# data), the latest version of each only. One parse per file version per process, however
+# many stores refresh from it: the data is shared, so nothing may change it (refresh() takes
+# a deep copy of the one key it merges).
+_PARSED = {}
+_PARSED_LOCK = threading.Lock()
+# path -> the lock held while that file is read and parsed, so a version is parsed once.
+_PARSING = {}
+
+
+def parsed_override(path, version=None, *, sleep=None):
+    """(data, version) of the override file at path, read and parsed at most once per file
+    version per process: version is what the caller just saw with stat_version(), and the
+    file is read only when this process has not parsed that version yet. The version
+    returned is the one of the content (it can be newer than the one asked for). data is
+    None for a file that is not schema 2 (a schema-1 file is converted by the next write).
+    Raises StoreReadError, and OSError, for a file that cannot be read: never an empty
+    store in its place."""
+    name = os.path.normcase(os.path.abspath(str(path)))
+    with _PARSED_LOCK:
+        hit = _PARSED.get(name)
+        if hit is not None and version is not None and hit[0] == version:
+            return hit[1], hit[0]
+        lock = _PARSING.setdefault(name, threading.Lock())
+    with lock:
+        with _PARSED_LOCK:
+            hit = _PARSED.get(name)
+        if hit is not None and version is not None and hit[0] == version:
+            return hit[1], hit[0]
+        data, native, read = _read_versioned(path, sleep=sleep)
+        if not native:
+            return None, read
+        with _PARSED_LOCK:
+            _PARSED[name] = (read, data)
+        return data, read
+
+
+def _parse(text, path, destructive_keys=frozenset()):
+    """_read() of the text of the file at path (None for a missing file)."""
     if text is None or not text.strip():
         return _empty(), False
     try:
@@ -426,6 +510,294 @@ def _pages(value):
     return []
 
 
+# --- writes that can wait -------------------------------------------------------------------
+#
+# A lookup changes the store in small ways that need not reach the file at once: a
+# candidate's lastSucceededAt (the order candidates are tried in, and the first success
+# mendwright report shows), the pages, steps and address a key was found on, and its
+# fingerprints. With many workers on one file, writing each of them at once rewrote the file
+# for every worker (and with dynamic text in an element, on every lookup). What the file does
+# not have yet is still written at once: a first success (unless another worker recorded one
+# already: the store looks at the file first), a key's first pages, steps and address, its
+# first fingerprint. Changes to what it has (the order of the last successes, a new page in
+# the list, a new fingerprint) are "soft": written at most every SOFT_EVERY seconds per key per
+# process, the first of a key in a process at once, with a write of the store as before; a
+# later one stays in the store's memory and goes with the store's next write (a heal, a
+# quarantine, a soft change that is due). Each is also kept in a small table the whole
+# process shares (SOFT): when the process exits (atexit, and multiprocessing's exit hook,
+# which runs where atexit does not), what a store never wrote, because it was dropped first,
+# is written there. That flush edits
+# the file in place under its lock with the merge rules of a write, and writes nothing when the
+# file already holds the change: the first success another worker recorded, a page list it
+# already has. Heals, quarantines, roles, destructive flags, code selectors, list heals and
+# shadow hosts are written at once, as before.
+
+# Seconds between two writes of a key's soft changes by one process.
+SOFT_EVERY = 300.0
+# The metadata a soft change carries (the rest of a key's metadata is written at once).
+SOFT_META = ('lastPage', 'pages', 'steps', 'lastUrl', 'fingerprint', 'listFingerprint')
+
+
+def _changes_order(rows, row, when):
+    """True when giving row lastSucceededAt=when moves it up among the active rows: another
+    active row succeeded at or after row's old time and before when."""
+    old = row.get('lastSucceededAt') or ''
+    for other in rows:
+        if other is row or other.get('status', 'active') != 'active':
+            continue
+        at = other.get('lastSucceededAt') or ''
+        if old <= at < when:
+            return True
+    return False
+
+
+def _apply_soft(data, pending):
+    """Apply soft changes ({key: {'rows': {xpath: lastSucceededAt}, 'meta': {field: value}}})
+    to the parsed override file data, in place, with the merge rules of a write. True when the
+    file must be written: a first success the file does not have, a success that changes the
+    order, pages or steps it does not list, a new fingerprint, a first address. A new order of
+    known pages, a newer success of the row already on top and a new address are written only
+    with such a change, as a store writes them with its next write."""
+    selectors = data.setdefault('selectors', {})
+    changed, carried = False, []
+    for key, delta in pending.items():
+        entry = selectors.get(key)
+        meta = delta.get('meta') or {}
+        if not isinstance(entry, dict):
+            if not meta:
+                continue        # its rows are not in the file (a seed row): nothing to do
+            entry = selectors[key] = {'candidates': []}
+        rows = [c for c in entry.get('candidates') or ()
+                if isinstance(c, dict) and isinstance(c.get('xpath'), str)]
+        for xpath, when in (delta.get('rows') or {}).items():
+            row = next((c for c in rows if c['xpath'] == xpath), None)
+            if row is None or not isinstance(when, str) or not when:
+                continue
+            old = row.get('lastSucceededAt')
+            if not old:
+                row['lastSucceededAt'] = when       # a first success nobody recorded
+                changed = True
+            elif when > old:
+                if _changes_order(rows, row, when):
+                    row['lastSucceededAt'] = when
+                    changed = True
+                else:
+                    carried.append((row, 'lastSucceededAt', when))
+        for field, cap in (('pages', MAX_PAGES), ('steps', MAX_STEPS)):
+            if field not in meta:
+                continue
+            theirs = _pages(entry.get(field))
+            merged = list(dict.fromkeys(_pages(meta[field]) + theirs))[:cap]
+            if set(merged) != set(theirs):
+                entry[field] = merged
+                changed = True
+            elif merged != theirs:
+                carried.append((entry, field, merged))
+        for field in ('fingerprint', 'listFingerprint'):
+            if field in meta and entry.get(field) != meta[field]:
+                entry[field] = copy.deepcopy(meta[field])
+                changed = True
+        for field in ('lastUrl', 'lastPage'):
+            if field not in meta or entry.get(field) == meta[field]:
+                continue
+            if not entry.get(field):
+                entry[field] = meta[field]
+                changed = True
+            else:
+                carried.append((entry, field, meta[field]))
+    if changed:
+        for target, field, value in carried:
+            target[field] = value
+    return changed
+
+
+class SoftWrites:
+    """The soft changes of every store of this process that wait to be written (see the
+    comment above SOFT_EVERY), per store file and key: only the changed rows' times and the
+    key's soft metadata, never a store, so a store can be dropped while its changes wait."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending = {}          # path -> {key: {'rows': {...}, 'meta': {...}}}
+        self._flushed = {}          # (path, key) -> clock() of its last flush
+        self._failed = set()        # paths whose flush failed (logged once)
+        # path -> writer(pending) for a store kept elsewhere than a local file (see register).
+        self._writers = {}
+        self._hooked = False
+        self.clock = time.monotonic
+
+    def register(self, path, writer):
+        """Have flush(path) write the soft changes that wait with writer(pending) instead of
+        editing a local file: for a store kept elsewhere (mendwright.remote), path is its name.
+        writer applies them as _apply_soft() does and writes only when that says so; it raises
+        when the store cannot be read or written, and the changes keep waiting."""
+        with self._lock:
+            self._writers[path] = writer
+
+    def record(self, path, key, rows=None, meta=None):
+        """Keep a soft change of key in the file at path: rows {xpath: lastSucceededAt} (the
+        newest wins) and meta (pages and steps join, the newest of the rest wins)."""
+        with self._lock:
+            entry = self._pending.setdefault(path, {}).setdefault(key, {'rows': {}, 'meta': {}})
+            for xpath, when in (rows or {}).items():
+                if isinstance(when, str) and when > (entry['rows'].get(xpath) or ''):
+                    entry['rows'][xpath] = when
+            for field, value in (meta or {}).items():
+                if field in ('pages', 'steps'):
+                    cap = MAX_PAGES if field == 'pages' else MAX_STEPS
+                    value = list(dict.fromkeys(_pages(value) + _pages(entry['meta'].get(field))))
+                    entry['meta'][field] = value[:cap]
+                else:
+                    entry['meta'][field] = copy.deepcopy(value)
+            if not self._hooked:
+                self._hooked = True
+                self._hook_exit()
+
+    def due(self, path, keys):
+        """True when one of keys of the file at path was not written by this process in the
+        last SOFT_EVERY seconds."""
+        now = self.clock()
+        with self._lock:
+            return self._due(path, keys, now)
+
+    def _due(self, path, keys, now):
+        return any(now - self._flushed[(path, k)] >= SOFT_EVERY
+                   if (path, k) in self._flushed else True for k in keys)
+
+    def claim_due(self, path, keys):
+        """due(), and when it is True, the turn to write: keys count as written now. Of the
+        stores of this process whose soft changes of a key come due at once, one writes them
+        and the others' wait SOFT_EVERY seconds, as one store's would (they go with that store's
+        next write, or at exit)."""
+        now = self.clock()
+        with self._lock:
+            if not self._due(path, keys, now):
+                return False
+            for key in keys:
+                self._flushed[(path, key)] = now
+            return True
+
+    def written(self, path, keys):
+        """Note that the soft changes of keys of the file at path were just written (by a
+        store's own write): the next ones wait SOFT_EVERY seconds."""
+        now = self.clock()
+        with self._lock:
+            for key in keys:
+                self._flushed[(path, key)] = now
+
+    def waiting(self, path=None):
+        """{path: [keys]} of the soft changes that wait, or the keys of one path."""
+        with self._lock:
+            if path is not None:
+                return sorted(self._pending.get(path, {}))
+            return {p: sorted(keys) for p, keys in self._pending.items()}
+
+    def flush(self, path, *, timeout=None, stale_after=None, sleep=time.sleep):
+        """Write the soft changes that wait for the file at path, under its lock, with the merge
+        rules of a write (see _apply_soft). A file that cannot be read or locked keeps them
+        waiting (one WARNING), and is never replaced by them alone. True when nothing waits
+        any more."""
+        with self._lock:
+            pending = self._pending.pop(path, None)
+            if not pending:
+                return True
+            now = self.clock()
+            for key in pending:
+                self._flushed[(path, key)] = now
+            writer = self._writers.get(path)
+        if writer is None and not os.path.exists(path):
+            return True     # the store file is gone: soft changes alone never make one
+        try:
+            if writer is not None:
+                writer(pending)
+            else:
+                with _locked(path, timeout=(SelectorStore.lock_timeout if timeout is None
+                                            else timeout),
+                             stale_after=(SelectorStore.lock_stale_after if stale_after is None
+                                          else stale_after), sleep=sleep):
+                    data, _native = _read(path, sleep=sleep)
+                    if _apply_soft(data, pending):
+                        _atomic_write(path, json.dumps(data, separators=(',', ':')), sleep)
+        except Exception as exc:
+            for key, delta in pending.items():
+                self.record(path, key, delta['rows'], delta['meta'])
+            if path not in self._failed:
+                self._failed.add(path)
+                logger.warning('mendwright could not save the pages, fingerprints and last '
+                               'successes of %d key(s) to %s yet (%s); they wait in memory and '
+                               'are saved later, or when the process exits.', len(pending),
+                               path, type(exc).__name__ + (': ' + str(exc) if str(exc) else ''))
+            return False
+        self._failed.discard(path)
+        return True
+
+    def clear(self):
+        """Forget every soft change that waits and when each key was written: for tests,
+        whose store files are temporary."""
+        with self._lock:
+            self._pending.clear()
+            self._flushed.clear()
+            self._failed.clear()
+            self._writers.clear()
+
+    def flush_all(self):
+        """flush() every file with soft changes that wait. Runs when the process exits."""
+        with self._lock:
+            paths = list(self._pending)
+        for path in paths:
+            try:
+                self.flush(path)
+            except Exception:
+                pass
+
+    def _hook_exit(self):
+        """Flush at exit: atexit, and multiprocessing's own exit hook, which a child process
+        of multiprocessing runs and atexit does not."""
+        import atexit
+        atexit.register(self.flush_all)
+        try:
+            from multiprocessing import util
+            util.Finalize(None, self.flush_all, exitpriority=20)
+        except Exception:
+            pass
+
+
+# The soft changes of every store of this process.
+SOFT = SoftWrites()
+
+
+class _FileWrites:
+    """The writes of one store file by the stores of this process (see
+    SelectorStore._persist_override and _persist_keys): one at a time, under lock, so a store
+    waits on it rather than polling the file's lock as every thread did; and count, the writes
+    that ended, so a store that waited sees whether another one wrote meanwhile and looks at the
+    file again before it writes the same. Across processes the file's lock keeps writers apart."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.count = 0
+
+
+_WRITERS = {}
+_WRITERS_LOCK = threading.Lock()
+
+
+def _writes(name):
+    """The _FileWrites of the store named name (see SelectorStore._turns)."""
+    with _WRITERS_LOCK:
+        found = _WRITERS.get(name)
+        if found is None:
+            found = _WRITERS[name] = _FileWrites()
+        return found
+
+
+def flush_all():
+    """Write every soft change of this process that waits (see SOFT_EVERY) now. It also runs
+    when the process exits; call it before os._exit() or when a long-lived process should save
+    its stores' pages, fingerprints and last successes at a point of your choosing."""
+    SOFT.flush_all()
+
+
 # The statuses of a list heal that waits: for a person to check it, or for mendwright fix.
 LIST_WAITING = ('proposed', 'accepted')
 # How many proposed and accepted list heals a key keeps: an accepted one, then the newest.
@@ -460,12 +832,37 @@ class SelectorStore:
     lock_timeout = 15.0
     lock_stale_after = 10.0
 
+    # Seconds a lookup lets pass before it looks at the file again for a key it is about to
+    # use through a saved selector, or that keeps missing (see refresh() and resolver.resolve).
+    refresh_every = 1.0
+
     def __init__(self, data, override_path, destructive_keys=frozenset(), seed=None,
-                 override=None, *, read_only=False):
+                 override=None, *, read_only=False, file_version=None, writes=True):
         self._data = data
         # read_only: changes stay in memory, and the file is never locked, read or written
         # again (see _persist_override).
         self._read_only = bool(read_only)
+        # writes=False: the file is read, and refresh() takes in what other workers save, but
+        # it is never written, nor its key records: changes stay in memory (see writes).
+        self._writes = bool(writes)
+        # The version (see file_version) of the override file every key in memory was last
+        # merged with: the file load_store() read, or the one this store last wrote. key ->
+        # the version refresh() last merged that key with, when newer.
+        self._version = file_version
+        self._key_versions = {}
+        # key -> when refresh() last looked at the file for it (self._clock), for max_age.
+        self._looked = {}
+        # (key, xpath) of the heals that came in from the file after this store read it: a
+        # heal another worker saved meanwhile (see arrived()).
+        self._arrived = set()
+        # Held while a refresh or a write merges the file into memory: two threads may share
+        # a store passed to open(store=...).
+        self._mutex = threading.RLock()
+        # Keys whose soft changes (see SOFT_EVERY) wait for this store's next write.
+        self._soft_waiting = set()
+        # True after a write failed, until one succeeds: memory then holds changes the file
+        # lacks, so no write is skipped because the file holds the change at hand (_file_holds).
+        self._unsaved = False
         self._override_path = Path(_expand(override_path))
         # A key written as a get_by_* call in another spelling marks the call's key too. One
         # written on an object, such as page.get_by_role(...), does not, and is logged.
@@ -666,7 +1063,7 @@ class SelectorStore:
                 changed = True
         self._preferred[key] = wanted
         if changed:
-            self._persist_override()
+            self._persist_keys((key,))
 
     def _entry(self, key):
         return self._data['selectors'].setdefault(key, {
@@ -740,10 +1137,20 @@ class SelectorStore:
         if action is not None:
             e['action'] = action
         saved = self._meta.get(key, {})
-        if any(saved.get(f) != v for f, v in changed.items()) or any(f in saved for f in cleared):
+        diff = ({f for f, v in changed.items() if saved.get(f) != v}
+                | {f for f in cleared if f in saved})
+        if diff:
             self._meta[key] = {f: v for f, v in dict(saved, **changed).items()
                                if f not in cleared}
-            self._persist_override()
+            if diff <= {'fingerprint', 'listFingerprint'}:
+                # A new fingerprint can wait (see SOFT_EVERY); a first one cannot, and neither
+                # can a list fingerprint that now says where the list sits.
+                first = any(f not in saved for f in diff) or (
+                    'listFingerprint' in diff and not _placed_list(saved.get('listFingerprint'))
+                    and _placed_list(changed['listFingerprint']))
+                self._persist_soft(key, at_once=first)
+            else:
+                self._persist_keys((key,))
 
     def set_last_page(self, key, path):
         """Record that key's element was just found on the page ``path`` (a normalized
@@ -763,7 +1170,7 @@ class SelectorStore:
         if saved.get('lastPage') != path or saved.get('pages') != pages:
             self._meta[key] = dict(saved, lastPage=path, pages=list(pages))
             if set(saved.get('pages') or ()) != set(pages):
-                self._persist_override()
+                self._persist_soft(key, at_once=not saved.get('pages'))
 
     def set_last_url(self, key, url):
         """Record the address of the page key's element was just found on: ``url`` as
@@ -779,7 +1186,7 @@ class SelectorStore:
         if saved.get('lastUrl') != url:
             self._meta[key] = dict(saved, lastUrl=url)
             if 'lastUrl' not in saved:
-                self._persist_override()
+                self._persist_soft(key, at_once=True)
 
     def last_url(self, key):
         """The address key's element was last found on (see set_last_url), or None. It is
@@ -794,6 +1201,18 @@ class SelectorStore:
         """True for a store that never writes its file (see load_store(read_only=True))."""
         return self._read_only
 
+    @property
+    def writes(self):
+        """Whether this store writes its file and its key records. False for a read-only
+        worker (load_store(writes=False), MENDWRIGHT_STORE_READ_ONLY=1): it takes in the heals
+        and quarantines other workers save, as any store, and keeps its own changes in memory,
+        for this process only. A read_only store writes nothing either."""
+        return self._writes and not self._read_only
+
+    @writes.setter
+    def writes(self, value):
+        self._writes = bool(value)
+
     def snapshot(self):
         """An independent copy of this store in memory, with read_only=True: what is done
         to it (a heal applied, a quarantine) never reaches this store or any file. It keeps
@@ -801,12 +1220,18 @@ class SelectorStore:
         set_code_candidates() gave and the list heals it took over as code, and starts with no
         batch, no unsaved change and no success recorded in this process."""
         clone = copy.copy(self)
-        for name in ('_data', '_meta', '_base', '_base_place', '_base_meta'):
+        for name in ('_data', '_meta', '_base', '_base_place', '_base_meta', '_base_index'):
             setattr(clone, name, copy.deepcopy(getattr(self, name, {})))
-        for name in ('_locked', '_seed_role', '_seed_text', '_guessed', '_delisted'):
+        for name in ('_locked', '_seed_role', '_seed_text', '_guessed', '_delisted',
+                     '_arrived'):
             setattr(clone, name, set(getattr(self, name, ())))
         clone._preferred = {k: list(v) for k, v in self._preferred.items()}
         clone._seed_state = dict(self._seed_state)
+        clone._key_versions = dict(getattr(self, '_key_versions', {}))
+        clone._looked = {}
+        clone._mutex = threading.RLock()
+        clone._soft_waiting = set()
+        clone._unsaved = False
         clone._batch = threading.local()
         clone._dirty = set()
         clone._last_success = {}
@@ -827,7 +1252,7 @@ class SelectorStore:
         if saved.get('steps') != steps:
             self._meta[key] = dict(saved, steps=list(steps))
             if set(saved.get('steps') or ()) != set(steps):
-                self._persist_override()
+                self._persist_soft(key, at_once=not saved.get('steps'))
 
     def guess_role(self, key, role, *, replace=False):
         """Use role as key's expectedRole for now, without saving it. Only replaces an
@@ -883,6 +1308,12 @@ class SelectorStore:
         c = self._find(key, xpath)
         if c is None:
             return False
+        if c.get('lastSucceededAt') is None and c.get('source') != 'seed':
+            # A first success is written at once, unless another worker already recorded
+            # one: then the file has it, and this one waits like any other (SOFT_EVERY).
+            self.refresh(key)
+            if c.get('status', 'active') != 'active':
+                return False        # another worker quarantined it meanwhile
         # A change in the recency order is worth a write, and so is the first success of a
         # code or heal candidate (else mendwright report says 'last success: never' for a
         # selector that matches on every run). Seed rows are left out: writing one pins it
@@ -898,11 +1329,15 @@ class SelectorStore:
         c['status'] = 'active'
         self._dirty.add((key, xpath))
         if not was_top or first:
-            self._persist_override()
+            # A new order of the last successes can wait (see SOFT_EVERY); a first one cannot.
+            self._persist_soft(key, {xpath: c['lastSucceededAt']}, at_once=first)
+        elif (key in self._soft_waiting and not getattr(self._batch, 'depth', 0)
+              and SOFT.claim_due(self._soft_path(), (key,))):
+            self._persist_keys((key,))    # what waited for this key is due now
         return not was_top
 
     def add_candidate(self, key, xpath, *, source='heal', frame_xpath=None, css=None,
-                      list_heal=None, shadow_hosts=None, now=None):
+                      list_heal=None, shadow_hosts=None, get_by=None, now=None):
         """Add a candidate selector for key, or update the one with the same text.
 
         frame_xpath is the selector of the iframe the candidate runs in: '' moves an
@@ -911,9 +1346,12 @@ class SelectorStore:
         (see mendwright.shadow): [] moves it out of one, None leaves it. css is a CSS
         selector checked to match the same element as a healed XPath (see mendwright.css),
         saved for mendwright fix and never run: '' drops one saved before, None leaves it.
-        list_heal True marks a heal of a list, saved as "list": true, as a build of 0.8.0
-        before its release did: list lookups use no heal (see Healer.locator_all), and
-        mendwright fix writes none of these back. False clears the mark, None leaves it."""
+        get_by is the heal's get_by twin, a get_by_* call checked to match the healed element
+        and nothing else (see client.get_by_twin), saved as getBy for mendwright fix and never
+        run, with the same '' and None. list_heal True marks a heal of a list, saved as
+        "list": true, as a build of 0.8.0 before its release did: list lookups use no heal
+        (see Healer.locator_all), and mendwright fix writes none of these back. False clears
+        the mark, None leaves it."""
         entry = self._entry(key)
         found = self._find(key, xpath)
         hosts = None if shadow_hosts is None else list(saved_hosts(list(shadow_hosts)))
@@ -926,6 +1364,8 @@ class SelectorStore:
                 cand['shadowHosts'] = hosts
             if css:
                 cand['css'] = css
+            if get_by:
+                cand['getBy'] = get_by
             if list_heal:
                 cand['list'] = True
             entry['candidates'].append(cand)
@@ -938,12 +1378,14 @@ class SelectorStore:
                 found['shadowHosts'] = hosts
             if css is not None and (found.get('css') or '') != css:
                 found['css'] = css
+            if get_by is not None and (found.get('getBy') or '') != get_by:
+                found['getBy'] = get_by
             if list_heal:
                 found['list'] = True
             elif list_heal is not None:
                 found.pop('list', None)
         self._dirty.add((key, xpath))
-        self._persist_override()
+        self._persist_keys((key,))
 
     def list_heals(self, key):
         """Copies of key's list heals that wait (proposed or accepted, see
@@ -1003,7 +1445,7 @@ class SelectorStore:
         if not entry or not any(_is_list_heal(c) for c in entry.get('candidates', [])):
             return
         try:
-            disk, _native = _read(self._override_path, self._destructive_keys, sleep=self._sleep)
+            disk, _native = self._disk()
         except Exception:
             return
         theirs = (disk.get('selectors') or {}).get(key)
@@ -1090,6 +1532,12 @@ class SelectorStore:
     # wrote for candidates and metadata this store has not touched, and atomically
     # replaces the file. What this store changed itself wins. If the file cannot be
     # written, the store logs one warning and keeps working in memory.
+    #
+    # Many workers often save the same thing: each registers the code's selector and role of a
+    # key the store never saw, records the first success or page of a heal they all adopted.
+    # The first one writes it. For the others, a change another worker saved already is no
+    # reason to write (_persist_keys looks at the file first, _file_holds), and a write that
+    # would change nothing is not made (_persist_override compares under the lock).
 
     @contextlib.contextmanager
     def batch(self):
@@ -1103,28 +1551,228 @@ class SelectorStore:
             yield self
         finally:
             state.depth -= 1
-            if not state.depth and getattr(state, 'wanted', False):
-                state.wanted = False
-                self._persist_override()
+            if not state.depth:
+                soft, state.soft = getattr(state, 'soft', set()), set()
+                maybe, state.maybe = getattr(state, 'maybe', set()), set()
+                succeeded, state.succeeded = getattr(state, 'succeeded', set()), set()
+                if getattr(state, 'wanted', False):
+                    state.wanted = False
+                    self._persist_override()
+                elif maybe and self._persist_keys(maybe, succeeded):
+                    pass        # the soft changes went with it
+                elif soft and SOFT.claim_due(self._soft_path(), soft):
+                    self._persist_keys(soft)
+
+    def _soft_path(self):
+        """The path SOFT keeps this store's soft changes under: the file's absolute path."""
+        return os.path.abspath(str(self._override_path))
+
+    # Where the store's file is read and written. A store kept elsewhere than a local file
+    # (mendwright.remote) gives its own: these four, _soft_path(), _persist_override() and
+    # _persist_failed().
+
+    def _latest(self, known, max_age=0.0):
+        """(data, version) of the override file now, for refresh() and _file_holds(): version
+        None when there is no file, and data None when version is one of known (the file did
+        not change since; it is not read) or the file is not schema 2. The file is parsed once
+        per version per process (parsed_override). Raises when it cannot be read. max_age is
+        for a store whose look costs a request: a look another store of the process made that
+        recently will do (a file's costs one stat, so it looks every time)."""
+        version = stat_version(self._override_path)
+        if version is None or version in known:
+            return None, version
+        return parsed_override(self._override_path, version, sleep=self._sleep)
+
+    def _disk(self):
+        """(data, native) of the override file now, read afresh (see _read). Raises when it
+        cannot be read."""
+        return _read(self._override_path, self._destructive_keys, sleep=self._sleep)
+
+    def _turns(self):
+        """The _FileWrites of this store's file: one writer of it at a time in this process."""
+        return _writes(os.path.normcase(os.path.abspath(str(self._override_path))))
+
+    def _persist_soft(self, key, rows=None, *, at_once=False):
+        """A change of key's last successes, pages, steps, address or fingerprints (see
+        SOFT_EVERY). at_once=True (what the file does not have yet) writes this store now, or at
+        the end of the batch, as any change. Otherwise the store is written when the key's soft
+        changes are due (the first in this process: at once), and else the change waits in
+        memory for the store's next write. rows {xpath: lastSucceededAt} and the key's soft
+        metadata also go to SOFT, which writes them at exit if this store is gone before it
+        wrote them."""
+        if not self.writes:
+            return
+        meta = {f: v for f, v in self._meta.get(key, {}).items() if f in SOFT_META}
+        path = self._soft_path()
+        SOFT.record(path, key, rows, meta)
+        self._soft_waiting.add(key)
+        state = self._batch
+        if getattr(state, 'depth', 0):
+            if at_once:
+                state.maybe = getattr(state, 'maybe', set()) | {key}
+                state.succeeded = getattr(state, 'succeeded', set()) | set(rows or ())
+            state.soft = getattr(state, 'soft', set()) | {key}
+            return
+        # A first success that another worker recorded meanwhile (rows) waits like any other.
+        if at_once and self._persist_keys((key,), succeeded=tuple(rows or ())):
+            return
+        if SOFT.claim_due(path, (key,)):
+            self._persist_keys((key,))
+
+    def flush(self):
+        """Write now the soft changes that wait (see SOFT_EVERY): this store's own, and those
+        other stores of this process left for its file. True when nothing waits any more."""
+        if not self.writes:
+            return True
+        if self._soft_waiting:
+            self._persist_override()
+        return SOFT.flush(self._soft_path(), sleep=self._sleep)
 
     def _persist_override(self):
-        if self._read_only:
-            return      # no lock file, no read, no write (see read_only)
+        if not self.writes:
+            return      # no lock file, no read, no write (see read_only and writes)
         state = self._batch
         if getattr(state, 'depth', 0):
             state.wanted = True     # written when the batch ends (see batch)
             return
+        writes = self._turns()
         try:
-            with self._locked_file():
-                # A file that became unreadable raises here, so it is never replaced.
-                disk, _native = _read(self._override_path, self._destructive_keys,
-                                      sleep=self._sleep)
-                self._absorb(disk)
-                payload = self._payload()
-                self._write(json.dumps(payload, separators=(',', ':')))
-                self._remember_base(payload)
+            with writes.lock:
+                try:
+                    with self._locked_file(), self._mutex:
+                        # A file that became unreadable raises here, so it is never replaced.
+                        disk, native = _read(self._override_path, self._destructive_keys,
+                                             sleep=self._sleep)
+                        self._absorb(disk)
+                        payload = self._payload()
+                        if not (native and _same_store(payload, disk)):
+                            # Unless the file holds all of it already (another worker wrote
+                            # the same), and is schema 2: a schema-1 file is converted.
+                            self._write(json.dumps(payload, separators=(',', ':')))
+                        self._remember_base(payload)
+                        # Every key in memory is the file now (the lock keeps other writers
+                        # out).
+                        self._version = stat_version(self._override_path)
+                        self._key_versions = {}
+                        self._unsaved = False
+                finally:
+                    writes.count += 1
+            # The soft changes that waited went with this write.
+            if self._soft_waiting:
+                SOFT.written(self._soft_path(), self._soft_waiting)
+                self._soft_waiting = set()
         except Exception as exc:
+            self._unsaved = True
             self._persist_failed(exc)
+
+    def _persist_keys(self, keys, succeeded=()):
+        """Write this store for a change of keys, unless the override file holds it already:
+        another worker saved the same selector, role, page, success or heal (_file_holds;
+        succeeded are the selectors whose first success is the change). A store looks at the
+        file before it waits for this process's turn to write and again when it has it, so of
+        the stores of a process that save one change at once, the first writes it. In a batch,
+        the look is made when the batch ends. False when nothing was written for it."""
+        if not self.writes:
+            return False
+        state = self._batch
+        if getattr(state, 'depth', 0):
+            state.maybe = getattr(state, 'maybe', set()) | set(keys)
+            return True
+        if self._file_holds(keys, succeeded):
+            return False
+        writes = self._turns()
+        for _ in range(8):
+            seen = writes.count
+            with writes.lock:
+                if writes.count == seen:
+                    # No other store of this process wrote the file while this one waited.
+                    self._persist_override()
+                    return True
+            # One did: look at the file again, out of the lock, in parallel with the others.
+            if self._file_holds(keys, succeeded):
+                return False
+        self._persist_override()
+        return True
+
+    def _file_holds(self, keys, succeeded=()):
+        """True when the override file holds what a write of this store would save for keys,
+        as another worker saved it (see _same_entry). Each key is merged from the file into
+        memory first, as refresh() merges it. False when the file did not change since this
+        store last read or wrote it (it lacks this store's change then), when it cannot be
+        read, and after a write of this store failed (_unsaved): that write is made again."""
+        if self._unsaved:
+            return False
+        keys = list(keys)
+        known = tuple(self._key_versions.get(k, self._version) for k in keys)
+        try:
+            data, version = self._latest(known)
+        except Exception:
+            return False
+        if version is None or version in known or data is None:
+            return False        # (data None: schema 1, which the next write converts)
+        theirs = data.get('selectors') or {}
+        with self._mutex:
+            for key in keys:
+                entry = theirs.get(key)
+                if isinstance(entry, dict):
+                    entry = copy.deepcopy(entry)    # the parse is shared by every store
+                    self._absorb_key(key, entry)
+                    self._remember_key_base(key, entry)
+                    self._key_versions[key] = version
+            return all(_same_entry(self._payload_entry(k), theirs.get(k), succeeded)
+                       for k in keys)
+
+    # --- reading what other workers saved (read-through) ---------------------------
+    #
+    # A store reads the override file when it loads, and again under the lock each time it
+    # writes. In between, refresh(key) takes in what other workers (threads with stores of
+    # their own, processes, machines sharing the file) saved for one key: their heals, their
+    # quarantines, a destructive flag. A lookup calls it before it uses a selector a heal or
+    # a seed file saved, about once a second while a key keeps missing, and a heal calls it
+    # before its fingerprint tier and before asking a model (see resolver.resolve and
+    # HealCoordinator.try_heal).
+
+    def refresh(self, key, *, max_age=0.0):
+        """Take in what the override file holds for key now, if it changed since this store
+        last read or wrote it, with the merge rules of a write (see _absorb): a quarantine
+        wins, then an acceptance; destructive True wins; the newest lastSucceededAt wins.
+        Returns True when key's candidates or metadata changed in memory.
+
+        Cheap when nothing changed: one stat of the file. When it did, the file is parsed
+        once per version per process however many stores refresh from it (parsed_override),
+        and only key is merged. max_age > 0 skips the look entirely when this store looked for
+        key less than max_age seconds ago. A read-only store, a file that is gone, and one
+        that cannot be read (it is never taken for an empty store) leave memory as it is."""
+        if self._read_only:
+            return False
+        if max_age:
+            now = self._clock()
+            last = self._looked.get(key)
+            if last is not None and now - last < max_age:
+                return False
+            self._looked[key] = now
+        known = self._key_versions.get(key, self._version)
+        try:
+            data, version = self._latest((known,), max_age)
+        except Exception:
+            return False        # unreadable now: keep what memory holds
+        if version is None or version == known:
+            return False
+        entry = (data or {}).get('selectors', {}).get(key) if data is not None else None
+        with self._mutex:
+            changed = False
+            if isinstance(entry, dict):
+                entry = copy.deepcopy(entry)    # the parse is shared by every store
+                changed = self._absorb_key(key, entry)
+                self._remember_key_base(key, entry)
+            self._key_versions[key] = version
+        return changed
+
+    def arrived(self, key, xpath):
+        """True for a heal of key that this store took in from the file after it read it
+        (refresh() or a write's merge): one another worker saved meanwhile, which a lookup
+        here has not checked or used yet (see Healer's adoption)."""
+        return (key, xpath) in self._arrived
 
     def _persist_failed(self, exc):
         detail = type(exc).__name__ + (': ' + str(exc) if str(exc) else '')
@@ -1156,14 +1804,38 @@ class SelectorStore:
         self._base = {}
         self._base_place = {}
         self._base_meta = {}
+        self._base_index = {}
         for key, entry in (data.get('selectors') or {}).items():
-            if not isinstance(entry, dict):
-                continue
-            for c in entry.get('candidates') or ():
-                if isinstance(c, dict) and isinstance(c.get('xpath'), str):
-                    self._base[(key, c['xpath'])] = c.get('status', 'active')
-                    self._base_place[(key, c['xpath'])] = _place(c)
-            self._base_meta[key] = _meta_fields(entry)
+            if isinstance(entry, dict):
+                self._remember_key_base(key, entry)
+
+    def _remember_key_base(self, key, entry):
+        """Record one key's part of the merge base (see _remember_base): what the file holds
+        for key now, in place of what it held before."""
+        index = getattr(self, '_base_index', None)
+        if index is None:
+            index = self._base_index = {}
+        for xpath in index.pop(key, ()):
+            self._base.pop((key, xpath), None)
+            self._base_place.pop((key, xpath), None)
+        xpaths = set()
+        for c in entry.get('candidates') or ():
+            if isinstance(c, dict) and isinstance(c.get('xpath'), str):
+                self._base[(key, c['xpath'])] = c.get('status', 'active')
+                self._base_place[(key, c['xpath'])] = _place(c)
+                xpaths.add(c['xpath'])
+        index[key] = xpaths
+        self._base_meta[key] = _meta_fields(entry)
+
+    def _key_state(self, key):
+        """What refresh() compares to tell whether a merge changed key in memory."""
+        e = self._data['selectors'].get(key)
+        if not isinstance(e, dict):
+            return None
+        rows = [(c.get('xpath'), c.get('source'), c.get('status', 'active'),
+                 c.get('lastSucceededAt')) + _place(c)
+                for c in e.get('candidates', []) if isinstance(c, dict)]
+        return rows, dict(self._meta.get(key, {}))
 
     def _absorb(self, disk):
         """Take in what other processes wrote to the override file since this store last
@@ -1175,52 +1847,60 @@ class SelectorStore:
           a stale view), otherwise this store's;
         - when both changed the destructive flag, True wins;
         - lastSucceededAt is the newer of the two;
-        - a candidate's frameXPath and css follow the same rule as a value: the file's when
-          only the other side changed them, this store's otherwise;
+        - a candidate's frameXPath, css, shadowHosts and getBy follow the same rule as a
+          value: the file's when only the other side changed them, this store's otherwise;
         - a list heal's proposal is the one with the later 'at' (the file's when this store
           has none), and its acceptedAt the file's when this store has none, but not for a
           list heal this store took over as code (see set_code_candidates).
         New keys and candidates from the file are added."""
         for key, entry in (disk.get('selectors') or {}).items():
-            if not isinstance(entry, dict):
+            if isinstance(entry, dict):
+                self._absorb_key(key, entry)
+
+    def _absorb_key(self, key, entry):
+        """_absorb() for one key and its entry in the file. Returns True when key's
+        candidates or metadata changed in memory. A heal it adds is remembered as arrived."""
+        before = self._key_state(key)
+        mine = self._data['selectors'].get(key)
+        if mine is None:
+            mine = self._entry(key)
+            mine['candidates'] = []
+        for c in entry.get('candidates') or ():
+            if not isinstance(c, dict) or not isinstance(c.get('xpath'), str):
                 continue
-            mine = self._data['selectors'].get(key)
-            if mine is None:
-                mine = self._entry(key)
-                mine['candidates'] = []
-            for c in entry.get('candidates') or ():
-                if not isinstance(c, dict) or not isinstance(c.get('xpath'), str):
-                    continue
-                xpath = c['xpath']
-                local = self._find(key, xpath)
-                if local is None:
-                    mine['candidates'].append(dict(c))
-                    continue
-                local['status'] = _merge_status(local.get('status', 'active'),
-                                                c.get('status', 'active'),
-                                                self._base.get((key, xpath)))
-                newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
-                local['lastSucceededAt'] = newest or None
-                _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
-                if (key, xpath) in self._delisted:
-                    continue                 # taken over as code here: no list heal any more
-                if c.get('list') is True:
-                    local['list'] = True     # another process healed a list with it
-                theirs = evidence_of(c)
-                if theirs is not None:
-                    mine_evidence = evidence_of(local)
-                    if mine_evidence is None or theirs['at'] > mine_evidence['at']:
-                        local['proposal'] = copy.deepcopy(theirs)
-                if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
-                        isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
-                    local['acceptedAt'] = c['acceptedAt']
-            merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
-                                 self._base_meta.get(key, {}))
-            if merged != self._meta.get(key, {}):
-                gone = set(self._meta.get(key, {})) - set(merged)
-                self._meta[key] = merged
-                self._overlay_meta(key, merged)
-                self._drop_meta(key, gone)
+            xpath = c['xpath']
+            local = self._find(key, xpath)
+            if local is None:
+                mine['candidates'].append(dict(c))
+                if c.get('source') == 'heal':
+                    self._arrived.add((key, xpath))
+                continue
+            local['status'] = _merge_status(local.get('status', 'active'),
+                                            c.get('status', 'active'),
+                                            self._base.get((key, xpath)))
+            newest = max(local.get('lastSucceededAt') or '', c.get('lastSucceededAt') or '')
+            local['lastSucceededAt'] = newest or None
+            _merge_place(local, c, getattr(self, '_base_place', {}).get((key, xpath)))
+            if (key, xpath) in self._delisted:
+                continue                 # taken over as code here: no list heal any more
+            if c.get('list') is True:
+                local['list'] = True     # another process healed a list with it
+            theirs = evidence_of(c)
+            if theirs is not None:
+                mine_evidence = evidence_of(local)
+                if mine_evidence is None or theirs['at'] > mine_evidence['at']:
+                    local['proposal'] = copy.deepcopy(theirs)
+            if isinstance(c.get('acceptedAt'), str) and c['acceptedAt'] and not (
+                    isinstance(local.get('acceptedAt'), str) and local['acceptedAt']):
+                local['acceptedAt'] = c['acceptedAt']
+        merged = _merge_meta(self._meta.get(key, {}), _meta_fields(entry),
+                             self._base_meta.get(key, {}))
+        if merged != self._meta.get(key, {}):
+            gone = set(self._meta.get(key, {})) - set(merged)
+            self._meta[key] = merged
+            self._overlay_meta(key, merged)
+            self._drop_meta(key, gone)
+        return self._key_state(key) != before
 
     def _payload(self):
         """The override file's content: per key, the candidates worth keeping (see
@@ -1231,49 +1911,106 @@ class SelectorStore:
         are kept apart from them, at most MAX_LIST_HEALS: an accepted one first, then the
         newest proposals."""
         selectors = {}
-        for key, e in self._data['selectors'].items():
-            cap = e.get('maxCandidates', 5)
-            persistable = [c for c in e.get('candidates', []) if self._is_delta(key, c)]
-
-            def recency(c):
-                return c.get('lastSucceededAt') or c.get('addedAt') or ''
-
-            active = sorted((c for c in persistable if c.get('status', 'active') == 'active'),
-                            key=lambda c: c.get('lastSucceededAt') or '', reverse=True)[:cap]
-            inactive = [c for c in persistable if c.get('status', 'active') != 'active']
-            # An acceptance is a person's choice: newer proposals never push it out.
-            waiting = sorted((c for c in inactive if c.get('status') in LIST_WAITING),
-                             key=lambda c: (c.get('status') == 'accepted',) + _proposal_order(c),
-                             reverse=True)[:MAX_LIST_HEALS]
-            inactive = [c for c in inactive if c.get('status') not in LIST_WAITING]
-            pinned = [c for c in inactive if c.get('source') == 'seed']
-            others = sorted((c for c in inactive if c.get('source') != 'seed'),
-                            key=recency, reverse=True)[:cap]
-            overlay = []
-            for c in active + pinned + others + waiting:
-                item = {k: c[k] for k in ('xpath', 'source', 'addedAt', 'lastSucceededAt', 'status') if k in c}
-                if 'frameXPath' in c:
-                    item['frameXPath'] = c['frameXPath']
-                if isinstance(c.get('shadowHosts'), list) and c['shadowHosts']:
-                    item['shadowHosts'] = list(c['shadowHosts'])
-                if isinstance(c.get('css'), str) and c['css']:
-                    item['css'] = c['css']
-                if c.get('list') is True:
-                    item['list'] = True
-                evidence = evidence_of(c)
-                if evidence is not None:
-                    item['proposal'] = evidence
-                if isinstance(c.get('acceptedAt'), str) and c['acceptedAt']:
-                    item['acceptedAt'] = c['acceptedAt']
-                overlay.append(item)
-            saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
-            if overlay or saved:
-                selectors[key] = dict(saved, candidates=overlay)
+        for key in self._data['selectors']:
+            entry = self._payload_entry(key)
+            if entry is not None:
+                selectors[key] = entry
         return {'schema': 2, 'selectors': selectors}
+
+    def _payload_entry(self, key):
+        """What the override file holds for key after a write of this store (see _payload),
+        or None when it holds nothing for key."""
+        e = self._data['selectors'].get(key)
+        if not isinstance(e, dict):
+            return None
+        cap = e.get('maxCandidates', 5)
+        persistable = [c for c in e.get('candidates', []) if self._is_delta(key, c)]
+
+        def recency(c):
+            return c.get('lastSucceededAt') or c.get('addedAt') or ''
+
+        active = sorted((c for c in persistable if c.get('status', 'active') == 'active'),
+                        key=lambda c: c.get('lastSucceededAt') or '', reverse=True)[:cap]
+        inactive = [c for c in persistable if c.get('status', 'active') != 'active']
+        # An acceptance is a person's choice: newer proposals never push it out.
+        waiting = sorted((c for c in inactive if c.get('status') in LIST_WAITING),
+                         key=lambda c: (c.get('status') == 'accepted',) + _proposal_order(c),
+                         reverse=True)[:MAX_LIST_HEALS]
+        inactive = [c for c in inactive if c.get('status') not in LIST_WAITING]
+        pinned = [c for c in inactive if c.get('source') == 'seed']
+        others = sorted((c for c in inactive if c.get('source') != 'seed'),
+                        key=recency, reverse=True)[:cap]
+        overlay = []
+        for c in active + pinned + others + waiting:
+            item = {k: c[k] for k in ('xpath', 'source', 'addedAt', 'lastSucceededAt', 'status') if k in c}
+            if 'frameXPath' in c:
+                item['frameXPath'] = c['frameXPath']
+            if isinstance(c.get('shadowHosts'), list) and c['shadowHosts']:
+                item['shadowHosts'] = list(c['shadowHosts'])
+            if isinstance(c.get('css'), str) and c['css']:
+                item['css'] = c['css']
+            if isinstance(c.get('getBy'), str) and c['getBy']:
+                item['getBy'] = c['getBy']
+            if c.get('list') is True:
+                item['list'] = True
+            evidence = evidence_of(c)
+            if evidence is not None:
+                item['proposal'] = evidence
+            if isinstance(c.get('acceptedAt'), str) and c['acceptedAt']:
+                item['acceptedAt'] = c['acceptedAt']
+            overlay.append(item)
+        saved = {f: v for f, v in self._meta.get(key, {}).items() if f in META_FIELDS}
+        if overlay or saved:
+            return dict(saved, candidates=overlay)
+        return None
 
     def _write(self, payload):
         """Write payload to the override file atomically (see _atomic_write)."""
         _atomic_write(self._override_path, payload, self._sleep)
+
+
+def _same_row(mine, theirs, succeeded=False):
+    """Whether two rows of one selector say the same, whatever addedAt each gives it: two
+    workers that added one selector each gave it the time they added it. succeeded: the change
+    at hand is the row's first success, which theirs holds when it has any success of the row
+    (a later one waits like any other, see SOFT_EVERY)."""
+    left_out = ('addedAt', 'lastSucceededAt') if succeeded else ('addedAt',)
+    if succeeded and not theirs.get('lastSucceededAt'):
+        return False
+    return ({k: v for k, v in mine.items() if k not in left_out}
+            == {k: v for k, v in theirs.items() if k not in left_out})
+
+
+def _same_entry(mine, theirs, succeeded=()):
+    """Whether theirs, a key's entry in the override file, holds what a write would save for
+    the key: mine, from SelectorStore._payload_entry (None for nothing). The same metadata, and
+    the same rows by selector, in any order (rows that tie on their last success sort either
+    way) and whatever addedAt each gives them (see _same_row). succeeded: the selectors whose
+    first success is the change at hand."""
+    if mine is None or theirs is None:
+        return mine is None and theirs is None
+    if not isinstance(theirs, dict):
+        return False
+    if ({k: v for k, v in mine.items() if k != 'candidates'}
+            != {k: v for k, v in theirs.items() if k != 'candidates'}):
+        return False
+    rows, others = mine.get('candidates') or [], theirs.get('candidates')
+    if not isinstance(others, list) or len(others) != len(rows):
+        return False
+    found = {}
+    for c in others:
+        if not isinstance(c, dict) or not isinstance(c.get('xpath'), str) or c['xpath'] in found:
+            return False
+        found[c['xpath']] = c
+    return all(c['xpath'] in found and _same_row(c, found[c['xpath']], c['xpath'] in succeeded)
+               for c in rows)
+
+
+def _same_store(payload, disk):
+    """Whether disk, the override file's content, holds what writing payload would save (see
+    _same_entry), so the write would change nothing."""
+    mine, theirs = payload.get('selectors') or {}, disk.get('selectors') or {}
+    return mine.keys() == theirs.keys() and all(_same_entry(mine[k], theirs[k]) for k in mine)
 
 
 def _merge_status(mine, theirs, base):
@@ -1496,7 +2233,17 @@ def _call_keys(data, path):
     return dict(data, selectors=renamed)
 
 
-def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False):
+def _is_remote(override_path):
+    """True for a store URL (see backends.url.is_store_url) or a StoreBackend object."""
+    from .backends.url import is_store_url
+    if is_store_url(override_path):
+        return True
+    return all(callable(getattr(override_path, name, None))
+               for name in ('get', 'put', 'delete', 'describe'))
+
+
+def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False,
+               writes=True):
     """A SelectorStore over a read-only seed file and a writable override file.
 
     seed_path=None means no seed. A seed path that does not exist raises
@@ -1506,7 +2253,18 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
     ValueError) naming the file, and so does a seed with two keys for one get_by_* call.
     Relative paths are read from the current directory, and '~' is expanded.
     read_only=True gives a store that never writes the override file: changes stay in
-    memory (`mendwright check` reads its store this way)."""
+    memory (`mendwright check` reads its store this way).
+
+    writes=False gives a store for a read-only worker (see SelectorStore.writes): it reads
+    the override file and takes in what other workers save, and never writes it.
+
+    override_path may also be a store URL (s3://bucket/prefix/, https://host/path/, memory:)
+    or a StoreBackend: the override file is then overrides.json there (see
+    mendwright.remote.load_remote_store), and the seed file stays a local file."""
+    if _is_remote(override_path):
+        from .remote import load_remote_store
+        return load_remote_store(seed_path, override_path, destructive_keys, read_only=read_only,
+                                 writes=writes)
     override_path = _expand(override_path)
     if seed_path is None:
         seed = _empty()
@@ -1518,8 +2276,9 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
                 'read from ' + os.getcwd() + '). Pass an absolute path, or seed_path=None '
                 'for no seed.')
         seed = _call_keys(_read_schema2(seed_path, destructive_keys), seed_path)
-    override, native = _read(override_path, destructive_keys)
+    override, native, version = _read_versioned(override_path, destructive_keys)
     # Saved metadata is read only from a schema-2 override. A schema-1 file migrated here
     # has inferred metadata, not metadata someone set.
     return SelectorStore(merge(seed, override), override_path, destructive_keys, seed=seed,
-                         override=override if native else None, read_only=read_only)
+                         override=override if native else None, read_only=read_only,
+                         file_version=version if native else None, writes=writes)

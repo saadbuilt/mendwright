@@ -1,0 +1,8 @@
+{
+  "id": "call-label-reworded-email-field",
+  "category": "label_reworded",
+  "description": "The step is the call get_by_label(\"E-mail\"). \"E-mail\" is now \"Email address\", next to a new recovery email field.",
+  "pages": "label-reworded-email-field",
+  "call": "get_by_label(\"E-mail\")",
+  "truth": "//input[@id='profile-email']"
+}

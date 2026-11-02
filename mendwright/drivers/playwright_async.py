@@ -28,9 +28,9 @@ from .base import (DESCRIBE_JS, FRAME_ATTRS_JS, INVENTORY_JS, PLACE_JS, PLACED, 
                    VISIBLE_MATCH_JS, frame_selector, inventory_rows, is_async_api, item_rows,
                    looks_like_locator, placement_of, shadow_arg, summary_from_js,
                    visible_match_from_js)
-from .playwright_sync import (_frame_locator, _raise_if_invalid, all_placed, chain_steps,
-                              child_frames, frame_info, is_direct_child, placed_count,
-                              playwright_target, step_hosts)
+from .playwright_sync import (ARIA_TIMEOUT_MS, _frame_locator, _raise_if_invalid, all_placed,
+                              chain_steps, child_frames, frame_info, is_direct_child,
+                              placed_count, playwright_target, step_hosts)
 
 
 async def _awaited(value):
@@ -44,8 +44,9 @@ class AsyncPlaywrightDriver:
     """Wraps an async Playwright Page or Frame (or a patchright / camoufox one).
 
     Every method is a coroutine: count, is_visible, scroll_into_view, handle, act, act_on,
-    url, outer_html, describe, fingerprint, visible_match, role_match, inventory, handles,
-    list_fingerprint and list_items, with the same arguments and results as
+    url, outer_html, describe, fingerprint, visible_match, role_match, same_element,
+    aria_name, inventory, handles, list_fingerprint and list_items, with the same arguments
+    and results as
     PlaywrightSyncDriver. handle() returns the native async Locator."""
 
     # Playwright's CSS pierces every open shadow root (see base.css_pierces).
@@ -268,6 +269,35 @@ class AsyncPlaywrightDriver:
                 return False
             loc = self._context(frames).get_by_role(role, **options).and_(built)
             return await loc.count() == 1
+        except Exception:
+            return None
+
+    async def same_element(self, selector, other, frame_chain=()):
+        """True when selector matches one element and it is the one other matches, False
+        when not, None on any error (see PlaywrightSyncDriver.same_element). Two round
+        trips."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            if step_hosts(frames):
+                return None
+            built = self._build(target, frames)
+            if await built.count() != 1:
+                return False
+            return await built.and_(self._build(*self._targets(other, frame_chain))).count() == 1
+        except Exception:
+            return None
+
+    async def aria_name(self, selector, frame_chain=()):
+        """{'role', 'name', 'level'} of the element selector matches, from Playwright's
+        aria_snapshot(), or None (see PlaywrightSyncDriver.aria_name). One round trip."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            if step_hosts(frames):
+                return None
+            snapshot = getattr(self._build(target, frames), 'aria_snapshot', None)
+            if not callable(snapshot):
+                return None
+            return getby.parse_aria(await snapshot(timeout=ARIA_TIMEOUT_MS))
         except Exception:
             return None
 

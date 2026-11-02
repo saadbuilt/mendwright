@@ -130,15 +130,15 @@ def test_a_bad_heal_get_by_raises_type_error(tmp_path, make_page, stub_provider)
     page = _page(make_page)
     with pytest.raises(TypeError) as caught:
         _open(page, tmp_path, stub_provider(HEAL), heal_get_by='yes')
-    assert str(caught.value) == ("mendwright.open() takes heal_get_by=True, heal_get_by=False "
-                                 "or heal_get_by=None, got heal_get_by='yes'.")
+    assert str(caught.value) == ("mendwright.open() takes heal_get_by=True, heal_get_by='model', "
+                                 "heal_get_by=False or heal_get_by=None, got heal_get_by='yes'.")
     assert page.queries == [] and page.trips == 0
 
 
 def test_a_bad_environment_value_raises_value_error(tmp_path, make_page, stub_provider,
                                                    monkeypatch):
     monkeypatch.setenv('MENDWRIGHT_HEAL_GET_BY', 'maybe')
-    with pytest.raises(ValueError, match='MENDWRIGHT_HEAL_GET_BY must be 1 or 0'):
+    with pytest.raises(ValueError, match='MENDWRIGHT_HEAL_GET_BY must be 1, 0 or model'):
         _open(_page(make_page), tmp_path, stub_provider(HEAL), heal_get_by=None)
 
 

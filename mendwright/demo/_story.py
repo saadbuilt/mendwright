@@ -13,19 +13,22 @@ checks pass it, the step is retried and the box is checked. The pay button misse
 and is refused without a model call, because its key is marked destructive=True and
 mendwright never heals a key marked destructive.
 
-The provider here is ScriptedProvider: it builds the real prompt and parses a canned
-reply with the real parser, but makes no API call. The page is StandInPage, or a real
-Playwright page with --browser. With --live, the provider is the one auto_provider()
-builds from the environment, and the accept_terms heal is a real API call.
+The provider is the one auto_provider() builds from the environment, the one `mendwright
+doctor` shows, so the accept_terms heal is a real model call. With --scripted it is
+ScriptedProvider: it builds the real prompt and parses a canned reply with the real
+parser, but makes no API call. The page is StandInPage, or a real Playwright page with
+--browser. What the command prints is mendwright's own log lines from the run, the ones
+your own script logs through the 'mendwright' logger, between a line that says what the
+demo is and a one-line summary.
 """
 
 import contextlib
 import json
+import logging
 import os
 import shutil
 import sys
 import tempfile
-import time
 from dataclasses import dataclass, field
 from importlib import resources
 
@@ -125,50 +128,9 @@ class StoryResult:
                 and self.banner_handled and not self.problems)
 
 
+
+
 # --- output ----------------------------------------------------------------------------
-
-_COLORS = {'green': '32', 'red': '31', 'yellow': '33', 'bold': '1', 'dim': '2'}
-
-
-class Style:
-    """ANSI colour when on, plain text when off."""
-
-    def __init__(self, on):
-        self.on = bool(on)
-
-    def __call__(self, text, color):
-        if not self.on:
-            return text
-        return '\x1b[' + _COLORS[color] + 'm' + text + '\x1b[0m'
-
-
-def want_color(stream):
-    """Colour only for a terminal, and never when NO_COLOR is set (https://no-color.org)."""
-    if os.environ.get('NO_COLOR'):
-        return False
-    try:
-        if not stream.isatty():
-            return False
-    except Exception:
-        return False
-    return _enable_windows_ansi()
-
-
-def _enable_windows_ansi():
-    """Turn on ANSI escape handling in a Windows console. False if that fails."""
-    if os.name != 'nt':
-        return True
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        mode = ctypes.c_uint32()
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            return False
-        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
-    except Exception:
-        return False
-
 
 def write_line(text, stream=None):
     """Print one line, replacing characters the stream's encoding cannot show."""
@@ -179,6 +141,41 @@ def write_line(text, stream=None):
         encoding = getattr(stream, 'encoding', None) or 'ascii'
         stream.write(text.encode(encoding, 'replace').decode(encoding) + '\n')
     stream.flush()
+
+
+class _LineHandler(logging.Handler):
+    """Writes each record of the 'mendwright' logger as one line, its level first: what a
+    script that configures logging with format='%(levelname)s %(message)s' shows."""
+
+    def __init__(self, stream):
+        super().__init__(logging.INFO)
+        self.stream = stream
+        self.setFormatter(logging.Formatter('%(levelname)s %(message)s'))
+
+    def emit(self, record):
+        try:
+            write_line(self.format(record), self.stream)
+        except Exception:
+            self.handleError(record)
+
+
+@contextlib.contextmanager
+def _log_lines(stream):
+    """Show mendwright's own INFO and WARNING lines on ``stream`` while the story runs, and
+    only there (not also through a root handler the caller configured). The logger's level
+    and propagation are put back afterwards, and the handler removed."""
+    log = logging.getLogger('mendwright')
+    handler = _LineHandler(stream)
+    level, propagate = log.level, log.propagate
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    try:
+        yield
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(level)
+        log.propagate = propagate
 
 
 # --- the story -------------------------------------------------------------------------
@@ -195,119 +192,77 @@ def _healing_on():
             os.environ['MENDWRIGHT_DISABLE'] = saved
 
 
-def _silent(_message):
-    pass
-
-
 def _recorded(provider):
-    """(calls, proposals) lists that fill as ``provider`` is asked, for a provider that
-    does not keep them itself. propose() is wrapped on the instance, so the coordinator
-    still sees the provider's own type, model and last_error."""
-    calls, proposals = [], []
+    """A list that fills with the key of each propose() call to ``provider``. propose() is
+    wrapped on the instance, so the coordinator still sees the provider's own type, model
+    and last_error."""
+    calls = []
     real = provider.propose
 
     def propose(bundle):
-        key = bundle.get('key')
-        calls.append(key)
-        proposal = real(bundle)
-        if proposal:
-            proposals.append((key, proposal))
-        return proposal
+        calls.append(bundle.get('key'))
+        return real(bundle)
 
     provider.propose = propose
-    return calls, proposals
+    return calls
 
 
-def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provider=None):
+def _first_line(error):
+    return (str(error).strip().splitlines() or [type(error).__name__])[0]
+
+
+def story(page, store_path, *, timeout_ms=0, poll_ms=0, provider=None):
     """Run the story on ``page`` (StandInPage or a real sync Playwright page) with the
-    override store at ``store_path``. ``say`` receives each line. Returns a StoryResult.
-    timeout_ms and poll_ms are passed to every heal.locator() call. ``provider`` is the
-    model provider to ask (mendwright demo --live); None uses the scripted reply."""
-    style = style or Style(False)
+    override store at ``store_path``, and return a StoryResult. It prints nothing itself:
+    mendwright logs each interruption it handles and each heal it applies or refuses to the
+    'mendwright' logger, as in any run. timeout_ms and poll_ms are passed to every
+    heal.locator() call. ``provider`` is the model provider to ask; None uses
+    ScriptedProvider with the canned reply."""
     result = StoryResult(store_path=store_path)
     if provider is None:
         provider = ScriptedProvider({TERMS_KEY: SCRIPTED_REPLY})
-        asked, proposals = provider.calls, provider.proposals
-        source = '(scripted reply, no API call)'
-    else:
-        asked, proposals = _recorded(provider)
-        source = '(' + type(provider).__name__ + ', a real API call)'
+    asked = _recorded(provider)
     # fingerprint=False: the story shows a model's heal. With the fingerprint tier on (the
     # default), the checkbox would heal from its recorded fingerprint before any model call.
     with _healing_on():
         heal = _open_healer(page, provider=provider, store_path=store_path, dry_run=False,
                             timeout_ms=timeout_ms, fingerprint=False)
-    # The story prints its own lines. mendwright's log line for each heal applied or
-    # refused, or interruption handled, would repeat them on stderr.
-    heal.coordinator.log = _silent
     # A step that may now come at any point: registered once, handled wherever it shows up.
     heal.interrupt(COOKIE_KEY, COOKIE_SELECTOR)
-    width = max(len(TERMS_KEY), len(PAY_KEY), len(COOKIE_KEY))
-    sel_width = max(len(TERMS_SELECTOR), len(PAY_SELECTOR), len(COOKIE_SELECTOR))
-
-    def row(version, key, selector, status, color, note):
-        return ('  ' + version + '  ' + key.ljust(width) + '  ' + selector.ljust(sel_width)
-                + '  ' + style(status.ljust(5), color) + '  ' + note)
-
-    def detail(label, text):
-        return '      ' + label.ljust(8) + ' ' + text
 
     # v1: both selectors match.
     page.set_content(page_html('v1'))
     box = heal.locator(TERMS_KEY, TERMS_SELECTOR, poll_ms=poll_ms)
     box.check(expect=box.is_checked)
     result.v1_terms = bool(box.is_checked())
-    say(row('v1', TERMS_KEY, TERMS_SELECTOR, 'ok' if result.v1_terms else 'FAIL',
-            'green' if result.v1_terms else 'red', 'matched, box checked'))
     heal.locator(PAY_KEY, PAY_SELECTOR, destructive=True, poll_ms=poll_ms)
     result.v1_pay = True
-    say(row('v1', PAY_KEY, PAY_SELECTOR, 'ok', 'green', 'matched (not clicked)'))
 
     # v2: a redesign removed both ids, and a cookie banner now covers the form.
     page.set_content(page_html('v2'))
-    say(style('      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --',
-              'dim'))
     failure = None
     try:
         box = heal.locator(TERMS_KEY, TERMS_SELECTOR, poll_ms=poll_ms)
     except (AttentionRequired, InvalidSelector) as exc:
         failure, box = exc, None
-    banner = [e for e in heal.handled_interruptions if e.key == COOKIE_KEY]
-    result.banner_handled = bool(banner)
-    if banner:
-        say(row('v2', COOKIE_KEY, COOKIE_SELECTOR, 'ok', 'green',
-                'banner covered the form, clicked it (heal.interrupt)'))
-    else:
+    result.banner_handled = any(e.key == COOKIE_KEY for e in heal.handled_interruptions)
+    if not result.banner_handled:
         result.problems.append('the cookie banner on v2 was not handled.')
     if failure is not None:
-        say(row('v2', TERMS_KEY, TERMS_SELECTOR, 'MISS', 'red', 'not healed'))
-        result.problems.append(TERMS_KEY + ' was not healed (the reason is above).')
-        for line in str(failure).splitlines():
-            say(detail('', line.strip()))
+        result.problems.append(TERMS_KEY + ' was not repaired: ' + _first_line(failure))
     event = heal.heals[-1] if heal.heals else None
     if box is not None and event is not None and event.key == TERMS_KEY:
         result.v2_terms_missed = TERMS_SELECTOR in event.old
         result.healed_xpath = event.new
-        proposal = next((p for k, p in reversed(proposals) if k == TERMS_KEY), None)
-        say(row('v2', TERMS_KEY, TERMS_SELECTOR, 'MISS', 'red', 'no element matches'))
-        say(detail('model', 'proposed ' + str((proposal or {}).get('xpath'))
-                   + ' ' + style(source, 'yellow')))
-        role = heal.store.meta(TERMS_KEY).get('expectedRole') or 'element'
-        live = '1 match on the live page' + ('' if role == 'checkbox' else ', visible')
-        say(detail('checks', style('pass', 'green') + ': 1 ' + role + ' in the captured HTML, '
-                   + live))
         box.check(expect=box.is_checked)
         result.retried = bool(box.is_checked())
-        event = heal.heals[-1]
-        result.confirmed = event.confirmed
-        if result.retried and event.confirmed:
-            say(detail('retry', style('ok', 'green')
-                       + ': box checked with the healed selector, heal confirmed'))
-        else:
-            say(detail('retry', style('FAIL', 'red') + ': the retried step did not check the box'))
+        result.confirmed = heal.heals[-1].confirmed
+        if not (result.retried and result.confirmed):
+            result.problems.append('the retried step did not check the box with the repaired '
+                                   'selector.')
     elif box is not None:
-        result.problems.append('#accept-terms still matched on v2, so nothing was healed.')
-        say(row('v2', TERMS_KEY, TERMS_SELECTOR, 'ok', 'yellow', 'still matched (no heal needed)'))
+        result.problems.append(TERMS_SELECTOR + ' still matched on v2, so nothing was '
+                               'repaired.')
 
     # v2: the pay button broke too. It is marked destructive=True, so it is never healed.
     calls_before = len(asked)
@@ -317,30 +272,29 @@ def story(page, store_path, *, say, style=None, timeout_ms=0, poll_ms=0, provide
         reason = heal.coordinator.explain(PAY_KEY) or str(exc)
         result.pay_refused = 'is marked as a destructive control' in reason
         result.pay_model_calls = len(asked) - calls_before
-        say(row('v2', PAY_KEY, PAY_SELECTOR, 'MISS', 'red', 'no element matches'))
-        if result.pay_refused:
-            calls = ('no model call' if result.pay_model_calls == 0
-                     else str(result.pay_model_calls) + ' model call(s)')
-            say(detail(style('refused', 'yellow'), "'" + PAY_KEY + "' is marked destructive=True. "
-                       'Not healed, ' + calls + '.'))
-        else:
-            say(detail('', reason))
+        if not result.pay_refused:
+            result.problems.append(PAY_KEY + ' was not refused as destructive: '
+                                   + _first_line(reason))
+        elif result.pay_model_calls:
+            result.problems.append(PAY_KEY + ' is marked destructive, but the model was asked '
+                                   'about it.')
     else:
-        result.problems.append('#pay still matched on v2.')
-        say(row('v2', PAY_KEY, PAY_SELECTOR, 'ok', 'yellow', 'still matched'))
+        result.problems.append(PAY_SELECTOR + ' still matched on v2.')
 
     result.model_calls = len(asked)
     return result
 
 
-def _summary(result, style):
-    applied = 1 if result.healed_xpath else 0
-    confirmed = ' and confirmed' if result.confirmed else ''
-    refused = 1 if result.pay_refused else 0
-    banner = 1 if result.banner_handled else 0
-    return (style('Done:', 'bold') + ' ' + _count(applied, 'heal') + ' applied' + confirmed
-            + ', ' + str(refused) + ' refused, ' + _count(banner, 'interruption') + ' handled, '
-            + _count(result.model_calls, 'model call') + ' in total.')
+def _summary(result):
+    if result.healed_xpath and result.confirmed:
+        repaired = '1 repaired (checked on the live page and confirmed by the retried step)'
+    elif result.healed_xpath:
+        repaired = '1 repaired (checked on the live page, not confirmed by the retried step)'
+    else:
+        repaired = '0 repaired'
+    return ('Done: ' + repaired + ', ' + str(1 if result.pay_refused else 0) + ' refused, '
+            + _count(1 if result.banner_handled else 0, 'interruption') + ' handled, '
+            + _count(result.model_calls, 'model call') + '.')
 
 
 def _count(n, noun):
@@ -406,36 +360,32 @@ def _provider_name(provider):
     return name + (', model ' + model if isinstance(model, str) and model else '')
 
 
-def run(*, browser=None, keep=False, slow=False, color=None, stream=None,
-        err_stream=None, sleep=time.sleep, live=False):
+NO_PROVIDER_HELP = (
+    'mendwright demo: set a provider up and check it with mendwright doctor, or install '
+    "mendwright's local model with mendwright model install (it runs in Ollama on your "
+    'machine). To run the demo with no model, use mendwright demo --scripted.')
+
+
+def run(*, browser=None, keep=False, scripted=False, stream=None, err_stream=None):
     """`mendwright demo`. Returns the exit code: 0 when the story ran red -> green, the
-    cookie banner was handled and the pay heal was refused, 1 otherwise (with the reason
-    on stderr). live=True asks the
-    provider from the environment (auto_provider()) instead of the scripted reply."""
+    cookie banner was handled and the pay heal was refused, 1 otherwise (with the reason on
+    stderr), and 1 when no model provider can be set up from the environment, with what to
+    do instead. scripted=True uses ScriptedProvider's canned reply, with no model call."""
     stream = stream or sys.stdout
     err_stream = err_stream or sys.stderr
-    style = Style(want_color(stream) if color is None else color)
     if browser is not None and browser not in BROWSERS:
         write_line('mendwright demo: unknown browser ' + repr(browser) + '. Use one of: '
                    + ', '.join(BROWSERS) + '.', err_stream)
         return 2
-    provider = None
-    if live:
+    if scripted:
+        provider = ScriptedProvider({TERMS_KEY: SCRIPTED_REPLY})
+    else:
         provider, why = _live_provider()
         if provider is None:
-            write_line('mendwright demo --live: no model provider is configured, so there is '
-                       'nothing to call. ' + why, err_stream)
-            write_line('mendwright demo --live: set a provider (mendwright doctor shows what it '
-                       'finds), or run mendwright demo without --live for the scripted reply.',
-                       err_stream)
+            write_line('mendwright demo: no model provider could be set up from your '
+                       'environment. ' + why, err_stream)
+            write_line(NO_PROVIDER_HELP, err_stream)
             return 1
-    first = [True]
-
-    def say(text):
-        if slow and not first[0]:
-            sleep(0.4)
-        first[0] = False
-        write_line(text, stream)
 
     with contextlib.ExitStack() as stack:
         # Start the browser before printing anything, so a missing install is one clear
@@ -450,44 +400,40 @@ def run(*, browser=None, keep=False, slow=False, color=None, stream=None,
             write_line('mendwright demo: ' + str(exc), err_stream)
             return 1
 
-        if browser:
-            where = 'Real headless ' + browser + ' (pages loaded with page.set_content)'
-        elif live:
-            where = 'A stand-in page (lxml, no browser)'
+        write_line('mendwright demo: a checkout page is redesigned and two selectors break'
+                   + (', in headless ' + browser if browser else '') + '.', stream)
+        if scripted:
+            write_line('Provider: ScriptedProvider, a canned reply (--scripted): no model call, '
+                       'nothing sent.', stream)
         else:
-            where = 'Offline: a stand-in page (lxml, no browser)'
-        say(style('mendwright demo: a redesign breaks two selectors on a checkout page and adds '
-                  'a cookie banner.', 'bold'))
-        if live:
-            say(where + ' and a live model: ' + _provider_name(provider)
-                + ' (real API calls).')
-        else:
-            say(where + ' and a scripted model reply (no API call).')
+            write_line('Provider: ' + _provider_name(provider) + ', from your environment '
+                       '(mendwright doctor shows it). Only the demo page is sent.', stream)
         if os.environ.get('MENDWRIGHT_DISABLE'):
-            say('Note: MENDWRIGHT_DISABLE is set. The demo ignores it; your own runs do not.')
-        say('')
+            write_line('Note: MENDWRIGHT_DISABLE is set. The demo ignores it; your own runs '
+                       'do not.', stream)
 
         folder = tempfile.mkdtemp(prefix='mendwright-demo-')
         if not keep:
             stack.callback(shutil.rmtree, folder, ignore_errors=True)
         store_path = os.path.join(folder, 'overrides.json')
-        result = story(page, store_path, say=say, style=style,
-                       timeout_ms=BROWSER_TIMEOUT_MS if browser else 0,
-                       poll_ms=BROWSER_POLL_MS if browser else 0, provider=provider)
-        say('')
-        say(_summary(result, style))
+        with _log_lines(stream):
+            result = story(page, store_path,
+                           timeout_ms=BROWSER_TIMEOUT_MS if browser else 0,
+                           poll_ms=BROWSER_POLL_MS if browser else 0, provider=provider)
+        write_line(_summary(result), stream)
         if keep:
-            say('Kept the store at ' + store_path + ' (journal.jsonl is next to it).')
-            say('See it with: mendwright report --store "' + store_path + '"')
+            write_line('Kept the store at ' + store_path + ' (journal.jsonl is next to it).',
+                       stream)
+            write_line('See it with: mendwright report --store "' + store_path + '"', stream)
         if not result.ok:
             for problem in result.problems or ['the story did not reach the expected end.']:
                 write_line('mendwright demo: ' + problem, err_stream)
-            if live:
-                write_line('mendwright demo --live: with a live model the result depends on '
-                           'the model. The reason is above; try a stronger model, or run '
-                           'mendwright demo without --live for the scripted reply.', err_stream)
-            else:
+            if scripted:
                 write_line('mendwright demo: this is a bug. Please report it with the output '
                            'above at https://github.com/saadbuilt/mendwright/issues', err_stream)
+            else:
+                write_line('mendwright demo: with a live model the result depends on the '
+                           'model. The reason is above; try a stronger model, or run '
+                           'mendwright demo --scripted for the canned reply.', err_stream)
             return 1
         return 0

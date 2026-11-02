@@ -1041,6 +1041,7 @@ def test_a_list_heal_of_a_key_from_a_seed_file_says_to_put_it_in_the_seed_file(t
     page, heal = _seeded(make_page, tmp_path, ROWS, page)
     assert len(heal.locator_all('cart', nonempty=True)) == 3
     assert heal.store.list_heals('cart') == []
+    heal.store.flush()      # the store's next write (its success waits, see SOFT_EVERY)
     assert ROWS not in _rows(tmp_path) or _rows(tmp_path)[ROWS]['source'] == 'seed'
     assert not [c for c in _rows(tmp_path).values() if c.get('list')]
 

@@ -1,0 +1,8 @@
+{
+  "id": "call-label-reworded-signin-link",
+  "category": "label_reworded",
+  "description": "The step is the call get_by_role(\"link\", name=\"Sign in\"). The header link reads \"Log in\", next to a new \"Create account\" link.",
+  "pages": "label-reworded-signin-link",
+  "call": "get_by_role(\"link\", name=\"Sign in\")",
+  "truth": "//header//a[@href='/account/login']"
+}

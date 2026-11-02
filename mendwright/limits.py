@@ -107,6 +107,22 @@ class RateLimiter:
             self._global.append(now)
             return True
 
+    def full(self, key):
+        """Which cap stops a heal of ``key`` now: ``('per_key', hits, cap)``,
+        ``('global', hits, cap)``, or ``None`` when neither does. Consumes nothing."""
+        now = self._clock()
+        with self._lock:
+            cutoff = now - self.window
+            kstamps = self._per_key.get(key)
+            if kstamps is not None:
+                self._prune(kstamps, cutoff)
+            self._prune(self._global, cutoff)
+            if self.per_key_per_hour is not None and len(kstamps or ()) >= self.per_key_per_hour:
+                return ('per_key', len(kstamps or ()), self.per_key_per_hour)
+            if self.global_per_hour is not None and len(self._global) >= self.global_per_hour:
+                return ('global', len(self._global), self.global_per_hour)
+            return None
+
     def snapshot(self):
         """Current in-window counts, for logging/diagnostics: ``(global, {key: count})``.
         Prunes first so the counts are current."""
@@ -156,6 +172,18 @@ class SpendCap:
         nothing. Thread-safe."""
         with self._lock:
             return self._check_locked(provider, cost)
+
+    def full(self, provider=None, cost=0.0):
+        """Which cap stops one more call now: ``('calls', calls, max_calls)``,
+        ``('cost', spent, ceiling)``, or ``None``. Consumes nothing."""
+        with self._lock:
+            if self.max_calls is not None and self._calls >= self.max_calls:
+                return ('calls', self._calls, self.max_calls)
+            ceiling = self.cost_ceiling.get(provider)
+            spent = self._spent.get(provider, 0.0)
+            if ceiling is not None and spent + _finite_cost(cost) > ceiling:
+                return ('cost', spent, ceiling)
+            return None
 
     def allow(self, provider=None, cost=0.0):
         """Reserve one call (and ``cost`` against ``provider``'s ceiling) for this run.
@@ -234,3 +262,14 @@ class Guardrails:
             if self.spend_cap is not None and not self.spend_cap.allow(provider, cost):
                 return False  # may have spent one rate slot: conservative, still closed
             return True
+
+    def full(self, key, provider=None, cost=0.0):
+        """Why allow() refuses ``key`` now, for the message that says so: the rate limiter's
+        ``full(key)`` or the spend cap's ``full(provider, cost)``, else ``None``."""
+        for guard, args in ((self.rate_limiter, (key,)), (self.spend_cap, (provider, cost))):
+            method = getattr(guard, 'full', None)
+            if callable(method):
+                why = method(*args)
+                if why is not None:
+                    return why
+        return None

@@ -43,7 +43,12 @@ What it will and will not touch:
   the code it cannot tell whether a call with the same arguments runs on heal.page or
   inside another locator, where it may still find the element it was written for. It is
   listed under "Left alone" with its healed selector and the Python lines that make a call
-  with the same literal arguments (python_call_sites).
+  with the same literal arguments (python_call_sites), and, when the heal was saved with a
+  get_by twin (getBy, see client.get_by_twin), that call next to each of those lines, as a
+  suggestion: a call that matched the healed element, and nothing else, when the heal was
+  made. A heal of any other key saved with a twin (open(suggest_get_by=True)) shows it too.
+  A twin is shown only when it is a call in mendwright's spelling (getby.twin_text), from the
+  store, or from the heal.applied that saved the heal when the store has lost it.
 
 Python files are read with tokenize and checked with ast: after the rewrite the file must
 still parse, have the same structure, and differ only in the values of the replaced
@@ -137,6 +142,7 @@ class Fix:
     accepted: str | None = None  # when a person accepted it (acceptedAt), for a list heal
     proposal: dict | None = None  # the evidence it was accepted on, for a list heal
     shadow: tuple = ()          # the shadow hosts of a heal inside a shadow root (new: a chain)
+    get_by: str | None = None   # the heal's get_by twin, a suggested call (see CallLeft)
 
     def for_old(self, selector):
         """What replaces one old selector: the CSS form for a CSS selector when there is
@@ -160,6 +166,8 @@ class CallLeft:
     method: str                 # get_by_role, get_by_text, ...
     new: str                    # the healed selector (XPath)
     confirmed: bool             # a canary success for this selector is in the journal
+    suggested: str | None = None  # the heal's get_by twin: a call that matched the healed
+    #                               element, and nothing else, when the heal was made
 
 
 @dataclass
@@ -310,6 +318,7 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
     selectors = store.get('selectors') if isinstance(store, dict) else None
     selectors = selectors if isinstance(selectors, dict) else {}
     canary = _canary_state(events)
+    twins = _journal_twins(events)
     destructive_keys = frozenset(k for k in destructive_keys or () if isinstance(k, str))
     # A get_by_* call written in another spelling marks the call's key, as
     # mendwright.open(destructive_keys=...) does.
@@ -392,7 +401,8 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
         if call is not None:
             # A heal.page.get_by_*() call: never rewritten, and its text never enters
             # new_for, so no string literal equal to it is either.
-            plan.calls.append(CallLeft(key, call.method, new, canary.get((key, new)) is True))
+            plan.calls.append(CallLeft(key, call.method, new, canary.get((key, new)) is True,
+                                       _twin(best, twins.get((key, new)))))
             continue
         old = list(dict.fromkeys(c['xpath'] for c in candidates
                                  if c.get('source') == 'code' and c['xpath'] != new))
@@ -461,10 +471,29 @@ def plan_fixes(store, events, *, include_unconfirmed=False, destructive_keys=(),
             continue
         role = entry.get('expectedRole')
         plan.fixes.append(Fix(key, new, old, confirmed, role if isinstance(role, str) else None,
-                              None if shadow else css, shadow=tuple(shadow)))
+                              None if shadow else css, shadow=tuple(shadow),
+                              get_by=None if shadow else _twin(best, twins.get((key, new)))))
 
     _claim(plan, claims)
     return plan
+
+
+def _journal_twins(events):
+    """(key, selector) -> the get_by twin the latest heal.applied for it names, for a heal
+    whose row in the store lost its getBy (a process before 0.11 rewrote the file)."""
+    out = {}
+    for event in events or ():
+        if isinstance(event, dict) and event.get('event') == 'heal.applied':
+            key, xpath = event.get('key'), event.get('xpath')
+            if isinstance(key, str) and isinstance(xpath, str):
+                out[(key, xpath)] = event.get('get_by')
+    return out
+
+
+def _twin(row, logged=None):
+    """The get_by twin to show for a heal: its row's getBy, else the one its heal.applied
+    named, each only when it is a call in mendwright's spelling (getby.twin_text)."""
+    return getby.twin_text(row.get('getBy')) or getby.twin_text(logged)
 
 
 def _plan_list(plan, key, entry, candidates, store_path, destructive_keys=frozenset()):
@@ -1742,7 +1771,10 @@ def left_alone(result):
     out = [{'code': plan.skip_codes.get(key, 'other'), 'key': key, 'path': None, 'line': None,
             'text': key + ': ' + reason} for key, reason in plan.skipped]
     out.extend({'code': 'get_by_call', 'key': call.key, 'path': None, 'line': None,
-                'text': _call_line(result, call)} for call in plan.calls)
+                'text': _call_line(result, call), 'suggested_call': call.suggested,
+                'call_sites': [{'path': path, 'line': line}
+                               for path, line in sorted(result.call_sites.get(call.key, ()))]}
+               for call in plan.calls)
     for blocked in result.blocked:
         selectors = sorted({i[1] for i in blocked.items})
         keys = sorted({k for i in blocked.items for k in i[2]})
@@ -1823,6 +1855,8 @@ def format_lines(result, *, apply):
                 lines.append('  was  ' + selector)
             for selector in fix.written():
                 lines.append('  now  ' + selector)
+            if fix.get_by:
+                lines.append('  or the call  ' + fix.get_by)
             if fix.list and fix.proposal:
                 from .lists import differs_lines, place_text
                 lines.append('       ' + place_text(fix.proposal.get('count'),
@@ -1835,11 +1869,13 @@ def format_lines(result, *, apply):
                 lines.append('  (it had ' + str(len(fix.old)) + ' selectors in code, and each '
                              'found one is replaced by the healed selector)')
 
-    left = [item['text'] for item in left_alone(result)]
+    left = left_alone(result)
     if left:
         lines.append('')
         lines.append('Left alone:')
-        lines.extend('  ' + line for line in left)
+        for item in left:
+            lines.append('  ' + item['text'])
+            lines.extend(_suggestion_lines(item))
 
     if n_rep and not apply:
         lines.append('')
@@ -1857,11 +1893,31 @@ def _quote_list(items):
     return ', '.join(repr(i) for i in items)
 
 
+def _suggestion_lines(item):
+    """The lines under the "Left alone" line of a get_by_* call key with a suggested call:
+    each place that makes the call, with the call to put there (at most CALL_PLACES)."""
+    suggested = item.get('suggested_call')
+    if item.get('code') != 'get_by_call' or not suggested:
+        return []
+    sites = item.get('call_sites') or []
+    width = max([len(str(s['path']) + ':' + str(s['line'])) for s in sites[:CALL_PLACES]] or [0])
+    out = ['    ' + (str(s['path']) + ':' + str(s['line'])).ljust(width) + '  ->  ' + suggested
+           for s in sites[:CALL_PLACES]]
+    if len(sites) > CALL_PLACES:
+        out.append('    and ' + str(len(sites) - CALL_PLACES) + ' more, each  ->  ' + suggested)
+    return out
+
+
 def _call_line(result, call):
     """The "Left alone" line of a CallLeft: why a call is not rewritten, its healed
     selector, and where calls with the same arguments are."""
     state = 'confirmed' if call.confirmed else 'not confirmed yet (check that it finds the right element)'
     places = sorted(result.call_sites.get(call.key, ()))
+    suggest, like = '', ','
+    if call.suggested:
+        suggest = (' Suggested call: ' + call.suggested + ', which matched the healed element, '
+                   'and nothing else, when the heal was made.')
+        like = ', as in the suggested call,'
     if places:
         shown = ', '.join(path + ':' + str(line) for path, line in places[:CALL_PLACES])
         if len(places) > CALL_PLACES:
@@ -1874,9 +1930,9 @@ def _call_line(result, call):
     return (call.key + ': it is a heal.page.' + call.method + '() call, and mendwright fix does '
             'not rewrite calls: from the code it cannot tell whether a call with these arguments '
             'runs on heal.page or inside another locator, where it may still find the element it '
-            'was written for. Its healed selector, ' + state + ', is ' + call.new + ". Change the "
-            "call's arguments by hand to the element's new role or words, or replace it with "
-            'page.locator(' + repr(call.new) + '). ' + where)
+            'was written for. Its healed selector, ' + state + ', is ' + call.new + '.' + suggest
+            + " Change the call's arguments by hand to the element's new role or words" + like
+            + ' or replace it with page.locator(' + repr(call.new) + '). ' + where)
 
 
 # --- machine output: JSON and Markdown ---------------------------------------------------
@@ -2005,7 +2061,8 @@ def to_json(result, *, apply, store_path, journal_path, events):
             continue
         entry = {
             'key': fix.key, 'role': fix.role, 'old': list(fix.old), 'now': fix.written(),
-            'xpath': fix.new, 'css': fix.css, 'confirmed': fix.confirmed,
+            'xpath': fix.new, 'css': fix.css, 'suggested_call': fix.get_by,
+            'confirmed': fix.confirmed,
             'found_by': _list_found_by(events, fix) if fix.list else _found_by(events, fix),
             'confirmed_by': (_list_confirmed_by(events, fix) if fix.list
                              else _confirmed_by(events, fix)),
@@ -2082,8 +2139,10 @@ def _md_row(item, prefix):
                       for p in places[:3])
     if len(places) > 3:
         where += ' and ' + str(len(places) - 3) + ' more'
-    cells = [key, ', '.join(code(s) for s in item.get('old') or []),
-             ', '.join(code(s) for s in item.get('now') or []),
+    now = ', '.join(code(s) for s in item.get('now') or [])
+    if isinstance(item.get('suggested_call'), str) and item['suggested_call']:
+        now += '<br>or the call ' + code(item['suggested_call'])
+    cells = [key, ', '.join(code(s) for s in item.get('old') or []), now,
              _md_found(item.get('found_by'), code), _md_confirmed(item.get('confirmed_by'), code),
              where]
     return '| ' + ' | '.join(cells) + ' |'
@@ -2103,7 +2162,24 @@ def _md_item(item, prefix):
     why = ['  <details><summary>Why</summary>', '']
     why += [('  ' + line) if line else '' for line in _md.fence(item.get('text') or '').split('\n')]
     why += ['', '  </details>', '']
-    return '- ' + subject + ': ' + phrase + '.', why
+    return '- ' + subject + ': ' + phrase + '.' + _md_suggestion(item, prefix), why
+
+
+def _md_suggestion(item, prefix):
+    """For a get_by_* call key with a suggested call: the places that make the call, each
+    with the call to put there, as a nested list after the item (at most CALL_PLACES), or
+    the call alone when no place was found."""
+    suggested = item.get('suggested_call')
+    if item.get('code') != 'get_by_call' or not isinstance(suggested, str) or not suggested:
+        return ''
+    sites = item.get('call_sites') or []
+    if not sites:
+        return '\n  - Suggested call: ' + _md.code(suggested)
+    lines = ['  - ' + _md.code(prefix + str(s.get('path')) + ':' + str(s.get('line')))
+             + ': ' + _md.code(suggested) for s in sites[:CALL_PLACES]]
+    if len(sites) > CALL_PLACES:
+        lines.append('  - …and ' + str(len(sites) - CALL_PLACES) + ' more: ' + _md.code(suggested))
+    return '\n' + '\n'.join(lines)
 
 
 def render_markdown(data, *, heading='##', limit=54000, path_prefix=''):

@@ -6,7 +6,8 @@
 
 Each results file is one run of benchmarks/run.py. The page lists every run in one table,
 then each run on its own: the counts per category and every wrong heal with its case id.
-Standard library only.
+Runs of the call cases (run.py --calls) get a section of their own, after the selector
+runs, since their corpus is another one. Standard library only.
 """
 
 from __future__ import annotations
@@ -70,15 +71,31 @@ def load(paths):
                 ('none', False): 3}[(run['provider'], fp)]
         return rank, run['page'] != 'standin', run['page'], run['date']
 
-    models = sorted((r for r in runs if r['provider'] not in BASELINES), key=lambda r: r['date'], reverse=True)
-    baselines = sorted((r for r in runs if r['provider'] in BASELINES), key=baseline_order)
-    return models + baselines
+    selector_runs = [r for r in runs if not r.get('calls')]
+    models = sorted((r for r in selector_runs if r['provider'] not in BASELINES),
+                    key=lambda r: r['date'], reverse=True)
+    baselines = sorted((r for r in selector_runs if r['provider'] in BASELINES),
+                       key=baseline_order)
+    # Call runs: the fingerprint tier alone, then the model runs, warm before cold.
+    calls = sorted((r for r in runs if r.get('calls')),
+                   key=lambda r: (bool(r.get('cold')), r['provider'] != 'none',
+                                  not r.get('fingerprint'), r['date']))
+    return models + baselines + calls
 
 
 def who(run):
     """The row name. A run with the fingerprint tier on says so; files written before the
-    tier existed have no 'fingerprint' field and ran without it."""
+    tier existed have no 'fingerprint' field and ran without it. A call run says
+    heal_get_by=True or 'model', and cold when its calls never matched before."""
     fp = bool(run.get('fingerprint'))
+    if run.get('calls'):
+        mode = 'heal_get_by=True' if run.get('heal_get_by') is True else "heal_get_by='model'"
+        if run['provider'] == 'none':
+            name = 'fingerprint tier alone (' + mode + ')'
+        else:
+            name = (run['provider'] + (' (' + run['model'] + ')' if run.get('model') else '')
+                    + (' + fingerprint' if fp else '') + ', ' + mode)
+        return name + (', cold' if run.get('cold') else '')
     if run['provider'] == 'none':
         return 'fingerprint tier alone (no model)' if fp else 'none baseline'
     if run['provider'] in BASELINES:
@@ -193,7 +210,57 @@ def run_section(run):
     return out
 
 
+def call_table(runs):
+    rows = ['| Run | Page | Date | Correct | Wrong | Missed | Negatives declined | Wrong on negatives '
+            '| Healed by fingerprint | Saved with a twin | Twin finds the right element '
+            '| Avg model calls | Avg latency |',
+            '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for run in runs:
+        s = run['summary']
+        rows.append('| ' + ' | '.join([
+            who(run), page(run), run['date'][:10],
+            str(s['correct']) + '/' + str(s['positives']) + ' (' + pct(s['correct'], s['positives']) + ')',
+            str(s['wrong']) + ' (' + pct(s['wrong'], s['positives']) + ')',
+            str(s['missed']) + ' (' + pct(s['missed'], s['positives']) + ')',
+            str(s['declined']) + '/' + str(s['negatives']),
+            str(s['wrong_negative']) + '/' + str(s['negatives']),
+            str(s.get('fingerprint_heals', 0)) if run.get('fingerprint') else '-',
+            str(s.get('twins', 0)),
+            str(s.get('twins_right', 0)),
+            format(s['avg_model_calls'], '.2f') if s['avg_model_calls'] is not None else '-',
+            latency(s['avg_model_ms']),
+        ]) + ' |')
+    return '\n'.join(rows)
+
+
+CALLS_TEXT = [
+    'The same redesigns, with the step written as a `heal.page.get_by_*()` call instead of '
+    '`heal.locator(key, selector)`: a call that found the step\'s element on the old page and '
+    'finds nothing on the new one, such as `get_by_role("link", name="Sign in")` once the link '
+    'reads "Log in". Each call case in `benchmarks/calls/` takes its pages from a case of '
+    '`benchmarks/cases/` and its truth too. They run in a real browser only (`--calls --browser '
+    'chromium`), since only Playwright runs a call.',
+    '',
+    'A heal_get_by=True row is 0.10.0\'s behaviour: the fingerprint only, no model. A '
+    "heal_get_by='model' row asks the model when the fingerprint does not heal the call. A cold "
+    'row skips the old page, so each call never matched before the redesign: there is no '
+    'fingerprint and no page the key was found on, so the page guard cannot stop a step that '
+    'moved, and mendwright asks the model only for a `get_by_role()` call (any other call names '
+    'no kind of element its pick could be checked against). "Saved with a twin" counts heals '
+    'saved with a get_by twin, a call that matched the healed element and nothing else when the '
+    'heal was made; "twin finds the right element" checks that call on the new page against the '
+    'case\'s truth.',
+    '',
+    'There are few call cases, so one case moves a rate by 9 points (positives) or 12 points '
+    '(negatives). The calls were written for these pages after the pages existed, and the '
+    'fingerprint tier and the local model were not tuned on them, but the local model was '
+    'trained on pages like the ones in `benchmarks/cases/`.',
+]
+
+
 def render(runs):
+    call_runs = [r for r in runs if r.get('calls')]
+    runs = [r for r in runs if not r.get('calls')]
     models = [r for r in runs if r['provider'] not in BASELINES]
     cases = max((r['case_count'] for r in runs), default=0)
     first = runs[0]['summary'] if runs else {'positives': 0, 'negatives': 0}
@@ -247,6 +314,15 @@ def render(runs):
             '## Each run', '']
     for run in runs:
         out += run_section(run)
+    if call_runs:
+        first = call_runs[0]['summary']
+        out += ['## get_by calls', '',
+                'The call corpus has ' + str(max(r['case_count'] for r in call_runs))
+                + ' cases: ' + str(first['positives']) + ' where a heal is the right answer and '
+                + str(first['negatives']) + ' where the right answer is to not heal.', '']
+        out += CALLS_TEXT + ['', call_table(call_runs), '', '## Each call run', '']
+        for run in call_runs:
+            out += run_section(run)
     return '\n'.join(out).rstrip() + '\n'
 
 

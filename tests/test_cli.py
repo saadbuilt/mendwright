@@ -9,7 +9,9 @@ real-browser test is marked `browser` and is deselected by default.
 """
 
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import types
@@ -43,32 +45,45 @@ def _child_env():
     return env
 
 
+PAY_REFUSED = (
+    "WARNING mendwright: did not heal 'pay': 'pay' is marked as a destructive control, and "
+    "mendwright never auto-heals those, because a validated but wrong selector here could act "
+    "on a live account. Fix the selector in your code or seed file by hand.")
+
+# What `mendwright demo --scripted` prints: one line saying what the demo is, the provider,
+# mendwright's own log lines from the run, and a summary. The heal line's time is written
+# as Ns (see _plain()), since a slow machine can take 0.1s.
 DEMO_LINES = [
-    "mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie "
-    "banner.",
-    "Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).",
-    "",
-    "  v1  accept_terms  #accept-terms   ok     matched, box checked",
-    "  v1  pay           #pay            ok     matched (not clicked)",
-    "      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --",
-    "  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it "
-    "(heal.interrupt)",
-    "  v2  accept_terms  #accept-terms   MISS   no element matches",
-    "      model    proposed " + HEALED_XPATH + " (scripted reply, no API call)",
-    "      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page",
-    "      retry    ok: box checked with the healed selector, heal confirmed",
-    "  v2  pay           #pay            MISS   no element matches",
-    "      refused  'pay' is marked destructive=True. Not healed, no model call.",
-    "",
-    "Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in "
-    "total.",
+    "mendwright demo: a checkout page is redesigned and two selectors break.",
+    "Provider: ScriptedProvider, a canned reply (--scripted): no model call, nothing sent.",
+    "WARNING mendwright: handled interruption 'cookies' before 'accept_terms'",
+    "WARNING mendwright: healed 'accept_terms': #accept-terms -> " + HEALED_XPATH
+    + " (ScriptedProvider, Ns)",
+    PAY_REFUSED,
+    "Done: 1 repaired (checked on the live page and confirmed by the retried step), "
+    "1 refused, 1 interruption handled, 1 model call.",
 ]
+
+NO_PROVIDER_ERR = [
+    "mendwright demo: no model provider could be set up from your environment. "
+    "mendwright.auto_provider: no provider configured. Set one of these.",
+    "mendwright demo: set a provider up and check it with mendwright doctor, or install "
+    "mendwright's local model with mendwright model install (it runs in Ollama on your "
+    "machine). To run the demo with no model, use mendwright demo --scripted.",
+]
+
+_SECONDS = re.compile(r", \d+\.\ds\)$")
+
+
+def _plain(text):
+    """The lines of ``text``, with the time at the end of a heal line written as Ns."""
+    return [_SECONDS.sub(", Ns)", line) for line in text.splitlines()]
 
 
 @pytest.fixture(autouse=True)
 def _no_provider_env(monkeypatch):
     """doctor reads provider variables; keep the developer's shell out of every test."""
-    for name in cli.PROVIDER_VARS + ("NO_COLOR", "ANTHROPIC_BASE_URL"):
+    for name in cli.PROVIDER_VARS + ("ANTHROPIC_BASE_URL",):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -131,110 +146,6 @@ def test_importing_main_module_does_not_run_anything(capsys):
 
 # --- demo -------------------------------------------------------------------------------
 
-def test_demo_output(capsys, temp_root):
-    assert cli.main(["demo"]) == 0
-    captured = capsys.readouterr()
-    assert captured.out.splitlines() == DEMO_LINES
-    assert captured.err == ""
-    assert "\x1b[" not in captured.out  # not a terminal, so no colour
-
-
-def test_demo_writes_nothing_into_the_cwd_and_cleans_up(tmp_path, monkeypatch, temp_root):
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    monkeypatch.chdir(cwd)
-    assert cli.main(["demo"]) == 0
-    assert list(cwd.iterdir()) == []
-    assert list(temp_root.iterdir()) == []
-
-
-def test_demo_keep_leaves_a_store_that_report_reads(capsys, temp_root):
-    assert cli.main(["demo", "--keep"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[:len(DEMO_LINES)] == DEMO_LINES
-    folder = next(temp_root.iterdir())
-    store = folder / "overrides.json"
-    assert out[len(DEMO_LINES):] == [
-        "Kept the store at " + str(store) + " (journal.jsonl is next to it).",
-        'See it with: mendwright report --store "' + str(store) + '"',
-    ]
-    assert (folder / "journal.jsonl").exists()
-
-    assert cli.main(["report", "--store", str(store), "--format", "json"]) == 0
-    report = json.loads(capsys.readouterr().out)
-    terms = next(k for k in report["keys"] if k["key"] == "accept_terms")
-    sources = {c["selector"]: c["source"] for c in terms["candidates"]}
-    assert sources == {"#accept-terms": "code", HEALED_XPATH: "heal"}
-    pay = next(k for k in report["keys"] if k["key"] == "pay")
-    assert pay["destructive"] is True                     # destructive=True was saved
-    assert report["journal"]["counts"] == {"requested": 1, "applied": 1, "rejected": 0,
-                                           "quarantined": 0, "held": 0}
-    assert report["journal"]["last_applied"][0]["old"] == ["#accept-terms"]
-
-
-def test_demo_colour_only_on_a_terminal_without_no_color(monkeypatch):
-    monkeypatch.setattr(story_module, "_enable_windows_ansi", lambda: True)
-
-    class Terminal:
-        def __init__(self):
-            self.text = ""
-
-        def isatty(self):
-            return True
-
-        def write(self, text):
-            self.text += text
-
-        def flush(self):
-            pass
-
-    term = Terminal()
-    assert run(stream=term) == 0
-    assert "\x1b[32mok   \x1b[0m" in term.text
-    assert "\x1b[31mMISS \x1b[0m" in term.text
-
-    monkeypatch.setenv("NO_COLOR", "1")
-    plain = Terminal()
-    assert run(stream=plain) == 0
-    assert "\x1b[" not in plain.text
-    assert plain.text.splitlines() == DEMO_LINES
-
-
-def test_demo_slow_pauses_between_lines(capsys):
-    pauses = []
-    assert run(slow=True, sleep=pauses.append) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert pauses == [0.4] * (len(lines) - 1)
-
-
-def test_demo_ignores_mendwright_settings_from_the_environment(capsys, tmp_path, monkeypatch):
-    elsewhere = tmp_path / "elsewhere" / "store.json"
-    monkeypatch.setenv("MENDWRIGHT_DISABLE", "1")
-    monkeypatch.setenv("MENDWRIGHT_DRY_RUN", "1")
-    monkeypatch.setenv("MENDWRIGHT_TIMEOUT_MS", "60000")
-    monkeypatch.setenv("MENDWRIGHT_STORE", str(elsewhere))
-    assert cli.main(["demo"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[2] == "Note: MENDWRIGHT_DISABLE is set. The demo ignores it; your own runs do not."
-    assert out[3:] == DEMO_LINES[2:]
-    assert os.environ["MENDWRIGHT_DISABLE"] == "1"  # restored afterwards
-    assert not elsewhere.parent.exists()
-
-
-def test_demo_exits_1_when_the_heal_does_not_happen(capsys, monkeypatch, temp_root):
-    # A reply the gate must reject (the button is not a checkbox): the CI step running
-    # `mendwright demo` has to fail when healing breaks.
-    monkeypatch.setattr(story_module, "SCRIPTED_REPLY", json.dumps({"xpath": "//button"}))
-    assert cli.main(["demo"]) == 1
-    captured = capsys.readouterr()
-    assert "  v2  accept_terms  #accept-terms   MISS   not healed" in captured.out
-    # The banner was still handled before the heal was tried.
-    assert "  v2  cookies       #cookie-accept  ok" in captured.out
-    assert "passed mendwright's local gate" in captured.out
-    assert "this is a bug" in captured.err
-    assert list(temp_root.iterdir()) == []
-
-
 class LiveStub:
     """Stands in for the provider auto_provider() builds: it answers like a model would,
     and nothing is sent."""
@@ -257,63 +168,235 @@ class LiveStub:
         pass
 
 
-def test_demo_live_asks_the_provider_from_the_environment(capsys, monkeypatch, temp_root):
-    stub = LiveStub()
+def _use_stub(monkeypatch, stub=None):
+    """Make auto_provider() return ``stub``, as if a provider were set in the environment."""
+    stub = stub or LiveStub()
     monkeypatch.setattr("mendwright.providers.auto_provider", lambda *a, **k: stub)
-    assert cli.main(["demo", "--live"]) == 0
+    return stub
+
+
+LIVE_PROVIDER_LINE = ("Provider: LiveStub, model stub-model, from your environment (mendwright "
+                      "doctor shows it). Only the demo page is sent.")
+
+
+def _live_lines():
+    return ([DEMO_LINES[0], LIVE_PROVIDER_LINE] + DEMO_LINES[2:3]
+            + [DEMO_LINES[3].replace("(ScriptedProvider, ", "(LiveStub, ")] + DEMO_LINES[4:])
+
+
+class Terminal:
+    """A stream that says it is a terminal, where the old demo printed ANSI colours."""
+
+    def __init__(self):
+        self.text = ""
+
+    def isatty(self):
+        return True
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+
+def test_demo_asks_the_provider_from_the_environment_by_default(capsys, monkeypatch,
+                                                               temp_root):
+    stub = _use_stub(monkeypatch)
+    assert cli.main(["demo"]) == 0
     captured = capsys.readouterr()
-    lines = captured.out.splitlines()
-    assert lines[1] == ("A stand-in page (lxml, no browser) and a live model: LiveStub, model "
-                        "stub-model (real API calls).")
-    assert lines[8] == ("      model    proposed " + HEALED_XPATH
-                        + " (LiveStub, a real API call)")
-    assert lines[2:8] == DEMO_LINES[2:8] and lines[9:] == DEMO_LINES[9:]
+    assert _plain(captured.out) == _live_lines()
     assert [b["key"] for b in stub.bundles] == ["accept_terms"]   # pay: no call
     assert captured.err == ""
-
-
-def test_demo_live_without_a_provider_says_so(capsys, monkeypatch, temp_root):
-    def nothing(*args, **kwargs):
-        raise ValueError("mendwright.auto_provider: no provider configured. Set one of these.")
-    monkeypatch.setattr("mendwright.providers.auto_provider", nothing)
-    assert cli.main(["demo", "--live"]) == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.splitlines() == [
-        "mendwright demo --live: no model provider is configured, so there is nothing to "
-        "call. mendwright.auto_provider: no provider configured. Set one of these.",
-        "mendwright demo --live: set a provider (mendwright doctor shows what it finds), or "
-        "run mendwright demo without --live for the scripted reply."]
     assert list(temp_root.iterdir()) == []
 
 
-def test_demo_live_when_the_model_fails_is_not_called_a_bug(capsys, monkeypatch, temp_root):
-    monkeypatch.setattr("mendwright.providers.auto_provider", lambda *a, **k: LiveStub(None))
-    assert cli.main(["demo", "--live"]) == 1
-    err = capsys.readouterr().err
-    assert "this is a bug" not in err
-    assert "with a live model the result depends on the model" in err
+def test_demo_live_is_still_accepted_and_changes_nothing(capsys, monkeypatch, temp_root):
+    stub = _use_stub(monkeypatch)
+    assert cli.main(["demo", "--live"]) == 0
+    captured = capsys.readouterr()
+    assert _plain(captured.out) == _live_lines()
+    assert [b["key"] for b in stub.bundles] == ["accept_terms"]
+    assert captured.err == ""
 
 
-def test_story_result(tmp_path):
-    lines = []
-    result = story(StandInPage(), str(tmp_path / "overrides.json"), say=lines.append)
+def test_demo_help_shows_scripted_and_hides_live_and_slow(capsys):
+    assert cli.main(["demo", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "--scripted" in out and "--browser" in out and "--keep" in out
+    assert "--live" not in out and "--slow" not in out
+
+
+def test_demo_slow_is_gone(capsys):
+    assert cli.main(["demo", "--slow"]) == 2
+    assert "unrecognized arguments: --slow" in capsys.readouterr().err
+
+
+def test_demo_without_a_provider_says_how_to_set_one_up(capsys, monkeypatch, temp_root):
+    def nothing(*args, **kwargs):
+        raise ValueError("mendwright.auto_provider: no provider configured. Set one of these.")
+    monkeypatch.setattr("mendwright.providers.auto_provider", nothing)
+    assert cli.main(["demo"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == NO_PROVIDER_ERR
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_with_nothing_in_the_environment_exits_1(capsys, temp_root):
+    # The real auto_provider(), with every provider variable removed (_no_provider_env).
+    assert cli.main(["demo"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = captured.err.splitlines()
+    assert err[0].startswith("mendwright demo: no model provider could be set up from your "
+                             "environment. mendwright.auto_provider: no provider configured.")
+    assert err[1:] == NO_PROVIDER_ERR[1:]
+    for words in ("mendwright doctor", "mendwright model install", "mendwright demo --scripted"):
+        assert words in err[1]
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_scripted_runs_offline(capsys, monkeypatch, temp_root):
+    def never(*args, **kwargs):
+        raise AssertionError("--scripted must not look for a provider")
+    monkeypatch.setattr("mendwright.providers.auto_provider", never)
+    assert cli.main(["demo", "--scripted"]) == 0
+    captured = capsys.readouterr()
+    assert _plain(captured.out) == DEMO_LINES
+    assert captured.err == ""
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_output_has_no_ansi_escape_codes(monkeypatch):
+    # Not even on a terminal: the old coloured display is gone.
+    term = Terminal()
+    assert run(scripted=True, stream=term) == 0
+    assert "\x1b" not in term.text
+    assert _plain(term.text) == DEMO_LINES
+
+    _use_stub(monkeypatch)
+    live = Terminal()
+    assert run(stream=live) == 0
+    assert "\x1b" not in live.text
+    assert _plain(live.text) == _live_lines()
+
+
+def test_demo_puts_the_mendwright_logger_back_as_it_was(capsys):
+    log = logging.getLogger("mendwright")
+    before = (list(log.handlers), log.level, log.propagate)
+    assert run(scripted=True) == 0
+    assert (list(log.handlers), log.level, log.propagate) == before
+
+
+def test_demo_log_lines_are_not_printed_twice_with_root_logging_configured(capsys):
+    root = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)
+    root.addHandler(handler)
+    try:
+        assert run(scripted=True) == 0
+    finally:
+        root.removeHandler(handler)
+    assert _plain(capsys.readouterr().out) == DEMO_LINES
+
+
+def test_demo_writes_nothing_into_the_cwd_and_cleans_up(tmp_path, monkeypatch, temp_root):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    assert cli.main(["demo", "--scripted"]) == 0
+    assert list(cwd.iterdir()) == []
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_keep_leaves_a_store_that_report_reads(capsys, temp_root):
+    assert cli.main(["demo", "--scripted", "--keep"]) == 0
+    out = _plain(capsys.readouterr().out)
+    assert out[:len(DEMO_LINES)] == DEMO_LINES
+    folder = next(temp_root.iterdir())
+    store = folder / "overrides.json"
+    assert out[len(DEMO_LINES):] == [
+        "Kept the store at " + str(store) + " (journal.jsonl is next to it).",
+        'See it with: mendwright report --store "' + str(store) + '"',
+    ]
+    assert (folder / "journal.jsonl").exists()
+
+    assert cli.main(["report", "--store", str(store), "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    terms = next(k for k in report["keys"] if k["key"] == "accept_terms")
+    sources = {c["selector"]: c["source"] for c in terms["candidates"]}
+    assert sources == {"#accept-terms": "code", HEALED_XPATH: "heal"}
+    pay = next(k for k in report["keys"] if k["key"] == "pay")
+    assert pay["destructive"] is True                     # destructive=True was saved
+    assert report["journal"]["counts"] == {"requested": 1, "applied": 1, "rejected": 0,
+                                           "quarantined": 0, "held": 0}
+    assert report["journal"]["last_applied"][0]["old"] == ["#accept-terms"]
+
+
+def test_demo_ignores_mendwright_settings_from_the_environment(capsys, tmp_path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere" / "store.json"
+    monkeypatch.setenv("MENDWRIGHT_DISABLE", "1")
+    monkeypatch.setenv("MENDWRIGHT_DRY_RUN", "1")
+    monkeypatch.setenv("MENDWRIGHT_TIMEOUT_MS", "60000")
+    monkeypatch.setenv("MENDWRIGHT_STORE", str(elsewhere))
+    assert cli.main(["demo", "--scripted"]) == 0
+    out = _plain(capsys.readouterr().out)
+    assert out[2] == "Note: MENDWRIGHT_DISABLE is set. The demo ignores it; your own runs do not."
+    assert out[:2] + out[3:] == DEMO_LINES
+    assert os.environ["MENDWRIGHT_DISABLE"] == "1"  # restored afterwards
+    assert not elsewhere.parent.exists()
+
+
+def test_demo_exits_1_when_the_heal_does_not_happen(capsys, monkeypatch, temp_root):
+    # A reply the gate must reject (the button is not a checkbox): the CI step running
+    # `mendwright demo --scripted` has to fail when healing breaks.
+    monkeypatch.setattr(story_module, "SCRIPTED_REPLY", json.dumps({"xpath": "//button"}))
+    assert cli.main(["demo", "--scripted"]) == 1
+    captured = capsys.readouterr()
+    out = captured.out.splitlines()
+    # The banner was still handled before the heal was tried.
+    assert out[2] == "WARNING mendwright: handled interruption 'cookies' before 'accept_terms'"
+    # mendwright's own line says why the checkbox was not repaired.
+    assert out[3].startswith("WARNING mendwright: did not heal 'accept_terms': ")
+    assert "passed mendwright's local gate" in out[3]
+    assert out[4] == PAY_REFUSED
+    assert out[5].startswith("Done: 0 repaired, 1 refused, 1 interruption handled, ")
+    assert "mendwright demo: accept_terms was not repaired: " in captured.err
+    assert "this is a bug" in captured.err
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_when_the_model_fails_is_not_called_a_bug(capsys, monkeypatch, temp_root):
+    _use_stub(monkeypatch, LiveStub(None))
+    assert cli.main(["demo"]) == 1
+    captured = capsys.readouterr()
+    assert "WARNING mendwright: did not heal 'accept_terms': " in captured.out
+    assert "the stub has no answer" in captured.out
+    assert "this is a bug" not in captured.err
+    assert "with a live model the result depends on the model" in captured.err
+    assert "mendwright demo --scripted" in captured.err
+
+
+def test_story_result(tmp_path, capsys, caplog):
+    caplog.set_level(logging.INFO, logger="mendwright")
+    result = story(StandInPage(), str(tmp_path / "overrides.json"))
     assert result.ok
     assert (result.v1_terms, result.v1_pay, result.v2_terms_missed) == (True, True, True)
     assert result.healed_xpath == HEALED_XPATH
     assert (result.retried, result.confirmed) == (True, True)
     assert (result.pay_refused, result.pay_model_calls, result.model_calls) == (True, 0, 1)
     assert result.banner_handled is True
-    assert lines == DEMO_LINES[3:-2]
+    assert capsys.readouterr().out == ""   # the story prints nothing; mendwright logs
+    lines = [r.levelname + " " + r.getMessage() for r in caplog.records if r.name == "mendwright"]
+    assert [_SECONDS.sub(", Ns)", line) for line in lines] == DEMO_LINES[2:5]
 
 
 def test_story_needs_the_banner_handled(tmp_path, monkeypatch):
     # Without the interruption the banner covers the form, the retried check() fails
     # in the stand-in page as it would in a browser, and the story is not ok.
     monkeypatch.setattr(story_module, "COOKIE_SELECTOR", "#no-such-button")
-    lines = []
     with pytest.raises(RuntimeError, match="intercepts pointer events"):
-        story(StandInPage(), str(tmp_path / "overrides.json"), say=lines.append)
+        story(StandInPage(), str(tmp_path / "overrides.json"))
 
 
 def test_scripted_provider_runs_the_real_prompt_and_parser():
@@ -392,7 +475,7 @@ def test_stand_in_page_has_a_url_you_can_set():
 
 def test_demo_browser_without_playwright(capsys, monkeypatch, temp_root):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
-    assert cli.main(["demo", "--browser"]) == 1
+    assert cli.main(["demo", "--scripted", "--browser"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""  # nothing half-told
     assert captured.err == (
@@ -427,7 +510,7 @@ def test_demo_browser_not_installed(capsys, monkeypatch):
         raise RuntimeError("BrowserType.launch: Executable doesn't exist at /x/firefox\n"
                            "Looks like Playwright was just installed or updated.")
     manager = _fake_playwright(monkeypatch, launch)
-    assert cli.main(["demo", "--browser", "firefox"]) == 1
+    assert cli.main(["demo", "--scripted", "--browser", "firefox"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ("mendwright demo: Playwright's firefox browser is not installed. "
@@ -445,11 +528,11 @@ def test_demo_browser_runs_the_same_story_on_the_page_it_gets(capsys, monkeypatc
         return browser
     monkeypatch.setattr(story_module, "BROWSER_TIMEOUT_MS", 0)
     manager = _fake_playwright(monkeypatch, launch)
-    assert cli.main(["demo", "--browser", "webkit"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[1] == ("Real headless webkit (pages loaded with page.set_content) and a "
-                      "scripted model reply (no API call).")
-    assert out[2:] == DEMO_LINES[2:]
+    assert cli.main(["demo", "--scripted", "--browser", "webkit"]) == 0
+    out = _plain(capsys.readouterr().out)
+    assert out[0] == ("mendwright demo: a checkout page is redesigned and two selectors break, "
+                      "in headless webkit.")
+    assert out[1:] == DEMO_LINES[1:]
     assert seen == [True] and closed == [True] and manager.stopped
     assert list(temp_root.iterdir()) == []
 
@@ -464,31 +547,42 @@ def test_demo_in_real_chromium():
     # In a child process: a browser test that ran before it in this process can leave a sync
     # Playwright running here, and Playwright's sync API won't start inside its loop.
     pytest.importorskip("playwright.sync_api")
-    env = _child_env()
-    env["NO_COLOR"] = "1"
-    proc = subprocess.run([sys.executable, "-m", "mendwright", "demo", "--browser", "chromium"],
-                          env=env, capture_output=True, text=True, timeout=300)
+    proc = subprocess.run([sys.executable, "-m", "mendwright", "demo", "--scripted", "--browser",
+                           "chromium"], env=_child_env(), capture_output=True, text=True,
+                          timeout=300)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.splitlines()[2:] == DEMO_LINES[2:]
+    assert _plain(proc.stdout)[1:] == DEMO_LINES[1:]
 
 
 def test_python_dash_m_demo_from_a_temp_folder(tmp_path):
     """The command works from any folder, writes nothing there, and pulls in no browser
     library (subprocess, so sys.modules starts clean)."""
-    env = _child_env()
-    env["NO_COLOR"] = "1"
-    probe = ("import runpy, sys; sys.argv = ['mendwright', 'demo']\n"
+    probe = ("import runpy, sys; sys.argv = ['mendwright', 'demo', '--scripted']\n"
              "try:\n    runpy.run_module('mendwright', run_name='__main__')\n"
              "except SystemExit as exc:\n    code = exc.code\n"
              "loaded = sorted(m for m in sys.modules if m.split('.')[0] in "
              "('playwright', 'selenium', 'patchright', 'camoufox'))\n"
              "print('exit', code, 'loaded', loaded)\n")
-    proc = subprocess.run([sys.executable, "-c", probe], cwd=tmp_path, env=env,
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=tmp_path, env=_child_env(),
                           capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    lines = proc.stdout.splitlines()
+    lines = _plain(proc.stdout)
     assert lines[:-1] == DEMO_LINES
     assert lines[-1] == "exit 0 loaded []"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_python_dash_m_demo_with_no_provider_exits_1(tmp_path):
+    """With no provider in the environment the command asks no model, prints nothing on
+    stdout, and says on stderr how to set one up or run --scripted."""
+    proc = subprocess.run([sys.executable, "-m", "mendwright", "demo"], cwd=tmp_path,
+                          env=_child_env(), capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    err = proc.stderr.splitlines()
+    assert err[0].startswith("mendwright demo: no model provider could be set up from your "
+                             "environment. mendwright.auto_provider: no provider configured.")
+    assert err[1:] == NO_PROVIDER_ERR[1:]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -572,7 +666,7 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
         "mendwright.open(), to heal a call that matches nothing from its fingerprint.")
     assert cli.main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["get_by"] == {
-        "enabled": False, "source": "default", "heals": False}
+        "enabled": False, "source": "default", "model": False, "heals": False}
 
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "1")
     assert cli.main(["doctor"]) == 0
@@ -582,7 +676,7 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
     assert "  MENDWRIGHT_HEAL_GET_BY=1" in out.splitlines()
     assert cli.main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["get_by"] == {
-        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "heals": True}
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "model": False, "heals": True}
 
     monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
     assert cli.main(["doctor"]) == 0
@@ -597,11 +691,30 @@ def test_doctor_says_whether_get_by_calls_heal(capsys, tmp_path, monkeypatch):
     assert "  not healed (MENDWRIGHT_HEAL_GET_BY=0): heal.page.get_by_role()" in (
         capsys.readouterr().out)
 
+    # model: a model may heal a call too, also with the fingerprint tier off.
+    monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "Model")
+    monkeypatch.setenv("MENDWRIGHT_FINGERPRINT", "0")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    at = lines.index("get_by_* locators")
+    assert " ".join(line.strip() for line in lines[at + 1:at + 4]) == (
+        "healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call that matches "
+        "nothing is healed from its fingerprint, or by the model provider when the fingerprint "
+        "does not heal it or the call never matched.")
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": True, "source": "MENDWRIGHT_HEAL_GET_BY", "model": True, "heals": True}
+    monkeypatch.delenv("MENDWRIGHT_FINGERPRINT")
+
     monkeypatch.setenv("MENDWRIGHT_HEAL_GET_BY", "sometimes")
     assert cli.main(["doctor"]) == 0
     lines = capsys.readouterr().out.splitlines()
     problems = lines[lines.index("Problems") + 1:]
-    assert any("MENDWRIGHT_HEAL_GET_BY must be 1 or 0" in line for line in problems)
+    assert any("MENDWRIGHT_HEAL_GET_BY must be 1, 0 or model" in line for line in problems)
+    assert cli.main(["doctor", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["get_by"] == {
+        "enabled": False, "source": "default", "model": False, "heals": False}
 
 
 def test_report_shows_a_call_key_as_it_is(capsys, tmp_path):

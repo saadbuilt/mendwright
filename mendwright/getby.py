@@ -21,11 +21,20 @@ arguments that are not text, a regular expression or a whole number, a regular e
 with flags other than re.IGNORECASE, re.MULTILINE and re.DOTALL, an argument mendwright
 does not read, or a key longer than MAX_KEY characters. Those go to Playwright as written.
 
-A call key is healed only from its fingerprint, never by a model (see
-HealCoordinator._heal_get_by), and a heal of a get_by_role() call must have the call's
-ARIA role, by Playwright's own matcher, on the live page (gate.live_reason). A lookup that
-misses raises GetByNotFound, which is both AttentionRequired and Playwright's
-TimeoutError (not_found_error).
+With heal_get_by=True a call key is healed only from its fingerprint, never by a model (see
+HealCoordinator._heal_get_by). With heal_get_by='model' (MODEL) the model provider is asked
+too, when the fingerprint does not heal the call or the call never matched: the call's own
+role and words are the intent it gets (intent_of), and a call that never matched is looked
+for only when it is a get_by_role() call whose role names a kind of element the gate knows
+(gate_role). A heal of a get_by_role() call must have the call's ARIA role, by Playwright's
+own matcher, on the live page (gate.live_reason), whoever proposed it. A lookup that misses
+raises GetByNotFound, which is both AttentionRequired and Playwright's TimeoutError
+(not_found_error).
+
+A heal of a call key is saved with a twin (twin_calls, checked live by client.get_by_twin):
+a get_by_role(), get_by_label(), get_by_test_id() or similar call that matched the healed
+element, and nothing else, on the live page when the heal was made. mendwright fix shows it
+next to each place that makes the call, and never writes it.
 """
 
 from __future__ import annotations
@@ -110,10 +119,15 @@ NOT_FOLLOWED = 'mendwright does not follow a get_by_* call into an iframe'
 # a get_by_role() call (see gate.live_reason).
 ROLE_UNREADABLE = "could not check the element's ARIA role on the live page"
 
-# The sentence a decline of a call key ends with (see HealCoordinator._heal_get_by).
-NO_MODEL = ('mendwright asks no model to heal a get_by_* call: the call names its element by '
-            'role and words, and those are what changed, so a model could only guess. Change '
-            'the call by hand.')
+# heal_get_by='model': a model may heal a call too (see HealCoordinator.try_heal).
+MODEL = 'model'
+
+# The sentence a decline of a call key ends with when no model may heal it (see
+# HealCoordinator._heal_get_by).
+NO_MODEL = ("With heal_get_by=True, mendwright asks no model to heal a get_by_* call: the call "
+            'names its element by role and words, and those are what changed. Change the call '
+            "by hand, or pass heal_get_by='model' to mendwright.open() to let the model provider "
+            'look for the element.')
 
 
 @dataclass(frozen=True)
@@ -456,6 +470,247 @@ def role_unknown_message(key):
     return ("mendwright does not know what kind of element '" + key + "' is: it could not "
             'read the element when the call last matched, so it cannot check a repaired one. '
             'Run the step again while the call matches.')
+
+
+# --- heal_get_by='model' ---------------------------------------------------------------------
+
+def _quoted(value):
+    """A name or text as the intent quotes it: a str in double quotes, a regular expression
+    as /pattern/ with i, m and s for its flags."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    flags = ''.join(letter for letter, flag in (('i', re.IGNORECASE), ('m', re.MULTILINE),
+                                                 ('s', re.DOTALL)) if value.flags & flag)
+    return '/' + value.pattern + '/' + flags
+
+
+def _named(value, what):
+    """' named "Sign in"', or ' whose name matches the regular expression /.../i'."""
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return ' ' + what + ' ' + _quoted(value)
+    return ' whose ' + ('name' if what == 'named' else what.split()[-1]) + (
+        ' matches the regular expression ' + _quoted(value))
+
+
+def intent_of(call):
+    """What the call says about its element, in words, for the model that heals it with
+    heal_get_by='model' (the bundle's intent): its role and name, or its text, label,
+    placeholder, alt text, title or test id, such as 'the button named "Sign in"'. The model
+    also gets the call itself, as the key and the selector that broke."""
+    method = call.method
+    if method == 'get_by_role':
+        text = 'the ' + str(call.value)
+        if call.level is not None:
+            text += ' at level ' + str(call.level)
+        text += _named(call.name, 'named')
+    elif method == 'get_by_test_id':
+        text = 'the element with the test id ' + _quoted(call.value)
+    else:
+        what = {'get_by_text': ('the element with the text', 'text'),
+                'get_by_label': ('the form field labelled', 'label'),
+                'get_by_placeholder': ('the field with the placeholder', 'placeholder'),
+                'get_by_alt_text': ('the image with the alt text', 'alt text'),
+                'get_by_title': ('the element with the title', 'title')}[method]
+        if isinstance(call.value, str):
+            text = what[0] + ' ' + _quoted(call.value)
+        else:
+            text = ('the element whose ' + what[1] + ' matches the regular expression '
+                    + _quoted(call.value))
+    return text
+
+
+def gate_role(call):
+    """The gate role (see mendwright.roles) a heal of call must have when the store knows
+    none for its key, because the call never matched: for a get_by_role() call, the first
+    gate role its ARIA role can mean, as role= takes it (a heading of level= 2 is an h2),
+    else None. None too for a role the gate has no word for, such as tab or menuitem, and
+    for the other get_by_* methods, which say nothing of the element's kind."""
+    if call is None or call.method != 'get_by_role' or not isinstance(call.value, str):
+        return None
+    from .roles import role_choices
+    name = call.value.strip().lower()
+    if name == 'heading' and call.level in (1, 2, 3, 4, 5, 6):
+        return 'h' + str(call.level)
+    try:
+        choices = role_choices(name)
+    except ValueError:
+        return None
+    return choices[0] if choices else None
+
+
+def role_unknown_model_message(key, call):
+    """Why a call key that never matched is not looked for by a model: nothing says what
+    kind of element it is, so what the model picks could not be checked."""
+    if call is not None and call.method == 'get_by_role':
+        why = ("mendwright's checks have no word for the ARIA role " + repr(call.value)
+               + ' (they know button, checkbox, radio, link, combobox, textbox and the roles of '
+               'HTML tags)')
+    else:
+        why = 'only a get_by_role() call says what kind of element it finds'
+    return ("mendwright does not know what kind of element '" + key + "' is: the call has not "
+            'matched one element in this store, and ' + why + ', so what a model picks could '
+            'not be checked and no model was asked. Run the step once while the call matches, '
+            'so mendwright reads the element.')
+
+
+# --- twins: a call that finds the healed element ---------------------------------------------
+
+# The longest name, label or text a twin is made with: a longer one is no call to write.
+MAX_TWIN_TEXT = 100
+# The methods a twin is made with, after the call's own method.
+_TWIN_ORDER = ('get_by_role', 'get_by_label', 'get_by_test_id')
+_FIELD_TAGS = ('input', 'select', 'textarea')
+_NOT_FIELDS = ('hidden', 'submit', 'button', 'reset', 'image')
+_SPACE = re.compile(r'[ \t\n\r\f]+')
+
+
+def _flat(text):
+    return _SPACE.sub(' ', text or '').strip()
+
+
+def _usable_text(text):
+    return isinstance(text, str) and 0 < len(text) <= MAX_TWIN_TEXT
+
+
+def _label_text(el):
+    """The text of the <label> elements of a form field (for= its id, or around it),
+    without the text of the field itself and of other controls in it, or ''."""
+    if not isinstance(el.tag, str) or el.tag.lower() not in _FIELD_TAGS:
+        return ''
+    if el.tag.lower() == 'input' and (el.get('type') or '').lower() in _NOT_FIELDS:
+        return ''
+    labels = []
+    ident = el.get('id')
+    root = el.getroottree().getroot()
+    if ident:
+        try:
+            labels.extend(root.xpath('//label[@for=$i]', i=ident))
+        except Exception:
+            pass
+    labels.extend(a for a in el.iterancestors() if isinstance(a.tag, str)
+                  and a.tag.lower() == 'label')
+    return _flat(' '.join(_text_without(label, _SKIPPED) for label in labels))
+
+
+# What a label's text leaves out: the text of the controls in it.
+_SKIPPED = frozenset(('select', 'textarea', 'option', 'script', 'style', 'button'))
+
+
+def _text_without(node, skip):
+    """node's text, without the text inside its descendants whose tag is in skip."""
+    out = [node.text or '']
+    for child in node:
+        if not (isinstance(child.tag, str) and child.tag.lower() in skip):
+            out.append(_text_without(child, skip))
+        out.append(child.tail or '')
+    return ''.join(out)
+
+
+def _call(method, *args, **kwargs):
+    """call_of() for a twin, or None when it is never a key."""
+    return call_of(method, args, kwargs)[0]
+
+
+def twin_calls(el, call=None, aria=None):
+    """The get_by_* calls that may find el, the element a heal of a key found, best first,
+    to be checked on the live page (client.get_by_twin): each must match el and nothing
+    else there before it is saved. call is the GetByCall of the key when the key is a call,
+    whose method goes first; aria is {'role', 'name', 'level'} for el as Playwright reads it
+    (driver.aria_name), or None.
+
+    - get_by_role(role, name=..., exact=True), from aria, with level= when call has one;
+    - get_by_label(label, exact=True), from the <label> of a form field;
+    - get_by_test_id(value), from data-testid, Playwright's default test id attribute;
+    - and, when call is one of them, get_by_text(), get_by_placeholder(),
+      get_by_alt_text() or get_by_title() with el's text or attribute, exact=True.
+
+    A name, label or text longer than MAX_TWIN_TEXT characters, or empty, gives none."""
+    found = {}
+    if isinstance(aria, dict) and isinstance(aria.get('role'), str) and aria['role']:
+        name = aria.get('name')
+        if _usable_text(name):
+            level = None
+            if (call is not None and call.method == 'get_by_role' and call.level is not None
+                    and isinstance(aria.get('level'), int)):
+                level = aria['level']
+            kwargs = {'name': name, 'exact': True}
+            if level is not None:
+                kwargs['level'] = level
+            found['get_by_role'] = _call('get_by_role', aria['role'], **kwargs)
+    label = _label_text(el) or _flat(el.get('aria-label'))
+    if _usable_text(label) and isinstance(el.tag, str) and el.tag.lower() in _FIELD_TAGS:
+        found['get_by_label'] = _call('get_by_label', label, exact=True)
+    test_id = el.get('data-testid')
+    if _usable_text(test_id) and test_id.strip():
+        found['get_by_test_id'] = _call('get_by_test_id', test_id)
+    own = call.method if call is not None else None
+    if own == 'get_by_text':
+        text = _flat(el.text_content() if isinstance(el.tag, str) else '')
+        if _usable_text(text):
+            found[own] = _call(own, text, exact=True)
+    attr = {'get_by_placeholder': 'placeholder', 'get_by_alt_text': 'alt',
+            'get_by_title': 'title'}.get(own)
+    if attr and _usable_text(_flat(el.get(attr))):
+        found[own] = _call(own, _flat(el.get(attr)), exact=True)
+    order = ((own,) if own else ()) + _TWIN_ORDER
+    out = []
+    for method in dict.fromkeys(order):
+        twin = found.get(method)
+        if twin is not None and (call is None or canonical(twin) != canonical(call)):
+            out.append(twin)
+    return out
+
+
+def twin_text(value):
+    """value, a twin read from the store or the journal, when it is a call in mendwright's
+    canonical spelling (parse, canonical), else None: something else wrote it, and it is
+    never shown."""
+    if not isinstance(value, str) or not value:
+        return None
+    call = parse(value)
+    if call is None or canonical(call) != value:
+        return None
+    return value
+
+
+_ARIA_LINE = re.compile(r'(?P<role>[a-z]+)(?: (?P<name>"(?:[^"\\]|\\.)*"))?(?P<rest>.*)', re.DOTALL)
+_ARIA_LEVEL = re.compile(r'\[level=(\d+)\]')
+
+
+def parse_aria(snapshot):
+    """{'role', 'name', 'level'} for the first line of Playwright's aria_snapshot() of one
+    element, such as '- button "Log in"' or '- heading "Cart" [level=2]', or None. name is
+    None when the line has none, or gives it as a regular expression."""
+    if not isinstance(snapshot, str) or not snapshot.startswith('- '):
+        return None
+    line = snapshot.splitlines()[0][2:]
+    if line.startswith("'"):            # a key YAML had to quote: 'button "a: b"':
+        end, i = None, 1
+        while i < len(line):
+            if line[i] == "'":
+                if line[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                end = i
+                break
+            i += 1
+        if end is None:
+            return None
+        line = line[1:end].replace("''", "'")
+    match = _ARIA_LINE.match(line)
+    if match is None:
+        return None
+    name = None
+    if match.group('name'):
+        try:
+            name = json.loads(match.group('name'))
+        except ValueError:
+            return None
+    level = _ARIA_LEVEL.search(match.group('rest') or '')
+    return {'role': match.group('role'), 'name': name,
+            'level': int(level.group(1)) if level else None}
 
 
 # --- the error a miss raises ---------------------------------------------------------------

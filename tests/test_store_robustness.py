@@ -313,18 +313,19 @@ def test_a_file_that_breaks_mid_run_is_not_overwritten(tmp_path, caplog):
 
 
 def _flaky_reads(monkeypatch, failures):
-    """Path.read_text raises PermissionError ``failures`` times, as Windows does while
-    another process replaces the file."""
+    """Opening the store file to read it raises PermissionError ``failures`` times, as
+    Windows does while another process replaces the file. (The store reads through
+    Path.open, so the file's version comes from the same handle as its text.)"""
     from pathlib import Path
-    real = Path.read_text
+    real = Path.open
     left = [failures]
 
-    def read_text(self, *args, **kwargs):
-        if self.name == 'o.json' and left[0] > 0:
+    def open_(self, mode='r', *args, **kwargs):
+        if self.name == 'o.json' and 'r' in mode and left[0] > 0:
             left[0] -= 1
             raise PermissionError(13, 'The process cannot access the file')
-        return real(self, *args, **kwargs)
-    monkeypatch.setattr(Path, 'read_text', read_text)
+        return real(self, mode, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_)
     monkeypatch.setattr('time.sleep', lambda s: None)
     return left
 

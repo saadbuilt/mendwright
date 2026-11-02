@@ -1,0 +1,225 @@
+"""Declines a worker reuses (mendwright.fleet.DECLINES): when the model looked at a page and
+gave no usable heal, that answer is reused per (store file, key, page signature) for
+MENDWRIGHT_DECLINE_TTL_SECONDS, by every worker of the process, with its reason and no model
+call. The herds are deterministic as in test_herd.py: the fake provider blocks until the test
+has seen the followers waiting. No model is called."""
+
+import asyncio
+import threading
+
+import pytest
+
+import mendwright
+import mendwright.aio
+from mendwright import AttentionRequired
+from mendwright.fleet import DECLINES, FLIGHTS
+from mendwright.providers._errors import NOT_HERE_HINT
+from test_aio import AsyncFakePage
+from test_herd import CODE, KEY, URL, V2, _count, _html, _instant, _journal, _store, _warm
+
+N = 12
+GONE = _html("<p class='note'>You accept the terms on the next page.</p>")
+NOT_HERE = ('the model says no element on this page fits: the consent checkbox is not on '
+            'this page. ' + NOT_HERE_HINT)
+
+
+class Declining:
+    """A provider that counts its calls in calls and blocks each one until release is set,
+    then declines as a model does that finds nothing on the page (last_error, code not_here),
+    or with a provider failure (error=...)."""
+
+    def __init__(self, calls, release, changed, error=NOT_HERE):
+        self.calls, self.release, self.changed, self.error = calls, release, changed, error
+        self.last_error = None
+
+    def propose(self, bundle):
+        with self.changed:
+            self.calls.append(bundle.get('key'))
+            self.changed.notify_all()
+        assert self.release.wait(60), 'the test never released the provider'
+        self.last_error = self.error
+        return None
+
+    def report_outcome(self, key, xpath, success):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_declines_kept():
+    DECLINES.clear()
+    yield
+    DECLINES.clear()
+
+
+def _open(make_page, tmp_path, provider, html=GONE, **kwargs):
+    page = make_page(html, url=URL)
+    kwargs.setdefault('timeout_ms', 0)
+    heal = mendwright.open(page, provider=provider, store_path=_store(tmp_path),
+                           fingerprint=False, **kwargs)
+    return page, heal
+
+
+def test_a_herd_on_a_decline_makes_one_model_call(tmp_path, make_page, stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    healers = []
+    for _ in range(N):
+        _page, heal = _open(make_page, tmp_path, Declining(calls, release, changed),
+                            timeout_ms=60000)
+        heal._clock = _instant()
+        healers.append(heal)
+    messages = []
+
+    def run(heal):
+        try:
+            heal.locator(KEY, CODE).check()
+            messages.append('ok')
+        except AttentionRequired as exc:
+            messages.append(str(exc))
+    threads = [threading.Thread(target=run, args=(heal,)) for heal in healers]
+    for thread in threads:
+        thread.start()
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
+    assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+    release.set()
+    for thread in threads:
+        thread.join(60)
+    assert not any(t.is_alive() for t in threads)
+    events = _journal(tmp_path)
+    assert len(calls) == 1
+    assert _count(events, 'heal.declined', code='not_here') == N
+    assert _count(events, 'heal.declined', code='not_here', cached=True) == N - 1
+    assert _count(events, 'heal.declined', code='rate_limit') == 0
+    # Every worker fails with the model's own reason, not with a rate cap.
+    assert len(messages) == N and all('no element on this page fits' in m for m in messages)
+    assert sum('reuses its answer for 600 seconds' in m for m in messages) == N - 1
+
+
+def test_the_async_healer_reuses_a_decline_too(tmp_path, make_page, stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+
+    async def main():
+        healers = []
+        for _ in range(N):
+            heal = await mendwright.aio.open(
+                AsyncFakePage(make_page(GONE, url=URL)), provider=Declining(calls, release,
+                                                                            changed),
+                store_path=_store(tmp_path), timeout_ms=60000, fingerprint=False)
+            heal._clock = _instant()
+            healers.append(heal)
+        tasks = [asyncio.ensure_future(h.locator(KEY, CODE).check()) for h in healers]
+
+        def ready():
+            with changed:
+                changed.wait_for(lambda: len(calls) == 1, 60)
+            return FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+        waited = await asyncio.to_thread(ready)
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return waited, results
+    waited, results = asyncio.run(main())
+    assert waited and all(isinstance(r, AttentionRequired) for r in results)
+    events = _journal(tmp_path)
+    assert len(calls) == 1
+    assert _count(events, 'heal.declined', code='not_here', cached=True) == N - 1
+
+
+def _declined_once(make_page, tmp_path, stub_provider, error=NOT_HERE, **kwargs):
+    """A store whose key one worker healed for nothing: (calls, a second worker)."""
+    _warm(make_page, tmp_path, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    release.set()
+    _page, first = _open(make_page, tmp_path, Declining(calls, release, changed, error),
+                         **kwargs)
+    with pytest.raises(AttentionRequired):
+        first.locator(KEY, CODE)
+    _page, second = _open(make_page, tmp_path, Declining(calls, release, changed, error),
+                          **kwargs)
+    return calls, second
+
+
+def test_a_decline_is_reused_for_its_ttl_and_asked_again_after(tmp_path, make_page,
+                                                               stub_provider):
+    calls, second = _declined_once(make_page, tmp_path, stub_provider)
+    now = second.coordinator.wallclock()
+    second.coordinator.wallclock = lambda: now + 599
+    with pytest.raises(AttentionRequired, match='599 seconds ago'):
+        second.locator(KEY, CODE)
+    assert len(calls) == 1
+    second.coordinator.wallclock = lambda: now + 601
+    with pytest.raises(AttentionRequired) as caught:
+        second.locator(KEY, CODE)
+    assert len(calls) == 2 and 'reuses its answer' not in str(caught.value)
+
+
+def test_a_ttl_of_zero_asks_the_model_every_time(tmp_path, make_page, stub_provider,
+                                                 monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_DECLINE_TTL_SECONDS', '0')
+    calls, second = _declined_once(make_page, tmp_path, stub_provider)
+    with pytest.raises(AttentionRequired):
+        second.locator(KEY, CODE)
+    assert len(calls) == 2
+
+
+def test_the_ttl_comes_from_the_environment(tmp_path, make_page, stub_provider, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_DECLINE_TTL_SECONDS', '30')
+    calls, second = _declined_once(make_page, tmp_path, stub_provider)
+    assert second.coordinator.decline_ttl == 30
+    with pytest.raises(AttentionRequired, match='reuses its answer for 30 seconds'):
+        second.locator(KEY, CODE)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('raw', ['ten', '-1', '1.5'])
+def test_a_bad_ttl_stops_open_and_doctor_lists_it(make_page, tmp_path, monkeypatch, raw):
+    from mendwright.cli import _settings_problems
+    monkeypatch.setenv('MENDWRIGHT_DECLINE_TTL_SECONDS', raw)
+    with pytest.raises(ValueError, match='MENDWRIGHT_DECLINE_TTL_SECONDS must be a whole '
+                                         'number of seconds'):
+        _open(make_page, tmp_path, None)
+    assert any('MENDWRIGHT_DECLINE_TTL_SECONDS' in p for p in _settings_problems())
+
+
+def test_a_failure_of_the_provider_is_not_reused(tmp_path, make_page, stub_provider):
+    calls, second = _declined_once(make_page, tmp_path, stub_provider,
+                                   error='the API answered HTTP 429 (rate limited).')
+    with pytest.raises(AttentionRequired):
+        second.locator(KEY, CODE)
+    assert len(calls) == 2          # asking again can work: nothing was reused
+
+
+def test_a_gate_decline_is_reused(tmp_path, make_page, stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    wrong = stub_provider("//input[@name='email']")     # the wrong role: fails the gate
+    _page, first = _open(make_page, tmp_path, wrong)
+    with pytest.raises(AttentionRequired, match="passed mendwright's local gate"):
+        first.locator(KEY, CODE)
+    assert len(wrong.bundles) == 2                      # the attempt and its re-prompt
+    again = stub_provider("//input[@name='email']")
+    _page, second = _open(make_page, tmp_path, again)
+    with pytest.raises(AttentionRequired, match='reuses its answer'):
+        second.locator(KEY, CODE)
+    assert again.bundles == []
+
+
+def test_a_decline_on_another_page_is_not_reused(tmp_path, make_page, stub_provider):
+    calls, second = _declined_once(make_page, tmp_path, stub_provider,
+                                   heal_across_pages=True)
+    second._page.url = 'https://shop.test/checkout/express'      # another page signature
+    with pytest.raises(AttentionRequired):
+        second.locator(KEY, CODE)
+    assert len(calls) == 2
+
+
+def test_a_heal_comes_before_a_reused_decline(tmp_path, make_page, stub_provider):
+    calls, second = _declined_once(make_page, tmp_path, stub_provider)
+    # The element is back, and another worker heals it; the decline is still in force.
+    _page, third = _open(make_page, tmp_path, stub_provider("//input[@data-testid='tos-optin']"),
+                         html=V2)
+    third.coordinator.decline_ttl = 0            # this one asks the model regardless
+    third.locator(KEY, CODE).check()
+    second._page.set_html(V2)
+    second.locator(KEY, CODE).check()            # adopts the heal: no decline, no call
+    assert len(calls) == 1 and second.pending() == {KEY: "//input[@data-testid='tos-optin']"}

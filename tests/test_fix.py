@@ -1582,7 +1582,7 @@ def test_a_call_key_never_enters_the_table_of_strings_to_replace():
     store = {"schema": 2, "selectors": {SIGN_IN: healed(SIGN_IN, LOGIN, role="button")}}
     plan = fixback.plan_fixes(store, [canary(SIGN_IN, LOGIN)])
     assert plan.fixes == [] and plan.new_for == {}
-    assert plan.calls == [fixback.CallLeft(SIGN_IN, 'get_by_role', LOGIN, True)]
+    assert plan.calls == [fixback.CallLeft(SIGN_IN, 'get_by_role', LOGIN, True, None)]
 
 
 # --- list heals that heal.locator_all(..., nonempty=True) proposed ---------------------------------
@@ -1836,3 +1836,98 @@ def test_a_list_heal_rejected_with_mendwright_lists_is_named_so(root, capsys):
     assert ("  cart: its newest heal, the list heal " + ROWS + ", was rejected with mendwright "
             "lists reject, and no selector has worked for the key since, so there is nothing to "
             "write back.") in out.splitlines()
+
+
+# --- suggested calls (get_by twins) ------------------------------------------------------------
+
+TWIN = 'get_by_role("button", name="Log in", exact=True)'
+
+
+def _twin_project(root, twin=TWIN, logged=None, key=SIGN_IN, old=SIGN_IN):
+    entry = healed(old, LOGIN, role="button")
+    if twin is not None:
+        entry["candidates"][-1]["getBy"] = twin
+    event = applied(key, LOGIN, [old])
+    if logged is not None:
+        event["get_by"] = logged
+    return write_store(root, {key: entry}, [event, canary(key, LOGIN)])
+
+
+def test_a_call_key_shows_the_suggested_call_next_to_each_place(root, capsys):
+    _twin_project(root)
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code, out, err = run(capsys)
+    assert (code, err) == (0, "")
+    lines = out.splitlines()
+    line = next(x for x in lines if x.startswith("  " + SIGN_IN + ":"))
+    assert ("Its healed selector, confirmed, is " + LOGIN + ". Suggested call: " + TWIN + ", "
+            "which matched the healed element, and nothing else, when the heal was made. Change "
+            "the call's arguments by hand to the element's new role or words, as in the "
+            "suggested call, or replace it with") in line
+    at = lines.index(line)
+    assert lines[at + 1:at + 3] == ["    tests/test_login.py:4  ->  " + TWIN,
+                                    "    tests/test_login.py:5  ->  " + TWIN]
+
+
+def test_the_suggested_call_is_in_the_json_and_null_without_one(root, capsys):
+    _twin_project(root)
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code = cli.main(["fix", "--format", "json"])
+    item, = json.loads(capsys.readouterr().out)["left_alone"]
+    assert code == 0 and item["code"] == "get_by_call"
+    assert item["suggested_call"] == TWIN
+    assert item["call_sites"] == [{"path": "tests/test_login.py", "line": 4},
+                                  {"path": "tests/test_login.py", "line": 5}]
+    _twin_project(root, twin=None)
+    cli.main(["fix", "--format", "json"])
+    item, = json.loads(capsys.readouterr().out)["left_alone"]
+    assert item["suggested_call"] is None and len(item["call_sites"]) == 2
+
+
+def test_the_markdown_lists_each_place_with_the_suggested_call(root, capsys):
+    _twin_project(root)
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    assert cli.main(["fix", "--format", "md"]) == 0
+    text = capsys.readouterr().out
+    assert ("- `" + SIGN_IN + "`: is a `heal.page.get_by_*()` call, which mendwright fix never "
+            "rewrites.\n  - `tests/test_login.py:4`: `" + TWIN + "`\n"
+            "  - `tests/test_login.py:5`: `" + TWIN + "`\n") in text
+    write(root, "tests/test_login.py", "x = 1\n")
+    cli.main(["fix", "--format", "md"])
+    assert "  - Suggested call: `" + TWIN + "`\n" in capsys.readouterr().out
+
+
+def test_a_twin_the_store_lost_comes_from_the_journal(root, capsys):
+    _twin_project(root, twin=None, logged=TWIN)
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code, out, _err = run(capsys)
+    assert "    tests/test_login.py:4  ->  " + TWIN in out.splitlines()
+
+
+@pytest.mark.parametrize("bad", [
+    "get_by_role('button', name='Log in', exact=True)",      # not mendwright's spelling
+    "page.get_by_role(\"button\")",                             # not a call key
+    "get_by_role(\"button\") ```\n<script>",                    # anything else
+    7,
+])
+def test_a_twin_that_is_not_a_call_in_mendwrights_spelling_is_never_shown(root, capsys, bad):
+    _twin_project(root, twin=bad, logged=bad)
+    write(root, "tests/test_login.py", SIGN_IN_SOURCE)
+    code, out, _err = run(capsys)
+    assert "Suggested call" not in out and " ->  " not in out
+    cli.main(["fix", "--format", "json"])
+    assert json.loads(capsys.readouterr().out)["left_alone"][0]["suggested_call"] is None
+
+
+def test_a_healed_selector_written_back_shows_its_twin_too(root, capsys):
+    _twin_project(root, key="sign_in", old="#login")
+    write(root, "tests/test_login.py", 'heal.locator("sign_in", "#login").click()\n')
+    code, out, _err = run(capsys)
+    assert "  now  " + LOGIN in out.splitlines()
+    assert "  or the call  " + TWIN in out.splitlines()
+    cli.main(["fix", "--format", "json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["written_back"][0]["suggested_call"] == TWIN
+    cli.main(["fix", "--format", "md"])
+    assert "`" + LOGIN + "`<br>or the call `" + TWIN + "`" in (
+        capsys.readouterr().out)

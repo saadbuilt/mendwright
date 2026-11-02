@@ -1,0 +1,8 @@
+{
+  "id": "call-label-reworded-apply-filters",
+  "category": "label_reworded",
+  "description": "The step is the call get_by_role(\"button\", name=\"Apply filters\"). The filter panel's submit button now shows a live count (\"Show 5 flights\").",
+  "pages": "label-reworded-apply-filters",
+  "call": "get_by_role(\"button\", name=\"Apply filters\")",
+  "truth": "//form[@data-testid='filters-form']//button[@type='submit']"
+}

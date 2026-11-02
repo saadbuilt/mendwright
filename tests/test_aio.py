@@ -1026,6 +1026,42 @@ def test_an_async_heal_without_the_calls_aria_role_is_refused(make_page, tmp_pat
     assert heal.heals == [] and provider.bundles == []
 
 
+def test_an_async_call_heals_by_a_model_only_with_heal_get_by_model(make_page, tmp_path,
+                                                                     stub_provider):
+    pytest.importorskip('playwright.async_api')
+    sync, page = _call_page(make_page)
+    redone = ("<html><body><main><button id='enter'>Continue</button>"
+              "<button id='back'>Back</button></main></body></html>")
+    provider = stub_provider("//button[@id='enter']")
+
+    async def main():
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by=True)
+        await _sign_in(heal)
+        sync.set_html(redone)
+        with pytest.raises(mendwright.getby.GetByNotFound) as caught:
+            await _sign_in(heal)                              # True: no model
+        assert str(caught.value).endswith(mendwright.getby.NO_MODEL)
+        assert provider.bundles == []
+        heal = await _open(page, tmp_path, provider, timeout_ms=0, heal_get_by='model')
+        await _sign_in(heal)
+        # A call that never matched: a model looks for it from the role it names.
+        await heal.page.get_by_role('button', name='Go back').click()
+        with pytest.raises(mendwright.getby.GetByNotFound) as caught:
+            await heal.page.get_by_label('Go back').click()     # names no kind of element
+        return heal, caught.value
+
+    heal, error = run(main())
+    assert [(h.key, h.new, h.source) for h in heal.heals] == [
+        (CALL, "//button[@id='enter']", 'model'),
+        ('get_by_role("button", name="Go back")', "//button[@id='enter']", 'model')]
+    assert [b['intent'] for b in provider.bundles] == ['the button named "Sign in"',
+                                                       'the button named "Go back"']
+    key = 'get_by_label("Go back")'
+    assert str(error).endswith(mendwright.getby.role_unknown_model_message(
+        key, mendwright.getby.parse(key)))
+    assert [a[:2] for a in sync.actions][-2:] == [("xpath=//button[@id='enter']", 'click')] * 2
+
+
 def test_the_async_calls_own_element_reports_nothing_to_the_canary(make_page, tmp_path,
                                                                    stub_provider):
     heal_xpath = "//button[@id='login']"
@@ -1164,8 +1200,8 @@ def test_the_async_call_off_by_default_is_the_real_locator(make_page, tmp_path, 
     async def main():
         heal = await _open(page, tmp_path, stub_provider(None), timeout_ms=0)
         assert type(heal.page.get_by_role('button', name='Sign in')) is AsyncFakeGetBy
-        with pytest.raises(TypeError, match='heal_get_by=True, heal_get_by=False or '
-                                            'heal_get_by=None'):
+        with pytest.raises(TypeError, match="heal_get_by=True, heal_get_by='model', "
+                                            'heal_get_by=False or heal_get_by=None'):
             await _open(page, tmp_path, stub_provider(None), heal_get_by=1)
 
     run(main())

@@ -513,9 +513,18 @@ print(json.dumps([getby.role_mismatch(call), getby.through_message('get_by_role(
     const call = parse('get_by_role("heading", name="Cart", level=2)') as GetByCall;
     // The Python package's words, but for its names: getBy* where it says get_by_*.
     const ts = (text: string) => text.replace(/get_by_\*/g, 'getBy*');
+    // But for NO_MODEL: since 0.11.0 the Python package can let a model heal a call
+    // (heal_get_by='model'), and its sentence says so. This package heals a call from its
+    // fingerprint only, so its sentence keeps the reason no model is asked, and offers none.
+    const pythonNoModel = python.splice(13, 1)[0];
+    const shared = 'asks no model to heal a get_by_* call: the call names its element by role and words, and those '
+      + 'are what changed';
+    assert.ok(pythonNoModel.includes(shared), pythonNoModel);
+    assert.ok(NO_MODEL.startsWith('mendwright ' + ts(shared) + ', so a model could only guess. Change the call by hand.'));
+    assert.ok(!/model'|healGetBy/.test(NO_MODEL), NO_MODEL);
     assert.deepEqual([roleMismatch(call), throughMessage('get_by_role("a")', 'matches 1 hidden element'),
       roleUnknownMessage('k'), notHealedMessage('page.x()', TYPE_REASON), ROLE_UNREADABLE, 'was rejected by the browser',
       'started to match something other than one visible element', emptyReason('name'), TYPE_REASON, SURROGATE_REASON,
-      BIND_REASON, LONG_REASON, noFingerprintMessage('k'), NO_MODEL, NOT_FOLLOWED], python.map(ts));
+      BIND_REASON, LONG_REASON, noFingerprintMessage('k'), NOT_FOLLOWED], python.map(ts));
   });
 });
