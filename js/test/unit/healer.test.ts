@@ -3,6 +3,8 @@
 // fails without it.
 
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { beforeEach, describe, test } from 'node:test';
 
 import { PlaywrightDriver } from '../../src/driver';
@@ -674,5 +676,18 @@ describe('a store URL', () => {
     // storePath comes first, and a store passed as it is needs no path.
     assert.doesNotThrow(() => open(w.page as never, { ...quiet, storePath: w.storePath }));
     assert.doesNotThrow(() => open(w.page as never, { ...quiet, store: loadStore(w.storePath) }));
+  });
+
+  test('an empty MENDWRIGHT_STORE is unset, as a CI variable that is not set gives it', () => {
+    const w = world(V1);
+    const here = process.cwd();
+    process.chdir(w.dir);
+    try {
+      process.env.MENDWRIGHT_STORE = '';
+      const heal = open(w.page as never, { timeoutMs: 100, log: () => undefined });
+      assert.equal(heal.store.overridePath, path.join(fs.realpathSync(w.dir), '.mendwright', 'overrides.json'));
+    } finally {
+      process.chdir(here);
+    }
   });
 });

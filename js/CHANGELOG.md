@@ -35,6 +35,7 @@ While the version starts with 0, a minor release can change the public API.
 - The store keeps any field of a candidate or of a key's entry in `overrides.json` that this package doesn't know, as the file has it, where a write of this package dropped it, so a field a later version of either package saves stays. It reads only `overrides.json` in its folder, so the per-key records the Python package 0.11 keeps in `keys/` next to it are left alone.
 - A store URL in `storePath`, `mendwrightStore` or `MENDWRIGHT_STORE`, such as the `s3://` and `https://` stores the Python package 0.11 reads, throws `TypeError` that names the option and the scheme and quotes nothing of the URL, where it was taken for a local path. This package keeps its store in a local file.
 - `MENDWRIGHT_HEAL_GET_BY=model`, which the Python package 0.11 takes, reads as `1` with one WARNING per process, where it made every `open()` and every test of the fixtures throw `TypeError`: a call still heals from its fingerprint only.
+- An empty `MENDWRIGHT_STORE`, as a CI variable that isn't set gives it, counts as unset in `open()`, as it does for the fixtures and in the Python package, where `open()` threw `EISDIR`.
 
 ## [0.1.0] - 2026-11-01
 

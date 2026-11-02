@@ -2869,9 +2869,10 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   const checks = expectations(options.expectValues, warn);
   const healGetBy = getBySetting(healGetByOption, warn);
   // A store URL (the Python package 0.11 reads one) is refused: this package keeps a local file.
+  // An empty MENDWRIGHT_STORE, as a CI variable that is not set gives, is unset.
   const storeWhere = options.storePath !== undefined ? 'storePath' : 'MENDWRIGHT_STORE';
   const storePath = options.store ? '' : path.resolve(localStorePath(
-    options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH, storeWhere));
+    options.storePath ?? (process.env.MENDWRIGHT_STORE || DEFAULT_STORE_PATH), storeWhere));
   const timeoutMs = options.timeoutMs ?? envTimeout() ?? DEFAULT_TIMEOUT_MS;
   const dryRun = options.dryRun ?? Boolean(envFlag('MENDWRIGHT_DRY_RUN'));
   const fingerprint = fingerprintSetting(options.fingerprint);
