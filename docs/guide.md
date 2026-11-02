@@ -483,7 +483,8 @@ The model gets:
 - the page, redacted as for any heal, and for `LocalModelProvider` only, the call's fingerprint
 
 A call that never matched has no role in the store, so there is nothing to check a model's pick against.
-For a `get_by_role()` call the role it names stands in: the gate role that ARIA role means, as `role=` takes it (a `textbox` is an input, a `heading` with `level=2` an h2), and Playwright must give the pick the ARIA role too.
+For a `get_by_role()` call the role it names stands in: the gate roles that ARIA role can mean, as `role=` takes it (a `textbox` is an input or a textarea, a `heading` with `level=2` an h2 and one with no `level=` any of h1 to h6), and Playwright must give the pick the ARIA role too.
+The model is told the first of them, and the element it picks says which one the gate checks.
 For a role the gate has no word for, such as `tab` or `menuitem`, and for `get_by_text()`, `get_by_label()` and the other methods, no model is asked:
 
 ```text

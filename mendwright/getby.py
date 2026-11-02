@@ -540,6 +540,23 @@ def gate_role(call):
     return choices[0] if choices else None
 
 
+def gate_roles(call):
+    """Every gate role a heal of call may have when the store knows none for its key (see
+    gate_role): the ones its ARIA role can mean, so a heading with no level= is any of h1 to
+    h6, a textbox an input or a textarea, a list a ul or an ol. () when gate_role() gives
+    None."""
+    first = gate_role(call)
+    if first is None:
+        return ()
+    if call.method == 'get_by_role' and call.level is not None:
+        return (first,)
+    from .roles import role_choices
+    try:
+        return tuple(role_choices(call.value.strip().lower())) or (first,)
+    except ValueError:
+        return (first,)
+
+
 def role_unknown_model_message(key, call):
     """Why a call key that never matched is not looked for by a model: nothing says what
     kind of element it is, so what the model picks could not be checked."""

@@ -161,6 +161,32 @@ def test_a_heading_call_gets_the_level_it_names(tmp_path, make_page, stub_provid
     assert provider.bundles[0]['expectedRole'] == 'h2'
 
 
+@pytest.mark.parametrize('html, role, heal_xpath, read', [
+    ("<html><body><h1>Shop</h1><main><h2 id='cart'>Shopping cart</h2><p>2 items</p></main>"
+     "</body></html>", ('heading',), "//h2[@id='cart']", 'Shopping cart'),
+    ("<html><body><form><label for='c'>Your comments</label><textarea id='c' name='comments'>"
+     "Great</textarea><button>Send</button></form></body></html>", ('textbox',),
+     "//textarea[@id='c']", None),
+    ("<html><body><h1>Steps</h1><ol id='steps'><li>One</li><li>Two</li></ol></body></html>",
+     ('list',), "//ol[@id='steps']", 'One'),
+], ids=['heading with no level onto an h2', 'textbox onto a textarea', 'list onto an ol'])
+def test_a_call_that_never_matched_heals_onto_any_kind_its_role_can_mean(
+        tmp_path, make_page, stub_provider, html, role, heal_xpath, read):
+    # A heading with no level= is any of h1 to h6: the element the model picks says which.
+    page = _page(make_page, html)
+    provider = stub_provider(heal_xpath)
+    heal = _open(page, tmp_path, provider)
+    found = heal.page.get_by_role(*role, name='Your cart')
+    if read is None:
+        found.fill('hi')
+    else:
+        assert read in found.inner_text()
+    key = mendwright.get_by_key('get_by_role', *role, name='Your cart')
+    assert [(h.key, h.new) for h in heal.heals] == [(key, heal_xpath)]
+    assert len(provider.bundles) == 1           # no re-prompt
+    assert not [e for e in _journal(tmp_path) if e['event'] == 'heal.declined']
+
+
 # --- every check of a heal still runs ---------------------------------------------------------
 
 def test_a_destructive_call_key_is_never_sent_to_a_model(tmp_path, make_page, stub_provider):

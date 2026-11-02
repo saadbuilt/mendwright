@@ -158,6 +158,28 @@ def rate_cap_message(selector_key, why):
             'MENDWRIGHT_RATE_PER_KEY_PER_HOUR and MENDWRIGHT_RATE_GLOBAL_PER_HOUR set the caps.')
 
 
+def _picked_role(meta, choices, proposal, html):
+    """meta for one proposal of a get_by_role() call that never matched, whose ARIA role can
+    mean several gate roles (choices, see getby.gate_roles: a heading with no level= is any of
+    h1 to h6): with the role of the one element the proposal's XPath matches in the captured
+    page when that role is one of choices, else meta as it is, whose role is the first choice.
+    The gate then checks that role, and Playwright's own matcher the call's ARIA role."""
+    if len(choices) < 2 or not isinstance(proposal, dict):
+        return meta
+    xpath = proposal.get('xpath')
+    if not isinstance(xpath, str) or not xpath.strip():
+        return meta
+    try:
+        import lxml.html
+
+        from .validation import _role_of
+        found = [m for m in lxml.html.fromstring(html).xpath(xpath) if hasattr(m, 'tag')]
+        role = _role_of(found[0]) if len(found) == 1 else None
+    except Exception:
+        return meta
+    return dict(meta, expectedRole=role) if role in choices else meta
+
+
 def _destructive_message(selector_key):
     return ("'" + selector_key + "' is marked as a destructive control, and "
             "mendwright never auto-heals those, because a validated but wrong selector here "
@@ -697,9 +719,12 @@ class HealCoordinator:
             # A store that could not be read is never taken for an empty one: a heal would
             # not know the quarantines and destructive flags saved there.
             return self._decline(selector_key, unread, code='store')
+        choices = ()
         if getby.is_key(selector_key):
             if not self.get_by_model:
                 return self._heal_get_by(selector_key, meta, broken_candidates)
+            if meta.get('expectedRole') in (None, '', 'unknown'):
+                choices = getby.gate_roles(getby.parse(selector_key))   # it never matched
             meta = self._call_meta(selector_key, meta)
             if meta is None:
                 return False
@@ -840,10 +865,11 @@ class HealCoordinator:
                                   reasoning=proposal.get('reasoning'), source=tag)
             if self.dry_run:
                 valid = None
+                picked = _picked_role(meta, choices, proposal, html)
                 for xpath in [proposal.get('xpath')] + list(proposal.get('fallbacks') or []):
                     if left_out and xpath and has_position(xpath):
                         continue   # apply() would refuse it (see mendwright.fit)
-                    if xpath and validate(xpath, html, expected_role=meta.get('expectedRole'),
+                    if xpath and validate(xpath, html, expected_role=picked.get('expectedRole'),
                                           expected_text=meta.get('expectedText'),
                                           destructive=bool(meta.get('destructive'))).ok:
                         valid = xpath
@@ -862,7 +888,8 @@ class HealCoordinator:
             marked = self._marked_now(selector_key)
             if marked is not None:
                 return marked
-            applied, reason = apply(self.store, selector_key, proposal, html, meta,
+            applied, reason = apply(self.store, selector_key, proposal, html,
+                                    _picked_role(meta, choices, proposal, html),
                                     driver=self.driver, positional=not left_out,
                                     frame_xpath=self.frame_xpath,
                                     shadow_hosts=self.shadow_hosts,
