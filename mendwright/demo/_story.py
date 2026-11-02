@@ -182,14 +182,20 @@ def _log_lines(stream):
 
 @contextlib.contextmanager
 def _healing_on():
-    """MENDWRIGHT_DISABLE=1 would turn healing off even with provider= passed. The demo
-    exists to show a heal, so it sets the variable aside while it opens the Healer."""
-    saved = os.environ.pop('MENDWRIGHT_DISABLE', None)
+    """The variables of your own runs that mendwright.open() reads and takes no argument for,
+    set aside while the demo opens its Healer: MENDWRIGHT_DISABLE=1 would turn healing off
+    even with provider= passed, and the demo exists to show a heal; MENDWRIGHT_STORE_READ_ONLY
+    would keep its heal out of its store, and MENDWRIGHT_DECLINE_TTL_SECONDS, which can't
+    change what the demo does, stops open() when it is not a number."""
+    saved = {name: os.environ.pop(name) for name in _SET_ASIDE if name in os.environ}
     try:
         yield
     finally:
-        if saved is not None:
-            os.environ['MENDWRIGHT_DISABLE'] = saved
+        os.environ.update(saved)
+
+
+_SET_ASIDE = ('MENDWRIGHT_DISABLE', 'MENDWRIGHT_STORE_READ_ONLY',
+              'MENDWRIGHT_DECLINE_TTL_SECONDS')
 
 
 def _recorded(provider):
@@ -224,9 +230,19 @@ def story(page, store_path, *, timeout_ms=0, poll_ms=0, provider=None):
     asked = _recorded(provider)
     # fingerprint=False: the story shows a model's heal. With the fingerprint tier on (the
     # default), the checkbox would heal from its recorded fingerprint before any model call.
+    # Every other setting is the demo's own too, whatever your environment says: no rate
+    # limit (MENDWRIGHT_RATE_PER_KEY_PER_HOUR=0 would refuse the heal), no get_by routing and
+    # no twins.
     with _healing_on():
-        heal = _open_healer(page, provider=provider, store_path=store_path, dry_run=False,
-                            timeout_ms=timeout_ms, fingerprint=False)
+        try:
+            heal = _open_healer(page, provider=provider, store_path=store_path, dry_run=False,
+                                timeout_ms=timeout_ms, fingerprint=False,
+                                rate_per_key_per_hour=None, rate_global_per_hour=None,
+                                heal_get_by=False, suggest_get_by=False)
+        except ValueError as exc:     # a setting mendwright.open() refuses
+            text = str(exc)
+            raise SetupError(text[len('mendwright: '):] if text.startswith('mendwright: ')
+                             else text) from None
     # A step that may now come at any point: registered once, handled wherever it shows up.
     heal.interrupt(COOKIE_KEY, COOKIE_SELECTOR)
 
@@ -417,9 +433,13 @@ def run(*, browser=None, keep=False, scripted=False, stream=None, err_stream=Non
             stack.callback(shutil.rmtree, folder, ignore_errors=True)
         store_path = os.path.join(folder, 'overrides.json')
         with _log_lines(stream):
-            result = story(page, store_path,
-                           timeout_ms=BROWSER_TIMEOUT_MS if browser else 0,
-                           poll_ms=BROWSER_POLL_MS if browser else 0, provider=provider)
+            try:
+                result = story(page, store_path,
+                               timeout_ms=BROWSER_TIMEOUT_MS if browser else 0,
+                               poll_ms=BROWSER_POLL_MS if browser else 0, provider=provider)
+            except SetupError as exc:
+                write_line('mendwright demo: ' + str(exc), err_stream)
+                return 1
         write_line(_summary(result), stream)
         if keep:
             write_line('Kept the store at ' + store_path + ' (journal.jsonl is next to it).',

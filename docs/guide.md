@@ -2938,7 +2938,7 @@ Done: 1 repaired (checked on the live page and confirmed by the retried step), 1
 - `--keep` keeps the temporary store and prints its path.
 
 It exits 0 when the cookie banner is handled, the checkbox is repaired and the pay button is refused, and 1 otherwise. With no provider set up, it exits 1 and says how to set one up ([Providers](#providers), or `mendwright model install` for the [local model](#local-model)) or to run `--scripted`.
-It writes only to a temporary folder, and ignores `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_DRY_RUN`, `MENDWRIGHT_DISABLE` and `MENDWRIGHT_FINGERPRINT`; the provider variables choose the model as they do for `mendwright.open()`. `--live`, from when the scripted reply was the default, is still accepted and changes nothing.
+It writes only to a temporary folder, and ignores `MENDWRIGHT_STORE`, `MENDWRIGHT_TIMEOUT_MS`, `MENDWRIGHT_DRY_RUN`, `MENDWRIGHT_DISABLE`, `MENDWRIGHT_FINGERPRINT`, `MENDWRIGHT_RATE_PER_KEY_PER_HOUR`, `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`, `MENDWRIGHT_DECLINE_TTL_SECONDS`, `MENDWRIGHT_HEAL_GET_BY`, `MENDWRIGHT_SUGGEST_GET_BY` and `MENDWRIGHT_STORE_READ_ONLY`; the provider variables choose the model as they do for `mendwright.open()`. `--live`, from when the scripted reply was the default, is still accepted and changes nothing.
 
 ### mendwright doctor
 

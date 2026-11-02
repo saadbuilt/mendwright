@@ -347,6 +347,36 @@ def test_demo_ignores_mendwright_settings_from_the_environment(capsys, tmp_path,
     assert not elsewhere.parent.exists()
 
 
+@pytest.mark.parametrize("values", [
+    {"MENDWRIGHT_RATE_PER_KEY_PER_HOUR": "0", "MENDWRIGHT_RATE_GLOBAL_PER_HOUR": "0",
+     "MENDWRIGHT_HEAL_GET_BY": "1", "MENDWRIGHT_SUGGEST_GET_BY": "1",
+     "MENDWRIGHT_STORE_READ_ONLY": "1", "MENDWRIGHT_DECLINE_TTL_SECONDS": "0"},
+    {"MENDWRIGHT_RATE_PER_KEY_PER_HOUR": "lots", "MENDWRIGHT_RATE_GLOBAL_PER_HOUR": "many",
+     "MENDWRIGHT_HEAL_GET_BY": "maybe", "MENDWRIGHT_SUGGEST_GET_BY": "maybe",
+     "MENDWRIGHT_STORE_READ_ONLY": "maybe", "MENDWRIGHT_DECLINE_TTL_SECONDS": "soon"},
+], ids=["settings", "values that are not settings"])
+def test_demo_ignores_the_newer_settings_of_your_own_runs(capsys, monkeypatch, temp_root,
+                                                          values):
+    # A rate of 0 refused the heal, and the demo called that a bug; a value open() refuses
+    # ended the demo with a traceback.
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    assert cli.main(["demo", "--scripted"]) == 0
+    captured = capsys.readouterr()
+    assert _plain(captured.out) == DEMO_LINES and captured.err == ""
+    assert {name: os.environ[name] for name in values} == values      # put back
+    assert list(temp_root.iterdir()) == []
+
+
+def test_demo_says_in_one_line_when_open_refuses_a_setting(capsys, monkeypatch, temp_root):
+    def refuse(*args, **kwargs):
+        raise ValueError("mendwright: MENDWRIGHT_SOMETHING must be 1 or 0, got 'x'.")
+    monkeypatch.setattr(story_module, "_open_healer", refuse)
+    assert cli.main(["demo", "--scripted"]) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert err == ["mendwright demo: MENDWRIGHT_SOMETHING must be 1 or 0, got 'x'."]
+
+
 def test_demo_exits_1_when_the_heal_does_not_happen(capsys, monkeypatch, temp_root):
     # A reply the gate must reject (the button is not a checkbox): the CI step running
     # `mendwright demo --scripted` has to fail when healing breaks.
