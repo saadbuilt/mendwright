@@ -84,6 +84,40 @@ def test_replace_is_retried_while_a_reader_holds_the_file(tmp_path, monkeypatch)
 
 # --- the lock file ----------------------------------------------------------------
 
+def _lock_refused(monkeypatch, times):
+    """os.open refuses to create a lock file `times` times (None: always) with the
+    PermissionError Windows gives while another writer's lock file is being deleted; the
+    calls it refused are listed."""
+    real, refused = os.open, []
+
+    def refusing(path, flags, mode=0o777):
+        if str(path).endswith('.lock') and (times is None or len(refused) < times):
+            refused.append(path)
+            raise PermissionError(13, 'Access is denied')
+        return real(path, flags, mode)
+    monkeypatch.setattr(os, 'open', refusing)
+    return refused
+
+
+def test_a_lock_file_being_deleted_is_waited_for(tmp_path, monkeypatch):
+    # The lock is gone by the time mendwright looks for it: that is a lock in use a moment
+    # ago, not a folder it cannot write.
+    from mendwright.store import _locked
+    refused, slept = _lock_refused(monkeypatch, 2), []
+    with _locked(tmp_path / 'o.json', timeout=5, stale_after=10, sleep=slept.append):
+        assert (tmp_path / 'o.json.lock').exists()
+    assert len(refused) == 2 and slept and sum(slept) < 0.05
+
+
+def test_a_lock_file_that_cannot_be_made_raises_after_a_few_quick_tries(tmp_path, monkeypatch):
+    from mendwright.store import _locked
+    refused, slept = _lock_refused(monkeypatch, None), []
+    with pytest.raises(PermissionError):
+        with _locked(tmp_path / 'o.json', timeout=5, stale_after=10, sleep=slept.append):
+            pass
+    assert 2 <= len(refused) <= 6 and sum(slept) < 0.05     # not at the deadline
+
+
 def test_the_lock_file_is_removed_after_a_write(tmp_path):
     store = _load(tmp_path)
     store.add_candidate('k', '//a', source='code')

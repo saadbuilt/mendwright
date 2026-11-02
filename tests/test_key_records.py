@@ -51,18 +51,21 @@ def test_a_lease_is_taken_renewed_and_given_back(records):
 def test_an_expired_lease_is_taken_over_by_exactly_one(records):
     records.take('k', 'sig', 'dead', 0.0, 15)
     assert records.look('k', 100.0)[0] == 'expired'
-    won, start = [], threading.Barrier(16)
+    won, errors, start = [], [], threading.Barrier(16)
 
     def take(i):
         start.wait()
-        if records.take('k', 'sig', 'owner%d' % i, 100.0, 15):
-            won.append(i)
+        try:
+            if records.take('k', 'sig', 'owner%d' % i, 100.0, 15):
+                won.append(i)
+        except Exception as exc:    # a loser is told False, never an error
+            errors.append(repr(exc))
     threads = [threading.Thread(target=take, args=(i,)) for i in range(16)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(30)
-    assert len(won) == 1
+    assert len(won) == 1 and errors == []
     assert records.look('k', 100.0)[1]['owner'] == 'owner%d' % won[0]
 
 

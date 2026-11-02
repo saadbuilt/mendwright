@@ -75,21 +75,22 @@ def test_delete_compares_the_version_and_a_gone_object_is_no_error(backend):
 
 
 def test_racing_creators_one_wins(backend):
-    wins, start = [], threading.Barrier(16)
+    wins, losses, start = [], [], threading.Barrier(16)
 
     def create(i):
         start.wait()
         try:
             backend.put('lease', str(i).encode(), create_only=True)
             wins.append(i)
-        except Conflict:
-            pass
+        except Exception as exc:    # every loser is told Conflict, never another error
+            losses.append(type(exc).__name__)
     threads = [threading.Thread(target=create, args=(i,)) for i in range(16)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(30)
     assert len(wins) == 1 and backend.get('lease').body == str(wins[0]).encode()
+    assert losses == ['Conflict'] * 15
 
 
 def test_racing_compare_and_swap_writers_lose_no_change(backend):

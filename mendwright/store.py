@@ -269,6 +269,11 @@ def _restore_shadow_hosts(data):
     return data
 
 
+# How many times _locked() tries again, a few milliseconds apart, when creating the lock file
+# is refused and no lock file is there (see the comment in _locked).
+_LOCK_DENIED_TRIES = 4
+
+
 @contextlib.contextmanager
 def _locked(path, *, timeout, stale_after, clock=time.monotonic, sleep=time.sleep,
             wallclock=time.time):
@@ -281,14 +286,21 @@ def _locked(path, *, timeout, stale_after, clock=time.monotonic, sleep=time.slee
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = clock() + timeout
     delay = 0.005
+    denied = 0
     while True:
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except (FileExistsError, PermissionError) as exc:
             # On Windows a lock file that is being deleted gives PermissionError for a
-            # moment. With no lock file there, it is a real permission problem.
+            # moment, and can be gone by the time it is looked for. A few quick tries tell
+            # that from a real permission problem, which still raises within milliseconds,
+            # not at the deadline.
             if isinstance(exc, PermissionError) and not lock.exists():
-                raise
+                denied += 1
+                if denied > _LOCK_DENIED_TRIES:
+                    raise
+                sleep(0.002 * denied)
+                continue
             if _break_if_stale(lock, stale_after, wallclock):
                 continue
             if clock() >= deadline:
