@@ -6,9 +6,11 @@
 // It ports the parts of the Python package that read a document with lxml:
 // validation._role_of, fingerprint.raw_of_element / FINGERPRINT_JS / xpath_for /
 // statically_hidden, gate's static check (validation.validate), capture.clean_html, the
-// driver's describe() and inventory(), and the candidate list and XPaths of the local
-// selector model (candidates.py). Text rules follow the Python ones: lengths and cuts count
-// code points, and str.strip() strips what Python's strips.
+// driver's describe() and inventory(), the candidate list and XPaths of the local selector
+// model (candidates.py), the CSS forms of a healed element (css.css_selectors), and the
+// scripts that read open shadow roots (drivers.base ENTER_JS, PLACE_JS, SHADOW_HTML_JS and
+// SHADOW_INVENTORY_JS). Text rules follow the Python ones: lengths and cuts count code
+// points, and str.strip() strips what Python's strips.
 //
 // policy, when given, is mendwright's own Trusted Types policy in this document (see the
 // driver): the helpers that parse an HTML string pass the string through it, because a page
@@ -483,9 +485,11 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
       outer_html: pySlice((el.outerHTML || '').replace(/\svalue=("[^"]*"|'[^']*'|[^\s>]+)/gi, ''), 2000),
     };
   };
-  const inventory = (limit: number) => {
+  // drivers.base._INVENTORY_SCAN: one pass over the interactive elements of scope, the
+  // document or a shadow root.
+  const inventoryIn = (limit: number, scope: any) => {
     const out: Record<string, string>[] = [];
-    const nodes = document.querySelectorAll('button, a, input, select, textarea, [role]');
+    const nodes = scope.querySelectorAll('button, a, input, select, textarea, [role]');
     const fieldRole = /^(textbox|searchbox|combobox|spinbutton|slider)$/i;
     for (const e of Array.from(nodes) as HTMLElement[]) {
       if (out.length >= limit) break;
@@ -499,6 +503,21 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
         aria_label: e.getAttribute('aria-label') || '' });
     }
     return out;
+  };
+  const inventory = (limit: number) => inventoryIn(limit, document);
+
+  // --- open shadow roots (drivers.base) ---------------------------------------------------
+  // SHADOW_HTML_JS: what the shadow root the host selectors lead to holds (its innerHTML: not
+  // the host, not the light DOM slotted into it, not a nested shadow root's content), or null
+  // when they lead to none.
+  const shadowHtml = (hosts: string[]) => {
+    const root = enter(document, hosts);
+    return root ? root.innerHTML : null;
+  };
+  // SHADOW_INVENTORY_JS: inventoryIn()'s rows for that shadow root, or null.
+  const shadowInventory = (arg: { hosts: string[]; limit: number }) => {
+    const root = enter(document, arg.hosts);
+    return root ? inventoryIn(arg.limit, root) : null;
   };
 
   // --- capture.clean_html ---------------------------------------------------------------
@@ -1117,14 +1136,147 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
     return out;
   };
 
+  // --- CSS forms of an element (css.css_selectors) ---------------------------------------
+  // Up to limit (3) CSS selectors that match el and nothing else in doc, most robust first:
+  // el's own attributes, two of them together, then a container with an id, test id, name,
+  // aria-label or class name around it. Each is made of forms with an exact XPath twin (a tag
+  // name, #id, .class, [attr="value"] and the descendant combinator) and counts only when its
+  // twin matches el alone. [] when none of these tells el apart, or when el is inside an <svg>
+  // or <math>.
+  const CSS_IDENT = /^-?[A-Za-z_][A-Za-z0-9_-]*$/;
+  const CSS_ATTRS = ['name', 'aria-label', 'placeholder', 'title', 'alt', 'for', 'formcontrolname', 'autocomplete',
+    'href', 'type', 'role'];
+  const CSS_ANCHOR_ATTRS = ['id'].concat(TEST_ATTRS, ['name', 'aria-label']);
+  const CSS_BARE = ['#'].concat(['id'].concat(TEST_ATTRS).map((name) => '[' + name + '='));
+  const CSS_FOREIGN = ['svg', 'math'];
+  const CSS_MAX_ANCESTORS = 6;
+  // (css, xpath predicate) for an exact attribute value.
+  const cssAttr = (name: string, value: string): [string, string] => (name === 'id' && CSS_IDENT.test(value)
+    ? ['#' + value, '@id=' + xpathLiteral(value)]
+    : ['[' + name + '=' + cssString(value) + ']', '@' + name + '=' + xpathLiteral(value)]);
+  const cssClass = (token: string): [string, string] => ['.' + token,
+    "contains(concat(' ', normalize-space(@class), ' '), " + xpathLiteral(' ' + token + ' ') + ')'];
+  // The (css, xpath predicate) pairs that describe el itself, best first.
+  const cssParts = (el: Element) => {
+    const parts: [string, string][] = [];
+    for (const name of TEST_ATTRS) {
+      const value = el.getAttribute(name);
+      if (cUsable(value) && !generated(value)) {
+        parts.push(cssAttr(name, value));
+        break;
+      }
+    }
+    const ident = el.getAttribute('id');
+    if (cUsable(ident) && !generated(ident)) parts.push(cssAttr('id', ident));
+    for (const name of CSS_ATTRS) {
+      const value = el.getAttribute(name);
+      if (!cUsable(value) || (name === 'name' && generated(value))) continue;
+      // A query or fragment is often a session or tracking value.
+      if (name === 'href' && (value.indexOf('javascript') === 0 || value.indexOf('?') >= 0 || value.indexOf('#') >= 0)) continue;
+      parts.push(cssAttr(name, value));
+    }
+    for (const token of stableClasses(el.getAttribute('class')).slice(0, 3)) {
+      if (classOk(token) && CSS_IDENT.test(token)) parts.push(cssClass(token));
+    }
+    return parts;
+  };
+  const cssAnchorParts = (anc: Element) => {
+    const parts: [string, string][] = [];
+    for (const name of CSS_ANCHOR_ATTRS) {
+      const value = anc.getAttribute(name);
+      if (cUsable(value) && !((name === 'id' || name === 'name') && generated(value))) parts.push(cssAttr(name, value));
+    }
+    for (const token of stableClasses(anc.getAttribute('class')).slice(0, 2)) {
+      if (classOk(token) && CSS_IDENT.test(token)) parts.push(cssClass(token));
+    }
+    return parts;
+  };
+  const cssCompound = (tag: string, parts: [string, string][]): [string, string] =>
+    [tag + parts.map((p) => p[0]).join(''), tag + parts.map((p) => '[' + p[1] + ']').join('')];
+  const cssSelectors = (el: Element, doc: Document, limit?: number) => {
+    const most = limit || 3;
+    const own = el.localName || '';
+    if (!CSS_IDENT.test(own) || ancestors(el).some((a) => CSS_FOREIGN.indexOf(a.localName) >= 0)) return [];
+    const tag = own.toLowerCase();
+    const out: string[] = [];
+    const add = (css: string, xpath: string) => {
+      if (out.indexOf(css) < 0) {
+        const hits = xpathElements(doc, '//' + xpath);
+        if (hits && hits.length === 1 && hits[0] === el) out.push(css);
+      }
+      return out.length >= most;
+    };
+    const parts = cssParts(el);
+    // An id or a test id is written alone (#save, [data-testid="save"]), as people do;
+    // everything else with its tag.
+    const bare = parts.slice(0, 2).filter((p) => CSS_BARE.some((start) => p[0].indexOf(start) === 0))
+      .map((p): [string, string] => [p[0], '*[' + p[1] + ']']);
+    const targets = bare.concat(parts.map((p) => cssCompound(tag, [p])));
+    const six = parts.slice(0, 6);
+    for (let i = 0; i < six.length; i++) {
+      for (let j = i + 1; j < six.length; j++) targets.push(cssCompound(tag, [six[i], six[j]]));
+    }
+    for (const [css, xpath] of targets) if (add(css, xpath)) return out;
+    if (out.length) return out;
+    const inner = ([[tag, tag]] as [string, string][]).concat(targets);
+    let depth = 0;
+    for (const anc of ancestors(el)) {
+      const name = anc.localName || '';
+      if (depth >= CSS_MAX_ANCESTORS || !CSS_IDENT.test(name)) break;
+      for (const part of cssAnchorParts(anc)) {
+        const [aCss, aXpath] = cssCompound(name.toLowerCase(), [part]);
+        for (const [css, xpath] of inner) if (add(aCss + ' ' + css, aXpath + '//' + xpath)) return out;
+      }
+      if (out.length) return out;
+      depth += 1;
+    }
+    return out;
+  };
+  // What xpath matches in the page html: how many elements (count), and the CSS forms of the
+  // one it matches, else []; null when the XPath cannot run there.
+  const cssForms = (arg: { html: string; xpath: string; limit?: number }) => {
+    const doc = parse(arg.html);
+    const hits = xpathElements(doc, arg.xpath);
+    if (hits === null) return null;
+    return { count: hits.length, forms: hits.length === 1 ? cssSelectors(hits[0], doc, arg.limit) : [] };
+  };
+
+  // --- the fingerprint tier in a shadow root (fingerprint.find on its HTML) -----------------
+  // A shadow root's elements are scored in its HTML as a document, as the Python package scores
+  // them, where an XPath runs: collect()'s elements of role in the page html, with their raw
+  // reads and their places among the document's elements (index), which xpathAt() and
+  // outsideAt() take.
+  const collectHtml = (arg: { html: string; role: string }) => {
+    const doc = parse(arg.html);
+    const labels = labelIndex(doc);
+    const raws: unknown[] = [];
+    const indexes: number[] = [];
+    allElements(doc).forEach((el, index) => {
+      if (roleOf(el) !== arg.role) return;
+      if (arg.role !== 'checkbox' && staticallyHidden(el)) return;
+      raws.push(rawOf(el, labels));
+      indexes.push(index);
+    });
+    return { raws: raws, indexes: indexes };
+  };
+  const xpathAt = (arg: { html: string; index: number }) => {
+    const el = allElements(parse(arg.html))[arg.index];
+    return el ? xpathFor(el) : null;
+  };
+  const outsideAt = (arg: { html: string; index: number; ids: string[] }) => {
+    const el = allElements(parse(arg.html))[arg.index];
+    return el ? outside(el, arg.ids) : null;
+  };
+
   return {
     roleOf: roleOf, rawOf: rawOf, recordRaw: recordRaw, staticallyHidden: staticallyHidden, hostsOf: hostsOf,
-    placed: placed,
+    placed: placed, shadowHtml: shadowHtml, shadowInventory: shadowInventory,
     stableClasses: stableClasses, generatedId: generatedId, generated: generated, xpathFor: xpathFor,
     collect: collect, outside: outside, validate: validate, describe: describe, inventory: inventory,
     cleanHtml: cleanHtml, featuresOf: featuresOf, featureLine: featureLine, fingerprintLine: fingerprintLine,
     candidates: candidates, indexOfMatch: indexOfMatch, robustXpaths: robustXpaths, xpathLiteral: xpathLiteral,
-    meaningfulClass: meaningfulClass,
+    meaningfulClass: meaningfulClass, cssSelectors: cssSelectors, cssForms: cssForms,
+    collectHtml: collectHtml, xpathAt: xpathAt, outsideAt: outsideAt,
   };
 }
 

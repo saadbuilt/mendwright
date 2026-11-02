@@ -79,20 +79,21 @@ export function readStore(store: string): any {
   return JSON.parse(fs.readFileSync(store, 'utf-8'));
 }
 
-/** A model that answers with the given proposals, in order, and keeps what it was sent and
- * the outcomes reported to it. */
+/** A model that answers with the given proposals, in order (an XPath, or a whole proposal with
+ * its fallbacks), and keeps what it was sent and the outcomes reported to it. */
 export class FakeModel implements HealProvider {
   readonly model = 'fake';
   readonly bundles: Bundle[] = [];
   readonly outcomes: [string, string, boolean][] = [];
   lastError: string | null = null;
 
-  constructor(private readonly replies: string[]) {}
+  constructor(private readonly replies: (string | Proposal)[]) {}
 
   async propose(bundle: Bundle): Promise<Proposal | null> {
     this.bundles.push(bundle);
-    const xpath = this.replies.shift();
-    return xpath ? { xpath, fallbacks: [], reasoning: 'fake' } : null;
+    const reply = this.replies.shift();
+    if (!reply) return null;
+    return typeof reply === 'string' ? { xpath: reply, fallbacks: [], reasoning: 'fake' } : reply;
   }
 
   reportOutcome(key: string, xpath: string, success: boolean): void {

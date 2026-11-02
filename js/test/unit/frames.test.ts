@@ -467,7 +467,7 @@ describe('a key last found inside an iframe', () => {
     const model = new FakeModel(["//button[@data-testid='save']"]);
     const heal = w.open({ provider: model });
     await assert.rejects(heal.locator('save', '#save', { role: 'button' }).click(),
-      /'save' was last found inside the shadow root of my-app\[id="root"\], and mendwright for TypeScript does not heal inside a shadow root yet/);
+      /'save' was last found inside a shadow root in the iframe iframe\[name="consent"\], and mendwright heals a key inside a shadow root only in the page or frame it was opened on, so it did not heal it, there or anywhere else\. Open mendwright on that frame to heal it there\./);
     assert.deepEqual([model.bundles.length, heal.heals, w.page.actions], [0, [], []]);
     assert.deepEqual(declines(w), [['save', 'shadow']]);
   });

@@ -727,18 +727,31 @@ export class SelectorStore {
     return !wasTop;
   }
 
-  /** Add a candidate for key, or update the one with the same text. frameXPath '' moves
-   * one saved inside an iframe to the page. */
-  addCandidate(key: string, xpath: string, options: { source?: string; frameXPath?: string } = {}): void {
+  /** Add a candidate for key, or update the one with the same text. frameXPath is the
+   * selector of the iframe it runs in: '' moves one saved inside an iframe to the page, and
+   * undefined leaves it where it is. shadowHosts are the selectors of the shadow hosts of the
+   * open shadow root it runs in, outermost first (see shadow.ts): [] moves one out of a shadow
+   * root, and undefined leaves it. */
+  addCandidate(key: string, xpath: string, options: { source?: string; frameXPath?: string; shadowHosts?: Hosts } = {}):
+      void {
     const entry = this.entry(key);
     const found = this.find(key, xpath);
+    const hosts = options.shadowHosts === undefined ? undefined : savedHosts([...options.shadowHosts]);
     if (!found) {
       const c: Candidate = { xpath, source: options.source ?? 'heal', addedAt: nowIso(), lastSucceededAt: null,
                              status: 'active' };
       if (options.frameXPath) c.frameXPath = options.frameXPath;
+      if (hosts && hosts.length) c.shadowHosts = hosts;
       entry.candidates.push(c);
-    } else if (options.frameXPath !== undefined && ((found.frameXPath as string) || '') !== options.frameXPath) {
-      found.frameXPath = options.frameXPath;
+    } else {
+      if (options.frameXPath !== undefined && ((found.frameXPath as string) || '') !== options.frameXPath) {
+        found.frameXPath = options.frameXPath;
+      }
+      // [] stays as a key, so the merge does not take old hosts back from the file; the file
+      // gets no empty shadowHosts.
+      if (hosts !== undefined && JSON.stringify(savedHosts(found.shadowHosts)) !== JSON.stringify(hosts)) {
+        found.shadowHosts = hosts;
+      }
     }
     this.dirty.add(SelectorStore.pair(key, xpath));
     this.persist();

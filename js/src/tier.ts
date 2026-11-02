@@ -1,12 +1,16 @@
 // fingerprint.find() of the Python package, on the live page: look for the element a stored
 // fingerprint describes among the elements that have the key's role, and answer with an
 // XPath only when the match is confident. For a heal inside an iframe, driver is on the
-// iframe's Frame (see scope.ts), so the elements scored are the iframe's.
+// iframe's Frame (see scope.ts), so the elements scored are the iframe's. For a heal inside
+// an open shadow root, driver is a ShadowDriver, which scores the elements of that shadow
+// root's HTML, as the Python package does, and whether one is visible is read on the live
+// page through a CSS form of it (shadowVisible), since no XPath runs inside a shadow root.
 
 import {
   MARGIN, THRESHOLD, containerIds, fmt, fromRaw, score, valid, type Fingerprint,
 } from './fingerprint';
 import type { HealDriver } from './scope';
+import { formsRead } from './shadow';
 
 export interface Match {
   /** Set only when the match is confident. */
@@ -33,14 +37,43 @@ async function liveVisible(driver: HealDriver, xpath: string): Promise<boolean |
   }
 }
 
+/** For a heal inside a shadow root (the Python package's coordinator._visible_check): whether
+ * the element xpath matches in html, the shadow root's HTML as a document, is visible on the
+ * live page, read through the first of its CSS forms that matches one element in that shadow
+ * root (driver is its ShadowDriver). Playwright's CSS pierces, so a form can also match in a
+ * shadow root inside it, and says nothing of the element then. With no such form, or on any
+ * error, null: unknown, so the element still counts as a rival. */
+export async function shadowVisible(driver: HealDriver, html: string, xpath: string): Promise<boolean | null> {
+  let read: unknown;
+  try {
+    read = await driver.lib('cssForms', { html, xpath });
+  } catch {
+    return null;
+  }
+  const found = formsRead(read);
+  for (const form of found && found.count === 1 ? found.forms : []) {
+    try {
+      if ((await driver.count(form)) === 1) return await driver.isVisible(form);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** options: threshold and margin; html, the captured document a ShadowDriver scores; and
+ * visible(xpath), whether that element is visible on the live page (false skips it, null is
+ * unknown), by default whether xpath reaches one visible element there. */
 export async function findMatch(fp: Fingerprint | null, role: string, driver: HealDriver,
-                                options: { threshold?: number; margin?: number } = {}): Promise<Match> {
+                                options: { threshold?: number; margin?: number; html?: string;
+                                           visible?: (xpath: string) => Promise<boolean | null> } = {}): Promise<Match> {
   const threshold = options.threshold ?? THRESHOLD;
   const margin = options.margin ?? MARGIN;
+  const visible = options.visible ?? ((xpath: string) => liveVisible(driver, xpath));
   if (!valid(fp)) return { xpath: null, score: 0, runnerUp: 0, reason: 'the stored fingerprint is not one this version reads' };
   let snap;
   try {
-    snap = await driver.snapshot(role);
+    snap = await driver.snapshot(role, options.html);
   } catch {
     return { xpath: null, score: 0, runnerUp: 0, reason: 'the captured page could not be parsed' };
   }
@@ -71,7 +104,13 @@ export async function findMatch(fp: Fingerprint | null, role: string, driver: He
       const xpath = await snap.xpathFor(item.index);
       if (role !== 'checkbox' && xpath !== null) {
         // A copy hidden on the live page is neither the answer nor a rival.
-        if ((await liveVisible(driver, xpath)) === false) continue;
+        let shown: boolean | null;
+        try {
+          shown = await visible(xpath);
+        } catch {
+          shown = null;
+        }
+        if (shown === false) continue;
       }
       viable.push({ ...item, xpath });
       if (viable.length === 2) break;

@@ -6,7 +6,9 @@
 //
 // For iframes one level down (see frames.ts) it finds the frames a selector matches in
 // (frameMatches) and gives a driver on the Frame of one iframe (framed), which a heal inside
-// that iframe reads through.
+// that iframe reads through. For open shadow roots (see shadow.ts) it reads what the shadow
+// root that a key's hosts lead to holds (shadowHtml, shadowInventory), which a heal inside it
+// reads through a ShadowDriver (scope.ts).
 //
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
 
@@ -21,7 +23,7 @@ import { frameOptions, frameSelector, type FrameMatch } from './frames';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
-import { savedHosts, type Hosts } from './shadow';
+import { hostCss, savedHosts, type Hosts } from './shadow';
 
 export type PageLike = Page | Frame;
 
@@ -29,15 +31,24 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // The helpers of mendwrightLib() the driver calls by name. Only these names are ever put
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
-  'candidates', 'indexOfMatch', 'robustXpaths', 'placed']);
+  'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'cssForms', 'collectHtml',
+  'xpathAt', 'outsideAt']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
-  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed';
+  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'cssForms'
+  | 'collectHtml' | 'xpathAt' | 'outsideAt';
 
 // The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
 // nothing of the live page. A page that enforces Trusted Types refuses a plain string to
 // DOMParser, so these get mendwright's own policy there (see PlaywrightDriver.lib).
-const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths']);
+const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths', 'cssForms',
+  'collectHtml', 'xpathAt', 'outsideAt']);
 const TRUSTED_TYPES = 'mendwright:trusted-types';
+
+/** True for a helper of the page library that reads only the HTML string it is given, never
+ * the live page: the only ones a heal inside a shadow root may run (see scope.ShadowDriver). */
+export function isParser(name: string): boolean {
+  return PARSERS.has(name);
+}
 
 /** What lib() throws when the page enforces Trusted Types and its trusted-types directive
  * does not allow mendwright's policy, so no HTML string can be parsed in it. */
@@ -229,6 +240,22 @@ async function alive(handle: JSHandle): Promise<boolean> {
 // (the Python package's FRAME_ATTRS_JS), read from the element's handle.
 const FRAME_ATTRS = (e: Element) => ({ tag: e.tagName.toLowerCase(), id: e.id || '',
   name: e.getAttribute('name') || '', title: e.getAttribute('title') || '', src: e.getAttribute('src') || '' });
+
+/** The model's inventory from the page script's rows (the Python package's inventory_rows):
+ * up to limit, each with its tag, role, id, name, text and aria_label, cut as the Python
+ * package cuts them. [] for anything that is not a list. */
+function inventoryRows(raw: unknown, limit: number): InventoryRow[] {
+  if (!Array.isArray(raw)) return [];
+  const norm = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  return raw.slice(0, limit).filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => ({
+    tag: String(r.tag ?? '').toLowerCase(),
+    role: roleFor(String(r.tag ?? '').toLowerCase(), r.role as string, r.type as string),
+    id: pySlice(String(r.id ?? ''), 200),
+    name: pySlice(String(r.name ?? ''), 200),
+    text: pySlice(norm(r.text), 80),
+    aria_label: pySlice(norm(r.aria_label), 80),
+  }));
+}
 
 /** A frame's name and url, '' for one that cannot be read (the Python package's frame_info). */
 function frameInfo(frame: Frame): { name: string; url: string } {
@@ -522,16 +549,34 @@ export class PlaywrightDriver {
     } catch {
       return [];
     }
-    if (!Array.isArray(raw)) return [];
-    const norm = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
-    return raw.slice(0, limit).filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => ({
-      tag: String(r.tag ?? '').toLowerCase(),
-      role: roleFor(String(r.tag ?? '').toLowerCase(), r.role as string, r.type as string),
-      id: pySlice(String(r.id ?? ''), 200),
-      name: pySlice(String(r.name ?? ''), 200),
-      text: pySlice(norm(r.text), 80),
-      aria_label: pySlice(norm(r.aria_label), 80),
-    }));
+    return inventoryRows(raw, limit);
+  }
+
+  // --- open shadow roots (see shadow.ts) ------------------------------------------------------
+
+  /** What the open shadow root that hosts (their selectors, outermost first) lead to in this
+   * page or frame holds (its innerHTML), or null when they lead to none now: a host missing,
+   * matching several elements or having a closed shadow root (the Python package's
+   * shadow_html). One round trip; null on any error. */
+  async shadowHtml(hosts: string[]): Promise<string | null> {
+    try {
+      const out = await this.lib<unknown>('shadowHtml', hosts.map(hostCss));
+      return typeof out === 'string' ? out : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** inventory() of the open shadow root that hosts lead to, [] when they lead to none. One
+   * round trip. */
+  async shadowInventory(hosts: string[], limit = 200): Promise<InventoryRow[]> {
+    let raw: unknown;
+    try {
+      raw = await this.lib('shadowInventory', { hosts: hosts.map(hostCss), limit });
+    } catch {
+      return [];
+    }
+    return inventoryRows(raw, limit);
   }
 
   // --- popups, for open({ dismiss: true }) (see dismiss.ts) ---------------------------------

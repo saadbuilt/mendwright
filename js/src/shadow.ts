@@ -1,17 +1,24 @@
-// Open shadow roots, as the Python package records them (mendwright/shadow.py). Since 0.10.0
+// Open shadow roots, as the Python package handles them (mendwright/shadow.py). Since 0.10.0
 // it saves where a key's element was found as the key's shadowHosts: the selectors of the
 // shadow hosts around it, outermost first, such as ['my-app[id="root"]'], or null for a host
-// nothing tells apart. A heal it made inside a shadow root is saved as the Playwright chain
-// of the hosts and a CSS selector, 'my-app[id="root"] >> [data-testid="save"]', with the
-// hosts as the candidate's shadowHosts.
+// nothing tells apart. A heal inside a shadow root is saved as the Playwright chain of the
+// hosts and a CSS selector, 'my-app[id="root"] >> [data-testid="save"]', with the hosts as
+// the candidate's shadowHosts.
 //
-// This package does not heal inside a shadow root, and never heals a key last found inside
-// one on the page around it (see Healer.heal). It runs a candidate saved inside one strictly,
-// as the Python package does: each host must match exactly one element in the document or
-// shadow root before it and have an open shadow root, and the CSS counts only what matches
-// in that shadow root (PlaywrightDriver.placed), never in the host's light DOM, a shadow
-// root inside it, or another host with the same tag. Playwright's own CSS pierces every open
-// shadow root, so a chain run as Playwright runs it could find an element somewhere else.
+// A candidate saved inside one runs strictly, as the Python package runs it: each host must
+// match exactly one element in the document or shadow root before it and have an open shadow
+// root, and the CSS counts only what matches in that shadow root (PlaywrightDriver.placed),
+// never in the host's light DOM, a shadow root inside it, or another host with the same tag.
+// Playwright's own CSS pierces every open shadow root, so a chain run as Playwright runs it
+// could find an element somewhere else.
+//
+// A key last found inside a shadow root heals only there, through a ShadowDriver (scope.ts):
+// the fingerprint tier and the model get that shadow root's HTML and nothing else, and the
+// XPath they find is checked in that HTML and saved as a CSS selector for the same element
+// (css.ts), once that CSS passed the live check inside the shadow root (gate.apply).
+//
+// Closed shadow roots are out of reach: the browser gives a script no handle on one, so their
+// elements are never found, recorded or healed.
 
 import { InvalidSelector } from './errors';
 import { pyRepr, pyStrip } from './py';
@@ -174,4 +181,57 @@ export function runTarget(candidate: Candidate): Target {
       'Check the key in overrides.json.');
   }
   return { selector: cssOnly(parts[parts.length - 1], 'a selector inside a shadow root'), frame: null, hosts: css };
+}
+
+// --- inside one shadow root ---------------------------------------------------------------
+
+/** A shadow root's HTML (its innerHTML) as a document, as the gate, the fingerprint tier and
+ * the model read it (Python's shadow.as_document). The host is left out: a selector that
+ * names it would not run inside its shadow root. */
+export function asDocument(inner: string): string {
+  return '<html><head></head><body>' + inner + '</body></html>';
+}
+
+/** The CSS of a shadow host's selector, without a css= prefix (Python's shadow.host_css).
+ * InvalidSelector for one that is empty or not CSS: a host is found with querySelectorAll(). */
+export function hostCss(selector: unknown): string {
+  let kind: string;
+  try {
+    kind = checkSyntax(selector);
+  } catch (error) {
+    if (error instanceof InvalidSelector) throw error;
+    throw InvalidSelector.build(null, 'a shadow host is not saved as a selector.',
+      'Check the shadowHosts of the key in overrides.json.');
+  }
+  if (kind !== CSS) {
+    throw InvalidSelector.build(selector as string, pyRepr(selector) + ' is not a CSS selector, and a shadow host is '
+      + 'looked up with CSS.', 'Check the shadowHosts of the key in overrides.json.');
+  }
+  return stripPrefix(selector as string);
+}
+
+/** The CSS of a selector that runs inside a shadow root, without a css= prefix (Python's
+ * shadow.inner_css). InvalidSelector for any other kind: XPath does not reach into a shadow
+ * root, and neither does a Playwright engine selector run that way. */
+export function innerCss(selector: unknown): string {
+  const kind = checkSyntax(selector);
+  if (kind !== CSS) {
+    throw InvalidSelector.build(selector as string, pyRepr(selector) + ' is not CSS, and only a CSS selector runs '
+      + 'inside a shadow root.', 'Use a CSS selector, such as \'#save\' or \'button[name="save"]\'.');
+  }
+  return stripPrefix(selector as string);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** What the page library's cssForms() gives for an XPath in a document: how many elements it
+ * matches, and the CSS forms of the one it matches; null when it cannot run there. */
+export type FormsRead = { count: number; forms: string[] } | null;
+
+/** A cssForms() result read from the page, null for anything malformed. */
+export function formsRead(value: unknown): FormsRead {
+  if (!isRecord(value) || typeof value.count !== 'number' || !Array.isArray(value.forms)) return null;
+  return { count: value.count, forms: value.forms.filter((f): f is string => typeof f === 'string') };
 }

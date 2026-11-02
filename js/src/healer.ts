@@ -16,10 +16,11 @@
 // a key found during it is saved with the step's name, and while it runs again, such a key
 // heals on the page the step showed on, whatever its address.
 //
-// Open shadow roots (see shadow.ts): each fingerprint read also reads where the element is,
-// and saves it as the key's shadowHosts, as the Python package does. A key last found inside
-// a shadow root is never healed by this package, so a look-alike on the page around its host
-// is never picked; a heal the Python package saved inside one runs strictly there.
+// Open shadow roots (see shadow.ts and scope.ts): each fingerprint read also reads where the
+// element is, and saves it as the key's shadowHosts, as the Python package does. A key last
+// found inside a shadow root heals only inside it, entered strictly through its hosts, never on
+// the page around its host, where a look-alike can be, and is refused when that shadow root
+// cannot be entered now. A heal saved inside one runs strictly there.
 //
 // Iframes one level down (see frames.ts and scope.ts): a key whose own selector matches
 // nothing on the page but one element inside one iframe is followed there, with no model call
@@ -63,7 +64,7 @@ import { autoProvider } from './providers/detect';
 import { pyLen, pyRepr, pySlice } from './py';
 import { peekVisible, present as presentNow, resolve } from './resolver';
 import { inferRole, roleChoices } from './roles';
-import { healPlace, type HealScope } from './scope';
+import { driverShadowed, healPlace, shadowUnreachable, type HealScope } from './scope';
 import { XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
 import { placeText, runTarget, type Target } from './shadow';
 import {
@@ -96,10 +97,11 @@ export type Read = typeof READS[number];
 const ABSENT_ANSWERS: ReadonlyMap<string, boolean> = new Map([['isVisible', false], ['isHidden', true]]);
 
 /** One heal a healer applied: the key, the selectors that had stopped matching, the new
- * XPath, the canary result (null while unconfirmed), and where it came from: 'fingerprint'
- * (no model call), 'model', 'intent', or 'frame' for a key whose own selector matched only
- * inside an iframe and is looked up there from now on (no model call; old is that selector,
- * and new the selector saved in the iframe). */
+ * selector (an XPath, or inside an open shadow root the chain of its hosts and a CSS
+ * selector), the canary result (null while unconfirmed), and where it came from:
+ * 'fingerprint' (no model call), 'model', 'intent', or 'frame' for a key whose own selector
+ * matched only inside an iframe and is looked up there from now on (no model call; old is
+ * that selector, and new the selector saved in the iframe). */
 export interface HealEvent {
   key: string;
   old: string[];
@@ -904,22 +906,27 @@ export class Healer {
   /** Where a heal of key runs (the Python package's Healer._heal_scope), as [refusal, scope]:
    * - A key whose element was last found inside an open shadow root (where the heal that
    *   matched last runs, or the hosts its chain names when the Python package 0.9.0 dropped
-   *   its shadowHosts, else the key's shadowHosts) is refused, inside an iframe too. Neither
-   *   the page's HTML nor its elements hold what a shadow root contains, so a heal here could
-   *   only find something outside it. The refusal comes after the checks for a key marked
-   *   destructive and the page guard.
+   *   its shadowHosts, else the key's shadowHosts) heals inside that shadow root, through a
+   *   ShadowDriver: the fingerprint tier and the model get what the shadow root holds and
+   *   nothing of the page around it. It is refused when its hosts lead to no open shadow root
+   *   now (a host gone, matching several elements, or with a closed shadow root), when one of
+   *   them is a host nothing tells apart, and when the shadow root is inside an iframe. Such a
+   *   key is never healed on the page outside its shadow root. A refusal comes after the
+   *   checks for a key marked destructive and the page guard.
    * - A key whose latest match was inside an iframe heals inside that iframe while it is on
    *   the page (its selector matches one iframe element with a document): the scope reads the
    *   iframe's document only, so an element that looks the same on the page around it is
    *   never picked.
    * - Otherwise, the iframe gone too, the key heals on the page, as the Python package's does. */
   private async healScope(key: string): Promise<[Refusal | null, HealScope | null]> {
-    const { frame, hosts } = healPlace(this.store, key);
+    const { frame, hosts, why } = healPlace(this.store, key);
+    if (why) return [{ code: 'shadow', reason: why }, null];
     if (hosts.length) {
-      return [{ code: 'shadow', reason: "'" + key + "' was last found inside " + placeText(hosts) + ', and '
-        + 'mendwright for TypeScript does not heal inside a shadow root yet, so it did not look for the element on the '
-        + 'page around it, where an element that looks the same could be. Fix the selector by hand, or let the Python '
-        + 'package heal it.' }, null];
+      const shadowed = driverShadowed(this.driver, hosts);
+      if (shadowed === null || (await shadowed.innerHtml()) === null) {
+        return [{ code: 'shadow', reason: shadowUnreachable(key, hosts as string[]) }, null];
+      }
+      return [null, { kind: 'shadow', hosts: shadowed.hosts, driver: shadowed }];
     }
     if (!frame) return [null, null];
     const driver = await this.driver.framed(frame);
@@ -996,7 +1003,7 @@ export class Healer {
     if (!this.coordinator.guard()) return 'a transaction guard is currently blocking heals';
     const reason = await liveReason(this.driver, alt, this.store.metaOf(key), frame);
     if (reason) return "its element there failed mendwright's checks (" + reason + ')';
-    this.store.addCandidate(key, alt, { source: 'heal', frameXPath: frame });
+    this.store.addCandidate(key, alt, { source: 'heal', frameXPath: frame, shadowHosts: [] });
     this.coordinator.recordFrame(key, selector, alt, frame);
     this.coordinator.pending.set(key, alt);
     return '';
