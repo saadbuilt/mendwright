@@ -28,6 +28,7 @@ message} makes the browser reject that method's calls when they run.
 import inspect
 import json
 import re
+import sys
 
 import lxml.html
 import pytest
@@ -624,6 +625,12 @@ def _fresh_fleet_state():
     yield
     fleet.DECLINES.clear()
     store.SOFT.clear()
+    # A remote store's shared read and outage state are per URL, and a test server's URL can
+    # come back with the next test's server on the same port.
+    remote = sys.modules.get('mendwright.remote')
+    if remote is not None:
+        remote._DOCS.clear()
+        remote._HEALTH.clear()
 
 
 class SoftClock:

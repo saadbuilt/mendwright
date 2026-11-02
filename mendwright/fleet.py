@@ -608,17 +608,18 @@ def records_for(store):
     name = store_name(store)
     if name is None:
         return None
-    with _RECORDS_LOCK:
-        found = _RECORDS.get(name)
-        if found is None:
-            if name == getattr(store, 'remote_place', None):
-                found = KeyRecords(store.backend, 'keys/', tries=REMOTE_CAS_TRIES,
-                                   pause=REMOTE_CAS_PAUSE, poll=REMOTE_LEASE_POLL)
-            else:
+    if name == getattr(store, 'remote_place', None):
+        # Through the store's own backend, never one an earlier store of the place made: its
+        # credentials are the ones read now (a token file can be renewed).
+        found = KeyRecords(store.backend, 'keys/', tries=REMOTE_CAS_TRIES, pause=REMOTE_CAS_PAUSE,
+                           poll=REMOTE_LEASE_POLL)
+    else:
+        with _RECORDS_LOCK:
+            found = _RECORDS.get(name)
+            if found is None:
                 folder, file_name = os.path.split(os.path.abspath(os.fspath(store._override_path)))
                 prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
-                found = KeyRecords(FileBackend(folder), prefix)
-            _RECORDS[name] = found
+                found = _RECORDS[name] = KeyRecords(FileBackend(folder), prefix)
     if getattr(store, 'writes', True) is False:
         return ReadOnlyRecords(found)
     return found

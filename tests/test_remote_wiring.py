@@ -102,7 +102,7 @@ def test_the_rate_limit_and_single_flight_are_per_store(make_page, stub_provider
     assert any(key[0] == a.store.remote_place for key in _LIMITERS)
     # The key records are the store's own, under keys/ in its backend.
     records = records_for(a.store)
-    assert records is records_for(b.store) and records.prefix == 'keys/'
+    assert records.backend is a.store.backend and records.prefix == 'keys/'
     records.take(KEY, 'sig', 'me', 100.0, 15)
     assert one.get(key_record_name(KEY)).body is not None
     assert two.get(key_record_name(KEY)).body is None

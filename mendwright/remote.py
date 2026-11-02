@@ -129,6 +129,10 @@ class _Health:
             return news
 
 
+class _Waiting(Unavailable):
+    """Raised at once, with no request, while a store waits after a failure (see _Guarded)."""
+
+
 _HEALTH = {}
 _HEALTH_LOCK = threading.Lock()
 
@@ -169,8 +173,8 @@ class _Guarded:
     def _call(self, health, action):
         wait = health.wait()
         if wait:
-            raise Unavailable(self.place + ': the store failed a moment ago, so mendwright waits '
-                              '%d s before it asks it again' % math.ceil(wait))
+            raise _Waiting(self.place + ': the store failed a moment ago, so mendwright waits '
+                           '%d s before it asks it again' % math.ceil(wait))
         try:
             result = action()
         except Conflict:
@@ -376,6 +380,8 @@ class RemoteSelectorStore(SelectorStore):
         it is read now. A store that still cannot be read keeps its reason."""
         try:
             data, version = self._latest((), max_age)
+        except _Waiting:
+            return False        # not asked: the reason the store gave stays
         except (BackendError, StoreReadError) as exc:
             self.unread = _unread_reason(self.remote_place, exc)
             self.unread_error = type(exc).__name__
