@@ -639,6 +639,27 @@ def test_the_server_needs_a_content_length_and_writes_nothing_of_a_body_cut_shor
     assert only_the_lock_file(server)
 
 
+def test_a_content_length_of_other_digits_than_0_to_9_is_a_bad_request(server, caplog):
+    # '\u00b2' passes str.isdigit(), and int() refuses it: the server answered 500 and logged
+    # a traceback that quoted the header.
+    head = ('PUT /overrides.json HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer %s\r\n'
+            'Content-Length: \u00b2\r\n\r\nab' % TOKEN).encode('latin-1')
+    with caplog.at_level(logging.DEBUG):
+        status, headers, _ = raw(server, head, timeout=5)
+    assert status == 400 and headers.get('connection') == 'close'
+    assert not [r for r in caplog.records if r.exc_info or '\u00b2' in r.getMessage()]
+    assert only_the_lock_file(server)
+
+
+def test_http_reads_a_body_whose_content_length_has_other_digits(client, stub):
+    def answer(handler):
+        handler.wfile.write(('HTTP/1.1 200 OK\r\nETag: "v1"\r\nContent-Length: \u00b2\r\n'
+                             'Connection: close\r\n\r\nab').encode('latin-1'))
+    stub.answers.append(answer)
+    read = client().get(OVERRIDES)
+    assert (read.body, read.version) == (b'ab', '"v1"')
+
+
 def test_the_server_etag_is_a_strong_hash_of_the_body(server):
     body = b'{"selectors": {}}'
     status, headers, _ = request(server, 'PUT', '/overrides.json', body=body)

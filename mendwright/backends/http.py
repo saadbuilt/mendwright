@@ -203,7 +203,7 @@ class HttpBackend:
 
     def _read_body(self, name, response):
         length = (response.headers.get('Content-Length') or '').strip()
-        if length.isdigit():
+        if length.isascii() and length.isdigit():      # not '²', which int() refuses
             if int(length) > self._max_body:
                 raise self._too_big(name)
             return response.read()     # raises IncompleteRead when the body is cut short

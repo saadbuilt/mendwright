@@ -20,10 +20,11 @@ to start, because the atomic writes rely on one process's locks.
 - An ETag is the first 32 hex digits of the SHA-256 of the body, quoted: strong, and the
   same for the same body.
 - GET and HEAD: 200 with the ETag, 304 when If-None-Match matches it, 404 when missing.
-- PUT: needs Content-Length (411 without one), at most --max-body bytes (413). The body is
-  read first; then If-Match and If-None-Match are checked and the file replaced under one
-  lock, so of two writers with the same If-Match only one wins. 412 when a precondition
-  fails, else 201 (created) or 200 (replaced), with the new ETag.
+- PUT: needs Content-Length (411 without one, 400 for one that is not digits 0 to 9), at most
+  --max-body bytes (413). The body is read first; then If-Match and If-None-Match are checked
+  and the file replaced under one lock, so of two writers with the same If-Match only one
+  wins. 412 when a precondition fails, else 201 (created) or 200 (replaced), with the new
+  ETag.
 - DELETE: 404 when the object is missing, whatever If-Match says (gone is not an error),
   412 when If-Match does not match, else 204.
 - A write goes to a temporary file next to the object, is flushed to disk, and replaces the
@@ -261,8 +262,13 @@ class _Handler(BaseHTTPRequestHandler):
     def _put(self, file):
         store = self.server.store
         length = (self.headers.get('Content-Length') or '').strip()
-        if self.headers.get('Transfer-Encoding') or not length.isdigit():
+        if self.headers.get('Transfer-Encoding') or not length:
             self._reply(411)
+            return
+        if not (length.isascii() and length.isdigit()):
+            # A length such as '²' passes isdigit() alone, and int() refuses it: the body
+            # cannot be framed, so nothing more is read from this connection.
+            self._reply(400, close=True)
             return
         if int(length) > store.max_body:
             self._reply(413)                # the body is never read
