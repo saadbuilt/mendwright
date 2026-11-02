@@ -149,11 +149,12 @@ out: Incorrect API key provided: [redacted] Authorization: Bearer [redacted] see
 - `journal.jsonl` next to it: heal events with the key, selectors, provider class, model, latency, and the model's `reasoning` text, which can quote the page. A `heal.held` event of a proposed list heal holds its heading too. With `dismiss=True`, a `flow.dismiss` event also holds up to 60 characters of the popup's text (runs of 12 to 19 digits redacted) and the labels of the buttons mendwright clicked on it, as the WARNING line does. On POSIX it's created with mode 0600.
 - Since 0.10.0, each journal event has `run`, the run's id (`MENDWRIGHT_RUN_ID`, or on GitHub Actions `gh-<run id>.<attempt>`). A `heal.declined` event holds the `reason` a heal did not apply, the text the log line and the error give, which can quote the page, as `reasoning` can. A `flow.stop` event holds a code, a key and a step or page path, never the message, so no popup text.
 - `overrides.json.lock` while a write is in progress.
+- With a [remote store](docs/remote-store.md) (a store URL in `MENDWRIGHT_STORE` or `store_path=`), `overrides.json` and the key records `keys/<hash>.json` are in the S3 bucket or behind the HTTPS server, with the same fields, and `journal.jsonl` stays on each machine, in `MENDWRIGHT_JOURNAL_DIR` (default `./.mendwright`). Anyone who can write the store can change the selectors every worker uses, so give the other workers read-only access (`MENDWRIGHT_STORE_READ_ONLY=1`). Credentials come from the AWS credential chain or `MENDWRIGHT_STORE_TOKEN` / `MENDWRIGHT_STORE_TOKEN_FILE`, never from the URL, which is refused when it holds one, and no message, log line or journal event holds them.
 - The TypeScript package in `js/` writes the same two files in the same format, `shadowHosts`, `run`, `heal.declined` and `flow.stop` included.
 - A `heal.canary` in the journal says what confirmed the heal and, for a passing test, holds the test's node id, which can hold a parametrized test's values.
 - Uploaded as an artifact for the GitHub Action, the store and the journal can be downloaded by anyone who can read the repository, until the artifact expires. The guide's workflow uploads only the two files, for one day.
 
-A store file that is corrupt or can't be read raises an error. mendwright never treats it as empty and overwrites it.
+A store file that is corrupt or can't be read raises an error. mendwright never treats it as empty and overwrites it. A remote store it can't read refuses every heal instead, and is never written over.
 
 ## The GitHub Action
 
