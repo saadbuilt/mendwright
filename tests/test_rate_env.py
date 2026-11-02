@@ -122,3 +122,39 @@ def test_doctor_lists_a_bad_value_and_still_exits_0(capsys, monkeypatch):
     problems = out[out.index('Problems') + 1:]
     assert any('MENDWRIGHT_RATE_GLOBAL_PER_HOUR must be a whole number' in line
                for line in problems)
+
+
+GO = "<html><body><form><button id='b'>Go</button><button id='c'>Stop</button></form></body></html>"
+
+
+def _try(heal, key='k', selector="//button[@id='gone']"):
+    with pytest.raises(AttentionRequired) as caught:
+        heal.locator(key, selector, role='button')
+    return str(caught.value)
+
+
+def test_a_refusal_by_the_shared_budget_spends_none_of_this_process_slots(
+        tmp_path, make_page, stub_provider, monkeypatch):
+    # Two Healers with limiters of their own stand for two processes on one store: they share
+    # the key's record. A's 3 attempts use up k's budget for both. B's refusals by that budget
+    # spend no slot of B's own, so they never say B made attempts it did not make, and never
+    # stop another key B could heal.
+    monkeypatch.setenv('MENDWRIGHT_DECLINE_TTL_SECONDS', '0')     # nothing reused
+    path = str(tmp_path / 'o.json')
+
+    def healer(provider, global_cap):
+        return mendwright.open(make_page(GO), provider=provider, store_path=path, timeout_ms=0,
+                               fingerprint=False, rate_per_key_per_hour=3,
+                               rate_global_per_hour=global_cap)
+    a = healer(stub_provider(None), 60)
+    for _ in range(3):
+        _try(a)
+    b_model = stub_provider("//button[@id='c']")
+    b = healer(b_model, 2)
+    assert b.coordinator.guardrails.rate_limiter is not a.coordinator.guardrails.rate_limiter
+    for _ in range(3):
+        assert 'the workers that share this store already made 3 heal attempts' in _try(b)
+    assert b.coordinator.guardrails.rate_limiter.snapshot() == (0, {})
+    assert b_model.bundles == []
+    b.locator('stop', "//button[@id='stop-gone']", role='button').click()    # healed
+    assert len(b_model.bundles) == 1 and b.heals[-1].new == "//button[@id='c']"

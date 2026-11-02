@@ -770,18 +770,27 @@ class HealCoordinator:
                     logged=(note + ', and ' + summary) if summary else None,
                     code=self._unavailable_code())
         # Direct-mode budget: fail closed when the rate/spend cap is reached (one heal
-        # attempt == one slot), mirroring the gateway's server-side needs_human.
+        # attempt == one slot), mirroring the gateway's server-side needs_human. This
+        # process's caps are looked at first, which spends nothing; then the attempt is
+        # counted in the key's record, where the per-key cap holds for every process on this
+        # store together; only then in this process. So an attempt the shared budget refuses
+        # spends none of this process's slots, for this key or for its others.
+        if self.guardrails is not None:
+            full = _cap_full(self.guardrails, selector_key)
+            if full is not None:
+                self.journal.rejected(selector_key, reason='rate/spend cap')
+                return self._decline(selector_key, rate_cap_message(selector_key, full),
+                                     code='rate_limit')
+        shared = self._shared_budget(selector_key)
+        if shared is not None:
+            self.journal.rejected(selector_key, reason='rate/spend cap')
+            return self._decline(selector_key, rate_cap_message(selector_key, shared),
+                                 code='rate_limit')
         if self.guardrails is not None and not self.guardrails.allow(selector_key):
             self.journal.rejected(selector_key, reason='rate/spend cap')
             return self._decline(selector_key, rate_cap_message(selector_key,
                                                                 _cap_full(self.guardrails,
                                                                           selector_key)),
-                                 code='rate_limit')
-        # The per-key cap holds for every process of this host on this store together.
-        shared = self._shared_budget(selector_key)
-        if shared is not None:
-            self.journal.rejected(selector_key, reason='rate/spend cap')
-            return self._decline(selector_key, rate_cap_message(selector_key, shared),
                                  code='rate_limit')
         tag = source if source != 'model' else None
         if not requested:
