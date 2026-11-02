@@ -113,6 +113,18 @@ describe('turning it on', () => {
     assert.equal(getBySetting(true), true);
   });
 
+  test("MENDWRIGHT_HEAL_GET_BY=model, the Python package's, reads as 1 here, with one warning", () => {
+    const w = login();
+    process.env.MENDWRIGHT_HEAL_GET_BY = ' Model ';
+    assert.equal(stepOf(w.open().page.getByRole('button', { name: 'Sign in' })),
+      "page.getByRole('button', { name: 'Sign in' })");
+    w.open();
+    assert.equal(getBySetting(), true);
+    assert.deepEqual(w.lines.filter((l) => l.includes('MENDWRIGHT_HEAL_GET_BY')), ["warning: MENDWRIGHT_HEAL_GET_BY is "
+      + "model, which lets the Python package's model provider heal heal.page's get_by_* calls. This package never asks "
+      + 'a model to heal a getBy* call, so it reads it as 1: a call heals from its fingerprint only.']);
+  });
+
   test('a healGetBy that is not a boolean, or a variable that is not a flag, throws before anything touches the page', () => {
     const w = login();
     assert.throws(() => w.open({ healGetBy: 'yes' as never }), (error: Error) => error instanceof TypeError

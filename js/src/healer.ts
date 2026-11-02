@@ -247,13 +247,28 @@ export function fingerprintSetting(fingerprint?: boolean): boolean {
   return value === null ? true : value;
 }
 
+let modelNoted = false;
+
 /** Whether heal.page's getBy* calls are looked up and healed (see Healer.getByLocator): the
  * healGetBy option when it is not null or undefined, else MENDWRIGHT_HEAL_GET_BY (1 or 0), else
- * off (the Python package's get_by_setting). MENDWRIGHT_DISABLE=1 leaves it as it is: the calls
- * are looked up, and nothing heals. Throws TypeError for a MENDWRIGHT_HEAL_GET_BY that is not a
- * flag. */
-export function getBySetting(healGetBy?: boolean | null): boolean {
+ * off (the Python package's get_by_setting). MENDWRIGHT_HEAL_GET_BY=model, which the Python
+ * package takes to let its model provider heal the calls too, reads as 1 here, where a call heals
+ * from its fingerprint only, with one WARNING per process: a CI job that runs both packages sets
+ * one environment for both. MENDWRIGHT_DISABLE=1 leaves it as it is: the calls are looked up, and
+ * nothing heals. Throws TypeError for a MENDWRIGHT_HEAL_GET_BY that is none of those. */
+export function getBySetting(healGetBy?: boolean | null, warn: (message: string) => void = (m) => log('warning', m)):
+    boolean {
   if (healGetBy !== undefined && healGetBy !== null) return Boolean(healGetBy);
+  const raw = process.env.MENDWRIGHT_HEAL_GET_BY;
+  if (raw !== undefined && raw.trim().toLowerCase() === 'model') {
+    if (!modelNoted) {
+      modelNoted = true;
+      warn("MENDWRIGHT_HEAL_GET_BY is model, which lets the Python package's model provider heal heal.page's "
+        + 'get_by_* calls. This package never asks a model to heal a getBy* call, so it reads it as 1: a call '
+        + 'heals from its fingerprint only.');
+    }
+    return true;
+  }
   return Boolean(envFlag('MENDWRIGHT_HEAL_GET_BY'));
 }
 
@@ -2852,7 +2867,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   // A key of destructiveKeys or expectValues written as a getBy* call on an object is named here.
   const warn = (message: string) => emit(options.log, 'warning', message);
   const checks = expectations(options.expectValues, warn);
-  const healGetBy = getBySetting(healGetByOption);
+  const healGetBy = getBySetting(healGetByOption, warn);
   // A store URL (the Python package 0.11 reads one) is refused: this package keeps a local file.
   const storeWhere = options.storePath !== undefined ? 'storePath' : 'MENDWRIGHT_STORE';
   const storePath = options.store ? '' : path.resolve(localStorePath(
