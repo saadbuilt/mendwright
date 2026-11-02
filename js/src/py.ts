@@ -55,6 +55,44 @@ export function pyJson(v: unknown, ensureAscii = true): string {
   return 'null';
 }
 
+/** The order Python sorts str in: by code point, where JavaScript's default sort compares
+ * UTF-16 code units. */
+export function pyCompare(a: string, b: string): number {
+  if (a === b) return 0;
+  const left = Array.from(a);
+  const right = Array.from(b);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const x = left[i].codePointAt(0) as number;
+    const y = right[i].codePointAt(0) as number;
+    if (x !== y) return x - y;
+  }
+  return left.length - right.length;
+}
+
+/** sorted() of a list of str, as Python sorts it. */
+export function pySorted(values: Iterable<string>): string[] {
+  return [...values].sort(pyCompare);
+}
+
+/** JSON as Python's json.dumps(v, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+ * writes it: compact, keys in Python's order, non-ASCII as it is and control characters
+ * escaped. For the values mendwright hashes: strings, whole numbers, booleans, null, lists and
+ * objects. */
+export function pyJsonSorted(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'string') return jsonString(v, false);
+  if (Array.isArray(v)) return '[' + v.map(pyJsonSorted).join(',') + ']';
+  if (typeof v === 'object') {
+    const record = v as Record<string, unknown>;
+    return '{' + pySorted(Object.keys(record)).map((k) => jsonString(k, false) + ':' + pyJsonSorted(record[k])).join(',')
+      + '}';
+  }
+  return 'null';
+}
+
 /** JSON as Python's json.dumps(v, separators=(',', ':')) writes it: compact, with every
  * character outside ASCII escaped. The store file is written this way, so a file the
  * TypeScript and the Python package both write keeps one spelling. */

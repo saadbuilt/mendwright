@@ -7,7 +7,7 @@
 // or, in Playwright Test, import { test, expect } from 'mendwright/test'.
 
 export { open, Healer, HealLocator, ACTIONS, READS, fingerprintSetting } from './healer';
-export type { HealEvent, LocatorOptions, OpenOptions, ExpectOption } from './healer';
+export type { HealEvent, LocatorOptions, LocatorAllOptions, OpenOptions, ExpectOption } from './healer';
 export { AttentionRequired, InvalidSelector, InterruptionLoop, StoreReadError } from './errors';
 export { AnthropicProvider } from './providers/anthropic';
 export type { AnthropicOptions } from './providers/anthropic';

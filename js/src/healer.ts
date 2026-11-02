@@ -60,16 +60,17 @@ import {
 } from './interruptions';
 import { Journal, runId, runIdProblem, type JournalLike } from './journal';
 import { sharedLimiter, type Guardrails } from './limits';
+import { itemRole, placed as listPlaced, validList, type ListFingerprint } from './lists';
 import { log, type LogSink } from './log';
 import { NullProvider, type HealProvider } from './providers/base';
 import { autoProvider } from './providers/detect';
 import { pyLen, pyRepr, pySlice } from './py';
-import { peekVisible, present as presentNow, resolve } from './resolver';
+import { noMatchMessage, peekVisible, present as presentNow, resolve, splitRunnable } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { driverShadowed, followAllowed, healPlace, shadowUnreachable, type HealScope } from './scope';
 import { CSS, XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
 import {
-  placeText, runTarget, shadowFound, shadowMessage, shadowPlan, shadowText, type ShadowFound, type Target,
+  hostsOf, placeText, runTarget, shadowFound, shadowMessage, shadowPlan, shadowText, type ShadowFound, type Target,
 } from './shadow';
 import {
   StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
@@ -173,6 +174,18 @@ export interface LocatorOptions {
   expectValue?: ExpectValue | null;
 }
 
+/** The options of heal.locatorAll(). */
+export interface LocatorAllOptions {
+  /** The items' role, as for heal.locator(): read from the first item when left out. */
+  role?: string;
+  /** How long a lookup that matches nothing waits for the list, when it waits (see
+   * Healer.locatorAll): the healer's timeout when left out. */
+  timeoutMs?: number;
+  pollMs?: number;
+  /** The list may be empty at this point: a lookup that matches nothing gives [] at once. */
+  optional?: boolean;
+}
+
 const TRUE = ['1', 'true', 'yes', 'on'];
 const FALSE = ['0', 'false', 'no', 'off', ''];
 
@@ -205,6 +218,15 @@ export function fingerprintSetting(fingerprint?: boolean): boolean {
   if (fingerprint !== undefined) return Boolean(fingerprint);
   const value = envFlag('MENDWRIGHT_FINGERPRINT');
   return value === null ? true : value;
+}
+
+/** What turns the fingerprint tier off, in the words a message uses, with the precedence of
+ * fingerprintSetting(): MENDWRIGHT_DISABLE=1, fingerprint: false, or MENDWRIGHT_FINGERPRINT=0
+ * (the Python package's _fingerprint_off_by). */
+function fingerprintOffBy(fingerprint?: boolean): string {
+  if (envFlag('MENDWRIGHT_DISABLE')) return 'MENDWRIGHT_DISABLE=1';
+  if (fingerprint !== undefined) return 'fingerprint: false';
+  return 'MENDWRIGHT_FINGERPRINT=0';
 }
 
 const USAGE = /\b(?:expected (?:float|integer|string|boolean|object|array|channel|binary|number|function|\w+), got \w+)/;
@@ -526,6 +548,204 @@ export class Healer {
    * no healing. */
   present(key: string): Promise<boolean> {
     return presentNow(this.store, this.driver, key);
+  }
+
+  // --- lists: locatorAll() (see lists.ts) ---------------------------------------------------
+
+  /** The elements of a list, such as the cards of a product grid: a HealLocator for each element
+   * key's selectors match, in page order (the Python package's heal.locator_all()). mendwright
+   * never gives a list that the key's own selectors don't match.
+   *
+   * selector, role (the items' role, read from the first item when it is left out), timeoutMs
+   * and pollMs mean what they mean for locator(). The first of key's selectors that matches one
+   * element or more gives the list, as written: the selector in your code first, then those
+   * saved for the key. A heal saved under the same key is skipped: a heal of one element, such
+   * as one heal.page made for page.click('.card'), is no heal of the list, and no list heal is
+   * ever used. Each time one matches two or more, mendwright records what the items look like
+   * (a list fingerprint, once per healer and selector), which says the list had items. When
+   * none matches:
+   *
+   * - a list mendwright has not seen with two or more items, or one with optional: true, gives
+   *   [] at once, as Locator.all() does, and so does any list while the fingerprint tier is off
+   *   (fingerprint: false, MENDWRIGHT_FINGERPRINT=0 or MENDWRIGHT_DISABLE=1), which records no
+   *   list fingerprint;
+   * - any other waits up to timeoutMs, handling registered interruptions, and throws
+   *   AttentionRequired, which says that either the list is empty at this point or its selector
+   *   broke. mendwright can't tell the two apart: the page after a cart's items all moved to
+   *   Saved for later can be the page after a redesign but for a class name. So it looks for no
+   *   other list, asks no model and saves nothing, and a selector that broke is fixed in your
+   *   code.
+   *
+   * The elements' actions handle interruptions and popups as locator()'s do, and confirm or
+   * quarantine nothing, and neither does their confirm(). The first read of any of them handles
+   * the registered interruptions once for the whole list, and their reads are never checked
+   * against expectValues. Throws TypeError or InvalidSelector at once, before anything touches
+   * the page, for arguments that can never work. */
+  locatorAll(key: string, selector?: string | string[] | null, options: LocatorAllOptions = {}): Promise<HealLocator[]> {
+    if (typeof key !== 'string' || !key) {
+      throw new TypeError('mendwright: heal.locatorAll() needs a key, a non-empty name such as "cards", got '
+        + pyRepr(key) + '.');
+    }
+    if (isGetByCall(key)) {
+      throw new TypeError('mendwright: ' + pyRepr(key) + ' is how the Python package names a heal.page.get_by_*() call '
+        + 'in the store, so heal.locatorAll() cannot take it as a key. Pick another key.');
+    }
+    if ((options as LocatorOptions).expectValue !== undefined) {
+      throw new TypeError('mendwright: heal.locatorAll() takes no expectValue: no list is found through a heal, so the '
+        + "reads of a list's elements are never checked.");
+    }
+    const roles = roleChoices(options.role);
+    const code = codeSelectors(key, selector);
+    const plan: Plan = {
+      roles, code, text: undefined, destructive: undefined, timeoutMs: options.timeoutMs ?? this.timeoutMs,
+      pollMs: options.pollMs ?? 200, optional: Boolean(options.optional), intent: undefined, expect: null,
+    };
+    return this.lookUpList(key, plan);
+  }
+
+  /** locatorAll() once its arguments were checked: the lookup under the healer's mutex, then a
+   * HealLocator for each element. */
+  private async lookUpList(key: string, plan: Plan): Promise<HealLocator[]> {
+    const natives = await this.turn(() => this.list(key, plan));
+    const reads = { due: true };   // one check of the interruptions for the reads of the whole list
+    const target = natives.length ? this.winnerTarget(key) : null;
+    const hosts = target && target.hosts.length ? target.hosts : null;
+    return natives.map((native) => HealLocator.element(this, key, native, plan, reads, hosts));
+  }
+
+  /** The Locators of list key (see locatorAll), with its code primed first. What a lookup that
+   * matches at once saves (the code's selectors, the first success, the page, the list
+   * fingerprint) costs one write of the store (the Python package's Healer._list). */
+  private async list(key: string, plan: Plan): Promise<Locator[]> {
+    const matched = await this.store.batchAsync(async () => {
+      this.prime(key, plan);
+      const found = await this.listLook(key, this.listRunnable(key));
+      return found === null ? null : this.listFound(key, plan.roles, found);
+    });
+    if (matched !== null) return matched;
+    if (plan.optional || !this.listWaits(key)) return [];
+    let found: [string, number];
+    try {
+      found = await this.resolveStep(key, () => this.listAttempt(key, plan.timeoutMs, plan.pollMs), plan);
+    } catch (error) {
+      // The page is blocked (InterruptionLoop), or a run function threw it: as it is.
+      if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired) || raisedByRun(error)) throw error;
+      throw this.listMissing(key, error);
+    }
+    return this.store.batchAsync(() => this.listFound(key, plan.roles, found));
+  }
+
+  /** True when a list lookup of key that matches nothing waits and throws: key has a list
+   * fingerprint and the fingerprint tier is on. With it off, such a lookup gives [] at once, as
+   * the real page does. */
+  private listWaits(key: string): boolean {
+    return this.coordinator.fingerprint && validList(this.store.metaOf(key).listFingerprint);
+  }
+
+  /** key's candidates a list lookup tries: those on the page (a list is looked for neither
+   * inside an iframe nor through a row saved inside a shadow root) that can run, without heals.
+   * A list key can also be the key of locator() or of a heal.page call, and a heal of the first
+   * card is no heal of the cards. A list heal is not used either: it can be another list that
+   * holds the items of an emptied one. Throws the first InvalidSelector when none can run. */
+  private listRunnable(key: string): Candidate[] {
+    const candidates = this.store.candidates(key).filter((c) => !c.frameXPath && !hostsOf(c).length
+      && c.source !== 'heal');
+    if (!candidates.length) throw new AttentionRequired('No selector candidates for: ' + key);
+    const [runnable, errors] = splitRunnable(key, candidates);
+    if (!runnable.length) throw errors[0];
+    return runnable;
+  }
+
+  /** [selector, count] for the first of runnable that matches one element or more now,
+   * recorded as the key's success, or null. */
+  private async listLook(key: string, runnable: Candidate[]): Promise<[string, number] | null> {
+    for (const candidate of runnable) {
+      let count: number;
+      try {
+        count = await this.driver.count(candidate.xpath);
+      } catch (error) {
+        if (error instanceof InvalidSelector) throw error;
+        count = 0;
+      }
+      if (count) {
+        this.store.recordSuccess(key, candidate.xpath);
+        return [candidate.xpath, count];
+      }
+    }
+    return null;
+  }
+
+  /** listLook() until one matches or waitMs runs out; AttentionRequired then. */
+  private async listAttempt(key: string, waitMs: number, pollMs: number): Promise<[string, number]> {
+    const runnable = this.listRunnable(key);
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const found = await this.listLook(key, runnable);
+      if (found !== null) return found;
+      if (Date.now() >= deadline) throw new AttentionRequired(noMatchMessage(key, runnable, []));
+      await sleep(pollMs);
+    }
+  }
+
+  /** The Locators of what found ([selector, count]) matched for list key, with the page saved
+   * and, when it should be read (see listTarget), the list fingerprint. */
+  private async listFound(key: string, roles: string[] | null, found: [string, number]): Promise<Locator[]> {
+    const [selector, count] = found;
+    this.rememberPage(key);
+    const place = this.listPlaced(key);
+    if (this.listTarget(key, selector, count, place)) {
+      this.keepList(key, selector, roles, await this.readList(selector, place), place);
+    }
+    return this.driver.handles(selector);
+  }
+
+  /** True when key's stored list fingerprint holds where the list sits. */
+  private listPlaced(key: string): boolean {
+    return listPlaced(this.store.metaOf(key).listFingerprint);
+  }
+
+  /** The list fingerprint of what selector matches, with where it sits when place; null on
+   * any error, or for a result that is not one. */
+  private async readList(selector: string, place: boolean): Promise<ListFingerprint | null> {
+    try {
+      const lfp = await this.driver.listFingerprint(selector, place);
+      return validList(lfp) ? lfp : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** True when the list fingerprint of what selector matched for key should be read: the
+   * fingerprint tier is on, it matched two or more, this healer has not read it for that
+   * selector yet (with where it sits, when place), and the key is not marked destructive. */
+  private listTarget(key: string, selector: string, count: number, place: boolean): boolean {
+    if (!this.coordinator.fingerprint || count < 2) return false;
+    if (this.fingerprinted.has(JSON.stringify(['list', key, selector, place]))) return false;
+    return !this.store.metaOf(key).destructive;
+  }
+
+  /** Save lfp as key's list fingerprint, and the items' role when role did not say. When place
+   * was asked for and lfp has none, a stored list fingerprint that holds one is left as it is: a
+   * failed read never removes a place. */
+  private keepList(key: string, selector: string, roles: string[] | null, lfp: ListFingerprint | null,
+                   place: boolean): void {
+    this.fingerprinted.add(JSON.stringify(['list', key, selector, place]));
+    if (place && !listPlaced(lfp) && this.listPlaced(key)) return;
+    if (lfp === null) return;
+    try {
+      this.store.setMeta(key, { listFingerprint: lfp });
+      if ((!roles || !roles.length) && this.store.roleIsGuess(key)) this.store.setMeta(key, { role: itemRole(lfp) });
+    } catch {
+      // a list fingerprint that cannot be saved is not recorded
+    }
+  }
+
+  /** The AttentionRequired for list key, whose lookup missed when none of its selectors
+   * matched: the miss and why the list is not healed (HealCoordinator.declineList), which the
+   * log gets too. */
+  private listMissing(key: string, missed: AttentionRequired): AttentionRequired {
+    const reason = this.coordinator.declineList(key, this.store.metaOf(key));
+    return new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
   }
 
   // --- steps in any order: step() and runSteps() (see steps.ts) ------------------------------
@@ -874,7 +1094,11 @@ export class Healer {
     }
   }
 
-  private async resolveStep(key: string, attempt: () => Promise<Locator>, plan: Plan): Promise<Locator> {
+  /** attempt(), and after a miss, handle the registered interruptions and try again while one
+   * was handled (the Python package's _resolve_step). Throws the last miss when none is left to
+   * handle. */
+  private async resolveStep<T>(key: string, attempt: () => Promise<T>, plan: Pick<Plan, 'timeoutMs' | 'pollMs'>):
+      Promise<T> {
     let missed: unknown;
     try {
       return await attempt();
@@ -1746,7 +1970,12 @@ export class HealLocator {
   // The CSS of the shadow hosts of the shadow root the element was found in, else null.
   private hosts: string[] | null = null;
   private isPresent = true;
-  private readsDue = true;
+  // Whether a read still handles the registered interruptions first: until a read or an
+  // action of the element did, once per lookup. The elements of one heal.locatorAll() share it.
+  private reads: { due: boolean } = { due: true };
+  // Whether the heal canary hears of the element's actions and confirm(): not for an element of
+  // heal.locatorAll(), which no heal found.
+  private canary = true;
   // The selector a heal saved that the element was found through, else null.
   private healed: string | null = null;
 
@@ -1754,6 +1983,21 @@ export class HealLocator {
     this.healer = healer;
     this.key = key;
     this.plan = plan;
+  }
+
+  /** @internal One element of a list heal.locatorAll() looked up (the Python package's
+   * Healer._item): resolved already to native, with the heal canary off, since no list is found
+   * through a heal, and reads shared by the elements of the lookup. hosts are those of the
+   * shadow root the list was found in, as for an element heal.locator() found there. */
+  static element(healer: Healer, key: string, native: Locator, plan: Plan, reads: { due: boolean },
+                 hosts: string[] | null): HealLocator {
+    const item = new HealLocator(healer, key, plan);
+    item.resolved = Promise.resolve({ native, healed: null, hosts });
+    item.nativeLocator = native;
+    item.hosts = hosts;
+    item.reads = reads;
+    item.canary = false;
+    return item;
   }
 
   /** Resolve the key now (healing it if needed), and return this locator. */
@@ -1823,9 +2067,11 @@ export class HealLocator {
     return this.isPresent;
   }
 
-  /** Confirm (true) or quarantine (false) a heal of this key, from a check of your own. */
+  /** Confirm (true) or quarantine (false) a heal of this key, from a check of your own. An
+   * element of heal.locatorAll() reports nothing: no list is found through a heal, and a heal of
+   * one element under the same key is not this element's. */
   confirm(success: boolean): this {
-    this.healer.coordinator.confirmPending(this.key, Boolean(success), { by: 'confirm' });
+    if (this.canary) this.healer.coordinator.confirmPending(this.key, Boolean(success), { by: 'confirm' });
     return this;
   }
 
@@ -1844,10 +2090,12 @@ export class HealLocator {
     const { timeoutMs, pollMs } = this.plan;
     const result = await this.healer.runStep(this.key, native, verb, args, timeoutMs, pollMs, {
       started: () => {
-        this.readsDue = false;   // its reads need not look again
+        this.reads.due = false;   // its reads need not look again
       },
       place: () => this.waitPlaced(native, verb),
-      failed: () => this.healer.coordinator.confirmPending(this.key, false, { by: 'action' }),
+      failed: () => {
+        if (this.canary) this.healer.coordinator.confirmPending(this.key, false, { by: 'action' });
+      },
     });
     if (expect) {
       let ok = false;
@@ -1856,7 +2104,7 @@ export class HealLocator {
       } catch {
         ok = false;
       }
-      this.healer.coordinator.confirmPending(this.key, ok, { by: 'expect' });
+      if (this.canary) this.healer.coordinator.confirmPending(this.key, ok, { by: 'expect' });
     }
     return result;
   }
@@ -1870,9 +2118,9 @@ export class HealLocator {
   async read(name: Read, args: unknown[]): Promise<unknown> {
     const native = await this.ensure();
     if (native === null) throw new Error(absentMessage(this.key));
-    if (this.readsDue) {
+    if (this.reads.due) {
       await this.healer.beforeAction(this.key, this.plan.timeoutMs, this.plan.pollMs);
-      this.readsDue = false;
+      this.reads.due = false;
     }
     // A Locator that matches nothing: answered as Playwright does (see waitPlaced).
     if (!(await this.waitPlaced(native, name))) return ABSENT_ANSWERS.get(name);
@@ -2263,6 +2511,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   const coordinator = new HealCoordinator(store, {
     provider, driver, journal, guard: options.guard, guardrails, dryRun, fingerprint,
     healAcrossPages: options.healAcrossPages, disabled, log: options.log,
+    fingerprintOffBy: fingerprint ? null : fingerprintOffBy(options.fingerprint),
   });
   const healer = new Healer(native, driver, store, coordinator, timeoutMs);
   healer.dismissOn = Boolean(options.dismiss);

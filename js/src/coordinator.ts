@@ -27,6 +27,7 @@ import { flowChangeMessage } from './flow';
 import { apply, quarantinedBodies, validateStatic } from './gate';
 import type { JournalLike } from './journal';
 import type { Guardrails } from './limits';
+import { listMissingMessage } from './lists';
 import { log, type LogLevel, type LogSink } from './log';
 import { MAX_PROMPT_PART, type Bundle, type Proposal } from './prompt';
 import { pyRepr } from './py';
@@ -54,9 +55,12 @@ export const GUARD_REASON = 'a transaction guard is currently blocking heals (a 
 
 /** The code of each heal.declined event, as the Python package names them
  * (coordinator.DECLINE_CODES), which its mendwright notify turns into its own words. dry_run
- * and disabled are declines on purpose. */
+ * and disabled are declines on purpose. list_empty is a list whose selectors all match nothing,
+ * list_not_found one looked up with nonempty: true that nothing could be proposed for, and
+ * list_waits_fix one whose list heal a person accepted, not yet in the code. */
 export const DECLINE_CODES = ['destructive', 'page_guard', 'disabled', 'no_provider', 'role_unknown', 'guard',
-  'rate_limit', 'not_here', 'no_proposal', 'gate', 'dry_run', 'frame', 'shadow', 'other'] as const;
+  'rate_limit', 'not_here', 'no_proposal', 'gate', 'dry_run', 'list_empty', 'list_not_found', 'list_waits_fix',
+  'frame', 'shadow', 'other'] as const;
 export type DeclineCode = typeof DECLINE_CODES[number];
 
 export interface HealRecord {
@@ -122,6 +126,9 @@ export interface CoordinatorOptions {
   clock?: () => number;
   /** Where this healer's lines go (default: warnings on stderr). */
   log?: LogSink;
+  /** What turned the fingerprint tier off, in the words a message uses ('fingerprint: false',
+   * 'MENDWRIGHT_FINGERPRINT=0' or 'MENDWRIGHT_DISABLE=1'), which open() sets. */
+  fingerprintOffBy?: string | null;
 }
 
 export class HealCoordinator {
@@ -136,6 +143,8 @@ export class HealCoordinator {
   readonly healAcrossPages: boolean;
   readonly disabled: boolean;
   readonly entry: string;
+  /** What turned the fingerprint tier off (see CoordinatorOptions), or null. */
+  readonly fingerprintOffBy: string | null;
   private readonly clock: () => number;
   private readonly sink: LogSink | null;
   /** key -> the heal this process applied and has not confirmed yet. */
@@ -156,6 +165,7 @@ export class HealCoordinator {
     this.healAcrossPages = Boolean(options.healAcrossPages);
     this.disabled = Boolean(options.disabled);
     this.entry = options.entry ?? 'mendwright.open()';
+    this.fingerprintOffBy = options.fingerprintOffBy ?? null;
     this.clock = options.clock ?? (() => performance.now());
     this.sink = options.log ?? null;
   }
@@ -213,6 +223,21 @@ export class HealCoordinator {
 
   explain(key: string): string {
     return this.healReasons.get(key) ?? '';
+  }
+
+  // --- lists (see lists.ts) -----------------------------------------------------------------
+
+  /** Decline to heal list key, whose selectors all match nothing (see Healer.locatorAll), and
+   * return the reason, recorded, logged and journaled as for any heal that did not apply, with
+   * the code list_empty (the Python package's decline_list). mendwright never heals such a
+   * list: an emptied list whose items show in another list on the page now, such as a cart's
+   * in Saved for later, can be the same page as a redesign but for a class name or a heading's
+   * text. So nothing is looked for on the page, no model is asked and nothing is saved. */
+  declineList(key: string, meta: KeyMeta): string {
+    const lfp = meta.listFingerprint as { count?: unknown } | null;
+    this.decline(key, listMissingMessage(key, lfp && typeof lfp === 'object' ? lfp.count : null), 'warning', null,
+      'list_empty');
+    return this.explain(key);
   }
 
   /** The reason to decline when this page is not one the key was found on, else ''. */

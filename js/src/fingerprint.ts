@@ -242,7 +242,9 @@ function tokens(value: string | undefined): Set<string> {
   return new Set((value || '').match(TOKEN)?.map((t) => t.toLowerCase()) ?? []);
 }
 
-function jaccard(a: Iterable<string> | undefined, b: Iterable<string> | undefined): number {
+/** How many of the tokens of a and b are in both, of all their tokens (the Python package's
+ * fingerprint._jaccard): 1 for two empty sets. */
+export function jaccard(a: Iterable<string> | undefined, b: Iterable<string> | undefined): number {
   const left = new Set(a ?? []);
   const right = new Set(b ?? []);
   if (!left.size && !right.size) return 1.0;

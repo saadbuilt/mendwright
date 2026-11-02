@@ -112,4 +112,9 @@ test('the public API', () => {
   assert.deepEqual([typeof step, stepOptions.optional, runOptions.pollMs], ['function', true, 50]);
   assert.equal(typeof api.Healer.prototype.step, 'function');
   assert.equal(typeof api.Healer.prototype.runSteps, 'function');
+  // heal.locatorAll()'s options, and the HealLocators it resolves to.
+  const listOptions: api.LocatorAllOptions = { role: 'div', timeoutMs: 1000, pollMs: 50, optional: true };
+  const none: api.HealLocator[] = [] as Awaited<ReturnType<api.Healer['locatorAll']>>;
+  assert.deepEqual([listOptions.optional, none], [true, []]);
+  assert.equal(typeof api.Healer.prototype.locatorAll, 'function');
 });

@@ -7,10 +7,11 @@
 // validation._role_of, fingerprint.raw_of_element / FINGERPRINT_JS / xpath_for /
 // statically_hidden, gate's static check (validation.validate), capture.clean_html, the
 // driver's describe() and inventory(), the candidate list and XPaths of the local selector
-// model (candidates.py), the CSS forms of a healed element (css.css_selectors), and the
+// model (candidates.py), the CSS forms of a healed element (css.css_selectors), the
 // scripts that read open shadow roots (drivers.base ENTER_JS, PLACE_JS, SHADOW_HTML_JS,
-// SHADOW_INVENTORY_JS and SHADOW_ROOTS_JS). Text rules follow the Python ones: lengths and
-// cuts count code points, and str.strip() strips what Python's strips.
+// SHADOW_INVENTORY_JS and SHADOW_ROOTS_JS), and the reads of a list (lists.LIST_JS,
+// LIST_PLACE_JS and ITEMS_JS). Text rules follow the Python ones: lengths and cuts count
+// code points, and str.strip() strips what Python's strips.
 //
 // policy, when given, is mendwright's own Trusted Types policy in this document (see the
 // driver): the helpers that parse an HTML string pass the string through it, because a page
@@ -1304,6 +1305,150 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
     return el ? outside(el, arg.ids) : null;
   };
 
+  // --- lists (lists.py) ------------------------------------------------------------------
+  // What a list's container and the elements of the page around it hold that tells them
+  // apart: CONTAINER_ATTRS.
+  const LIST_CONTAINER_ATTRS = ['id', 'class', 'role', 'aria-label', 'data-testid', 'data-test', 'data-qa'];
+  // lists._LEAF: text-level and empty elements, which never hold a list.
+  const LIST_LEAF = ['a', 'abbr', 'area', 'audio', 'b', 'base', 'bdi', 'bdo', 'br', 'button', 'canvas', 'cite',
+    'code', 'col', 'data', 'dfn', 'em', 'embed', 'hr', 'i', 'iframe', 'img', 'input', 'kbd', 'label', 'link', 'map',
+    'mark', 'meta', 'meter', 'object', 'optgroup', 'option', 'output', 'param', 'picture', 'progress', 'q', 's',
+    'samp', 'select', 'small', 'source', 'span', 'strong', 'sub', 'sup', 'textarea', 'time', 'track', 'u', 'var',
+    'video', 'wbr'];
+
+  // LIST_JS, the read the Python drivers make in the browser when a list lookup matched two or
+  // more elements, and with place, LIST_PLACE_JS, which reads the list's label and where it
+  // sits too. null unless two or more elements matched.
+  const listRaw = (els: Element[], place?: unknown) => {
+    if (!els || els.length < 2) return null;
+    const top = els[0].getRootNode() as any;
+    const shadow = !!top && top.nodeType === 11 && !!top.host;
+    const one = recordRaw;
+    const shape = (el: Element) => {
+      const out: Record<string, number> = {};
+      for (const c of Array.from(el.children)) {
+        const t = '>' + c.tagName.toLowerCase();
+        out[t] = (out[t] || 0) + 1;
+      }
+      let n = 0;
+      for (const d of Array.from(el.querySelectorAll('*'))) {
+        const t = d.tagName.toLowerCase();
+        out[t] = (out[t] || 0) + 1;
+        if (++n >= 500) break;
+      }
+      return out;
+    };
+    const last = els.length - 1;
+    const picks = Array.from(new Set([0, Math.floor(last / 2), last]));
+    const items = picks.map((i) => ({ fp: one([els[i]]), shape: shape(els[i]) }));
+    let box: Element | null = els[0].parentElement;
+    while (box && !els.every((e) => (box as Element).contains(e))) box = box.parentElement;
+    let depth = 0;
+    for (let n: Element | null = els[0]; n && n !== box; n = n.parentElement) depth++;
+    let container: { tag: string; attrs: Record<string, string> } | null = null;
+    if (box && !/^(body|html)$/i.test(box.tagName)) {
+      const attrs: Record<string, string> = {};
+      for (const a of LIST_CONTAINER_ATTRS) {
+        const v = box.getAttribute(a);
+        if (v !== null) attrs[a] = v;
+      }
+      container = { tag: box.tagName.toLowerCase(), attrs: attrs };
+    }
+    if (place !== true) return { count: els.length, depth: depth, items: items, container: container, shadow: shadow };
+    const name = (e: Element) => e.tagName.toLowerCase();
+    const unread = /^(template|noscript|script|style)$/;
+    const heading = (e: Element) => !unread.test(name(e)) && (/^h[1-6]$/.test(name(e))
+      || (e.getAttribute('role') || '').trim().toLowerCase() === 'heading');
+    const headingIn = (e: Element) => {
+      if (unread.test(name(e))) return null;
+      if (heading(e)) return e;
+      for (let c = e.lastElementChild; c; c = c.previousElementSibling) if (heading(c)) return c;
+      return null;
+    };
+    const named = (e: Element) => {
+      const ids = (e.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      const text = ids.map((i) => e.ownerDocument.getElementById(i)).filter(Boolean)
+        .map((t) => (t as Element).textContent).join(' ');
+      if (text.trim()) return text;
+      const own = e.getAttribute('aria-label');
+      return own && own.trim() ? own : null;
+    };
+    let label: string | null = '';
+    if (box) {
+      let node: Element = els[0];
+      while (node.parentElement && node.parentElement !== box) node = node.parentElement;
+      let holder: Element | null = box;
+      search: while (holder) {
+        for (let s = node.previousElementSibling; s; s = s.previousElementSibling) {
+          const h = headingIn(s);
+          if (h) { label = h.textContent; break search; }
+        }
+        if (/^(body|html)$/i.test(holder.tagName)) break;
+        const own = named(holder);
+        if (own) { label = own; break; }
+        node = holder;
+        holder = holder.parentElement;
+      }
+    }
+    const test = (e: Element) => {
+      for (const a of ['data-testid', 'data-test', 'data-qa']) {
+        const v = e.getAttribute(a);
+        if (v !== null) return v;
+      }
+      return '';
+    };
+    const raw = (e: Element) => {
+      const p = e.parentElement;
+      return [name(e), e.getAttribute('id') || '', test(e), e.getAttribute('class') || '',
+        p ? name(p) : '', p ? p.getAttribute('id') || '' : '', p ? test(p) : '',
+        p ? p.getAttribute('class') || '' : ''];
+    };
+    const chain: string[][] = [];
+    const mine = new Set<Element>();
+    for (let n: Element | null = box; n && !/^(body|html)$/i.test(n.tagName); n = n.parentElement) {
+      chain.push(raw(n));
+      mine.add(n);
+    }
+    for (const e of els) for (let n = e.parentElement; n && n !== box; n = n.parentElement) mine.add(n);
+    const prune = /^(template|noscript|script|style|svg|math)$/;
+    const leaf = new Set(LIST_LEAF);
+    const skip = new Set(els);
+    const seen = new Set<string>();
+    const others: string[][] = [];
+    const said = new Set<string | null>();
+    const body = els[0].ownerDocument.body;
+    const stack = body ? Array.from(body.children).reverse() : [];
+    let read = 0;
+    let cut = false;
+    while (stack.length) {
+      const e = stack.pop() as Element;
+      if (skip.has(e) || prune.test(name(e))) continue;
+      if (heading(e)) said.add(e.textContent);
+      if (!leaf.has(name(e))) {
+        const own = named(e);
+        if (own) said.add(own);
+      }
+      if (!leaf.has(name(e)) && !mine.has(e)) {
+        if (++read > 10000) { cut = true; break; }
+        const r = raw(e);
+        const k = r.join('\u0001');
+        if (!seen.has(k)) { seen.add(k); others.push(r); }
+      }
+      for (let i = e.children.length - 1; i >= 0; i--) stack.push(e.children[i]);
+    }
+    const labels = Array.from(said).slice(0, 200);
+    return { count: els.length, depth: depth, items: items, container: container, shadow: shadow, label: label,
+             place: { chain: chain, others: others, labels: labels, cut: cut } };
+  };
+
+  // ITEMS_JS, for the live gate of a list: what each match is, and whether it is visible as
+  // Playwright counts it (a box with a size, and not visibility: hidden). At most 200.
+  const listItems = (els: Element[]) => els.slice(0, 200).map((e) => ({
+    tag: e.tagName.toLowerCase(), role: e.getAttribute('role') || '',
+    type: e.getAttribute('type') || '',
+    visible: e.getClientRects().length > 0
+      && (e.ownerDocument.defaultView || window).getComputedStyle(e).visibility !== 'hidden' }));
+
   return {
     roleOf: roleOf, rawOf: rawOf, recordRaw: recordRaw, staticallyHidden: staticallyHidden, hostsOf: hostsOf,
     placed: placed, shadowHtml: shadowHtml, shadowInventory: shadowInventory, shadowRoots: shadowRoots,
@@ -1312,7 +1457,7 @@ export function mendwrightLib(policy?: { createHTML(text: string): unknown } | n
     cleanHtml: cleanHtml, featuresOf: featuresOf, featureLine: featureLine, fingerprintLine: fingerprintLine,
     candidates: candidates, indexOfMatch: indexOfMatch, robustXpaths: robustXpaths, xpathLiteral: xpathLiteral,
     meaningfulClass: meaningfulClass, cssSelectors: cssSelectors, cssForms: cssForms, cssFormsEach: cssFormsEach,
-    collectHtml: collectHtml, xpathAt: xpathAt, outsideAt: outsideAt,
+    collectHtml: collectHtml, xpathAt: xpathAt, outsideAt: outsideAt, listRaw: listRaw, listItems: listItems,
   };
 }
 

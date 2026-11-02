@@ -30,8 +30,9 @@ import * as path from 'node:path';
 import { StoreReadError } from './errors';
 import { valid as validFingerprint, type Fingerprint } from './fingerprint';
 import { pageUrl } from './flow';
+import { validList, type ListFingerprint } from './lists';
 import { log } from './log';
-import { compactJson, nowIso } from './py';
+import { compactJson, nowIso, pyRepr } from './py';
 import { inferRole } from './roles';
 import { frameSpelling } from './selectors';
 import { savedHosts, textHosts, type Hosts } from './shadow';
@@ -256,12 +257,8 @@ function validUrl(value: unknown): value is string {
   return typeof value === 'string' && Boolean(value) && pageUrl(value) === value;
 }
 
-// The Python package's lists.valid(): a list fingerprint it can score. This package never
-// makes or uses one, but keeps a valid one when it writes the file.
-function validListFingerprint(lfp: unknown): boolean {
-  return isRecord(lfp) && lfp.v === 1 && typeof lfp.count === 'number' && Number.isInteger(lfp.count)
-    && lfp.count >= 2 && Array.isArray(lfp.items) && lfp.items.length > 0 && lfp.items.every(validFingerprint);
-}
+// A list fingerprint the Python package's lists.valid() can score (see lists.ts).
+const validListFingerprint = validList;
 
 /** The saved metadata of one entry of the file, with malformed values dropped. */
 function metaFields(entry: unknown): Meta {
@@ -561,7 +558,8 @@ export class SelectorStore {
    * hosts around it, outermost first (null for a host nothing tells apart), or [] for the
    * page, which removes the field (see shadow.ts). */
   setMeta(key: string, fields: { role?: string; text?: string | string[]; destructive?: boolean;
-                                 intent?: string; fingerprint?: Fingerprint; shadowHosts?: Hosts }): void {
+                                 intent?: string; fingerprint?: Fingerprint; shadowHosts?: Hosts;
+                                 listFingerprint?: ListFingerprint }): void {
     const e = this.entry(key);
     const changed: Meta = {};
     let cleared = false;
@@ -592,6 +590,14 @@ export class SelectorStore {
       }
       e.fingerprint = fields.fingerprint;
       changed.fingerprint = fields.fingerprint;
+    }
+    if (fields.listFingerprint !== undefined) {
+      if (!validList(fields.listFingerprint)) {
+        throw new TypeError("mendwright: setMeta({ listFingerprint }) takes a list fingerprint from mendwright's lists "
+          + 'module.');
+      }
+      e.listFingerprint = fields.listFingerprint;
+      changed.listFingerprint = fields.listFingerprint;
     }
     if (fields.role !== undefined) {
       e.expectedRole = fields.role;
@@ -766,17 +772,149 @@ export class SelectorStore {
     }
   }
 
+  // --- list heals (see lists.ts) ------------------------------------------------------------
+
+  /** Copies of key's list heals that wait (proposed or accepted, see proposeListHeal), the
+   * newest proposal first; rows with no proposal last. */
+  listHeals(key: string): Candidate[] {
+    const rows = (this.data.selectors[key]?.candidates ?? []).filter(isListHeal).map((c) => clone(c));
+    return sortedDesc(rows, proposalOrder);
+  }
+
+  /** Save xpath as a list heal proposed for key (see heal.locatorAll() with nonempty: true),
+   * with the evidence a person checks it by (proposal, see lists.proposalEvidence) and its CSS
+   * form css, and return a copy of the row. The row is inactive ("status": "proposed",
+   * "list": true): no lookup tries it, and only the Python package's mendwright lists accept
+   * accepts it. A row with the same XPath that was proposed or superseded is proposed again with
+   * the new evidence. Throws for a row that is accepted or quarantined, or an active one from
+   * code: those are never proposed (the Python package's propose_list_heal). */
+  proposeListHeal(key: string, xpath: string, options: { css?: string | null; proposal: Record<string, unknown> }):
+      Candidate {
+    const proposal = options.proposal;
+    if (!isRecord(proposal)) throw new TypeError('mendwright: proposeListHeal() takes the proposal as an object');
+    const entry = this.entry(key);
+    const pair = SelectorStore.pair(key, xpath);
+    let c = this.find(key, xpath);
+    if (c === null) {
+      c = { xpath, source: 'heal', addedAt: nowIso(), lastSucceededAt: null, status: 'proposed', list: true };
+      if (options.css) c.css = options.css;
+      c.proposal = clone(proposal);
+      entry.candidates.push(c);
+    } else {
+      const status = c.status ?? 'active';
+      if (status === 'accepted' || status === 'quarantined' || (status === 'active' && c.source !== 'heal')) {
+        throw new Error('mendwright: ' + pyRepr(xpath) + ' is ' + status + ' for ' + pyRepr(key)
+          + ', so it is not proposed again');
+      }
+      if (c.source !== 'seed') c.source = 'heal';
+      c.status = 'proposed';
+      c.list = true;
+      c.proposal = clone(proposal);
+      // An empty css stays as a key, so the merge does not take an old one back.
+      c.css = options.css || '';
+      this.delisted.delete(pair);
+      // Proposed now, whatever the file says another process made it since: an acceptance or a
+      // quarantine there still wins (see mergeStatus).
+      this.base.delete(pair);
+    }
+    this.dirty.add(pair);
+    this.persist();
+    return clone(c);
+  }
+
+  /** Take in what another process did to key's list heals in the file since this store read or
+   * wrote it, such as the Python package's mendwright lists accept or reject: the statuses
+   * 'accepted', 'quarantined' and 'superseded', and acceptedAt, merged as a write merges them,
+   * without writing. So a store loaded before a person accepted or rejected a list heal doesn't
+   * propose it again. Nothing when the file can't be read. */
+  reloadListHeals(key: string): void {
+    const entry = this.data.selectors[key];
+    if (!entry || !(entry.candidates ?? []).some(isListHeal)) return;
+    let disk: StoreData;
+    try {
+      [disk] = readStoreFile(this.overridePath, this.destructiveKeys);
+    } catch {
+      return;
+    }
+    const theirs = disk.selectors?.[key];
+    if (!isRecord(theirs)) return;
+    const mine = new Map(entry.candidates.filter(isListHeal).map((c) => [c.xpath, c]));
+    for (const c of (theirs.candidates as Candidate[]) ?? []) {
+      if (!isRecord(c) || typeof c.xpath !== 'string' || !mine.has(c.xpath)) continue;
+      const local = mine.get(c.xpath) as Candidate;
+      const pair = SelectorStore.pair(key, c.xpath);
+      const status = mergeStatus(local.status ?? 'active', c.status ?? 'active', this.base.get(pair));
+      if (status === local.status || !['accepted', 'quarantined', 'superseded'].includes(status)) continue;
+      local.status = status;
+      if (status === c.status) this.base.set(pair, status);   // as the file has it now
+      if (typeof c.acceptedAt === 'string' && c.acceptedAt
+          && !(typeof local.acceptedAt === 'string' && local.acceptedAt)) {
+        local.acceptedAt = c.acceptedAt;
+      }
+    }
+  }
+
+  /** End key's list heals that selector, which just matched, was replaced by: those whose
+   * proposal names it among the selectors that matched nothing (proposal.was.selectors), and
+   * those with no proposal when selector is one of the key's selectors from code or a seed
+   * file. A proposed one becomes 'superseded', an accepted one 'quarantined': the list was not
+   * broken. Returns [xpath, old status, new status] for each row it changed, and writes the
+   * file only then (the Python package's retire_list_heals). */
+  retireListHeals(key: string, selector: string): [string, string, string][] {
+    const entry = this.data.selectors[key];
+    if (!entry) return [];
+    let own: Set<string> | null = null;
+    const changes: [string, string, string][] = [];
+    for (const c of entry.candidates ?? []) {
+      if (!isListHeal(c)) continue;
+      const evidence = evidenceOf(c);
+      const was = evidence ? (evidence.was || {}) : null;
+      let hit: boolean;
+      if (isRecord(was) && Array.isArray(was.selectors)) {
+        hit = was.selectors.includes(selector);
+      } else {
+        if (own === null) {
+          own = new Set(this.candidates(key).filter((o) => o.source === 'code' || o.source === 'seed').map((o) => o.xpath));
+        }
+        hit = own.has(selector);
+      }
+      if (!hit) continue;
+      const old = c.status as string;
+      c.status = old === 'proposed' ? 'superseded' : 'quarantined';
+      this.dirty.add(SelectorStore.pair(key, c.xpath));
+      changes.push([c.xpath, old, c.status]);
+    }
+    if (changes.length) this.persist();
+    return changes;
+  }
+
   /** Write the file once for every change made inside fn. */
   batch<T>(fn: () => T): T {
     this.batchDepth += 1;
     try {
       return fn();
     } finally {
-      this.batchDepth -= 1;
-      if (!this.batchDepth && this.batchWanted) {
-        this.batchWanted = false;
-        this.persist();
-      }
+      this.endBatch();
+    }
+  }
+
+  /** batch() for an async fn: the file is written once, when the promise it returns settles,
+   * for every change made until then (the Python package's batch() around a lookup that awaits
+   * the page, as its async healer's is). */
+  async batchAsync<T>(fn: () => Promise<T>): Promise<T> {
+    this.batchDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.endBatch();
+    }
+  }
+
+  private endBatch(): void {
+    this.batchDepth -= 1;
+    if (!this.batchDepth && this.batchWanted) {
+      this.batchWanted = false;
+      this.persist();
     }
   }
 

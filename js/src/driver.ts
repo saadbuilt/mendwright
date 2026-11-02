@@ -21,6 +21,7 @@ import { InvalidSelector } from './errors';
 import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
 import { clickMayHaveRun } from './flow';
 import { frameOptions, frameSelector, type FrameMatch } from './frames';
+import { listFromRaw, type ListFingerprint } from './lists';
 import { pySlice } from './py';
 import { roleFor } from './roles';
 import { playwrightSelector } from './selectors';
@@ -33,10 +34,10 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
   'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'shadowRoots',
-  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt']);
+  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listRaw', 'listItems']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
   | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'shadowRoots'
-  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt';
+  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt' | 'listRaw' | 'listItems';
 
 // The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
 // nothing of the live page. A page that enforces Trusted Types refuses a plain string to
@@ -256,6 +257,34 @@ function inventoryRows(raw: unknown, limit: number): InventoryRow[] {
     text: pySlice(norm(r.text), 80),
     aria_label: pySlice(norm(r.aria_label), 80),
   }));
+}
+
+/** One element of a list, as the live gate reads it (the Python package's list_items() rows):
+ * its tag, its gate role, its type attribute, and whether it is visible as Playwright counts it. */
+export interface ItemRow {
+  tag: string;
+  role: string;
+  type: string;
+  visible: boolean;
+}
+
+/** listItems()'s rows from the page script's result (the Python package's item_rows): the role
+ * computed with roleFor(), anything malformed skipped. A result that is not a list throws. */
+export function itemRows(raw: unknown): ItemRow[] {
+  if (!Array.isArray(raw)) {
+    throw new TypeError('mendwright: the read of a list gave ' + (raw === null ? 'null' : typeof raw) + ', not a list');
+  }
+  const rows: ItemRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const tag = String((item as { tag?: unknown }).tag || '').toLowerCase();
+    const rawType = (item as { type?: unknown }).type;
+    const type = typeof rawType === 'string' ? rawType : '';
+    const role = (item as { role?: unknown }).role;
+    rows.push({ tag, role: roleFor(tag, typeof role === 'string' ? role : null, type || null), type,
+                visible: (item as { visible?: unknown }).visible === true });
+  }
+  return rows;
 }
 
 /** A frame's name and url, '' for one that cannot be read (the Python package's frame_info). */
@@ -539,6 +568,45 @@ export class PlaywrightDriver {
       const read = raw && typeof raw === 'object' ? (raw as { hosts?: unknown }).hosts : undefined;
       return { fp, hosts: fp && Array.isArray(read) ? savedHosts(read) : undefined };
     }, { fp: null, hosts: undefined } as FingerprintRead, hosts);
+  }
+
+  // --- lists (see lists.ts) -------------------------------------------------------------------
+
+  /** A Locator for each element selector matches now, as Locator.all() gives them (nth(0),
+   * nth(1), ...) (the Python package's handles()). A malformed selector throws InvalidSelector,
+   * and any other error throws as it is. */
+  async handles(selector: string): Promise<Locator[]> {
+    const loc = this.locator(selector);
+    let count: number;
+    try {
+      count = await loc.count();
+    } catch (error) {
+      if (browserRejected(error)) throw invalid(error, selector);
+      throw error;
+    }
+    return Array.from({ length: count }, (_, i) => loc.nth(i));
+  }
+
+  /** The list fingerprint of the elements selector matches (see lists.ts), or null when it
+   * matches fewer than two; with place, with the list's label and where it sits. One round
+   * trip, which reads no input value. A malformed selector throws InvalidSelector; any other
+   * error gives null. */
+  listFingerprint(selector: string, place = false): Promise<ListFingerprint | null> {
+    return this.probe(selector, null, async (loc) => listFromRaw(
+      await loc.evaluateAll(elementsFunction('listRaw') as (els: Element[], arg: unknown) => unknown, place)), null);
+  }
+
+  /** [{ tag, role, type, visible }] for the first 200 elements selector matches, in one round
+   * trip that does not wait. A malformed selector throws InvalidSelector, and any other error
+   * throws as it is: the live check of a list fails on it. */
+  async listItems(selector: string): Promise<ItemRow[]> {
+    const loc = this.locator(selector);
+    try {
+      return itemRows(await loc.evaluateAll(elementsFunction('listItems') as (els: Element[]) => unknown));
+    } catch (error) {
+      if (browserRejected(error)) throw invalid(error, selector);
+      throw error;
+    }
   }
 
   /** Up to limit interactive elements of the page, as the model's inventory. Never input

@@ -26,7 +26,10 @@ function requireVisible(store: SelectorStore, key: string): boolean {
   }
 }
 
-function splitRunnable(key: string, candidates: Candidate[]): [Candidate[], Error[]] {
+/** [runnable, errors]: the candidates whose selector and frame selector pass checkSyntax and
+ * that can run where they were saved, and the errors of the others (the Python package's
+ * resolver._split_runnable). */
+export function splitRunnable(key: string, candidates: Candidate[]): [Candidate[], Error[]] {
   const runnable: Candidate[] = [];
   const errors: Error[] = [];
   for (const candidate of candidates) {
