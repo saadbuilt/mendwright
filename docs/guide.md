@@ -216,7 +216,7 @@ It heals only when all of these hold:
 - It sits inside every recorded ancestor whose id is still on the page. A Save button that left its form, while the form is still there, is not taken.
 - A unique XPath without positions can be built for it.
 
-That XPath then goes through the same checks as a model's proposal (see [How it works](../README.md#how-it-works)):
+That XPath then goes through the same checks as a model's proposal (see [The checks](../SECURITY.md#the-checks)):
 
 - one match of the step's role in the captured HTML
 - not quarantined
@@ -2407,7 +2407,7 @@ jobs:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.1` can be a SHA too, with a `# v0.10.0` comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.1` can be a SHA too, with the release tag as its comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -2916,7 +2916,7 @@ pytest shows the lines in the captured output of a failed test.
 
 ## Command line
 
-`mendwright` (or `python -m mendwright`) has seven commands, `demo`, `doctor`, `report`, `fix`, `lists`, `model` (see [Local model](#local-model)) and `check`, plus `--version`.
+`mendwright` (or `python -m mendwright`) has eight commands, `demo`, `doctor`, `report`, `fix`, `lists`, `model` (see [Local model](#local-model)), `check` and `notify`, plus `--version`.
 If your shell can't find `mendwright`, because pip put it in a Scripts folder that isn't on PATH (as the Microsoft Store Python on Windows does), `python -m mendwright` runs every command the same way, such as `python -m mendwright demo`.
 
 ### mendwright demo
@@ -2952,9 +2952,11 @@ Model provider
   this order: ANTHROPIC_API_KEY and ANTHROPIC_MODEL (Anthropic); OPENAI_API_KEY and
   OPENAI_MODEL (OpenAI-compatible); GEMINI_API_KEY and GEMINI_MODEL (Gemini);
   MENDWRIGHT_GATEWAY and MENDWRIGHT_KEY, plus MENDWRIGHT_AUTH_HEADER if your gateway
-  uses another header (mendwright gateway); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama is
-  not on http://127.0.0.1:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one of:
-  anthropic, openai, gemini, gateway, ollama, or pass provider=... to mendwright.open().
+  uses another header (mendwright gateway); MENDWRIGHT_LOCAL_MODEL (mendwright's local
+  selector model in Ollama); OLLAMA_MODEL, plus OLLAMA_HOST if Ollama is not on
+  http://127.0.0.1:11434 (local Ollama). Or set MENDWRIGHT_PROVIDER to one of:
+  anthropic, openai, gemini, gateway, local, ollama, or pass provider=... to
+  mendwright.open().
   `mendwright demo --scripted` works without one (it uses a scripted reply).
 
 Fingerprint healing (no model)
