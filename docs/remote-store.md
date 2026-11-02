@@ -85,7 +85,7 @@ aws s3 cp s3://my-bucket/mendwright/overrides.json .mendwright/overrides.json
 mendwright report --store .mendwright/overrides.json
 ```
 
-For an HTTPS store, `curl -fsS -o .mendwright/overrides.json -H "Authorization: Bearer $MENDWRIGHT_STORE_TOKEN" https://store.example.com/team/overrides.json` does the same. `mendwright lists accept` and `reject` can't change a remote store yet. Don't upload an edited copy over a store that workers write: their changes since the download would be lost.
+For an HTTPS store, `curl -fsS -o .mendwright/overrides.json -H "Authorization: Bearer $MENDWRIGHT_STORE_TOKEN" https://store.example.com/team/overrides.json` does the same. The line reads the token as mendwright does: with `MENDWRIGHT_STORE_TOKEN_FILE` set, `$(cat "$MENDWRIGHT_STORE_TOKEN_FILE")`, and on Windows it gives the PowerShell command, `Invoke-WebRequest -UseBasicParsing -Headers @{Authorization = "Bearer $env:MENDWRIGHT_STORE_TOKEN"} -OutFile .mendwright/overrides.json https://store.example.com/team/overrides.json`. `mendwright lists accept` and `reject` can't change a remote store yet. Don't upload an edited copy over a store that workers write: their changes since the download would be lost.
 
 `mendwright doctor` names a remote store, the folder of this machine's journal, and whether the worker is read-only, and never contacts the store.
 

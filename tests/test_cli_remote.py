@@ -50,6 +50,7 @@ def test_a_command_given_an_s3_store_says_how_to_download_it(argv, command, code
 @pytest.mark.parametrize('argv, command, code', COMMANDS, ids=[c[1] for c in COMMANDS])
 def test_a_command_given_an_https_store_by_the_environment_says_how_to_download_it(
         argv, command, code, capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, '_on_windows', lambda: False)      # the curl form
     monkeypatch.setenv('MENDWRIGHT_STORE', 'https://store.example/team/overrides.json')
     monkeypatch.setenv('MENDWRIGHT_JOURNAL_DIR', str(tmp_path / 'journals'))
     assert cli.main(argv) == code
@@ -57,6 +58,29 @@ def test_a_command_given_an_https_store_by_the_environment_says_how_to_download_
     assert "remote stores aren't supported by this command yet (https://store.example/team/)" in line
     assert ('curl -fsS -o journals/overrides.json -H "Authorization: Bearer '
             '$MENDWRIGHT_STORE_TOKEN" https://store.example/team/overrides.json') in line
+
+
+@pytest.mark.parametrize('windows, token_file, how', [
+    (False, False, 'curl -fsS -o .mendwright/overrides.json -H "Authorization: Bearer '
+                   '$MENDWRIGHT_STORE_TOKEN" https://store.example/team/overrides.json'),
+    (False, True, 'curl -fsS -o .mendwright/overrides.json -H "Authorization: Bearer '
+                  '$(cat "$MENDWRIGHT_STORE_TOKEN_FILE")" https://store.example/team/overrides.json'),
+    (True, False, 'Invoke-WebRequest -UseBasicParsing -Headers @{Authorization = "Bearer '
+                  '$env:MENDWRIGHT_STORE_TOKEN"} -OutFile .mendwright/overrides.json '
+                  'https://store.example/team/overrides.json'),
+    (True, True, 'Invoke-WebRequest -UseBasicParsing -Headers @{Authorization = "Bearer '
+                 '$((Get-Content -Raw $env:MENDWRIGHT_STORE_TOKEN_FILE).Trim())"} -OutFile '
+                 '.mendwright/overrides.json https://store.example/team/overrides.json'),
+], ids=['posix', 'posix, token file', 'windows', 'windows, token file'])
+def test_the_https_download_reads_the_token_as_mendwright_does_in_this_shell(
+        monkeypatch, windows, token_file, how):
+    # A token kept in a file (a Docker or Kubernetes secret) leaves MENDWRIGHT_STORE_TOKEN
+    # empty, which sent 'Bearer ' and got 401; cmd.exe and PowerShell don't read $NAME.
+    if token_file:
+        monkeypatch.setenv('MENDWRIGHT_STORE_TOKEN_FILE', '/run/secrets/SECRETPATH')
+    assert cli._https_download('https://store.example/team/', '.mendwright/overrides.json',
+                               windows=windows) == how
+    assert 'SECRETPATH' not in how
 
 
 def test_notify_says_it_too_and_fails_only_when_asked(capsys):

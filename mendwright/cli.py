@@ -970,8 +970,7 @@ def remote_refusal(command, value):
     if url.startswith('s3://'):
         how = 'aws s3 cp ' + url + 'overrides.json ' + copy
     else:
-        how = ('curl -fsS -o ' + copy + ' -H "Authorization: Bearer $MENDWRIGHT_STORE_TOKEN" '
-               + url + 'overrides.json')
+        how = _https_download(url, copy)
     if command in ('lists accept', 'lists reject'):
         then = ('mendwright lists --store ' + copy + ' to see its list heals. Accepting or '
                 'rejecting one in a remote store is not supported yet, and a copy uploaded over '
@@ -981,6 +980,28 @@ def remote_refusal(command, value):
     return (head + "remote stores aren't supported by this command yet (" + url + '). Download '
             'the store next to this machine\'s journal and run the command on the copy: ' + how
             + ', then ' + then + '.')
+
+
+def _https_download(url, copy, windows=None):
+    """The command that downloads the overrides.json of the HTTPS store url to copy, with the
+    token mendwright reads: MENDWRIGHT_STORE_TOKEN, or the file MENDWRIGHT_STORE_TOKEN_FILE
+    names. The command reads the variable, so neither the token nor the file's path is
+    written out. In PowerShell on Windows (windows=None: this machine's), else for a POSIX
+    shell."""
+    windows = _on_windows() if windows is None else windows
+    from_file = bool(os.environ.get('MENDWRIGHT_STORE_TOKEN_FILE'))
+    if windows:
+        token = ('$((Get-Content -Raw $env:MENDWRIGHT_STORE_TOKEN_FILE).Trim())' if from_file
+                 else '$env:MENDWRIGHT_STORE_TOKEN')
+        return ('Invoke-WebRequest -UseBasicParsing -Headers @{Authorization = "Bearer ' + token
+                + '"} -OutFile ' + copy + ' ' + url + 'overrides.json')
+    token = '$(cat "$MENDWRIGHT_STORE_TOKEN_FILE")' if from_file else '$MENDWRIGHT_STORE_TOKEN'
+    return ('curl -fsS -o ' + copy + ' -H "Authorization: Bearer ' + token + '" ' + url
+            + 'overrides.json')
+
+
+def _on_windows():
+    return os.name == 'nt'
 
 
 def _copy_path():
