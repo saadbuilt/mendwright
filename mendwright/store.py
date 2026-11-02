@@ -766,9 +766,8 @@ _WRITERS = {}
 _WRITERS_LOCK = threading.Lock()
 
 
-def _writes(path):
-    """The _FileWrites of the store file at path."""
-    name = os.path.normcase(os.path.abspath(str(path)))
+def _writes(name):
+    """The _FileWrites of the store named name (see SelectorStore._turns)."""
     with _WRITERS_LOCK:
         found = _WRITERS.get(name)
         if found is None:
@@ -1415,7 +1414,7 @@ class SelectorStore:
         if not entry or not any(_is_list_heal(c) for c in entry.get('candidates', [])):
             return
         try:
-            disk, _native = _read(self._override_path, self._destructive_keys, sleep=self._sleep)
+            disk, _native = self._disk()
         except Exception:
             return
         theirs = (disk.get('selectors') or {}).get(key)
@@ -1537,6 +1536,31 @@ class SelectorStore:
         """The path SOFT keeps this store's soft changes under: the file's absolute path."""
         return os.path.abspath(str(self._override_path))
 
+    # Where the store's file is read and written. A store kept elsewhere than a local file
+    # (mendwright.remote) gives its own: these four, _soft_path(), _persist_override() and
+    # _persist_failed().
+
+    def _latest(self, known, max_age=0.0):
+        """(data, version) of the override file now, for refresh() and _file_holds(): version
+        None when there is no file, and data None when version is one of known (the file did
+        not change since; it is not read) or the file is not schema 2. The file is parsed once
+        per version per process (parsed_override). Raises when it cannot be read. max_age is
+        for a store whose look costs a request: a look another store of the process made that
+        recently will do (a file's costs one stat, so it looks every time)."""
+        version = stat_version(self._override_path)
+        if version is None or version in known:
+            return None, version
+        return parsed_override(self._override_path, version, sleep=self._sleep)
+
+    def _disk(self):
+        """(data, native) of the override file now, read afresh (see _read). Raises when it
+        cannot be read."""
+        return _read(self._override_path, self._destructive_keys, sleep=self._sleep)
+
+    def _turns(self):
+        """The _FileWrites of this store's file: one writer of it at a time in this process."""
+        return _writes(os.path.normcase(os.path.abspath(str(self._override_path))))
+
     def _persist_soft(self, key, rows=None, *, at_once=False):
         """A change of key's last successes, pages, steps, address or fingerprints (see
         SOFT_EVERY). at_once=True (what the file does not have yet) writes this store now, or at
@@ -1580,7 +1604,7 @@ class SelectorStore:
         if getattr(state, 'depth', 0):
             state.wanted = True     # written when the batch ends (see batch)
             return
-        writes = _writes(self._override_path)
+        writes = self._turns()
         try:
             with writes.lock:
                 try:
@@ -1625,7 +1649,7 @@ class SelectorStore:
             return True
         if self._file_holds(keys, succeeded):
             return False
-        writes = _writes(self._override_path)
+        writes = self._turns()
         for _ in range(8):
             seen = writes.count
             with writes.lock:
@@ -1648,16 +1672,13 @@ class SelectorStore:
         if self._unsaved:
             return False
         keys = list(keys)
+        known = tuple(self._key_versions.get(k, self._version) for k in keys)
         try:
-            version = stat_version(self._override_path)
-            if version is None or any(version == self._key_versions.get(k, self._version)
-                                      for k in keys):
-                return False
-            data, version = parsed_override(self._override_path, version, sleep=self._sleep)
+            data, version = self._latest(known)
         except Exception:
             return False
-        if data is None:
-            return False        # schema 1: the next write converts it
+        if version is None or version in known or data is None:
+            return False        # (data None: schema 1, which the next write converts)
         theirs = data.get('selectors') or {}
         with self._mutex:
             for key in keys:
@@ -1699,14 +1720,12 @@ class SelectorStore:
             if last is not None and now - last < max_age:
                 return False
             self._looked[key] = now
+        known = self._key_versions.get(key, self._version)
         try:
-            version = stat_version(self._override_path)
-            if version is None or version == self._key_versions.get(key, self._version):
-                return False
-            data, version = parsed_override(self._override_path, version, sleep=self._sleep)
+            data, version = self._latest((known,), max_age)
         except Exception:
             return False        # unreadable now: keep what memory holds
-        if version is None or version == self._key_versions.get(key, self._version):
+        if version is None or version == known:
             return False
         entry = (data or {}).get('selectors', {}).get(key) if data is not None else None
         with self._mutex:
