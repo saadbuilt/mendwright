@@ -1273,6 +1273,10 @@ export class Healer {
     const record: RunRecord = { healer: this, key: item.key, done: new Promise<void>((resolve) => (finish = resolve)) };
     this.runs.push(record);
     try {
+      // No dismissal starts from now on (this.runs), and one another step started before is let
+      // finish first, Escape and clicks and all, as on the Python package's async healer, whose one
+      // lock holds both: nothing dismisses a popup while the function runs.
+      await this.popupMutex.run(async () => undefined);
       await RUN_CONTEXT.run([...(RUN_CONTEXT.getStore() ?? []), record], () => STEP_CONTEXT.run(null, async () => {
         const result = run(this.page);
         if (!isThenable(result)) throw new TypeError(runPlainMessage(item.key, fn, result));

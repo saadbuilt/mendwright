@@ -922,6 +922,54 @@ describe('run functions of heal.interrupt()', () => {
     assert.ok(warnings(w)[0].startsWith("signIn(), the run function of interruption 'relogin', raised an error"));
   });
 
+  test('a dismissal already under way when a run function is called ends before the function starts', async () => {
+    // The modal covers Go, and Escape doesn't close it. While mendwright presses Escape on it,
+    // the session popup opens under the modal and another step calls its run function: the
+    // function waits until the dismissal is done, No thanks clicked and all, and nothing of the
+    // dismissal happens while it runs.
+    const w = page(lower(50));
+    const heal = w.open({ dismiss: true });
+    heal.interrupt('relogin', '#relogin', {
+      run: async function signIn(p: Page) {
+        w.page.calls.push(['run', 'started']);
+        await p.click('#signin');
+        w.page.calls.push(['run', 'returned']);
+      },
+    });
+    let other: Promise<void> | null = null;
+    const press = w.page.keyboard.press;
+    w.page.keyboard.press = async (key: string) => {
+      w.page.calls.push(['key', key]);
+      const pressed = await press(key);
+      if (!other) {
+        add(w, relogin(5));
+        other = heal.locator('email', '#email').fill('ada@example.com');
+        await new Promise((resolve) => setTimeout(resolve, 200));   // the other step runs meanwhile
+      }
+      return pressed;
+    };
+    const clickOn = w.page.clickOn.bind(w.page);
+    w.page.clickOn = (el: Element) => {
+      w.page.calls.push(['click', el.id]);
+      clickOn(el);
+    };
+
+    await heal.locator('go', '#go').click();
+    await other;
+
+    const order = w.page.calls.filter(([what]) => ['key', 'click', 'run'].includes(what))
+      .map(([what, on]) => what + ' ' + on);
+    const started = order.indexOf('run started');
+    const returned = order.indexOf('run returned');
+    assert.ok(started >= 0 && returned > started, order.join(', '));
+    // Nothing of the dismissal while the function runs. (The step of Go, past its checks, may
+    // click meanwhile, as on the Python package's async healer.)
+    const during = order.slice(started, returned + 1);
+    assert.ok(during.includes('click signin') && !during.some((s) => s === 'key Escape' || s.startsWith('click nl-')), order.join(', '));
+    assert.ok(order.indexOf('click nl-no') >= 0 && order.indexOf('click nl-no') < started, order.join(', '));
+    assert.ok(gone(w, 'nl') && gone(w, 'relogin'));
+  });
+
   test('nor once a run function started while the element was looked at', async () => {
     // The modal covers Go. While mendwright looks at what covers it, the session popup opens
     // above the modal, and another step calls its run function: the modal is left alone until
