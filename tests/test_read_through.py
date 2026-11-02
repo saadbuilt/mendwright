@@ -181,7 +181,8 @@ def test_a_heal_saved_while_the_model_answers_is_adopted_not_saved_twice(tmp_pat
     assert Racing.calls == 1 and pb.actions[-1][:2] == ('xpath=' + HEALED, 'check')
     assert b.pending() == {KEY: HEALED} and b.heals == []
     assert len(_journal(tmp_path, 'heal.applied')) == 1        # A's, and no second heal
-    assert [c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']] == [CODE, HEALED]
+    # In any order: a write puts the most recent success first, to the second.
+    assert sorted(c['xpath'] for c in _disk(tmp_path)[KEY]['candidates']) == sorted([CODE, HEALED])
 
 
 def _fingerprint():
