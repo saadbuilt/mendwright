@@ -64,6 +64,7 @@ import weakref
 from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
+from .backends.url import is_store_url
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
 from .drivers.base import (NOWHERE, PLACED, _member, _takes_place, css_pierces, is_async_api,
                            is_driver, looks_like_locator, takes_keyword, unsupported_message)
@@ -95,6 +96,7 @@ from .resolver import (THROUGH, Reuse, _again, _no_match_message, _require_visib
                        reuse_meta)
 from .selectors import CSS, XPATH, InvalidSelector, classify
 from .shadow import driver_shadowed
+from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
 
@@ -487,6 +489,11 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
             # awaited (a bare coroutine is truthy and would always allow the heal).
             return bool(bridge.run(user_guard))
 
+    if store is None:
+        place = store_path if store_path is not None else os.environ.get('MENDWRIGHT_STORE')
+        if is_store_url(place):
+            # A remote store is read over the network: in a worker thread, not on the loop.
+            store = await asyncio.to_thread(load_store, None, place, destructive_keys)
     store, coord, timeout_ms = _setup(
         bridge, provider=provider, store=store, store_path=store_path, guard=guard,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,
@@ -1047,7 +1054,7 @@ class AsyncHealer:
             if native is _NOT_FOLLOWED:
                 native = await self._follow_into_shadow(key, exc, attempt)
             if native is _NOT_FOLLOWED:
-                native = await self._heal(key, exc, attempt, timeout)
+                native = await self._heal(key, exc, attempt)
         core._adopt_winner(key)
         await self._check_healed_target(key)
         await self._learn(key, roles)
@@ -1098,7 +1105,7 @@ class AsyncHealer:
                 if _raised_by_run(exc):
                     raise
                 await self._get_by_frames(key, exc)
-                native = await self._heal(key, exc, attempt, timeout)
+                native = await self._heal(key, exc, attempt)
         except InterruptionLoop:
             raise   # the page is blocked: a heal would not help
         except AttentionRequired as exc:
@@ -1648,14 +1655,14 @@ class AsyncHealer:
             return None
         return HealScope(frame=frame, driver=SyncBridge(framed, asyncio.get_running_loop()))
 
-    async def _heal(self, key, exc, attempt, timeout=None):
+    async def _heal(self, key, exc, attempt):
         """Run the sync heal (coordinator.resolve_with_heal) in a worker thread, then retry
         attempt() on the event loop. The coordinator reaches the page through SyncBridge.
 
         Single-flight as on the sync Healer (mendwright.fleet.single_flight_async): a
-        follower awaits the leader on the event loop, at most the step's timeout, so it holds
-        no worker thread while it waits; then it adopts the leader's heal or reuses its
-        decline, or makes its own attempt."""
+        follower awaits the leader on the event loop while it works, at most fleet.FOLLOW_CAP
+        seconds, so it holds no worker thread while it waits; then it adopts the leader's heal
+        or reuses its decline, or makes its own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
         context = self._core._flow_context(key, await _url(self._driver))
         missed = [exc]
@@ -1681,9 +1688,8 @@ class AsyncHealer:
                                  context)
             return await attempt()
 
-        timeout = self.timeout_ms if timeout is None else timeout
         return await single_flight_async(self.store, key, self._core._signature(key, context),
-                                         heal, timeout / 1000.0)
+                                         heal)
 
     async def _learn(self, key, roles):
         """Healer._learn(), with describe() awaited."""

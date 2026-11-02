@@ -36,6 +36,7 @@ PHRASES = {
     'gate': ('selector', 'could not be repaired: no proposed selector passed the checks'),
     'rate_limit': ('selector', 'was not repaired: the hourly heal limit was reached'),
     'guard': ('selector', 'was not repaired: guard= blocked heals'),
+    'store': ('selector', 'was not repaired: mendwright could not read the store'),
     'list_empty': ('selector', 'matched nothing as a list: it is empty, or its selector broke'),
     'list_not_found': ('selector', 'matched nothing as a list, and mendwright found no list it '
                                    'could propose'),

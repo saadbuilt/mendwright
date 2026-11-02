@@ -217,11 +217,14 @@ def _place(label, container):
 
 def _store_flag(store):
     """' --store "PATH"' for the commands a list message names, when the store's file is not
-    the default one."""
+    the default one: a remote store's URL, which the commands name and refuse for now."""
+    from .cli import store_flag
+    place = getattr(store, 'remote_place', None)
+    if isinstance(place, str) and place:
+        return ' --store "' + place + '"'
     path = getattr(store, '_override_path', None)
     if path is None:
         return ''
-    from .cli import store_flag
     return store_flag(path)
 
 
@@ -248,6 +251,7 @@ DECLINE_CODES = (
     'no_provider',      # no model provider, and the fingerprint did not heal it
     'role_unknown',     # the key's role is unknown, so a heal could not be checked
     'guard',            # guard= blocked heals
+    'store',            # the store could not be read, so nothing is healed until it can be
     'rate_limit',       # the hourly heal limit was reached
     'not_here',         # the model found no element on this page that fits, or was not sure
     'no_proposal',      # the provider gave no usable selector
@@ -429,7 +433,7 @@ class HealCoordinator:
         from .shadow import place_text
         self.journal.applied(selector_key, xpath=new, old=[old], provider=SHADOW_PROVIDER,
                              model=None, latency_ms=0, source=SHADOW_PROVIDER,
-                             shadow=list(hosts))
+                             shadow=list(hosts), **self._kept())
         self.heal_reasons.pop(selector_key, None)
         self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
                            'source': SHADOW_PROVIDER})
@@ -442,7 +446,8 @@ class HealCoordinator:
         the iframe ``frame`` and is now saved there as ``new``. It counts as a heal (strict
         mode fails on it, and the canary checks it) with source 'frame'."""
         self.journal.applied(selector_key, xpath=new, old=[old], provider=FRAME_PROVIDER,
-                             model=None, latency_ms=0, source=FRAME_PROVIDER, frame=frame)
+                             model=None, latency_ms=0, source=FRAME_PROVIDER, frame=frame,
+                             **self._kept())
         self.heal_reasons.pop(selector_key, None)
         self.heals.append({'key': selector_key, 'old': (old,), 'new': new, 'confirmed': None,
                            'source': FRAME_PROVIDER})
@@ -616,6 +621,20 @@ class HealCoordinator:
                 'mendwright.open() heals it inside that shadow root; or fix the selector in '
                 'your code.')
 
+    def _store_refusal(self, selector_key):
+        """Why the store refuses every heal now, or '': it could not be read (see
+        mendwright.remote.RemoteSelectorStore.heal_refusal). A store without heal_refusal(),
+        such as a local file, which raises when it cannot be read, never refuses."""
+        refusal = getattr(self.store, 'heal_refusal', None)
+        if not callable(refusal):
+            return ''
+        try:
+            reason = refusal(selector_key)
+        except Exception:
+            logger.debug('mendwright: could not ask the store whether it may heal', exc_info=True)
+            return ''
+        return reason if isinstance(reason, str) else ''
+
     def _unavailable_code(self):
         """The code of a decline because no model provider can be asked: 'disabled' under
         MENDWRIGHT_DISABLE=1, else 'no_provider'."""
@@ -656,6 +675,11 @@ class HealCoordinator:
         outside = self._outside_shadow(selector_key)
         if outside:
             return self._decline(selector_key, outside, code=self._place_code('shadow'))
+        unread = self._store_refusal(selector_key)
+        if unread:
+            # A store that could not be read is never taken for an empty one: a heal would
+            # not know the quarantines and destructive flags saved there.
+            return self._decline(selector_key, unread, code='store')
         if getby.is_key(selector_key):
             if not self.get_by_model:
                 return self._heal_get_by(selector_key, meta, broken_candidates)
@@ -1089,7 +1113,7 @@ class HealCoordinator:
                           latency_ms=int(round(seconds * 1000)), xpath=match.xpath, css=css,
                           id=evidence['id'], list=True, items=match.count, label=now['label'],
                           differs=evidence['differs'], old=old, page=evidence['page'],
-                          source=FINGERPRINT_PROVIDER)
+                          source=FINGERPRINT_PROVIDER, **self._kept())
         self.held.append({'key': selector_key, 'xpath': match.xpath, 'id': evidence['id'],
                           'label': now['label'], 'count': match.count})
         role = meta.get('expectedRole')
@@ -1361,7 +1385,8 @@ class HealCoordinator:
         self.journal.applied(selector_key, xpath=applied, old=_old_selectors(broken_candidates),
                              provider=provider, model=model,
                              latency_ms=int(round(seconds * 1000)),
-                             source=source if source != 'model' else None, **where)
+                             source=source if source != 'model' else None, **where,
+                             **self._kept())
         self.heal_reasons.pop(selector_key, None)  # a prior failure no longer applies
         self.heals.append({'key': selector_key, 'old': tuple(_old_selectors(broken_candidates)),
                            'new': applied, 'confirmed': None, 'source': source})
@@ -1416,7 +1441,19 @@ class HealCoordinator:
             from .shadow import place_text
             where = ' inside ' + place_text(self.shadow_hosts)
         self._emit(logging.WARNING, 'healed ' + repr(selector_key) + where + ': ' + was + ' -> '
-                   + applied + timing)
+                   + applied + timing + self._kept_note())
+
+    def _kept(self):
+        """{'saved': False} for a journal event of a change this worker keeps in memory, as a
+        read-only worker does (see SelectorStore.writes), else {}."""
+        return {'saved': False} if getattr(self.store, 'writes', True) is False else {}
+
+    def _kept_note(self):
+        """What a log line of such a change adds."""
+        if not self._kept():
+            return ''
+        return ('; kept in memory for this process, since this worker does not write the store '
+                '(MENDWRIGHT_STORE_READ_ONLY)')
 
     def confirm(self, selector_key, xpath, success, reason=None, *, by=None, test=None):
         """Canary report: route the outcome through the provider, and quarantine a healed
@@ -1443,7 +1480,7 @@ class HealCoordinator:
             heal['confirmed'] = bool(success)
         if not success:
             self.store.quarantine(selector_key, xpath)
-            self.journal.quarantine(selector_key, xpath=xpath, reason=reason)
+            self.journal.quarantine(selector_key, xpath=xpath, reason=reason, **self._kept())
 
     def is_pending(self, selector_key, xpath):
         """True when xpath is the heal of selector_key this process applied and has not

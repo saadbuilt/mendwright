@@ -155,7 +155,11 @@ That counts only in the same place: a selector quarantined inside an iframe does
 
 | Variable | Meaning |
 |---|---|
-| `MENDWRIGHT_STORE` | Store path, the default for `store_path` |
+| `MENDWRIGHT_STORE` | Store path, the default for `store_path`: a file, or a store URL such as `s3://bucket/prefix/` or `https://host/path/` (see [Remote stores](remote-store.md)) |
+| `MENDWRIGHT_JOURNAL_DIR` | The folder `journal.jsonl` goes to when the store is a store URL (default `./.mendwright`). A local store keeps its journal next to its file |
+| `MENDWRIGHT_STORE_READ_ONLY` | `1` makes a read-only worker: it uses the heals other workers save and never writes the store or its records; its own heals stay in memory (see [Read-only workers](remote-store.md#read-only-workers)) |
+| `MENDWRIGHT_STORE_TOKEN` | The bearer token of an HTTPS store. Never printed |
+| `MENDWRIGHT_STORE_TOKEN_FILE` | A file that holds that token, such as a Docker or Kubernetes secret, in place of `MENDWRIGHT_STORE_TOKEN` |
 | `MENDWRIGHT_TIMEOUT_MS` | Default `timeout_ms`, in whole milliseconds |
 | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` | Default `rate_per_key_per_hour`: a whole number, or `none` for no limit. `0` lets no model attempt through, while fingerprint heals still happen |
 | `MENDWRIGHT_RATE_GLOBAL_PER_HOUR` | Default `rate_global_per_hour`, in the same form |
@@ -2007,7 +2011,7 @@ It can't unmark a key from `destructive_keys` or the seed file.
 
 ### overrides.json
 
-The store is one JSON file, `./.mendwright/overrides.json` by default.
+The store is one JSON file, `./.mendwright/overrides.json` by default, or `overrides.json` in an S3 bucket or behind an HTTPS server that many machines share (see [Remote stores](remote-store.md)).
 This is the file after a run that learned the role on the old page and healed the selector on the new one:
 
 ```json
@@ -2112,6 +2116,7 @@ Every event has `run`, right after `event`, when the run has an id: `MENDWRIGHT_
 | `no_provider` | No model provider is set up, and the fingerprint did not heal it |
 | `role_unknown` | The key's role is unknown, so a heal could not be checked |
 | `guard` | `guard=` blocked heals |
+| `store` | The store could not be read, so nothing is healed until it can be (see [When the store fails](remote-store.md#when-the-store-fails)) |
 | `rate_limit` | The hourly heal limit was reached |
 | `not_here` | The model found no element on this page that fits, or was not sure which (see [When the model finds no element](#when-the-model-finds-no-element)) |
 | `no_proposal` | The provider gave no usable selector |
@@ -2136,9 +2141,16 @@ Two more events come from [many workers at once](#many-workers-at-once):
 
 A `heal.declined` that reuses the model's answer from another worker, or from an earlier lookup, has `"cached": true`.
 
+A [remote store](remote-store.md) adds two:
+
+- `store.unavailable` when the store could not be read or written: when a worker opens (`"op": "open"`), and when an outage of its reads or writes starts (`"op": "read"` or `"write"`), with `store` (its URL), `error`, `reason` and, for an outage, `retry_in` (seconds until it is asked again)
+- `store.available` when it answers again, with `op` and `after` (seconds the outage lasted)
+
+The events of a heal or a quarantine that a [read-only worker](remote-store.md#read-only-workers) keeps in memory have `"saved": false`.
+
 ## Many workers at once
 
-Many workers often share one store: threads with a Healer each, asyncio tasks, `pytest -n auto`, a pool of scrapers.
+Many workers often share one store: threads with a Healer each, asyncio tasks, `pytest -n auto`, a pool of scrapers, a fleet of machines on one [remote store](remote-store.md).
 Each `mendwright.open()` and `mendwright.aio.open()` is a worker, with its own copy of the store in memory.
 When a deploy breaks a key for all of them at once, mendwright heals it once, and the others use that heal.
 
@@ -2148,7 +2160,7 @@ When a key misses for several workers on one store file, the first one to start 
 
 - **Threads and asyncio tasks of one process** wait for the leader in that process. A worker on the async healer waits on its event loop and holds no worker thread.
 - **Processes of one machine** wait through a small record per key next to the store (see [Coordination records](#coordination-records)). Exactly one process leads.
-- **Machines** each keep their own store, and learn a heal once per store. A store that several machines share on a network folder works as on one machine, but the leases and the shared budget read each machine's own clock, so between machines they are best effort.
+- **Machines** share a heal through a [remote store](remote-store.md): an S3 bucket or an HTTPS server, named by a store URL such as `MENDWRIGHT_STORE=s3://bucket/prefix/`. Exactly one machine leads, through the key's record in the store, and the leases and the shared budget read each machine's own clock, so keep the clocks in sync. Machines that each keep a store of their own learn a heal once per store.
 
 When the leader is done, each waiting worker:
 
@@ -2156,8 +2168,9 @@ When the leader is done, each waiting worker:
 - **fails with the model's own reason** when the model looked at the page and gave no usable heal, with no model call (see [Declines are reused](#declines-are-reused)).
 - **makes its own attempt**, under the usual caps, after anything else: a rate limit, a failure of the provider, a dry run.
 
-A worker waits no longer than its step's own `timeout_ms`, then makes its own attempt under the usual caps.
-So keep `timeout_ms` above your model's usual answer time. The default, 10 seconds, is. With `timeout_ms` of 100 ms and a model that takes 2 seconds, every worker stops waiting before the leader has its answer, and heals alone, as before.
+A worker waits for the leader as long as the leader is at work, whatever its step's own `timeout_ms`: a worker that stopped sooner would only ask the model the same question again.
+The wait is capped at 60 seconds (`mendwright.fleet.FOLLOW_CAP`). After that, a worker makes its own attempt under the usual caps.
+A leader in another process is at work while it renews its lease. When that process dies, its lease runs out 15 seconds after the last renewal, and one waiting worker takes the heal over.
 
 Only the leader spends the hourly budget. An attempt still makes up to 2 model calls.
 `rate_per_key_per_hour` counts the attempts of every process on the machine together, and `rate_global_per_hour` those of one process.
@@ -2218,16 +2231,18 @@ A file that can't be read leaves memory as it is.
 ### Fewer writes
 
 What the store file doesn't have yet is written at once: heals, quarantines, roles, destructive flags, your code's selectors, a first success, and a key's first pages, address, steps and fingerprint.
-A first success another worker already recorded isn't written again.
+What another worker saved first isn't written again. When many workers register the code's selector and role of a key the store never saw, or record the first success and page of a heal they all adopted, the first one writes each, and the others take it in from the file.
+A worker that only uses another worker's heal or decline writes nothing, to the store or to the key's [record](#coordination-records).
+The workers of one process take turns to write the store, so one at a time waits for its lock file.
 
-Changes to what the file has are written at most every 5 minutes per key per process: the order of the last successes, a new page in a key's list, a new fingerprint, such as the fingerprint of an element whose text changes on every view.
+Changes to what the file has are written at most every 5 minutes per key per process, by one of its workers: the order of the last successes, a new page in a key's list, a new fingerprint, such as the fingerprint of an element whose text changes on every view.
 In between they wait in the worker's memory and go with its next write.
 Whatever still waits is written when the process exits, also from a `multiprocessing` child.
 `SelectorStore.flush()` and `mendwright.store.flush_all()` write what waits now; call one before `os._exit()`.
 
 ### Coordination records
 
-Each key gets a small record next to the store, `keys/<first 32 hex digits of sha256(key)>.json` (for a store file with another name than `overrides.json`, `<file name>.keys/`). It holds:
+Each key gets a small record next to the store, `keys/<first 32 hex digits of sha256(key)>.json` (for a store file with another name than `overrides.json`, `<file name>.keys/`; for a [remote store](remote-store.md), `keys/` next to its `overrides.json`, in the store). It holds:
 
 - the lease of the heal under way: the process that leads takes it with a compare-and-swap, so exactly one does, and renews it every 5 seconds while it heals. A lease nobody renewed for 15 seconds belongs to a process that died, and exactly one waiting process takes it over.
 - the times of the model attempts made for the key in the last hour, by every process
@@ -2251,7 +2266,9 @@ Measured with 1000 threads in one process, or 16 processes of 10 threads, on one
 | 16 processes of 10 threads, the model heals | 48 calls, 112 failures | 1 call, 159 adopted |
 | 16 processes of 10 threads, the model finds nothing | 48 calls, 112 failures | 1 call, 159 with the model's reason |
 
-With `timeout_ms=100`, shorter than the model's answer, the workers stop waiting first and heal alone, so the thread herds make as many model calls as before: 3 with the caps, 1000 without. Without the caps, a worker still uses the heal another worker saved while it waited for its own answer: 2 writes where there were 1001. 1000 threads that heal from the fingerprint all finish before the first of them has saved, and save their own heals as before. 16 processes of 10 threads make 3 calls in all where they made 48, since the per-key cap counts every process, and so get 157 failures where they got 112; their fingerprint heal is made once, with 2 writes where there were 179.
+A shorter `timeout_ms`, even one below the model's answer time, gives the same counts: the workers wait for the leader whatever their step's timeout (see [One heal for many workers](#one-heal-for-many-workers)). With `timeout_ms=100` and the caps off, 1000 threads made 1 model call where they made 1000, whether the model heals or finds nothing.
+
+On a store that has never seen the key, such as a first run, every worker registers the code's selector and role before it misses. 1000 threads with `timeout_ms=10000` then write the store 6 times in all when the model heals, and twice when it finds nothing, with no lock timeout: the first worker writes each change and the others take it in from the file (see [Fewer writes](#fewer-writes)).
 
 ## CI
 

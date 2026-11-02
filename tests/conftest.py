@@ -28,6 +28,7 @@ message} makes the browser reject that method's calls when they run.
 import inspect
 import json
 import re
+import sys
 
 import lxml.html
 import pytest
@@ -595,7 +596,8 @@ _ENV_SETTINGS = (
     'MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE',
     'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID',
     'MENDWRIGHT_WEBHOOK_URL', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR',
-    'MENDWRIGHT_DECLINE_TTL_SECONDS',
+    'MENDWRIGHT_DECLINE_TTL_SECONDS', 'MENDWRIGHT_STORE_TOKEN', 'MENDWRIGHT_STORE_TOKEN_FILE',
+    'MENDWRIGHT_JOURNAL_DIR', 'MENDWRIGHT_STORE_READ_ONLY',
     'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL',
@@ -623,6 +625,12 @@ def _fresh_fleet_state():
     yield
     fleet.DECLINES.clear()
     store.SOFT.clear()
+    # A remote store's shared read and outage state are per URL, and a test server's URL can
+    # come back with the next test's server on the same port.
+    remote = sys.modules.get('mendwright.remote')
+    if remote is not None:
+        remote._DOCS.clear()
+        remote._HEALTH.clear()
 
 
 class SoftClock:

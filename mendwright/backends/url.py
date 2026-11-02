@@ -23,9 +23,44 @@ import re
 from . import OVERRIDES, MemoryBackend
 from ._common import check_bucket, check_prefix, refuse_secrets, split_url
 
-__all__ = ['backend_for']
+__all__ = ['backend_for', 'store_url', 'is_store_url']
 
 _SCHEME = re.compile(r'([A-Za-z][A-Za-z0-9+.-]*):')
+
+
+def is_store_url(value):
+    """True when value is written as a URL (a scheme of two or more letters and a colon), so
+    store_url() and backend_for() take it for one, valid or not; False for a local path."""
+    if not isinstance(value, str):
+        return False
+    found = _SCHEME.match(value)
+    return found is not None and len(found.group(1)) > 1
+
+
+def store_url(url):
+    """The store URL as mendwright names the store in messages, normalized as its backend's
+    describe() gives it (s3://bucket/prefix/, https://host:port/path/, memory:), or None for a
+    local path. Builds no backend and imports no SDK. Raises ValueError for a URL backend_for()
+    refuses, without quoting it."""
+    if isinstance(url, os.PathLike) or not is_store_url(url):
+        return None
+    found = _SCHEME.match(url)
+    scheme = found.group(1).lower()
+    if scheme == 'memory':
+        if url[found.end():]:
+            raise ValueError('a memory store URL is memory: with nothing after it')
+        return 'memory:'
+    parts, port = split_url(url)
+    refuse_secrets(url, parts)
+    if scheme == 's3':
+        bucket, prefix = _s3_place(parts, port)
+        return 's3://' + bucket + '/' + prefix
+    if scheme in ('https', 'http'):
+        from .http import folder_url
+        return folder_url(parts._replace(path='/' + _folder(parts.path)).geturl())[0]
+    raise ValueError(
+        'a store URL is s3://bucket/prefix/, https://host/path/ (http:// to localhost only) or '
+        'memory:, not ' + scheme + ':. For a local path with a colon in it, start it with ./')
 
 
 def backend_for(url):
