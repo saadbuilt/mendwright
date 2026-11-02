@@ -3,8 +3,9 @@
 // throws and is never healed onto that other list, and no model is asked; optional: true gives []
 // at once. With nonempty: true, a redesigned cart gives a proposal, which the Python package's
 // command line lists and accepts, and the lookup still throws until the selector is in the code;
-// an emptied cart is refused as another list. The pages are served by page.route(), and a page's
-// body is changed between lookups by reloading it.
+// an emptied cart is refused as another list; and the selector a list heal replaced matching
+// again retires it, a proposed one superseded and an accepted one quarantined. The pages are
+// served by page.route(), and a page's body is changed between lookups by reloading it.
 
 import { AttentionRequired, open } from 'mendwright';
 import { expect, test } from 'mendwright/test';
@@ -158,3 +159,43 @@ test('an emptied cart with nonempty: true is refused as another list, and nothin
     + "labelled another part of the page when the list was recorded, and the list was under 'Shopping cart'.");
   expect(readStore(store).selectors.cart.candidates.filter((c: { list?: boolean }) => c.list)).toEqual([]);
 });
+
+test('the selector a list heal replaced matching again retires it: a proposed one, then an accepted one',
+  async ({ page }) => {
+    test.skip(!pythonCommand(), 'no Python that imports mendwright from this repository');
+    const routes = { '/cart': cart(true) };
+    await serve(page, routes);
+    const store = tempStore('lists-retire');
+    const lines: string[] = [];
+    const options = { provider: new FakeModel([]), storePath: store, timeoutMs: 300,
+                      log: (level: string, message: string) => lines.push(level + ': ' + message) };
+    const heal = open(page, options);
+    expect(await heal.locatorAll('cart', '.cart-item', { nonempty: true })).toHaveLength(3);
+    const row = () => readStore(store).selectors.cart.candidates.find((c: { xpath: string }) => c.xpath === ROWS);
+    const renamed = async () => {
+      routes['/cart'] = cart(true, 'cart-row');
+      await page.reload();
+      await expect(heal.locatorAll('cart', '.cart-item', { nonempty: true })).rejects.toThrow('Accept it with:');
+    };
+    await renamed();
+    expect(row().status).toBe('proposed');
+    routes['/cart'] = cart(true);   // the old selector works again
+    await page.reload();
+    expect(await heal.locatorAll('cart', '.cart-item')).toHaveLength(3);
+    expect(row().status).toBe('superseded');
+    expect(lines.filter((l) => l.startsWith("info: .cart-item matches 'cart' again, so the list heal found for it on ")))
+      .toHaveLength(1);
+    // Proposed again, accepted with the Python package's command line, and the old selector
+    // matches once more, in the next run: quarantined.
+    await renamed();
+    const [accepted, , err] = mendwrightCli(['lists', 'accept', 'cart', row().proposal.id, '--store', store]);
+    expect(accepted, err).toBe(0);
+    routes['/cart'] = cart(true);
+    await page.reload();
+    expect(await open(page, options).locatorAll('cart', '.cart-item', { nonempty: true })).toHaveLength(3);
+    expect(row().status).toBe('quarantined');
+    expect(lines.filter((l) => l.startsWith("warning: the selector in your code for 'cart', .cart-item, matches 3 "
+      + 'elements again, so the list heal you accepted for it on '))).toHaveLength(1);
+    expect(journal(store).filter((e) => e.event === 'heal.quarantine')).toMatchObject([{ key: 'cart', xpath: ROWS,
+      list: true, reason: 'the selector it replaced matches again' }]);
+  });

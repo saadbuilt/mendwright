@@ -141,6 +141,23 @@ print(json.dumps({'xpath': match.xpath, 'css': match.css, 'evidence': evidence})
   });
 });
 
+describe('a list heal this package retired', { skip: needsPython() }, () => {
+  test("is retired for the Python package's command line too", async () => {
+    const { w, pid } = await proposal();
+    const [accepted, , err] = cli(['lists', 'accept', 'cart', pid, '--store', w.storePath]);
+    assert.equal(accepted, 0, err);
+    w.page.goto(cart(true));   // the old selector works again: the accepted list heal is quarantined
+    assert.equal((await w.open().locatorAll('cart', '.cart-item')).length, 3);
+    assert.equal(rowOf(w, ROWS).status, 'quarantined');
+    const [status, out] = cli(['lists', '--store', w.storePath]);
+    assert.equal(status, 0);
+    assert.ok(out.includes('No list heal waits for you to check it.') && !out.includes('accepted list heal'), out);
+    const [again, , refused] = cli(['lists', 'accept', 'cart', pid, '--store', w.storePath]);
+    assert.equal(again, 1);
+    assert.ok(refused.includes("mendwright lists: 'cart' has no list heal to check."), refused);
+  });
+});
+
 describe('a proposal the Python package made and accepted', { skip: needsPython() }, () => {
   test('this package keeps its rows through its writes, and its lookup throws that it waits for fix', async () => {
     const w = world(cart(true), { url: 'https://shop.test/cart', rects: true });

@@ -29,8 +29,9 @@ import type { JournalLike } from './journal';
 import type { Guardrails } from './limits';
 import {
   IN_SHADOW, NEVER_SEEN, PLACELESS, cameAndWentWhy, cameLine, dryRunReason, findList, foundLine, gateRefusal, inShadow,
-  listMissingMessage, nonemptySearched, nonemptyUnsearched, placed, proposalEvidence, proposalMessage, stateWord,
-  stateWordReason, unsavedReason, validList, waitsForFixMessage, type ListFingerprint, type ListMatch,
+  listMissingMessage, nonemptySearched, nonemptyUnsearched, placed, proposalEvidence, proposalMessage,
+  retiredAcceptedLine, retiredProposedLine, stateWord, stateWordReason, unsavedReason, validList, waitsForFixMessage,
+  type ListFingerprint, type ListMatch,
 } from './lists';
 import { log, type LogLevel, type LogSink } from './log';
 import { MAX_PROMPT_PART, type Bundle, type Proposal } from './prompt';
@@ -419,6 +420,26 @@ export class HealCoordinator {
     this.emit('warning', reprText(key) + ' waits for mendwright fix: ' + reason);
     this.journal.event('heal.declined', { key, code: 'list_waits_fix', reason });
     return reason;
+  }
+
+  /** Log, and journal, the list heals of key that SelectorStore.retireListHeals() ended when
+   * its selector matched count elements (the Python package's retired_lists): changes are its
+   * [xpath, old status, new status], rows the list heals as they were before. A proposed one is
+   * no longer proposed (an INFO line); an accepted one is quarantined, with a WARNING and a
+   * heal.quarantine event. */
+  retiredLists(key: string, selector: string, count: number, changes: [string, string, string][],
+               rows: Candidate[]): void {
+    const before = new Map(rows.map((r) => [r.xpath, r]));
+    for (const [xpath, old] of changes) {
+      const row = before.get(xpath) ?? ({} as Partial<Candidate>);
+      if (old === 'proposed') {
+        const evidence = row.proposal && typeof row.proposal === 'object' ? row.proposal : {};
+        this.emit('info', retiredProposedLine(key, selector, (evidence as { at?: unknown }).at));
+        continue;
+      }
+      this.emit('warning', retiredAcceptedLine(key, selector, count, row.acceptedAt, xpath));
+      this.journal.event('heal.quarantine', { key, xpath, list: true, reason: 'the selector it replaced matches again' });
+    }
   }
 
   /** For findList(): false when the live page has elements of xpath and none of them is

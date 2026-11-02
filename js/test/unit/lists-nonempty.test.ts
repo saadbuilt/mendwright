@@ -15,6 +15,7 @@ import { listGate, listLiveReason } from '../../src/gate';
 import { AttentionRequired } from '../../src/errors';
 import { Healer, type LocatorAllOptions } from '../../src/healer';
 import { Journal } from '../../src/journal';
+import { whenText } from '../../src/lists';
 import { loadStore, type Candidate } from '../../src/store';
 import { cleanEnv, journalOf, world, type World } from '../support/env';
 import { NoModel, V1, V2, cart, todomvc } from '../support/listpages';
@@ -617,4 +618,90 @@ describe('the list gate', () => {
       assert.throws(() => accepted.store.proposeListHeal('cards', TILE, { proposal: { id: 'b', at: 'c', count: 4 } }),
         /is accepted for 'cards', so it is not proposed again/);
     });
+});
+
+/** Accept the proposal of ROWS in the store file as the Python package's mendwright lists accept
+ * does: its status, and when. */
+function accept(w: World, at = '2026-11-02T10:20:00+00:00'): void {
+  const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+  const row = data.selectors.cart.candidates.find((c: Candidate) => c.xpath === ROWS);
+  row.status = 'accepted';
+  row.acceptedAt = at;
+  fs.writeFileSync(w.storePath, JSON.stringify(data));
+}
+
+describe('retiring a list heal', () => {
+  for (const nonempty of [true, false]) {
+    test('the selector it replaced matching again retires it, with nonempty: ' + nonempty, async () => {
+      const { w, heal } = await recorded();
+      w.page.goto(cart(true, { row: 'cart-row' }));
+      await raised(heal);
+      const at = (rowsOf(w)[ROWS].proposal as { at: string }).at;
+      w.page.goto(cart(true));   // the old selector works
+      assert.equal((await heal.locatorAll('cart', '.cart-item', { nonempty })).length, 3);
+      assert.equal(rowsOf(w)[ROWS].status, 'superseded');
+      assert.ok(w.lines.includes("info: .cart-item matches 'cart' again, so the list heal found for it on " + whenText(at)
+        + ' is no longer proposed.'), w.lines.join('\n'));
+      // Found again, accepted, and the old selector matches once more: quarantined.
+      w.page.goto(cart(true, { row: 'cart-row' }));
+      await raised(heal);
+      assert.equal(rowsOf(w)[ROWS].status, 'proposed');
+      accept(w);
+      w.page.goto(cart(true));
+      const again = w.open();
+      assert.equal((await again.locatorAll('cart', '.cart-item', { nonempty })).length, 3);
+      assert.equal(rowsOf(w)[ROWS].status, 'quarantined');
+      assert.ok(w.lines.includes("warning: the selector in your code for 'cart', .cart-item, matches 3 elements again, so "
+        + 'the list heal you accepted for it on 2026-11-02 10:20:00 UTC, ' + ROWS + ', is quarantined: the list was not '
+        + "broken, or the key is used on more than one page. mendwright fix won't write it."), w.lines.join('\n'));
+      const quarantined = events(w, 'heal.quarantine');
+      assert.deepEqual({ ...quarantined[quarantined.length - 1], ts: null }, { ts: null, event: 'heal.quarantine',
+        key: 'cart', xpath: ROWS, list: true, reason: 'the selector it replaced matches again' });
+    });
+  }
+
+  test('one element of the selector it replaced quarantines an accepted list heal; the way back is the code',
+    async () => {
+      // A list with one item is not empty, so one element that keeps the old class (a mini cart)
+      // is enough: mendwright can't tell it from the cart, and fails closed.
+      const { w, heal } = await recorded();
+      w.page.goto(cart(true, { row: 'cart-row' }));
+      await raised(heal);
+      accept(w);
+      w.page.goto(cart(true, { row: 'cart-row' }).replace('<h2>Saved for later',
+        "<aside><div class='cart-item'>Blue mug</div></aside><h2>Saved for later"));
+      assert.equal((await w.open().locatorAll('cart', '.cart-item')).length, 1);
+      assert.equal(rowsOf(w)[ROWS].status, 'quarantined');
+      w.page.goto(cart(true, { row: 'cart-row' }));
+      const again = w.open();
+      assert.equal(await raised(again), searched('the group it found, ' + ROWS + ", failed mendwright's list checks ("
+        + REJECTED + ')'));
+      // The way back: the selector in the code, by hand.
+      assert.equal((await again.locatorAll('cart', ROWS, { nonempty: true })).length, 3);
+      assert.equal(rowsOf(w)[ROWS].status, 'active');
+    });
+
+  test('another selector of the key retires nothing', async () => {
+    const { w, heal } = await recorded();
+    w.page.goto(cart(true, { row: 'cart-row' }));
+    await raised(heal);
+    assert.equal((await heal.locatorAll('cart', '.cart-row', { nonempty: true })).length, 3);   // another page's
+    assert.equal(rowsOf(w)[ROWS].status, 'proposed');
+    assert.deepEqual(events(w, 'heal.quarantine'), []);
+  });
+
+  test('a list heal with no proposal is retired by a selector of the code, and only by one', () => {
+    const w = shopPage();
+    const store = loadStore(w.storePath);
+    store.setCodeCandidates('cart', ['.cart-item']);
+    store.proposeListHeal('cart', ROWS, { proposal: { id: 'a', at: 'b', count: 3 } });
+    const data = JSON.parse(fs.readFileSync(w.storePath, 'utf-8'));
+    delete data.selectors.cart.candidates.find((c: Candidate) => c.xpath === ROWS).proposal;   // as 0.8.0 wrote it
+    fs.writeFileSync(w.storePath, JSON.stringify(data));
+    const again = loadStore(w.storePath);
+    again.setCodeCandidates('cart', ['.cart-item']);
+    assert.deepEqual(again.retireListHeals('cart', '.other'), []);
+    assert.deepEqual(again.retireListHeals('cart', '.cart-item'), [[ROWS, 'proposed', 'superseded']]);
+    assert.equal(loadStore(w.storePath).status('cart', ROWS), 'superseded');
+  });
 });

@@ -710,7 +710,8 @@ export class Healer {
 
   /** The Locators of what found ([selector, count]) matched for list key, with the page saved
    * and, when it should be read (see listTarget), the list fingerprint: with where the list sits
-   * when place (nonempty: true) or when the stored one already holds it. */
+   * when place (nonempty: true) or when the stored one already holds it. The key's list heals
+   * that selector was replaced by are retired (see retireLists). */
   private async listFound(key: string, roles: string[] | null, found: [string, number], place = false):
       Promise<Locator[]> {
     const [selector, count] = found;
@@ -719,7 +720,24 @@ export class Healer {
     if (this.listTarget(key, selector, count, place)) {
       this.keepList(key, selector, roles, await this.readList(selector, place), place);
     }
+    this.retireLists(key, selector, count);
     return this.driver.handles(selector);
+  }
+
+  /** End key's list heals that selector, which just matched count elements, replaced
+   * (SelectorStore.retireListHeals): a proposed one is no longer proposed, an accepted one is
+   * quarantined, with a WARNING and a heal.quarantine journal event. A list heal names the
+   * selectors it replaced, so another selector of the key, such as another page's, ends none. */
+  private retireLists(key: string, selector: string, count: number): void {
+    const rows = this.listRows(key);
+    if (!rows.length) return;
+    let changes: [string, string, string][];
+    try {
+      changes = this.store.retireListHeals(key, selector);
+    } catch {
+      return;
+    }
+    if (changes.length) this.coordinator.retiredLists(key, selector, count, changes, rows);
   }
 
   /** True when key's stored list fingerprint holds where the list sits. */

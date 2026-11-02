@@ -260,6 +260,31 @@ print(json.dumps(out))`, { file, before: V1, after: V2, xpath: CARDS, other });
     assert.equal(py.lines[py.lines.length - 3], "'cart' waits for mendwright fix: " + py.waits);
   });
 
+  test("the lines of a list heal retired are the Python package's", () => {
+    const rows = [{ xpath: '//a', status: 'proposed', proposal: { at: '2026-11-01T09:00:00+00:00' } },
+      { xpath: '//b', status: 'accepted', acceptedAt: '2026-11-02T10:20:00+00:00' }, { xpath: '//c', status: 'accepted' },
+      { xpath: '//d', status: 'proposed' }];
+    const changes: [string, string, string][] = [['//a', 'proposed', 'superseded'], ['//b', 'accepted', 'quarantined'],
+      ['//c', 'accepted', 'quarantined'], ['//d', 'proposed', 'superseded'], ['//e', 'accepted', 'quarantined']];
+    const py = runPython<string[]>(PY_HEAD + `
+from mendwright.coordinator import HealCoordinator
+from mendwright.store import load_store
+d = json.load(sys.stdin)
+lines = []
+coord = HealCoordinator(load_store(None, d['file']), provider=object(), html_provider=lambda: '',
+                        inventory_provider=list, guard=lambda: True, log=lines.append)
+coord.retired_lists('cart', '.cart-item', 1, [tuple(c) for c in d['changes']], d['rows'])
+coord.retired_lists("my 'cart'", '.x', 3, [tuple(c) for c in d['changes'][:2]], d['rows'])
+print(json.dumps(lines))`, { file: path.join(tempDir(), 'o.json'), rows, changes });
+    const lines: string[] = [];
+    const coordinator = new HealCoordinator(loadStore(path.join(tempDir(), 'o.json')), {
+      provider: new NoModel(), driver: null as never, journal: new NullJournal(),
+      log: (_level, message) => lines.push(message) });
+    coordinator.retiredLists('cart', '.cart-item', 1, changes, rows as never);
+    coordinator.retiredLists("my 'cart'", '.x', 3, changes.slice(0, 2), rows as never);
+    assert.deepEqual(lines, py);
+  });
+
   test('the state words, printable text, container names, command keys, dates and ordinals', () => {
     const lfp = { v: 1, count: 2, depth: 1, items: [{ v: 1, tag: 'li', classes: ['done', 'todo-item'], shape: {} }],
                   container: { tag: 'ul', id: 'tasks-list', classes: ['list'] }, label: 'Completed tasks' } as ListFingerprint;

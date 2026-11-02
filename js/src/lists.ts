@@ -1370,3 +1370,21 @@ export function cameLine(key: string, selector: string): string {
 export function cameAndWentWhy(selector: string): string {
   return 'the selector in your code, ' + selector + ', matched while mendwright looked and matches nothing now';
 }
+
+/** The INFO line of a proposed list heal of key that selector, which it replaced, ended by
+ * matching again: the proposal was found at at. */
+export function retiredProposedLine(key: string, selector: string, at: unknown): string {
+  return selector + ' matches ' + reprText(key) + ' again, so the list heal found for it on '
+    + (typeof at === 'string' && at ? whenText(at) : 'date unknown') + ' is no longer proposed.';
+}
+
+/** The WARNING of an accepted list heal of key (xpath, accepted at acceptedAt) that selector,
+ * the selector in the code it replaced, quarantined by matching count elements again. */
+export function retiredAcceptedLine(key: string, selector: string, count: number, acceptedAt: unknown, xpath: string):
+    string {
+  return 'the selector in your code for ' + reprText(key) + ', ' + selector + ', matches ' + elementsText(count)
+    + ' again, so the list heal you accepted for it on '
+    + (typeof acceptedAt === 'string' && acceptedAt ? whenText(acceptedAt) : 'date unknown') + ', ' + xpath
+    + ", is quarantined: the list was not broken, or the key is used on more than one page. mendwright fix won't write "
+    + 'it.';
+}
