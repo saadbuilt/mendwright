@@ -248,6 +248,7 @@ DECLINE_CODES = (
     'no_provider',      # no model provider, and the fingerprint did not heal it
     'role_unknown',     # the key's role is unknown, so a heal could not be checked
     'guard',            # guard= blocked heals
+    'store',            # the store could not be read, so nothing is healed until it can be
     'rate_limit',       # the hourly heal limit was reached
     'not_here',         # the model found no element on this page that fits, or was not sure
     'no_proposal',      # the provider gave no usable selector
@@ -616,6 +617,20 @@ class HealCoordinator:
                 'mendwright.open() heals it inside that shadow root; or fix the selector in '
                 'your code.')
 
+    def _store_refusal(self, selector_key):
+        """Why the store refuses every heal now, or '': it could not be read (see
+        mendwright.remote.RemoteSelectorStore.heal_refusal). A store without heal_refusal(),
+        such as a local file, which raises when it cannot be read, never refuses."""
+        refusal = getattr(self.store, 'heal_refusal', None)
+        if not callable(refusal):
+            return ''
+        try:
+            reason = refusal(selector_key)
+        except Exception:
+            logger.debug('mendwright: could not ask the store whether it may heal', exc_info=True)
+            return ''
+        return reason if isinstance(reason, str) else ''
+
     def _unavailable_code(self):
         """The code of a decline because no model provider can be asked: 'disabled' under
         MENDWRIGHT_DISABLE=1, else 'no_provider'."""
@@ -656,6 +671,11 @@ class HealCoordinator:
         outside = self._outside_shadow(selector_key)
         if outside:
             return self._decline(selector_key, outside, code=self._place_code('shadow'))
+        unread = self._store_refusal(selector_key)
+        if unread:
+            # A store that could not be read is never taken for an empty one: a heal would
+            # not know the quarantines and destructive flags saved there.
+            return self._decline(selector_key, unread, code='store')
         if getby.is_key(selector_key):
             if not self.get_by_model:
                 return self._heal_get_by(selector_key, meta, broken_candidates)

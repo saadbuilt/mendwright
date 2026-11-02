@@ -621,8 +621,18 @@ class SoftWrites:
         self._pending = {}          # path -> {key: {'rows': {...}, 'meta': {...}}}
         self._flushed = {}          # (path, key) -> clock() of its last flush
         self._failed = set()        # paths whose flush failed (logged once)
+        # path -> writer(pending) for a store kept elsewhere than a local file (see register).
+        self._writers = {}
         self._hooked = False
         self.clock = time.monotonic
+
+    def register(self, path, writer):
+        """Have flush(path) write the soft changes that wait with writer(pending) instead of
+        editing a local file: for a store kept elsewhere (mendwright.remote), path is its name.
+        writer applies them as _apply_soft() does and writes only when that says so; it raises
+        when the store cannot be read or written, and the changes keep waiting."""
+        with self._lock:
+            self._writers[path] = writer
 
     def record(self, path, key, rows=None, meta=None):
         """Keep a soft change of key in the file at path: rows {xpath: lastSucceededAt} (the
@@ -694,15 +704,20 @@ class SoftWrites:
             now = self.clock()
             for key in pending:
                 self._flushed[(path, key)] = now
-        if not os.path.exists(path):
+            writer = self._writers.get(path)
+        if writer is None and not os.path.exists(path):
             return True     # the store file is gone: soft changes alone never make one
         try:
-            with _locked(path, timeout=SelectorStore.lock_timeout if timeout is None else timeout,
-                         stale_after=(SelectorStore.lock_stale_after if stale_after is None
-                                      else stale_after), sleep=sleep):
-                data, _native = _read(path, sleep=sleep)
-                if _apply_soft(data, pending):
-                    _atomic_write(path, json.dumps(data, separators=(',', ':')), sleep)
+            if writer is not None:
+                writer(pending)
+            else:
+                with _locked(path, timeout=(SelectorStore.lock_timeout if timeout is None
+                                            else timeout),
+                             stale_after=(SelectorStore.lock_stale_after if stale_after is None
+                                          else stale_after), sleep=sleep):
+                    data, _native = _read(path, sleep=sleep)
+                    if _apply_soft(data, pending):
+                        _atomic_write(path, json.dumps(data, separators=(',', ':')), sleep)
         except Exception as exc:
             for key, delta in pending.items():
                 self.record(path, key, delta['rows'], delta['meta'])
@@ -723,6 +738,7 @@ class SoftWrites:
             self._pending.clear()
             self._flushed.clear()
             self._failed.clear()
+            self._writers.clear()
 
     def flush_all(self):
         """flush() every file with soft changes that wait. Runs when the process exits."""
@@ -2202,6 +2218,15 @@ def _call_keys(data, path):
     return dict(data, selectors=renamed)
 
 
+def _is_remote(override_path):
+    """True for a store URL (see backends.url.is_store_url) or a StoreBackend object."""
+    from .backends.url import is_store_url
+    if is_store_url(override_path):
+        return True
+    return all(callable(getattr(override_path, name, None))
+               for name in ('get', 'put', 'delete', 'describe'))
+
+
 def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_only=False):
     """A SelectorStore over a read-only seed file and a writable override file.
 
@@ -2212,7 +2237,14 @@ def load_store(seed_path, override_path, destructive_keys=frozenset(), *, read_o
     ValueError) naming the file, and so does a seed with two keys for one get_by_* call.
     Relative paths are read from the current directory, and '~' is expanded.
     read_only=True gives a store that never writes the override file: changes stay in
-    memory (`mendwright check` reads its store this way)."""
+    memory (`mendwright check` reads its store this way).
+
+    override_path may also be a store URL (s3://bucket/prefix/, https://host/path/, memory:)
+    or a StoreBackend: the override file is then overrides.json there (see
+    mendwright.remote.load_remote_store), and the seed file stays a local file."""
+    if _is_remote(override_path):
+        from .remote import load_remote_store
+        return load_remote_store(seed_path, override_path, destructive_keys, read_only=read_only)
     override_path = _expand(override_path)
     if seed_path is None:
         seed = _empty()
