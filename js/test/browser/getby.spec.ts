@@ -266,8 +266,9 @@ test('a call that matches only inside an iframe is not followed, and heals on th
 });
 
 test.describe('the fixtures', () => {
-  const store = tempStore('getby-fixture');
-  test.use({ mendwrightOptions: { healGetBy: true, timeoutMs: 1000 }, mendwrightStore: store });
+  // A store of its own for each run of the test, so a run never finds the heal an earlier one saved.
+  test.use({ mendwrightOptions: { healGetBy: true, timeoutMs: 1000 },
+    mendwrightStore: async ({}, use) => use(tempStore('getby-fixture')) });
 
   test('mendwrightOptions: { healGetBy: true } heals the page fixture\'s getBy* calls', async ({ page, heal }) => {
     const redesign = await site(page as Page, '<button id="login" type="button" onclick="done(\'login\')">Sign in</button>');
