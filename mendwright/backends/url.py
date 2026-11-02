@@ -102,9 +102,11 @@ def _folder(path):
     if last == OVERRIDES:
         return head + '/' if head else ''
     if last.lower().endswith('.json'):
+        # The name is not quoted: no part of a refused URL is.
         raise ValueError(
-            'the store URL ends in ' + last + ', a file: a remote store URL names the folder '
-            'that holds overrides.json and keys/, such as s3://bucket/prefix/')
+            'the store URL ends in a .json file name other than overrides.json, a file: a '
+            'remote store URL names the folder that holds overrides.json and keys/, such as '
+            's3://bucket/prefix/')
     return path + '/'
 
 

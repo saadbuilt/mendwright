@@ -1037,6 +1037,7 @@ def test_backend_for_memory_is_a_new_memory_backend_each_time():
     ('localhost:8787/x/', 'not localhost:'),
     ('s3://store-bucket/x/store.json', 'a file'),
     ('https://store.example.com/x/store.json', 'a file'),
+    ('https://store.example.com/x/SECRETVALUE.json', 'a file'),
     ('s3://Store_Bucket/x/', 'not an S3 bucket name'),
     ('s3://store-bucket:9000/x/', 'no port'),
     ('s3:///x/', 'needs a bucket'),
