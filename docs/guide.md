@@ -46,7 +46,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `page` | required | A sync Playwright `Page` or `Frame` (patchright and camoufox too), a Selenium WebDriver, or a driver you registered with `register_driver` |
 | `provider` | `auto_provider()` | The model provider. If none can be built, selectors still resolve, only [fingerprint heals](#heals-without-a-model) happen, other heals are declined with the reason, and one WARNING is logged. |
 | `fingerprint` | `MENDWRIGHT_FINGERPRINT`, else on | Look for the element from its saved fingerprint before any model call. `False` turns it off. See [Heals without a model](#heals-without-a-model). |
-| `store_path` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | Where heals are saved. `~` is expanded. Relative paths are relative to the current directory. |
+| `store_path` | `MENDWRIGHT_STORE`, else `./.mendwright/overrides.json` | Where heals are saved: a file, or a store URL such as `s3://bucket/prefix/` (see [Remote stores](remote-store.md)). In a path, `~` is expanded, and a relative path is relative to the current directory. |
 | `store` | built from `store_path` | A `SelectorStore`, for example from `load_store()` with a seed file |
 | `timeout_ms` | `MENDWRIGHT_TIMEOUT_MS`, else 10000 | How long `locator()` polls before it treats a selector as broken |
 | `dry_run` | `MENDWRIGHT_DRY_RUN`, else off | Ask for heals and check each proposal against the captured HTML only (no live-page check), but save nothing and raise `AttentionRequired` |
@@ -55,7 +55,7 @@ Every setting is a keyword argument. An argument you pass wins over the matching
 | `rate_per_key_per_hour` | `MENDWRIGHT_RATE_PER_KEY_PER_HOUR`, else 3 | Heal attempts per key per hour for a direct provider (rejected and dry-run attempts count, and each attempt makes up to 2 model calls), for every process on the machine that uses the same store file together. `None` removes the limit. |
 | `rate_global_per_hour` | `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`, else 60 | Heal attempts per hour across all keys for a direct provider. `None` removes the limit. |
 | `guardrails` | built from the two rates | A `mendwright.limits.Guardrails`, for example with a `SpendCap(max_calls=...)` added |
-| `journal` | `journal.jsonl` next to the store | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
+| `journal` | `journal.jsonl` next to the store file, or in `MENDWRIGHT_JOURNAL_DIR` (default `./.mendwright`) for a store URL | A `mendwright.journal.Journal`, or `NullJournal()` to write none |
 | `cookies` | `None` | `"reject"` or `"accept"` registers an interruption for the consent banners of common consent managers, under the key `cookie_banner`. `None` clicks nothing you didn't ask for. See [Cookie banners](#cookie-banners). |
 | `heal_across_pages` | `False` | `True` lets a key heal on a page where it was never found. See [Steps that moved to another page](#steps-that-moved-to-another-page). |
 | `dismiss` | `False` | `True` dismisses a popup nobody registered, such as a newsletter modal, when it covers the element of an action. `False` makes no browser call for it. See [Popups mendwright wasn't told about](#popups-mendwright-wasnt-told-about). |
@@ -2068,7 +2068,7 @@ Pass the result as `mendwright.open(page, store=load_store(...))`.
 
 ### journal.jsonl
 
-Every heal step appends one JSON line to `journal.jsonl` next to the store:
+Every heal step appends one JSON line to `journal.jsonl` next to the store (for a store URL, in `MENDWRIGHT_JOURNAL_DIR`):
 
 ```text
 {"ts":"2026-10-10T19:07:53+00:00","event":"heal.requested","key":"accept_terms"}
