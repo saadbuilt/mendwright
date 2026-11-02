@@ -4,7 +4,7 @@ Self-healing selectors for Playwright Test.
 
 mendwright heals many broken selectors without any API key. Each time a selector matches, it saves a fingerprint of the element: its tag, ids, names, label, text and surroundings. When a site update breaks the selector, mendwright looks for that element first, checks the new XPath against the live page, saves it, and retries the step. It asks a model only when the fingerprint match isn't confident. On the next run the saved selector is used and nothing is asked.
 
-This is the first release of the TypeScript package, 0.1.0. It is a port of the [Python package](https://github.com/saadbuilt/mendwright) for Playwright Test, with its fingerprint scoring, its checks and its store file, but not yet everything the Python package does: see [Not in 0.1.0](#not-in-010).
+This is the TypeScript package 0.2.0, a port of the [Python package](https://github.com/saadbuilt/mendwright) for Playwright Test: its fingerprint scoring, its checks and its store file, and its runtime features, popups nobody registered, checks of what a read returns, interruptions that need a form, steps in any order, iframes, shadow roots, lists and `getBy*` calls. It has no command line of its own: the Python package's commands run on the store it writes (see [The command line](#the-command-line)). What it leaves out is listed in [Not in 0.2.0](#not-in-020).
 
 ## Install
 
@@ -586,13 +586,39 @@ The journal has the Python package's events, with the same fields: each line has
 
 `MENDWRIGHT_DISABLE=1` resolves selectors but never heals or calls a provider, even one passed as `provider`. The fixtures take `mendwrightProvider`, `mendwrightStore`, `mendwrightOptions` (any other `open()` option), `mendwrightPage` and `mendwrightStrict` through `test.use()`.
 
-## Not in 0.1.0
+## The command line
+
+This package has no command line. The Python package's commands read and write the same store, so a team that writes its tests in TypeScript runs them with [pipx](https://pipx.pypa.io/), with no Python project of its own. Each takes the store with `--store`: `.mendwright/overrides.json` next to your Playwright config, unless `mendwrightStore` or `MENDWRIGHT_STORE` puts it elsewhere.
+
+```bash
+pipx run mendwright report --store .mendwright/overrides.json                   # what was healed, and where
+pipx run mendwright fix --store .mendwright/overrides.json --glob "*.ts"        # what fix would write: a dry run
+pipx run mendwright fix --apply --store .mendwright/overrides.json --glob "*.ts"
+pipx run mendwright lists --store .mendwright/overrides.json                    # list heals that wait for you
+pipx run mendwright notify --store .mendwright/overrides.json                   # a run's summary, to MENDWRIGHT_WEBHOOK_URL
+```
+
+`mendwright fix` searches Python files only unless you name others, so pass `--glob "*.ts"`, and `--glob "*.tsx"` or another for each other kind of file your selectors are in. It writes back only heals your tests confirmed. In a TypeScript file it reads the file line by line, leaves comments alone, and replaces a string in single, double or backtick quotes whose whole value is the old selector, in the quotes the new selector needs: `page.fill('#email', ...)` becomes `page.fill("//input[@id='user-email']", ...)`. It does so wherever such a string is, a constant that holds the selector included, and the tests of this package check that the file it writes still parses. It never rewrites a `heal.page.getBy*()` call: it lists the call with its healed selector instead. When `heal.locator()` passed two selectors that both broke, both are replaced by the healed one, which `heal.locator()` then tries once.
+
+`mendwright check`, the drift check before a run, opens a browser with the Python package's Playwright, so it needs both. In a virtual environment:
+
+```bash
+python -m venv .mw && . .mw/bin/activate
+pip install "mendwright[playwright]" && python -m playwright install chromium
+mendwright check --store .mendwright/overrides.json --base-url https://staging.example.com
+```
+
+The GitHub Action that opens a pull request with confirmed heals works the same way. Upload `.mendwright/overrides.json` and `.mendwright/journal.jsonl` from your Playwright job, as the Python package's guide shows for a pytest job, and pass the files to search with its `globs` input, `globs: "*.ts"`. Its `working-directory` and `store` inputs say where your code and the store are, when the Playwright config isn't at the root of the repository. See [CI](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#ci) in the Python package's guide.
+
+## Not in 0.2.0
 
 These are in the Python package and not in this one yet:
 
 - Selenium. This package works with Playwright only.
-- `mendwright check`, the drift check before a run.
-- `mendwright fix`, which writes confirmed heals back into your code, and the GitHub Action that opens a pull request with them.
+- A command line: `mendwright report`, `fix`, `check`, `lists` and `notify`, and the GitHub Action, are the Python package's, and work on this package's store (see [The command line](#the-command-line)). So is `heal.drift()`, the drift check from a test of your own.
+- The Python package 0.11's stores at a URL (`s3://`, `https://`) and its coordination of many workers: one heal of a key for all of them, declines they share, and the per-key records it keeps in `keys/`. This package keeps a local `overrides.json`, which it shares with the Python package, and each process heals for itself.
+- The Python package 0.11's `heal_get_by='model'` and the `get_by` call it suggests next to a heal: here a `getBy*` call heals from its fingerprint only, and a heal saves no suggested call, though one the Python package saved is kept.
+- `MENDWRIGHT_RATE_PER_KEY_PER_HOUR` and `MENDWRIGHT_RATE_GLOBAL_PER_HOUR`: the hourly limits are the `ratePerKeyPerHour` and `rateGlobalPerHour` options of `open()` here.
 
 And, compared with the Python package's `heal.locator()`, `heal.locator_all()`, `heal.interrupt()` and `heal.step()`:
 
