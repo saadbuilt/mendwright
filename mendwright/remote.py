@@ -372,7 +372,8 @@ class RemoteSelectorStore(SelectorStore):
         and a look now does not read it either (see the module docstring)."""
         if self.unread is None:
             return ''
-        self._read_again()
+        if not self._read_only:     # a snapshot never reads the store again
+            self._read_again()
         return self.unread or ''
 
     def _read_again(self, max_age=0.0):

@@ -945,8 +945,9 @@ def remote_refusal(command, value):
         how = ('curl -fsS -o ' + copy + ' -H "Authorization: Bearer $MENDWRIGHT_STORE_TOKEN" '
                + url + 'overrides.json')
     if command in ('lists accept', 'lists reject'):
-        then = ('mendwright lists --store ' + copy + ' to see its list heals; accept or reject '
-                'them where the store is written, not on a copy')
+        then = ('mendwright lists --store ' + copy + ' to see its list heals. Accepting or '
+                'rejecting one in a remote store is not supported yet, and a copy uploaded over '
+                'a store that workers write would lose their changes')
     else:
         then = 'mendwright ' + command + ' --store ' + copy
     return (head + "remote stores aren't supported by this command yet (" + url + '). Download '

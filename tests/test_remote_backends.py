@@ -26,7 +26,7 @@ from test_remote_store import _health_is_fresh  # noqa: F401  (an autouse fixtur
 ROLE = 'checkbox'
 WRONG = 'wrong-token-OTHERSECRET-9876543210'
 AWS_SECRET = 'aws-secret-SECRETVALUE-key'
-SECRETS = ('SECRETVALUE', 'OTHERSECRET')
+SECRETS = ('SECRETVALUE', 'OTHERSECRET', TOKEN)
 
 
 class Remote:

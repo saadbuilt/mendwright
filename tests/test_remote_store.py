@@ -332,3 +332,14 @@ def test_a_read_gives_the_last_copy_when_the_store_stops_answering(make_page, st
     assert [c['xpath'] for c in store.candidates(KEY)] == [CODE]
     assert store.unread is None and store.heal_refusal(KEY) == ''
 
+
+
+def test_a_snapshot_of_a_store_that_could_not_be_read_never_asks_again():
+    backend = Faulty()
+    backend.fail['get'] = Unavailable('memory: not now')
+    store = load_store(None, backend)
+    snapshot = store.snapshot()
+    asked = len(backend.calls)
+    assert snapshot.heal_refusal(KEY) == store.unread
+    assert snapshot.refresh(KEY) is False
+    assert len(backend.calls) == asked
