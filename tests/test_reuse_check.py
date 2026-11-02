@@ -217,6 +217,8 @@ def test_present_and_is_visible_leave_a_refused_heal_out(tmp_path, make_page, st
 
 def test_a_saved_heal_of_a_get_by_role_call_needs_the_calls_aria_role(tmp_path, make_page,
                                                                        stub_provider):
+    # getby.GetByNotFound is also Playwright's TimeoutError, so it needs Playwright.
+    pytest.importorskip('playwright.sync_api')
     key = 'get_by_role("button", name="Sign in")'
     heal_xpath = "//button[@id='login']"
     store = _write(tmp_path / 'overrides.json',
