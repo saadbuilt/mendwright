@@ -431,6 +431,42 @@ def test_a_quarantine_the_store_holds_survives_a_worker_that_opened_during_an_ou
     assert _rows(backend.inner)[HEALED]['status'] == 'quarantined'
 
 
+def test_a_store_read_again_that_cannot_be_taken_in_stays_unread(make_page, stub_provider,
+                                                                  tmp_path):
+    # It answers again with a row _parse() accepts and the merge cannot take. A step whose
+    # code selector matches still passes, memory stays as it was, and heals stay refused.
+    store, backend = _unread(lambda s: s.set_meta(KEY, role=ROLE))
+    doc = _doc(backend.inner)
+    doc['selectors'] = dict({'aaa_other': {'candidates': 5}}, **doc['selectors'])
+    backend.inner.put(OVERRIDES, json.dumps(doc).encode('utf-8'))
+    _read_again(store, backend)
+    assert 'TypeError' in store.heal_refusal(KEY) and store.unread_error == 'TypeError'
+    assert store._data['selectors'] == {}               # nothing taken in
+    page = make_page(V1, url=URL)
+    _open(page, store, tmp_path, stub_provider(None)).locator(KEY, CODE, role=ROLE).check()
+    assert page.actions[-1][:2] == ('css=' + CODE, 'check') and store.unread
+    provider = stub_provider(HEALED)
+    with pytest.raises(AttentionRequired, match='could not read the store'):
+        _open(make_page(V2, url=URL), store, tmp_path, provider).locator(KEY, CODE).check()
+    assert provider.bundles == [] and [w for w in backend.writes() if w[1] == OVERRIDES] == []
+
+
+def test_a_store_that_cannot_say_whether_it_was_read_refuses_heals(make_page, stub_provider,
+                                                                   tmp_path, monkeypatch):
+    store, _ = _unread(lambda s: s.set_meta(KEY, role=ROLE))
+
+    def refusal(key=None):
+        raise ConnectionResetError(104, 'Connection reset by peer')
+    monkeypatch.setattr(store, 'heal_refusal', refusal)
+    provider = stub_provider(HEALED)
+    heal = _open(make_page(V2, url=URL), store, tmp_path, provider)
+    with pytest.raises(AttentionRequired, match='could not tell whether it read the store'):
+        heal.locator(KEY, CODE, role=ROLE).check()
+    assert provider.bundles == [] and heal.heals == []
+    [declined] = [e for e in _journal(tmp_path) if e['event'] == 'heal.declined']
+    assert declined['code'] == 'store'
+
+
 def test_a_body_that_is_not_a_selector_file_is_not_an_empty_store(make_page, stub_provider,
                                                                    tmp_path):
     backend = MemoryBackend()

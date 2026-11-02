@@ -624,15 +624,19 @@ class HealCoordinator:
     def _store_refusal(self, selector_key):
         """Why the store refuses every heal now, or '': it could not be read (see
         mendwright.remote.RemoteSelectorStore.heal_refusal). A store without heal_refusal(),
-        such as a local file, which raises when it cannot be read, never refuses."""
+        such as a local file, which raises when it cannot be read, never refuses. One whose
+        heal_refusal() raises refuses: it could not tell that it was read."""
         refusal = getattr(self.store, 'heal_refusal', None)
         if not callable(refusal):
             return ''
         try:
             reason = refusal(selector_key)
-        except Exception:
+        except Exception as exc:
             logger.debug('mendwright: could not ask the store whether it may heal', exc_info=True)
-            return ''
+            return ('mendwright could not tell whether it read the store (' + type(exc).__name__
+                    + (': ' + str(exc) if str(exc) else '') + '). It never takes a store it '
+                    'cannot read for an empty one, which could undo a quarantine or a destructive '
+                    'flag saved there, so it heals nothing until it can tell.')
         return reason if isinstance(reason, str) else ''
 
     def _unavailable_code(self):

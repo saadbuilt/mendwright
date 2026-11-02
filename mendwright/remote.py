@@ -385,12 +385,19 @@ class RemoteSelectorStore(SelectorStore):
 
     def _read_again(self, max_age=0.0):
         """Read the store that could not be read when it loaded, and take it all in: True when
-        it is read now. A store that still cannot be read keeps its reason."""
+        it is read now. A store that still cannot be read keeps its reason, and so does one
+        whose read or take-in fails in any other way (a backend that lets an OSError through,
+        a row _parse() accepts and the merge cannot take): memory stays as it was, and
+        refresh() and heal_refusal() never raise."""
         try:
             data, version = self._latest((), max_age)
+            if data is not None:
+                # Tried on a copy first: a take-in that fails half way would leave memory
+                # neither as it was nor as the store is.
+                self.snapshot()._absorb(copy.deepcopy(data))
         except _Waiting:
             return False        # not asked: the reason the store gave stays
-        except (BackendError, StoreReadError) as exc:
+        except Exception as exc:
             self.unread = _unread_reason(self.remote_place, exc)
             self.unread_error = type(exc).__name__
             return False
