@@ -1306,7 +1306,9 @@ class SelectorStore:
 
     def record_success(self, key, xpath, *, now=None):
         c = self._find(key, xpath)
-        if c is None:
+        if c is None or c.get('status', 'active') != 'active':
+            # Quarantined or superseded since the lookup listed it (another worker's change
+            # taken in meanwhile): a success here never undoes that, whatever the row's source.
             return False
         if c.get('lastSucceededAt') is None and c.get('source') != 'seed':
             # A first success is written at once, unless another worker already recorded

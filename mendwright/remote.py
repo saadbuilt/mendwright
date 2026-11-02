@@ -363,9 +363,16 @@ class RemoteSelectorStore(SelectorStore):
     # --- reading ------------------------------------------------------------------------------
 
     def refresh(self, key, *, max_age=0.0):
-        if self.unread is not None and not self._read_only:
-            self._read_again(max_age)
-        return super().refresh(key, max_age=max_age)
+        """SelectorStore.refresh(), and for a store that could not be read when it loaded, a
+        read of it first. True when either changed key in memory: a lookup that reads the
+        store after an outage must see the quarantines it took in for key (see
+        resolver._used), or it would use the row and save it as active again."""
+        if self.unread is None or self._read_only:
+            return super().refresh(key, max_age=max_age)
+        before = self._key_state(key)
+        self._read_again(max_age)
+        changed = super().refresh(key, max_age=max_age)
+        return changed or self._key_state(key) != before
 
     def heal_refusal(self, key=None):
         """Why no heal may run on this store now, or '': it could not be read when it loaded,

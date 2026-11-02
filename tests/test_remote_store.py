@@ -284,7 +284,7 @@ def _unread(setup, seed_path=None):
     """(store, backend): a store that could not be read when it opened, over a store whose
     overrides.json setup(a store that could) wrote. Its copy holds the seed alone."""
     inner = MemoryBackend()
-    writer = load_store(None, inner)
+    writer = load_store(seed_path, inner)
     setup(writer)
     assert writer.flush()
     backend = Faulty(inner)
@@ -386,6 +386,49 @@ def test_drift_says_a_store_that_cannot_be_read_follows_no_key(stub_provider, tm
     heal = _open(TwoDocs(INNER), store, tmp_path, stub_provider(None), heal_across_pages=True)
     [k] = heal.drift(['terms'], timeout_ms=0).keys
     assert k.verdict == 'refused' and 'could not read the store ' + store.remote_place in k.reason
+
+
+@pytest.mark.parametrize('kind', ['sync', 'async'])
+def test_a_quarantine_the_store_holds_survives_a_worker_that_opened_during_an_outage(
+        kind, make_page, stub_provider, tmp_path):
+    # The seed gives KEY the row HEALED, and the store holds it quarantined. A worker that
+    # opened while the store could not be read uses the row, as its seed says. The lookup
+    # that reads the store once it answers takes the quarantine in: it must not use the row,
+    # nor save it as active again over the store's quarantine.
+    import asyncio
+
+    import mendwright.aio
+    from test_aio import AsyncFakePage
+    seed = tmp_path / 'seed.json'
+    seed.write_text(json.dumps({'schema': 2, 'selectors': {KEY: {
+        'expectedRole': ROLE, 'candidates': [{'xpath': HEALED, 'source': 'seed'}]}}}),
+        encoding='utf-8')
+    store, backend = _unread(lambda s: s.quarantine(KEY, HEALED), str(seed))
+    assert _rows(backend.inner)[HEALED]['status'] == 'quarantined'
+    page = make_page(V2, url=URL)
+    if kind == 'sync':
+        heal = _open(page, store, tmp_path, stub_provider(None))
+
+        def check():
+            heal.locator(KEY, CODE, role=ROLE).check()
+    else:
+        async def look():
+            heal = await mendwright.aio.open(AsyncFakePage(page), store=store, timeout_ms=0,
+                                             fingerprint=False)
+            await (await heal.locator(KEY, CODE, role=ROLE)).check()
+
+        def check():
+            asyncio.run(look())
+    check()                                             # the seed's row, during the outage
+    assert page.actions[-1][:2] == ('xpath=' + HEALED, 'check')
+    _read_again(store, backend)
+    page.actions.clear()
+    with pytest.raises(AttentionRequired):
+        check()
+    assert page.actions == [] and store.unread is None
+    assert store.status(KEY, HEALED) == 'quarantined'
+    store.flush()
+    assert _rows(backend.inner)[HEALED]['status'] == 'quarantined'
 
 
 def test_a_body_that_is_not_a_selector_file_is_not_an_empty_store(make_page, stub_provider,

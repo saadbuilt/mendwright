@@ -126,6 +126,22 @@ class PersistTests(unittest.TestCase):
             store.quarantine('k', '//healed')
             self.assertNotIn('//healed', [c['xpath'] for c in store.candidates('k')])
 
+    def test_a_success_never_makes_a_row_active_again(self):
+        # A lookup that listed the row before a quarantine or a supersede reached this store
+        # leaves it as it is, whatever its source: a seed row has no first-success look.
+        with tempfile.TemporaryDirectory() as d:
+            store, _ovr = self._store(d)
+            store.add_candidate('k', '//healed', source='heal', now='2026-10-06T13:00:00')
+            store.record_success('k', '//healed', now='2026-10-06T13:01:00')
+            store.quarantine('k', '//healed')
+            self.assertFalse(store.record_success('k', '//healed', now='2026-10-06T13:02:00'))
+            self.assertEqual(store.status('k', '//healed'), 'quarantined')
+            store._entry('k')['candidates'].append(
+                {'xpath': '//seeded', 'source': 'seed', 'addedAt': None,
+                 'lastSucceededAt': None, 'status': 'superseded'})
+            self.assertFalse(store.record_success('k', '//seeded', now='2026-10-06T13:03:00'))
+            self.assertEqual(store.status('k', '//seeded'), 'superseded')
+
     def test_corrupt_override_raises_and_names_the_file(self):
         # Reading it as empty would drop its destructive flags and quarantines, and the
         # next write would replace it.
