@@ -35,10 +35,14 @@ def _saved(tmp_path):
     return json.loads((tmp_path / 'overrides.json').read_text(encoding='utf-8'))
 
 
-def test_a_herd_on_a_key_the_store_never_saw_saves_it_once(tmp_path, make_page, writes):
+def test_a_herd_on_a_key_the_store_never_saw_saves_it_once(tmp_path, make_page, writes,
+                                                           monkeypatch):
     # The store file does not exist yet: every worker registers the same code selector and
     # role, one heals, the others adopt its heal. Every worker used to write the selector and
-    # the role itself, 2 writes each, under one lock.
+    # the role itself, 2 writes each, under one lock. The store's clock stands still: a
+    # success an adopter records in the next second is a newer lastSucceededAt, which its
+    # store writes as a change of its own.
+    monkeypatch.setattr(store_module, '_now_iso', lambda: '2026-11-03T00:00:00+00:00')
     calls, release, changed = [], threading.Event(), threading.Condition()
     workers = []
     for _ in range(N):
