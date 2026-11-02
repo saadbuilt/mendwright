@@ -87,10 +87,15 @@ jobs:
           allow-prereleases: true
           cache: pip
           cache-dependency-path: pyproject.toml
-      - name: Install the package with test extras
+      - name: Install the package and pytest
+        run: python -m pip install -e . "pytest>=7" cssselect
+      # moto's dependencies (cffi, PyYAML) may have no wheel for a new Python yet. The S3 store
+      # tests skip without moto and boto3, and the rest of the suite still runs.
+      - name: Install the test extras for the S3 store tests
+        continue-on-error: true
         run: python -m pip install -e ".[test]"
       - name: Run the offline suite
-        run: python -m pytest -q
+        run: python -m pytest -q -rs
 
   # The oldest versions pyproject.toml claims to support: lxml>=5 and pytest>=7.
   lowest-deps:
