@@ -33,5 +33,7 @@ export { WAITING_STEP } from './steps';
 export type { RunStepsOptions, StepFunction, StepOptions } from './steps';
 export { parseMoney, parseNumber } from './values';
 export type { ExpectValue, ValueName } from './values';
+export { getByKey } from './getby';
+export type { GetByMethod } from './getby';
 
 export const version = '0.1.0';

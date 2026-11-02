@@ -25,9 +25,10 @@ import type { Page } from '@playwright/test';
 
 import { InvalidSelector } from './errors';
 import { valueText } from './flow';
+import { isKey, reservedKeyMessage } from './getby';
 import { pyRepr } from './py';
 import { roleChoices } from './roles';
-import { XPATH, checkSyntax, classify, isGetByCall, normalize, stripPrefix } from './selectors';
+import { XPATH, checkSyntax, classify, normalize, stripPrefix } from './selectors';
 import { IDENTIFIER } from './values';
 
 export const COOKIE_BANNER_KEY = 'cookie_banner';
@@ -90,10 +91,7 @@ export function makeInterruption(key: unknown, selector: unknown, options: Inter
     throw new TypeError("mendwright: heal.interrupt() needs a key, a non-empty name such as 'cookies', got "
       + pyRepr(key) + '.');
   }
-  if (isGetByCall(key)) {
-    throw new TypeError('mendwright: ' + pyRepr(key) + ' is how the Python package names a heal.page.get_by_*() '
-      + 'call in the store, so heal.interrupt() cannot take it as a key. Pick another key.');
-  }
+  if (isKey(key)) throw new TypeError(reservedKeyMessage(key, 'heal.interrupt()'));
   const items = Array.isArray(selector) ? selector : [selector];
   if (!items.length) {
     throw new TypeError('mendwright: heal.interrupt(' + pyRepr(key) + ', []) got an empty list. Pass the selector of '

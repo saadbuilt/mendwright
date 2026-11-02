@@ -1,8 +1,11 @@
-// Selector kinds, as the Python package reads them (mendwright/selectors.py): XPath, CSS,
-// or a Playwright engine selector. A string written as a get_by_* call is how the Python
-// package names a heal.page.get_by_*() call in the store, so it is never a selector or a
-// key here.
+// Selector kinds, as the Python package reads them (mendwright/selectors.py): XPath, CSS, a
+// Playwright engine selector, or a get_by_* call.
 //
+// - A getBy* call written out as the Python package writes it, such as
+//   get_by_role("button", name="Go"), is the kind 'get_by' (see getby.ts): the key and the
+//   selector of a heal.page.getBy*() call. Only the driver runs one, and checkSyntax() refuses
+//   it unless the caller runs stored candidates ({ calls: true }), so heal.locator() and the
+//   others never take one.
 // - "xpath=...", or anything starting with "/", "(", "./" or ".." is XPath.
 // - "css=..." is CSS.
 // - "text=", "role=", "data-testid=", "internal:..." and any other "name=" prefix is a
@@ -13,6 +16,7 @@
 // the browser the first time they run, and an error there becomes the same InvalidSelector.
 
 import { InvalidSelector } from './errors';
+import { canonical, parse, tsMethodOf, type GetByCall } from './getby';
 import { pyRepr } from './py';
 
 export const XPATH = 'xpath';
@@ -24,16 +28,9 @@ export type SelectorKind = typeof XPATH | typeof CSS | typeof ENGINE | typeof GE
 const XPATH_STARTS = ['/', '(', './', '..'];
 const ENGINE_PREFIX = /^(?:internal:|_?[A-Za-z][\w-]*=)/;
 const ENGINE_PREFIX_ONLY = /^(?:internal:|_?[A-Za-z][\w-]*=)$/;
-const GET_BY_CALL = /^get_by_(?:role|text|label|placeholder|alt_text|title|test_id)\s*\([\s\S]*\)$/;
 
 const TYPE_HINT = "pass a selector string such as '#save' or \"role=button[name='Save']\"; "
   + "Locator objects can't be stored";
-
-/** True for a string written as a get_by_* call, such as get_by_role("button", name="Go"):
- * the Python package's key for a heal.page.get_by_*() call. */
-export function isGetByCall(text: unknown): boolean {
-  return typeof text === 'string' && text.length <= 1000 && GET_BY_CALL.test(text.trim());
-}
 
 function requireString(selector: unknown): asserts selector is string {
   if (typeof selector !== 'string') {
@@ -71,7 +68,7 @@ function isChain(text: string): boolean {
 export function classify(selector: unknown): SelectorKind {
   requireString(selector);
   const text = selector.trim();
-  if (isGetByCall(text)) return GET_BY;
+  if (text.startsWith('get_by_') && parse(text) !== null) return GET_BY;
   if (isChain(text)) return ENGINE;
   if (text.startsWith('xpath=')) return XPATH;
   if (XPATH_STARTS.some((start) => text.startsWith(start))) return XPATH;
@@ -90,19 +87,23 @@ export function stripPrefix(selector: string): string {
 }
 
 /** The spelling mendwright stores a selector under: trimmed, and without an 'xpath=' or
- * 'css=' prefix that does not change its kind. Python's selectors.normalize(). */
+ * 'css=' prefix that does not change its kind. A get_by_* call gets its key's spelling
+ * (getby.canonical). Python's selectors.normalize(). */
 export function normalize(selector: string): string {
   const kind = classify(selector);
   const body = stripPrefix(selector);
-  if (kind === ENGINE || kind === GET_BY) return body;
+  if (kind === GET_BY) return canonical(parse(body) as GetByCall);
+  if (kind === ENGINE) return body;
   if (body && classify(body) === kind) return body;
   return (kind === XPATH ? 'xpath=' : 'css=') + body;
 }
 
 /** Check what can be checked without a browser, and return the selector's kind. A
- * non-string raises TypeError; an empty selector, one that is only a prefix, or a get_by_*
- * call raises InvalidSelector. */
-export function checkSyntax(selector: unknown): SelectorKind {
+ * non-string raises TypeError; an empty selector, or one that is only a prefix, raises
+ * InvalidSelector, and so does a get_by_* call unless calls is true, which the code that
+ * runs stored candidates passes (the resolver and the driver): a call is the key of a
+ * heal.page.getBy*() call, never a selector of heal.locator() and the others. */
+export function checkSyntax(selector: unknown, options: { calls?: boolean } = {}): SelectorKind {
   requireString(selector);
   if (!selector.trim()) {
     throw InvalidSelector.build(selector, 'the selector is empty.',
@@ -110,9 +111,10 @@ export function checkSyntax(selector: unknown): SelectorKind {
   }
   const kind = classify(selector);
   if (kind === GET_BY) {
+    if (options.calls) return kind;
     throw InvalidSelector.build(selector, pyRepr(selector) + ' is a get_by_* call, not a selector.',
-      'mendwright for TypeScript does not heal get_by_* calls yet. Pass an XPath, CSS or '
-      + 'Playwright selector.');
+      'Call heal.page.' + tsMethodOf((parse(selector) as GetByCall).method) + '(...) on open(page, '
+      + '{ healGetBy: true }), or pass an XPath, CSS or Playwright selector.');
   }
   const body = stripPrefix(selector);
   if (!body || (kind === ENGINE && ENGINE_PREFIX_ONLY.test(body))) {

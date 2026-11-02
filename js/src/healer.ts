@@ -54,6 +54,7 @@ import {
 } from './flow';
 import { frameCandidates, frameMessage, framePlan, type FrameMatch } from './frames';
 import { liveReason } from './gate';
+import { isKey, reservedKeyMessage } from './getby';
 import {
   COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, functionName, makeInterruption, nthTargets,
   type CookieChoice, type InterruptOptions, type Interruption, type InterruptionEvent, type RunFunction,
@@ -70,7 +71,7 @@ import { pyLen, pyRepr, pySlice } from './py';
 import { noMatchMessage, peekVisible, present as presentNow, resolve, splitRunnable } from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { driverShadowed, followAllowed, healPlace, shadowUnreachable, type HealScope } from './scope';
-import { CSS, XPATH, checkSyntax, classify, isGetByCall, normalize } from './selectors';
+import { CSS, XPATH, checkSyntax, classify, normalize } from './selectors';
 import {
   hostsOf, placeText, runTarget, shadowFound, shadowMessage, shadowPlan, shadowText, type ShadowFound, type Target,
 } from './shadow';
@@ -531,10 +532,7 @@ export class Healer {
     if (typeof key !== 'string' || !key) {
       throw new TypeError('mendwright: heal.locator() needs a key, a non-empty name such as "email", got ' + pyRepr(key) + '.');
     }
-    if (isGetByCall(key)) {
-      throw new TypeError('mendwright: ' + pyRepr(key) + ' is how the Python package names a heal.page.get_by_*() call '
-        + 'in the store, so heal.locator() cannot take it as a key. Pick another key.');
-    }
+    if (isKey(key)) throw new TypeError(reservedKeyMessage(key, 'heal.locator()'));
     const intent = options.intent;
     if (intent !== undefined && (typeof intent !== 'string' || !intent.trim())) {
       throw new TypeError('mendwright: intent for ' + pyRepr(key) + ' takes a description of the element in words, got '
@@ -604,10 +602,7 @@ export class Healer {
       throw new TypeError('mendwright: heal.locatorAll() needs a key, a non-empty name such as "cards", got '
         + pyRepr(key) + '.');
     }
-    if (isGetByCall(key)) {
-      throw new TypeError('mendwright: ' + pyRepr(key) + ' is how the Python package names a heal.page.get_by_*() call '
-        + 'in the store, so heal.locatorAll() cannot take it as a key. Pick another key.');
-    }
+    if (isKey(key)) throw new TypeError(reservedKeyMessage(key, 'heal.locatorAll()'));
     if ((options as LocatorOptions).expectValue !== undefined) {
       throw new TypeError('mendwright: heal.locatorAll() takes no expectValue: no list is found through a heal, so the '
         + "reads of a list's elements are never checked.");

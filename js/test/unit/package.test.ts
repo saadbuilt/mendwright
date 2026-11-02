@@ -95,9 +95,13 @@ test('the popup scripts are self-contained: each is a function from its source t
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
     'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
-    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP']) {
+    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP', 'getByKey']) {
     assert.ok(name in api, name);
   }
+  // getByKey() takes Playwright's names and the Python package's, with Playwright's arguments.
+  const method: api.GetByMethod = 'get_by_role';
+  assert.equal(api.getByKey(method, 'button', { name: 'Pay' }), 'get_by_role("button", name="Pay")');
+  assert.equal(api.getByKey('getByTestId', 'total'), 'get_by_test_id("total")');
   assert.equal(api.DISMISS_KEY, '<popup>');
   assert.equal(api.WAITING_STEP, '<next step>');
   assert.equal(api.parseMoney('1.299,00 €'), '1299.00');
