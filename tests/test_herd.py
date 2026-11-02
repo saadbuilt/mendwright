@@ -296,6 +296,56 @@ def test_a_leader_waits_for_another_processes_lease_past_its_step_timeout(
     assert _count(_journal(tmp_path), 'heal.adopted') == 1
 
 
+# The element the fingerprint finds again: the same label, a new id, name and test id.
+FP_V1 = _html("<label><input id='accept-terms' name='terms' type='checkbox'>"
+              "<span>I accept the terms and conditions</span></label>")
+FP_V2 = _html("<label><input type='checkbox' name='agreement' data-testid='legal-consent'>"
+              "<span>I accept the terms and conditions</span></label>")
+
+
+def test_a_herd_heals_from_the_fingerprint_with_a_long_step_timeout(tmp_path, make_page,
+                                                                    stub_provider):
+    # The fleet harness's fp page with timeout_ms=10000: each lookup polls and looks at the
+    # store again (the clocks step 0.5 s per read) before it heals, and the fingerprint the
+    # warm-up saved still heals the key, once, with no model call; the others adopt it.
+    page = make_page(FP_V1, url=URL, fingerprints=True)
+    mendwright.open(page, provider=stub_provider(None), store_path=_store(tmp_path),
+                    timeout_ms=0).locator(KEY, CODE, role='checkbox').check()
+    assert json.loads((tmp_path / 'overrides.json').read_text(encoding='utf-8'))[
+        'selectors'][KEY]['fingerprint']
+    provider = stub_provider(None)
+    workers = []
+    for _ in range(N):
+        page = make_page(FP_V2, url=URL, fingerprints=True)
+        heal = mendwright.open(page, provider=provider, store_path=_store(tmp_path),
+                               timeout_ms=10000)
+        steps = itertools.count(0, 0.5)
+        heal._clock = heal.store._clock = lambda steps=steps: float(next(steps))
+        workers.append((page, heal))
+    errors, polled = [], []
+
+    def run(heal):
+        try:
+            heal.locator(KEY, CODE, poll_ms=1).check()
+        except Exception as exc:        # noqa: BLE001 - reported below
+            errors.append(exc)
+        polled.append(heal._clock())
+    threads = [threading.Thread(target=run, args=(heal,)) for _page, heal in workers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert not any(t.is_alive() for t in threads) and errors == []
+    assert provider.bundles == []
+    events = _journal(tmp_path)
+    [applied] = [e for e in events if e['event'] == 'heal.applied']
+    assert applied['source'] == 'fingerprint'
+    assert _count(events, 'heal.adopted') == N - 1
+    assert all(page.actions[-1][:2] == ('xpath=' + applied['xpath'], 'check')
+               for page, _h in workers)
+    assert max(polled) >= 10.0      # the leader polled out its step on its clock
+
+
 def test_a_nested_lookup_in_the_leaders_thread_does_not_wait_for_itself():
     flight, leader = FLIGHTS.begin(('store', 'k', 'sig'))
     try:
