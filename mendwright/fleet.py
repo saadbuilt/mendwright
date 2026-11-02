@@ -599,7 +599,8 @@ _RECORDS_LOCK = threading.Lock()
 
 def records_for(store):
     """The KeyRecords of store's file (see the comment above LEASE_TTL), or None for a store
-    without a file, or one that never writes (read_only). A remote store's records are
+    without a file, one that never writes (read_only), and a local file whose name has a colon
+    or a backslash, which no record name holds (it heals without them). A remote store's records are
     keys/<hash>.json next to its overrides.json, in its backend (mendwright.remote). For a
     read-only worker's store (writes False), a view that reads them and writes nothing
     (ReadOnlyRecords)."""
@@ -620,6 +621,10 @@ def records_for(store):
             found = _RECORDS.get(name)
             if found is None:
                 folder, file_name = os.path.split(os.path.abspath(os.fspath(store._override_path)))
+                if ':' in file_name or '\\' in file_name:
+                    # No object name holds it (FileBackend.path): such a store, as
+                    # ./file:o.json on Linux, heals with no records, each process for itself.
+                    return None
                 prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
                 found = _RECORDS[name] = KeyRecords(FileBackend(folder), prefix)
     if getattr(store, 'writes', True) is False:
@@ -733,7 +738,7 @@ def _lead_across_processes(records, key, signature, deadline, clock, pause):
                     return True
             except Conflict:
                 pass
-    except BackendError:
+    except (BackendError, ValueError):     # ValueError: a name the backend takes no object by
         return False
     finally:
         if waited:
@@ -791,7 +796,7 @@ async def _lead_across_processes_async(records, key, signature, deadline, clock,
                     return True
             except Conflict:
                 pass
-    except BackendError:
+    except (BackendError, ValueError):     # ValueError: a name the backend takes no object by
         return False
     finally:
         if waited:

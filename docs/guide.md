@@ -2244,7 +2244,7 @@ Whatever still waits is written when the process exits, also from a `multiproces
 
 ### Coordination records
 
-Each key gets a small record next to the store, `keys/<first 32 hex digits of sha256(key)>.json` (for a store file with another name than `overrides.json`, `<file name>.keys/`; for a [remote store](remote-store.md), `keys/` next to its `overrides.json`, in the store). It holds:
+Each key gets a small record next to the store, `keys/<first 32 hex digits of sha256(key)>.json` (for a store file with another name than `overrides.json`, `<file name>.keys/`; for a [remote store](remote-store.md), `keys/` next to its `overrides.json`, in the store). A store file whose name has a colon or a backslash, such as `./file:o.json` on Linux, gets no records: its processes heal each for itself. A record holds:
 
 - the lease of the heal under way: the process that leads takes it with a compare-and-swap, so exactly one does, and renews it every 5 seconds while it heals. A lease nobody renewed for 15 seconds belongs to a process that died, and exactly one waiting process takes it over.
 - the times of the model attempts made for the key in the last hour, by every process

@@ -4,6 +4,7 @@ model's declines per page signature, in <store folder>/keys/<hash>.json, written
 compare-and-swap. Never in overrides.json."""
 
 import json
+import os
 import threading
 
 import pytest
@@ -46,6 +47,31 @@ def test_a_lease_is_taken_renewed_and_given_back(records):
     assert records.look('k', 113.0)[0] == 'live'
     records.release('k', 'me')
     assert records.look('k', 113.0) == ('none', None)
+
+
+@pytest.mark.parametrize('name', [
+    'file:o.json',
+    pytest.param('x\\y.json', marks=pytest.mark.skipif(os.sep == '\\', reason='a separator here')),
+], ids=['colon', 'backslash'])
+def test_a_store_file_no_record_name_can_hold_heals_without_records(tmp_path, monkeypatch, name):
+    # On Linux, ./file:o.json is a file name with a colon, and its records would be named
+    # file:o.json.keys/..., which no store object name holds: such a store heals each process
+    # for itself, where its first heal raised ValueError.
+    store = load_store(None, str(tmp_path / 'store.json'))
+    monkeypatch.setattr(store, '_override_path', os.path.join(str(tmp_path), name))
+    assert records_for(store) is None
+
+
+def test_a_record_name_the_backend_refuses_leaves_the_heal_to_run_without_a_lease():
+    from mendwright.fleet import FLIGHTS, _lead_across_processes
+
+    class Refusing:
+        poll = 0.01
+
+        def read(self, key):
+            raise ValueError("mendwright: a store object name is a relative path with /, got 'x'")
+    assert _lead_across_processes(Refusing(), 'k', 'sig', 10.0, lambda: 0.0,
+                                  FLIGHTS._pause) is False
 
 
 def test_an_expired_lease_is_taken_over_by_exactly_one(records):
