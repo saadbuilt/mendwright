@@ -22,7 +22,7 @@ import { expect, test as base, type Frame, type Page, type TestInfo } from '@pla
 
 import { addHealerListener, open, removeHealerListener, type Healer, type OpenOptions } from './healer';
 import type { HealProvider } from './providers/base';
-import { expandPath } from './store';
+import { localStorePath } from './store';
 
 export { expect };
 
@@ -49,14 +49,15 @@ const healers = new WeakMap<object, Healer>();
  * to where Playwright was started), the mendwrightStore option (relative to the config file),
  * MENDWRIGHT_STORE (relative to where Playwright was started), then .mendwright/overrides.json
  * next to the config file. A leading ~ is the home directory in each, as for open() and the
- * Python package's pytest plugin: a CI workflow's YAML passes ~ on as it is. */
+ * Python package's pytest plugin: a CI workflow's YAML passes ~ on as it is. A store URL,
+ * which the Python package 0.11 reads, throws TypeError: this package keeps a local file. */
 export function storePathFor(testInfo: TestInfo, option: string | undefined, storePath?: string): string {
-  if (storePath) return path.resolve(expandPath(storePath));
+  if (storePath) return path.resolve(localStorePath(storePath, 'storePath'));
   const configFile = testInfo.config.configFile;
   const root = configFile ? path.dirname(configFile) : process.cwd();
-  if (option) return path.resolve(root, expandPath(option));
+  if (option) return path.resolve(root, localStorePath(option, 'mendwrightStore'));
   const env = (process.env.MENDWRIGHT_STORE || '').trim();
-  if (env) return path.resolve(expandPath(env));
+  if (env) return path.resolve(localStorePath(env, 'MENDWRIGHT_STORE'));
   return path.join(root, '.mendwright', 'overrides.json');
 }
 

@@ -91,7 +91,7 @@ import {
   StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
   type Step, type StepFunction, type StepOptions,
 } from './steps';
-import { DEFAULT_STORE_PATH, expandPath, loadStore, type Candidate, type KeyMeta, type SelectorStore } from './store';
+import { DEFAULT_STORE_PATH, loadStore, localStorePath, type Candidate, type KeyMeta, type SelectorStore } from './store';
 import {
   VALUE_READS, expectation, expectations, refusalReason, refusedMessage, type ExpectValue, type Expectation,
 } from './values';
@@ -2822,7 +2822,10 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   const warn = (message: string) => emit(options.log, 'warning', message);
   const checks = expectations(options.expectValues, warn);
   const healGetBy = getBySetting(healGetByOption);
-  const storePath = path.resolve(expandPath(options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH));
+  // A store URL (the Python package 0.11 reads one) is refused: this package keeps a local file.
+  const storeWhere = options.storePath !== undefined ? 'storePath' : 'MENDWRIGHT_STORE';
+  const storePath = options.store ? '' : path.resolve(localStorePath(
+    options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH, storeWhere));
   const timeoutMs = options.timeoutMs ?? envTimeout() ?? DEFAULT_TIMEOUT_MS;
   const dryRun = options.dryRun ?? Boolean(envFlag('MENDWRIGHT_DRY_RUN'));
   const fingerprint = fingerprintSetting(options.fingerprint);

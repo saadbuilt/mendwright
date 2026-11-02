@@ -19,6 +19,11 @@
 //   frameXPath, css and shadowHosts, and a heal the Python package saved with a get_by twin
 //   (Python 0.11) keeps its getBy, in a three-way merge of their own. This package never runs
 //   css or getBy: mendwright fix reads them.
+// - A field of a candidate or of a key's entry that this package doesn't know, such as one a
+//   later version of either package writes, is kept as the file has it: the file's value at
+//   each write, never one of this process's own. The store reads only overrides.json in its
+//   folder, so the per-key records the Python package 0.11 keeps in keys/ next to it are left
+//   alone.
 // - Writes take the lock file overrides.json.lock, take in what other processes (Python or
 //   TypeScript, other Playwright Test workers) wrote since the last read with a three-way
 //   merge, and replace the file atomically. On a conflict 'quarantined' wins, then
@@ -109,6 +114,34 @@ const MAX_LIST_HEALS = 3;
 const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts', 'getBy'] as const;
 type Place = [string, string, string, string];
 
+// The fields of a candidate this package reads and writes. Any other field of one is kept
+// as the file has it (see unknownFields).
+const ROW_FIELDS = new Set(['xpath', 'source', 'addedAt', 'lastSucceededAt', 'status', 'frameXPath', 'css',
+  'shadowHosts', 'getBy', 'list', 'proposal', 'acceptedAt']);
+// The fields of a key's entry this package reads: its metadata and candidates, and those a
+// schema-1 file or a new entry has, which neither package writes to overrides.json.
+const ENTRY_FIELDS = new Set<string>([...META_FIELDS, 'candidates', 'maxCandidates', 'stage', 'action']);
+
+/** The fields of a candidate or an entry (known: ROW_FIELDS or ENTRY_FIELDS) that this
+ * package doesn't know, as a copy. */
+function unknownFields(row: Record<string, unknown>, known: Set<string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(row)) {
+    if (!known.has(field) && value !== undefined) out[field] = clone(value);
+  }
+  return out;
+}
+
+/** Give mine the fields of theirs, a candidate or an entry as the file has it, that this
+ * package doesn't know, in place of its own: it never changes them, so the file's are the
+ * latest, and one a process that doesn't know it dropped stays dropped. */
+function takeUnknown(mine: Record<string, unknown>, theirs: Record<string, unknown>, known: Set<string>): void {
+  for (const field of Object.keys(mine)) {
+    if (!known.has(field)) delete mine[field];
+  }
+  Object.assign(mine, unknownFields(theirs, known));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -145,6 +178,33 @@ export function defaultStorePath(): string {
 export function storeFlag(file: string): string {
   const normcase = (p: string) => (process.platform === 'win32' ? p.toLowerCase().replace(/\//g, '\\') : p);
   return normcase(path.resolve(file)) === normcase(defaultStorePath()) ? '' : ' --store "' + file + '"';
+}
+
+// A store URL as the Python package 0.11 reads one in MENDWRIGHT_STORE (backends.url's
+// is_store_url): a scheme of two or more letters and a colon, so C:\store is a path.
+const STORE_URL = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+
+/** Whether value is written as a store URL (s3://, https://, memory: and the like), which the
+ * Python package 0.11 opens as a remote store and this package does not. */
+export function isStoreUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const found = STORE_URL.exec(value);
+  return found !== null && found[1].length > 1;
+}
+
+/** file, a store path that where (storePath, mendwrightStore or MENDWRIGHT_STORE) gave, with
+ * '~' expanded. A store URL throws TypeError: this package keeps its store in a local file
+ * only, and taking the URL for a path would write a store nobody reads to a folder named after
+ * it. The message names the scheme only, since a URL can hold a token. */
+export function localStorePath(file: string, where: string): string {
+  if (isStoreUrl(file)) {
+    const scheme = (STORE_URL.exec(file) as RegExpExecArray)[1].toLowerCase();
+    throw new TypeError('mendwright: ' + where + ' is a ' + scheme + ': store URL, and mendwright for TypeScript keeps '
+      + 'its store in a local file only (the Python package 0.11 reads a store at a URL). Set ' + where
+      + ' to the path of a local overrides.json'
+      + (where === 'MENDWRIGHT_STORE' ? ', or pass storePath (mendwrightStore for the fixtures), which comes first.' : '.'));
+  }
+  return expandPath(file);
 }
 
 /** A path with '~' expanded. */
@@ -1023,6 +1083,7 @@ export class SelectorStore {
         this.entry(key).candidates = [];
       }
       const mine = this.entry(key);
+      takeUnknown(mine, entry, ENTRY_FIELDS);
       for (const c of (entry.candidates as Candidate[]) ?? []) {
         if (!isRecord(c) || typeof c.xpath !== 'string') continue;
         const id = SelectorStore.pair(key, c.xpath);
@@ -1035,6 +1096,7 @@ export class SelectorStore {
         const newest = [local.lastSucceededAt || '', c.lastSucceededAt || ''].sort()[1];
         local.lastSucceededAt = newest || null;
         mergePlace(local, c, this.basePlace.get(id));
+        takeUnknown(local, c, ROW_FIELDS);
         if (this.delisted.has(id)) continue;   // taken over as code here: no list heal any more
         if (c.list === true) local.list = true;
         const theirs = evidenceOf(c);
@@ -1086,13 +1148,17 @@ export class SelectorStore {
         const evidence = evidenceOf(c);
         if (evidence !== null) item.proposal = evidence;
         if (typeof c.acceptedAt === 'string' && c.acceptedAt) item.acceptedAt = c.acceptedAt;
+        Object.assign(item, unknownFields(c, ROW_FIELDS));
         overlay.push(item);
       }
       const saved: Record<string, unknown> = {};
       for (const [field, value] of Object.entries(this.meta.get(key) ?? {})) {
         if ((META_FIELDS as readonly string[]).includes(field)) saved[field] = value;
       }
-      if (overlay.length || Object.keys(saved).length) selectors[key] = { ...saved, candidates: overlay } as Entry;
+      const kept = unknownFields(e, ENTRY_FIELDS);
+      if (overlay.length || Object.keys(saved).length || Object.keys(kept).length) {
+        selectors[key] = { ...saved, ...kept, candidates: overlay } as Entry;
+      }
     }
     return { schema: 2, selectors };
   }

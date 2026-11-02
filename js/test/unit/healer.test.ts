@@ -6,6 +6,7 @@ import { strict as assert } from 'node:assert';
 import { beforeEach, describe, test } from 'node:test';
 
 import { PlaywrightDriver } from '../../src/driver';
+import { open } from '../../src/healer';
 import { AttentionRequired, InvalidSelector } from '../../src/errors';
 import { loadStore } from '../../src/store';
 import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
@@ -656,5 +657,22 @@ describe('heal.page', () => {
     assert.equal(await page.isVisible('#email'), true);
     w.page.goto(V2);
     assert.equal(await w.open().page.isVisible('#email'), false);
+  });
+});
+
+describe('a store URL', () => {
+  test('open() refuses one from storePath or MENDWRIGHT_STORE by name, and quotes none of it', () => {
+    const w = world(V1);
+    const quiet = { timeoutMs: 100, log: () => undefined };
+    assert.throws(() => open(w.page as never, { ...quiet, storePath: 's3://bucket/heals/' }),
+      (error: Error) => error instanceof TypeError && error.message.startsWith('mendwright: storePath is a s3: store URL')
+        && !error.message.includes('bucket'));
+    process.env.MENDWRIGHT_STORE = 'https://ci:t0ken@stores.example/team/';
+    assert.throws(() => open(w.page as never, quiet),
+      (error: Error) => error instanceof TypeError && error.message.startsWith('mendwright: MENDWRIGHT_STORE is a https: store URL')
+        && !/t0ken|stores\.example|team/.test(error.message));
+    // storePath comes first, and a store passed as it is needs no path.
+    assert.doesNotThrow(() => open(w.page as never, { ...quiet, storePath: w.storePath }));
+    assert.doesNotThrow(() => open(w.page as never, { ...quiet, store: loadStore(w.storePath) }));
   });
 });
