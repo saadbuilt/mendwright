@@ -32,6 +32,10 @@ export interface HealDriver {
   count(selector: string, frameXPath?: string | null): Promise<number>;
   describe(selector: string, frameXPath?: string | null): Promise<Description | null>;
   isVisible(selector: string, frameXPath?: string | null): Promise<boolean>;
+  /** Whether the browser gives the one element selector matches the ARIA role role (and the
+   * heading level level): true, false, or null when it cannot tell. The live check of a heal
+   * of a getByRole() call asks it, and refuses the heal without it (see gate.liveReason). */
+  roleMatch?(selector: string, role: string, level: number | null, frameXPath?: string | null): Promise<boolean | null>;
 }
 
 /** A driver for the inside of the open shadow root that hosts lead to (the Python package's
@@ -78,6 +82,12 @@ export class ShadowDriver implements HealDriver {
   async scrollIntoView(selector: string, frameXPath?: string | null): Promise<void> {
     const [css, hosts] = this.target(selector, frameXPath);
     await this.base.scrollIntoView(css, null, hosts);
+  }
+
+  async roleMatch(selector: string, role: string, level: number | null, frameXPath?: string | null):
+      Promise<boolean | null> {
+    const [css, hosts] = this.target(selector, frameXPath);
+    return this.base.roleMatch(css, role, level, null, hosts);
   }
 
   /** What the shadow root holds (its innerHTML), or null when the hosts lead to no open

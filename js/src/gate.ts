@@ -8,7 +8,11 @@
 //      role, and no quarantined selector of the key reaches that element.
 //   4. On the live page: it matches exactly one element, the element is read again and has
 //      the key's role, and it is visible (a hidden checkbox is allowed: a styled checkbox
-//      hides its native input).
+//      hides its native input). For the key of a heal.page.getByRole() call (see getby.ts),
+//      Playwright itself must also give the element the call's ARIA role, and its level when
+//      the call has one (driver.roleMatch): the gate's role is mostly the tag, and a
+//      <button role="tab"> that lost its role is still a button to it. A driver that cannot
+//      tell refuses the heal.
 //
 // The capture is taken before a model call, which takes seconds, so the page can change in
 // between; the live check is what makes the element that is saved and acted on the one
@@ -28,6 +32,7 @@
 
 import { cssXpath } from './css';
 import { TrustedTypesRefused, type ItemRow, type PlaywrightDriver } from './driver';
+import { ROLE_UNREADABLE, parse, roleMismatch, type GetByCall } from './getby';
 import type { Proposal } from './prompt';
 import type { HealDriver } from './scope';
 import { CSS, XPATH, classify, frameSpelling, hasPosition, isBrittle, normalize, stripPrefix } from './selectors';
@@ -49,10 +54,27 @@ const RETIRED: Record<string, string> = {
   superseded: 'previously superseded',
 };
 
+/** driver.roleMatch() when the driver has it, else null: whether the browser gives the one
+ * element selector matches the ARIA role role (and level). null too when it throws or answers
+ * anything but true or false, so the live check refuses the heal (the Python package's
+ * driver_role_match). */
+export async function driverRoleMatch(driver: HealDriver, selector: string, role: string, level: number | null,
+                                      frame: string | null = null): Promise<boolean | null> {
+  if (typeof driver.roleMatch !== 'function') return null;
+  try {
+    const out = await driver.roleMatch(selector, role, level, frame);
+    return typeof out === 'boolean' ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 /** '' when xpath passes the live check, else the reason it does not. frame, when given, is
- * the selector of an iframe of the page the driver reads: xpath is checked inside it. */
+ * the selector of an iframe of the page the driver reads: xpath is checked inside it. call is
+ * the GetByCall of the key when the key is a getBy* call (see getby.ts): for getByRole(),
+ * Playwright must give the element the call's role, and its level when it has one. */
 export async function liveReason(driver: HealDriver, xpath: string, meta: Pick<KeyMeta, 'expectedRole'>,
-                                 frame: string | null = null): Promise<string> {
+                                 frame: string | null = null, call: GetByCall | null = null): Promise<string> {
   try {
     if ((await driver.count(xpath, frame)) !== 1) return NOT_LIVE;
     const live = await driver.describe(xpath, frame);
@@ -60,6 +82,11 @@ export async function liveReason(driver: HealDriver, xpath: string, meta: Pick<K
     const want = meta.expectedRole;
     if (want && want !== 'unknown' && live.role !== want) {
       return 'live element role mismatch: got ' + String(live.role) + ' want ' + String(want);
+    }
+    if (call !== null && call.method === 'get_by_role') {
+      const ok = await driverRoleMatch(driver, xpath, call.value as string, call.level, frame);
+      if (ok === null) return ROLE_UNREADABLE;
+      if (!ok) return roleMismatch(call);
     }
     if (want === 'checkbox') return '';
     if (!(await driver.isVisible(xpath, frame))) return NOT_LIVE;
@@ -149,7 +176,7 @@ async function shadowHeal(store: SelectorStore, key: string, html: string, body:
       reason = retired;
       continue;
     }
-    const live = await liveReason(driver, css, meta);
+    const live = await liveReason(driver, css, meta, null, parse(key));
     if (live) {
       reason = live;
       continue;
@@ -209,7 +236,7 @@ export async function apply(store: SelectorStore, key: string, proposal: Partial
       if (saved !== null) return [saved, why];
       continue;
     }
-    const live = await liveReason(driver, xpath, meta);
+    const live = await liveReason(driver, xpath, meta, null, parse(key));
     if (live) {
       reason = live;
       continue;

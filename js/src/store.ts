@@ -9,6 +9,9 @@
 //   and so do the list heals ('proposed', 'accepted') a lookup with nonempty: true saves for a
 //   person to check, as the Python package saves them (see lists.ts): no lookup tries those,
 //   and only the Python package's mendwright lists accepts one.
+// - destructiveKeys: a key written as a getBy* call in another spelling, such as
+//   get_by_role('button', name='Pay'), marks the call's key too (getby.canonicalKey). One
+//   written on an object, such as page.get_by_role(...), does not, and is named in a WARNING.
 // - Per-key metadata: expectedRole, expectedText, destructive, lastPage and pages, lastUrl,
 //   steps, intent, fingerprint, listFingerprint and shadowHosts (where the element was
 //   found, see shadow.ts), written only when one of them changes.
@@ -31,9 +34,10 @@ import * as path from 'node:path';
 import { StoreReadError } from './errors';
 import { valid as validFingerprint, type Fingerprint } from './fingerprint';
 import { pageUrl } from './flow';
+import { canonicalKey, onObjectWarning } from './getby';
 import { validList, type ListFingerprint } from './lists';
 import { log } from './log';
-import { compactJson, nowIso, pyRepr } from './py';
+import { compactJson, nowIso, pyRepr, pySorted } from './py';
 import { inferRole } from './roles';
 import { frameSpelling } from './selectors';
 import { savedHosts, textHosts, type Hosts } from './shadow';
@@ -399,6 +403,16 @@ function sortedDesc<T>(items: T[], key: (item: T) => unknown[]): T[] {
 export interface StoreOptions {
   destructiveKeys?: Iterable<string>;
   readOnly?: boolean;
+  /** Where the WARNING for a destructive key written as a getBy* call on an object goes
+   * (default: the log). */
+  warn?: (message: string) => void;
+}
+
+/** keys and, for each written as a getBy* call in another spelling, the call's key (the Python
+ * package's store reads destructive_keys= so). */
+function destructiveSet(keys: Iterable<string> | undefined): Set<string> {
+  const given = [...(keys ?? [])];
+  return new Set([...given, ...given.map((key) => canonicalKey(key))]);
 }
 
 export class SelectorStore {
@@ -428,7 +442,14 @@ export class SelectorStore {
     this.data = data;
     this.overridePath = path.resolve(expandPath(overridePath));
     this.readOnly = Boolean(options.readOnly);
-    this.destructiveKeys = new Set(options.destructiveKeys ?? []);
+    // A key written as a getBy* call in another spelling marks the call's key too. One written
+    // on an object, such as page.get_by_role(...), does not, and is logged.
+    const marked = [...(options.destructiveKeys ?? [])];
+    for (const key of pySorted(marked.filter((k) => typeof k === 'string'))) {
+      const warning = onObjectWarning('destructiveKeys', key);
+      if (warning !== null) (options.warn ?? ((message: string) => log('warning', message)))(warning);
+    }
+    this.destructiveKeys = destructiveSet(marked);
     for (const [key, entry] of Object.entries(options.override?.selectors ?? {})) {
       const fields = metaFields(entry);
       if (Object.keys(fields).length) {
@@ -1165,12 +1186,13 @@ export function atomicWrite(file: string, text: string): void {
  * directory, and '~' is expanded. */
 export function loadStore(overridePath: string, options: StoreOptions = {}): SelectorStore {
   const file = path.resolve(expandPath(overridePath));
-  const destructive = new Set(options.destructiveKeys ?? []);
+  const marked = [...(options.destructiveKeys ?? [])];
+  const destructive = destructiveSet(marked);
   const [override, native] = readStoreFile(file, destructive);
   const data: StoreData = { schema: 2, selectors: {} };
   for (const [key, entry] of Object.entries(override.selectors)) {
     const rows = Array.isArray(entry?.candidates) ? clone(entry.candidates) : [];
     data.selectors[key] = { ...clone(entry), candidates: rows.filter((c) => isRecord(c) && typeof c.xpath === 'string') } as Entry;
   }
-  return new SelectorStore(data, file, { ...options, destructiveKeys: destructive, override: native ? override : null });
+  return new SelectorStore(data, file, { ...options, destructiveKeys: marked, override: native ? override : null });
 }

@@ -12,8 +12,15 @@
 // match in (shadowMatches).
 //
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
+//
+// A selector may also be a getBy* call written as its key, such as
+// get_by_role("button", name="Go") (see getby.ts): it runs as that call on the page, or in a
+// frame, and so does it in each frame frameMatches() looks in. A call the browser rejects when
+// it runs (level on a button, say) raises InvalidSelector, as a selector the browser cannot parse
+// does. roleMatch() asks Playwright's own role matcher whether an element has an ARIA role, for
+// the live check of a heal of a getByRole() call.
 
-import type { ElementHandle, Frame, JSHandle, Locator, Page } from '@playwright/test';
+import type { ElementHandle, Frame, FrameLocator, JSHandle, Locator, Page } from '@playwright/test';
 
 import { mendwrightLib } from './browser/lib';
 import { POPUP_CONTROLS_JS, POPUP_CONTROL_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS } from './browser/popup';
@@ -21,11 +28,12 @@ import { InvalidSelector } from './errors';
 import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
 import { clickMayHaveRun } from './flow';
 import { frameOptions, frameSelector, type FrameMatch } from './frames';
+import { build, parse, tsMethodOf, type GetByCall } from './getby';
 import { listFromRaw, type ListFingerprint } from './lists';
 import { pySlice } from './py';
 import { roleFor } from './roles';
-import { playwrightSelector } from './selectors';
-import { hostCss, rootsOf, savedHosts, shadowArg, type Hosts, type ShadowMatch } from './shadow';
+import { GET_BY, checkSyntax, playwrightSelector } from './selectors';
+import { hostCss, innerCss, rootsOf, savedHosts, shadowArg, type Hosts, type ShadowMatch } from './shadow';
 
 export type PageLike = Page | Frame;
 
@@ -129,6 +137,10 @@ function handleFunction(name: 'xpathFor' | 'outside' | 'raw'): (h: unknown, arg:
 
 // How Playwright words a selector it cannot parse (the Python drivers read the same text).
 const BROWSER_SELECTOR_ERROR = /while parsing|Unknown engine|not a valid (?:XPath|selector)|not a legal expression|did not match the expected pattern/i;
+// How Playwright's role engine words a getBy* call whose arguments it rejects when the call
+// runs, not when it is built: level or a state on a role that has none, for example '"level"
+// attribute is only supported for roles: "heading", ...' (the Python package's _GET_BY_REJECTED).
+const GET_BY_REJECTED = /is only supported for roles|Unknown attribute|does not support .* matcher|must be a string or a regular expression|Role must not be empty/;
 
 /** True for a Playwright error that says the browser cannot parse a selector. */
 export function browserRejected(error: unknown): boolean {
@@ -136,11 +148,32 @@ export function browserRejected(error: unknown): boolean {
   return BROWSER_SELECTOR_ERROR.test(first);
 }
 
-function invalid(error: unknown, selector: string): InvalidSelector {
+/** The InvalidSelector for a Playwright error that says the browser cannot parse selector,
+ * or, for a getBy* call, that its role engine rejects the call's arguments; else null. */
+function rejection(error: unknown, selector: string): InvalidSelector | null {
   const first = String((error as Error)?.message ?? error).trim().split('\n')[0] ?? '';
-  const detail = /^\w+\.\w+: /.test(first) ? first.slice(first.indexOf(': ') + 2) : first;
+  let detail = /^\w+\.\w+: /.test(first) ? first.slice(first.indexOf(': ') + 2) : first;
+  const call = first && GET_BY_REJECTED.test(first) ? callOf(selector) : null;
+  if (call) {
+    if (detail.startsWith('Error: ')) detail = detail.slice('Error: '.length);
+    return InvalidSelector.build(selector, 'the browser rejected a get_by_* call (' + detail.replace(/\.$/, '') + ').',
+      "Check the call's arguments against what Playwright's " + tsMethodOf(call.method) + '() takes.');
+  }
+  if (!first || !BROWSER_SELECTOR_ERROR.test(first)) return null;
   return InvalidSelector.build(selector, 'the browser rejected a selector (' + detail.replace(/\.$/, '') + ').',
     "Fix the selector, or use an XPath such as \"//button[@id='save']\".");
+}
+
+/** Throw rejection()'s InvalidSelector for error, when it is one. */
+function throwRejected(error: unknown, selector: string): void {
+  const bad = rejection(error, selector);
+  if (bad) throw bad;
+}
+
+/** The GetByCall of a selector written as a getBy* call (see getby.ts), else null. Throws
+ * TypeError or InvalidSelector for a selector that can never run, as checkSyntax() does. */
+function callOf(selector: string): GetByCall | null {
+  return checkSyntax(selector, { calls: true }) === GET_BY ? parse(selector) : null;
 }
 
 interface Placed {
@@ -312,16 +345,47 @@ export class PlaywrightDriver {
   /** The Locator for a stored selector, inside the iframe frameXPath when it has one. For a
    * CSS selector inside an open shadow root, hosts are the CSS of its shadow hosts, outermost
    * first, and the Locator is their chain: Playwright's CSS pierces open shadow roots, so
-   * every read through it checks first that each match is in that shadow root (placed). */
+   * every read through it checks first that each match is in that shadow root (placed). A
+   * getBy* call written as its key runs as that call (getby.build), on the page or in the
+   * iframe; inside a shadow root, which takes CSS only, it throws InvalidSelector. */
   locator(selector: string, frameXPath?: string | null, hosts?: string[] | null): Locator {
-    const target = playwrightSelector(selector);
-    if (hosts && hosts.length) {
-      let loc = this.page.locator('css=' + hosts[0]);
-      for (const host of hosts.slice(1)) loc = loc.locator('css=' + host);
-      return loc.locator(target);
+    const call = callOf(selector);
+    if (call !== null) {
+      if (hosts && hosts.length) innerCss(selector);
+      return build(frameXPath ? this.page.frameLocator(playwrightSelector(frameXPath)) : this.page, call);
     }
+    const target = playwrightSelector(selector);
+    if (hosts && hosts.length) return this.hostChain(hosts).locator(target);
     if (frameXPath) return this.page.frameLocator(playwrightSelector(frameXPath)).locator(target);
     return this.page.locator(target);
+  }
+
+  /** The Locator of the last of hosts (CSS, outermost first), each looked for in the one before:
+   * Playwright's CSS pierces into the shadow root of each from there. */
+  private hostChain(hosts: string[]): Locator {
+    let loc = this.page.locator('css=' + hosts[0]);
+    for (const host of hosts.slice(1)) loc = loc.locator('css=' + host);
+    return loc;
+  }
+
+  /** Whether Playwright gives the one element selector matches the ARIA role role, and the
+   * heading level level when it is not null, by its own matcher: true when getByRole(role,
+   * { level }) and the selector's Locator match one element, false when they do not, and null on
+   * any error (the Python package's role_match). One round trip. Like a getByRole() call
+   * without includeHidden: true, it leaves out an element hidden from the accessibility tree.
+   * Inside a shadow root (hosts), a match outside it gives false. */
+  async roleMatch(selector: string, role: string, level: number | null = null, frameXPath?: string | null,
+                  hosts?: string[] | null): Promise<boolean | null> {
+    try {
+      const built = this.locator(selector, frameXPath, hosts);
+      if (hosts && hosts.length && !allPlaced(await this.place(built, hosts))) return false;
+      const ctx: Page | Frame | FrameLocator | Locator = hosts && hosts.length ? this.hostChain(hosts)
+        : frameXPath ? this.page.frameLocator(playwrightSelector(frameXPath)) : this.page;
+      const options = level === null ? {} : { level };
+      return (await ctx.getByRole(role as Parameters<Page['getByRole']>[0], options).and(built).count()) === 1;
+    } catch {
+      return null;
+    }
   }
 
   /** What placed() says of the Locator of a selector inside a shadow root. */
@@ -350,7 +414,7 @@ export class PlaywrightDriver {
       if (hosts && hosts.length && !allPlaced(await this.place(loc, hosts))) return fallback;
       return await op(loc);
     } catch (error) {
-      if (browserRejected(error)) throw invalid(error, selector);
+      throwRejected(error, selector);
       return fallback;
     }
   }
@@ -361,7 +425,7 @@ export class PlaywrightDriver {
       try {
         return placedCount(await this.place(loc, hosts));
       } catch (error) {
-        if (browserRejected(error)) throw invalid(error, selector);
+        throwRejected(error, selector);
         return 0;
       }
     }
@@ -426,14 +490,15 @@ export class PlaywrightDriver {
    * another iframe, and, for one that does not, a CSS selector for its iframe element here
    * (frames.frameSelector), or null when nothing tells it apart (the Python package's
    * frame_matches). Throws InvalidSelector for a selector that can never run; any other error
-   * skips that frame. */
+   * skips that frame. A getBy* call runs as that call in each frame. */
   async frameMatches(selector: string): Promise<FrameMatch[]> {
-    const target = playwrightSelector(selector);
+    const call = callOf(selector);
+    const target = call === null ? playwrightSelector(selector) : '';
     const found: FrameMatch[] = [];
     for (const frame of this.childFrames()) {
       let count: number;
       try {
-        count = await frame.locator(target).count();
+        count = await (call === null ? frame.locator(target) : build(frame, call)).count();
       } catch {
         continue;
       }
@@ -583,7 +648,7 @@ export class PlaywrightDriver {
     try {
       count = await loc.count();
     } catch (error) {
-      if (browserRejected(error)) throw invalid(error, selector);
+      throwRejected(error, selector);
       throw error;
     }
     return Array.from({ length: count }, (_, i) => loc.nth(i));
@@ -606,7 +671,7 @@ export class PlaywrightDriver {
     try {
       return itemRows(await loc.evaluateAll(elementsFunction('listItems') as (els: Element[]) => unknown));
     } catch (error) {
-      if (browserRejected(error)) throw invalid(error, selector);
+      throwRejected(error, selector);
       throw error;
     }
   }

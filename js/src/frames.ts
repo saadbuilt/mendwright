@@ -13,6 +13,7 @@
 // follows the key (Healer.followIntoFrame).
 
 import { cssString } from './css';
+import { isKey } from './getby';
 import { generated } from './providers/candidates';
 import { hostname, port, pyLen, pyRepr, pyStrip, urlsplit } from './py';
 import { frameSpelling } from './selectors';
@@ -160,7 +161,8 @@ export function framePlan(key: string, selector: string, frames: FrameMatch[],
 /** Why a key whose selector matches only inside an iframe was not followed there (the Python
  * package's facade._frame_message), with the TypeScript way to open mendwright on that frame:
  * by its name, else by its URL, else a Frame from page.frames(). frames are where selector
- * matches, the first one named; why says why not, null when nothing tells that iframe apart. */
+ * matches, the first one named; why says why not, null when nothing tells that iframe apart.
+ * For the key of a getBy* call, the advice passes healGetBy: true. */
 export function frameMessage(key: string, selector: string, frames: FrameMatch[], why: string | null): string {
   const frame = frames[0];
   const name = frame.name || '';
@@ -178,6 +180,7 @@ export function frameMessage(key: string, selector: string, frames: FrameMatch[]
     how = 'the Frame from page.frames()';
   }
   if (frames.length > 1) where += ' (and ' + (frames.length - 1) + ' more)';
+  if (isKey(key)) how += ', { healGetBy: true }';     // else heal.page.getBy*() there would not heal
   const because = why || 'nothing tells that iframe apart from the others on the page';
   return "'" + key + "' is inside an iframe: " + selector + ' matches nothing in the page mendwright was opened on, '
     + 'but matches inside ' + where + '. mendwright did not look for it there, because ' + because + ', and did '

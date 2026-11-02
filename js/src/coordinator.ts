@@ -18,6 +18,9 @@
 // found inside a shadow root is never healed without its scope (outsideShadow). A key's own
 // selector followed into an iframe or a shadow root is recorded here too (recordFrame,
 // recordShadow), as a heal with source 'frame' or 'shadow'.
+//
+// The key of a heal.page.getBy*() call (see getby.ts) is healed from its fingerprint only, never
+// by a model (healGetBy).
 
 import { buildBundle, redact } from './capture';
 import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
@@ -25,6 +28,7 @@ import { AttentionRequired } from './errors';
 import { fmt, valid as validFingerprint } from './fingerprint';
 import { flowChangeMessage } from './flow';
 import { REJECTED_LIST, apply, listGate, quarantinedBodies, validateStatic } from './gate';
+import { NO_MODEL, isKey, noFingerprintMessage, roleUnknownMessage, tierOffMessage } from './getby';
 import type { JournalLike } from './journal';
 import type { Guardrails } from './limits';
 import {
@@ -62,11 +66,12 @@ export const GUARD_REASON = 'a transaction guard is currently blocking heals (a 
 /** The code of each heal.declined event, as the Python package names them
  * (coordinator.DECLINE_CODES), which its mendwright notify turns into its own words. dry_run
  * and disabled are declines on purpose. list_empty is a list whose selectors all match nothing,
- * list_not_found one looked up with nonempty: true that nothing could be proposed for, and
- * list_waits_fix one whose list heal a person accepted, not yet in the code. */
+ * list_not_found one looked up with nonempty: true that nothing could be proposed for,
+ * list_waits_fix one whose list heal a person accepted, not yet in the code, and get_by a
+ * getBy* call its fingerprint could not heal (no model is asked). */
 export const DECLINE_CODES = ['destructive', 'page_guard', 'disabled', 'no_provider', 'role_unknown', 'guard',
   'rate_limit', 'not_here', 'no_proposal', 'gate', 'dry_run', 'list_empty', 'list_not_found', 'list_waits_fix',
-  'frame', 'shadow', 'other'] as const;
+  'get_by', 'frame', 'shadow', 'other'] as const;
 export type DeclineCode = typeof DECLINE_CODES[number];
 
 export interface HealRecord {
@@ -476,7 +481,8 @@ export class HealCoordinator {
    * root where no heal can run now (see scope.healPlace). scope, when given, is where the heal
    * runs instead of the page: inside the iframe or the shadow root the key was last found in
    * (see scope.ts). A key last found inside a shadow root is never healed without that
-   * shadow root's scope. */
+   * shadow root's scope. The key of a getBy* call is healed from its fingerprint only (see
+   * healGetBy). */
   async tryHeal(key: string, meta: KeyMeta, broken: string[], context: FlowContext,
                 refusal: Refusal | null = null, scope: HealScope | null = null): Promise<string | false> {
     if (meta.destructive) return this.decline(key, destructiveMessage(key), 'warning', null, 'destructive');
@@ -485,6 +491,7 @@ export class HealCoordinator {
     if (refusal) return this.decline(key, refusal.reason, 'warning', null, this.placeCode(refusal.code));
     const outside = this.outsideShadow(key, scope);
     if (outside) return this.decline(key, outside, 'warning', null, this.placeCode('shadow'));
+    if (isKey(key)) return this.healGetBy(key, meta, broken, scope);
     const driver: HealDriver = scope ? scope.driver : this.driver;
     const frame = scope && scope.kind === 'frame' ? scope.frame : null;
     const hosts = scope && scope.kind === 'shadow' ? scope.hosts : null;
@@ -600,6 +607,34 @@ export class HealCoordinator {
       + reason + '). The gate requires a non-brittle xpath that matches exactly one element of the expected role and '
       + 'is present on the live page.', 'warning', null, 'gate');
     return false;
+  }
+
+  /** tryHeal() for the key of a heal.page.getBy*() call (see getby.ts), after the checks for a
+   * key marked destructive, the page and the shadow root: the fingerprint tier only (the
+   * Python package's _heal_get_by). A call names its element by role and words, and when it
+   * breaks those are what changed, so a model given the old call could only guess. The
+   * fingerprint holds what survives a redesign (ids, test ids, names, classes, ancestors), and
+   * the tier needs a strong sign of identity and a margin before it proposes anything. So no
+   * provider is asked, no page leaves the machine, and the rate limit is not used.
+   *
+   * Declined, in order: MENDWRIGHT_DISABLE=1, the fingerprint tier off, no fingerprint in the
+   * store (a call that never matched is more often a mistake in the call than a redesign), an
+   * unknown role, a guard that blocks; then whatever the tier itself does not heal. Its pick
+   * goes through apply(), whose live check also asks Playwright for the ARIA role of a
+   * getByRole() call (gate.liveReason). */
+  private async healGetBy(key: string, meta: KeyMeta, broken: string[], scope: HealScope | null):
+      Promise<string | false> {
+    if (this.disabled) return this.decline(key, DISABLED_REASON, 'warning', null, 'disabled');
+    if (!this.fingerprint) return this.decline(key, tierOffMessage(key), 'warning', null, 'get_by');
+    if (!validFingerprint(meta.fingerprint)) return this.decline(key, noFingerprintMessage(key), 'warning', null, 'get_by');
+    const role = meta.expectedRole;
+    if (!role || role === 'unknown') return this.decline(key, roleUnknownMessage(key), 'warning', null, 'role_unknown');
+    if (!this.guard()) return this.decline(key, GUARD_REASON, 'warning', null, 'guard');
+    const driver: HealDriver = scope ? scope.driver : this.driver;
+    const html = await driver.content();
+    const [applied, note] = await this.fingerprintTier(key, meta, broken, html, this.clock(), scope);
+    if (applied !== null) return applied;   // the heal, or false after the dry run declined it
+    return this.decline(key, note + '. ' + NO_MODEL, 'warning', null, 'get_by');
   }
 
   /** The first tier: [applied selector, or false when dry run declined it, or null to go on

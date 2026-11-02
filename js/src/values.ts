@@ -30,6 +30,7 @@
 // str.casefold(), unicodedata.decimal() and unicodedata.combining() are written out below,
 // and the tests compare them with Python over every character.
 
+import { canonicalKey, onObjectWarning, twoSpellingsMessage } from './getby';
 import { PY_SPACE, isDigitChar, pyLen, pyLstrip, pyRepr, pyRstrip, pySlice, pySplit, pyStrip, urlsplit } from './py';
 
 /** The checks expectValue takes by name, and how a message says a value is not one. */
@@ -700,10 +701,15 @@ export function expectation(spec: unknown, key?: string | null): Expectation | n
 }
 
 /** {key: Expectation} for open({ expectValues }): an object (or a Map) of keys to what
- * expectValue takes. A key whose check is null or undefined has none. Throws TypeError for
- * anything else. */
-export function expectations(specs: unknown): Map<string, Expectation> {
+ * expectValue takes. A key whose check is null or undefined has none. A key written as a
+ * getBy* call in another spelling than mendwright's, such as get_by_test_id('total'), is saved
+ * under the call's key (getby.canonicalKey), and one written as a call on an object, such as
+ * page.get_by_test_id('total'), is a key of its own, which warn is told of. Throws TypeError
+ * for anything else, and for two keys that name one call. */
+export function expectations(specs: unknown, warn: (message: string) => void = () => undefined):
+    Map<string, Expectation> {
   const out = new Map<string, Expectation>();
+  const spelled = new Map<string, string>();
   if (specs === null || specs === undefined) return out;
   let entries: [unknown, unknown][];
   const proto = typeof specs === 'object' ? Object.getPrototypeOf(specs) : undefined;
@@ -719,8 +725,15 @@ export function expectations(specs: unknown): Map<string, Expectation> {
     if (typeof key !== 'string' || !key) {
       throw new TypeError('mendwright: expectValues takes keys as strings, got ' + pyRepr(key) + '.');
     }
+    const warning = onObjectWarning('expectValues', key);
+    if (warning !== null) warn(warning);
+    // A key written as a getBy* call in another spelling is the call's key.
+    const canonical = canonicalKey(key);
+    const first = spelled.get(canonical);
+    if (first !== undefined) throw new TypeError(twoSpellingsMessage('expectValues', first, key));
+    spelled.set(canonical, key);
     const found = expectation(spec, key);
-    if (found !== null) out.set(key, found);
+    if (found !== null) out.set(canonical, found);
   }
   return out;
 }

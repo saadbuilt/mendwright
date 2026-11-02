@@ -276,8 +276,52 @@ export class FakeLocator {
     return new FakeLocator(this.page, selector, this.where, this);
   }
 
-  getByTestId(id: string): FakeLocator {
-    return this.locator('css=[data-testid="' + id + '"]');
+  getByRole(role: string, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByRole', role, options));
+  }
+
+  getByText(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByText', text, options));
+  }
+
+  getByLabel(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByLabel', text, options));
+  }
+
+  getByPlaceholder(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByPlaceholder', text, options));
+  }
+
+  getByAltText(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByAltText', text, options));
+  }
+
+  getByTitle(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByTitle', text, options));
+  }
+
+  getByTestId(id: unknown): FakeLocator {
+    return this.locator(getBySelector('getByTestId', id));
+  }
+
+  /** Locator.and(): what both match. */
+  and(other: FakeLocator): FakeLocator {
+    return new FakeCombined(this.page, this.selector + ' & ' + other.selector, this.where,
+      (strict) => this.elements(strict).filter((el) => other.elements(strict).includes(el)));
+  }
+
+  /** Locator.or(): what either matches, in document order. */
+  or(other: FakeLocator): FakeLocator {
+    return new FakeCombined(this.page, this.selector + ' | ' + other.selector, this.where, (strict) => {
+      const both = [...this.elements(strict), ...other.elements(strict).filter((el) => !this.elements(strict).includes(el))];
+      return both.sort((a, b) => (a.compareDocumentPosition(b) & 4 ? -1 : 1));
+    });
+  }
+
+  /** Locator.filter({ hasText }). */
+  filter(options: { hasText?: string } = {}): FakeLocator {
+    return new FakeCombined(this.page, this.selector + '.filter()', this.where, (strict) => this.elements(strict)
+      .filter((el) => options.hasText === undefined || (el.textContent ?? '').includes(options.hasText)));
   }
 
   frameLocator(selector: string): FakeFrameLocator {
@@ -439,9 +483,63 @@ export class FakeLocator {
   }
 }
 
-class FakeFrameLocator {
+/** A locator from and(), or() or filter(): what find gives. */
+class FakeCombined extends FakeLocator {
+  constructor(page: FakePage, name: string, where: Where | null, private readonly find: (strict: boolean) => Element[]) {
+    super(page, name, where);
+  }
+
+  override elements(strict = true): Element[] {
+    return this.find(strict);
+  }
+
+  override nth(index: number): FakeLocator {
+    return new FakeCombined(this.page, this.selector + ' >> nth=' + index, this.where, (strict) => {
+      const all = this.find(strict);
+      const at = index < 0 ? all.length + index : index;
+      return all[at] ? [all[at]] : [];
+    });
+  }
+}
+
+/** Something with locator() that gets the getBy* methods: a page, a frame or a frame locator. */
+abstract class GetBys {
+  abstract locator(selector: string): FakeLocator;
+
+  getByRole(role: string, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByRole', role, options));
+  }
+
+  getByText(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByText', text, options));
+  }
+
+  getByLabel(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByLabel', text, options));
+  }
+
+  getByPlaceholder(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByPlaceholder', text, options));
+  }
+
+  getByAltText(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByAltText', text, options));
+  }
+
+  getByTitle(text: unknown, options: Record<string, unknown> = {}): FakeLocator {
+    return this.locator(getBySelector('getByTitle', text, options));
+  }
+
+  getByTestId(id: unknown): FakeLocator {
+    return this.locator(getBySelector('getByTestId', id));
+  }
+}
+
+class FakeFrameLocator extends GetBys {
   /** outer: the document the iframe is looked for in, read each time it is used. */
-  constructor(readonly page: FakePage, readonly frame: string, private readonly outer: Where) {}
+  constructor(readonly page: FakePage, readonly frame: string, private readonly outer: Where) {
+    super();
+  }
 
   /** The frame of the iframe this.frame matches in the document outside it, now: null when it
    * matches none, or an element with no document. When it matches several, the first one's,
@@ -457,7 +555,7 @@ class FakeFrameLocator {
     return els.length ? this.page.frameOf(els[0]) : null;
   }
 
-  locator(selector: string): FakeLocator {
+  override locator(selector: string): FakeLocator {
     return new FakeLocator(this.page, selector, (strict) => this.resolve(strict));
   }
 
@@ -562,10 +660,176 @@ function declareShadowRoots(root: ParentNode): void {
   }
 }
 
+// --- the getBy* calls, as Playwright's engines match them (in short) ---------------------------
+//
+// A getBy* locator's selector is 'getby=' and the call as JSON ({ m, v, o }, a RegExp as
+// { re, flags }). What it matches, as Playwright does in short:
+//
+// - getByRole: the elements whose ARIA role is the role (the role attribute, else the tag's:
+//   button, a link with href, h1 to h6 a heading, an input by its type, and so on), that are in
+//   the accessibility tree (no aria-hidden="true", hidden attribute or inline display: none or
+//   visibility: hidden on it or an ancestor; data-fake-hidden hides it from the eye only, as a
+//   styled checkbox's input is), with level (aria-level, else the heading's number) and name:
+//   aria-labelledby, aria-label, a field's label, an img's alt, else the text of a role that
+//   takes its name from it, else title. level on a role that has none throws Playwright's
+//   error. includeHidden: true counts what is hidden from the tree too.
+// - getByText: the innermost elements whose text has the text; getByLabel: the fields whose
+//   label (label for, a label around it, aria-label, aria-labelledby) has it; getByPlaceholder,
+//   getByAltText, getByTitle: the elements whose attribute has it; getByTestId: data-testid.
+//
+// Text matches as Playwright's does: in any case and with runs of white space as one, a whole
+// match with exact: true, a RegExp by search. Open shadow roots are looked into.
+
+type FakeCall = { m: string; v: unknown; o: Record<string, unknown> };
+
+function encodeValue(value: unknown): unknown {
+  return value instanceof RegExp ? { re: value.source, flags: value.flags } : value;
+}
+
+function decodeValue(value: unknown): unknown {
+  const re = value as { re?: unknown; flags?: unknown } | null;
+  return re && typeof re === 'object' && typeof re.re === 'string' ? new RegExp(re.re, String(re.flags ?? '')) : value;
+}
+
+/** The selector of a fake getBy* locator. */
+function getBySelector(method: string, value: unknown, options: Record<string, unknown> = {}): string {
+  const o: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(options ?? {})) if (v !== undefined) o[k] = encodeValue(v);
+  return 'getby=' + JSON.stringify({ m: method, v: encodeValue(value), o });
+}
+
+const NAME_FROM_CONTENT = new Set(['button', 'link', 'heading', 'checkbox', 'radio', 'tab', 'menuitem', 'option',
+  'cell', 'columnheader', 'rowheader', 'switch', 'treeitem', 'listitem', 'tooltip']);
+const LEVEL_ROLES = ['heading', 'listitem', 'row', 'treeitem'];
+
+const squash = (text: string | null | undefined) => (text ?? '').replace(/\s+/g, ' ').trim();
+
+/** The element's ARIA role, as Playwright gives it in short, or null. */
+export function fakeRole(el: Element): string | null {
+  const explicit = squash(el.getAttribute('role')).split(' ')[0];
+  if (explicit) return explicit;
+  const tag = el.localName;
+  if (/^h[1-6]$/.test(tag)) return 'heading';
+  if (tag === 'input') {
+    const type = (el.getAttribute('type') || 'text').toLowerCase();
+    if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+    if (type === 'checkbox' || type === 'radio') return type;
+    if (type === 'hidden') return null;
+    if (type === 'range') return 'slider';
+    if (type === 'number') return 'spinbutton';
+    return 'textbox';
+  }
+  const roles: Record<string, string> = {
+    button: 'button', textarea: 'textbox', nav: 'navigation', main: 'main', ul: 'list', ol: 'list', li: 'listitem',
+    dialog: 'dialog', option: 'option', table: 'table', tr: 'row', td: 'cell', th: 'columnheader', p: 'paragraph',
+    form: 'form', img: 'img', section: 'region', article: 'article', header: 'banner', footer: 'contentinfo',
+  };
+  if (tag === 'a' || tag === 'area') return el.hasAttribute('href') ? 'link' : null;
+  if (tag === 'select') return el.hasAttribute('multiple') ? 'listbox' : 'combobox';
+  return roles[tag] ?? null;
+}
+
+/** Whether el is out of the accessibility tree (see the comment above). */
+function outOfTree(el: Element): boolean {
+  for (let n: Element | null = el; n; n = up(n)) {
+    if (n.getAttribute('aria-hidden') === 'true' || n.hasAttribute('hidden')) return true;
+    const style = (n.getAttribute('style') || '').replace(/ /g, '').toLowerCase();
+    if (style.includes('display:none') || style.includes('visibility:hidden')) return true;
+  }
+  return false;
+}
+
+function byIds(el: Element, ids: string): string {
+  const root = el.getRootNode() as Document | ShadowRoot;
+  return ids.split(/\s+/).filter(Boolean).map((id) => squash(root.getElementById?.(id)?.textContent
+    ?? (root as ShadowRoot).querySelector?.('#' + id)?.textContent)).join(' ');
+}
+
+/** The text of the labels of a field: label for its id, and a label around it. */
+function labelText(el: Element): string {
+  const parts: string[] = [];
+  const id = el.getAttribute('id');
+  const root = el.getRootNode() as Document | ShadowRoot;
+  if (id) for (const label of Array.from(root.querySelectorAll('label'))) if (label.getAttribute('for') === id) parts.push(squash(label.textContent));
+  for (let n = el.parentElement; n; n = n.parentElement) if (n.localName === 'label') parts.push(squash(n.textContent));
+  return parts.filter(Boolean).join(' ');
+}
+
+const FIELDS = ['input', 'textarea', 'select'];
+
+/** The element's accessible name, in short. */
+export function fakeName(el: Element): string {
+  const labelledby = el.getAttribute('aria-labelledby');
+  if (labelledby && byIds(el, labelledby)) return byIds(el, labelledby);
+  const label = squash(el.getAttribute('aria-label'));
+  if (label) return label;
+  if (FIELDS.includes(el.localName)) {
+    const text = labelText(el);
+    if (text) return text;
+  }
+  if (el.localName === 'img' && el.getAttribute('alt')) return squash(el.getAttribute('alt'));
+  const role = fakeRole(el);
+  if (role && NAME_FROM_CONTENT.has(role) && squash(el.textContent)) return squash(el.textContent);
+  return squash(el.getAttribute('title') || el.getAttribute('placeholder'));
+}
+
+function textMatches(wanted: unknown, text: string, exact: boolean): boolean {
+  if (wanted instanceof RegExp) {
+    wanted.lastIndex = 0;
+    return wanted.test(text);
+  }
+  const want = squash(String(wanted));
+  return exact ? squash(text) === want : squash(text).toLowerCase().includes(want.toLowerCase());
+}
+
+function levelOf(el: Element): number | null {
+  const aria = Number(el.getAttribute('aria-level'));
+  if (Number.isInteger(aria) && aria > 0) return aria;
+  const heading = /^h([1-6])$/.exec(el.localName);
+  return heading ? Number(heading[1]) : null;
+}
+
+/** The elements of doc (inside scope) that the call matches (see the comment above). */
+function getByElements(doc: Document, call: FakeCall, scope: Element | null): Element[] {
+  const all = pierced(scope ?? doc).filter((el) => !['html', 'head', 'script', 'style', 'template'].includes(el.localName));
+  const value = decodeValue(call.v);
+  const o = Object.fromEntries(Object.entries(call.o).map(([k, v]) => [k, decodeValue(v)]));
+  const exact = o.exact === true;
+  switch (call.m) {
+    case 'getByRole': {
+      if (o.level !== undefined && !LEVEL_ROLES.includes(String(value))) {
+        throw new Error('locator.count: Error: "level" attribute is only supported for roles: "heading", "listitem", '
+          + '"row", "treeitem"');
+      }
+      return all.filter((el) => fakeRole(el) === value && (o.includeHidden === true || !outOfTree(el))
+        && (o.level === undefined || levelOf(el) === o.level)
+        && (o.name === undefined || textMatches(o.name, fakeName(el), exact))
+        && (o.checked === undefined || Boolean((el as HTMLInputElement).checked) === o.checked)
+        && (o.disabled === undefined || el.hasAttribute('disabled') === o.disabled));
+    }
+    case 'getByText': {
+      const found = all.filter((el) => textMatches(value, el.textContent ?? '', exact));
+      return found.filter((el) => !found.some((other) => other !== el && el.contains(other)));
+    }
+    case 'getByLabel':
+      return all.filter((el) => (FIELDS.includes(el.localName) || el.hasAttribute('aria-label')
+        || el.hasAttribute('aria-labelledby')) && textMatches(value, FIELDS.includes(el.localName) && labelText(el)
+        ? labelText(el) : fakeName(el), exact));
+    case 'getByTestId':
+      return all.filter((el) => el.hasAttribute('data-testid') && textMatches(value, el.getAttribute('data-testid') ?? '',
+        true));
+    default: {
+      const attr = ({ getByPlaceholder: 'placeholder', getByAltText: 'alt', getByTitle: 'title' } as Record<string, string>)[call.m];
+      return all.filter((el) => el.hasAttribute(attr) && textMatches(value, el.getAttribute(attr) ?? '', exact));
+    }
+  }
+}
+
 /** What selector matches in doc, or inside scope (an element of doc, not itself): 'xpath=...',
- * 'css=...' or 'text=...', or one of them followed by ' >> nth=<n>'. text=Words matches, as
- * Playwright's text engine does, the innermost elements whose text has the words, in any case
- * and with runs of white space as one; text="Words" those whose whole text is them. */
+ * 'css=...', 'text=...' or 'getby=...' (a getBy* call, see above), or one of them followed by
+ * ' >> nth=<n>'. text=Words matches, as Playwright's text engine does, the innermost elements
+ * whose text has the words, in any case and with runs of white space as one; text="Words" those
+ * whose whole text is them. */
 function queryIn(doc: Document, selector: string, scope: Element | null = null): Element[] {
   const nth = /^([\s\S]*) >> nth=(-?\d+)$/.exec(selector);
   if (nth) {
@@ -573,6 +837,7 @@ function queryIn(doc: Document, selector: string, scope: Element | null = null):
     const at = Number(nth[2]) < 0 ? all.length + Number(nth[2]) : Number(nth[2]);
     return all[at] ? [all[at]] : [];
   }
+  if (selector.startsWith('getby=')) return getByElements(doc, JSON.parse(selector.slice('getby='.length)), scope);
   if (selector.startsWith('text=')) {
     const body = selector.slice('text='.length);
     const exact = /^(["']).*\1$/s.test(body);
@@ -612,8 +877,10 @@ function queryIn(doc: Document, selector: string, scope: Element | null = null):
 const FRAME_TAGS = ['iframe', 'frame'];
 
 /** A stand-in for a Playwright Frame: the document of one iframe of the page (see the header). */
-export class FakeFrame implements FakeContext {
-  constructor(readonly owner: FakePage, readonly element: Element, readonly parent: FakePage | FakeFrame) {}
+export class FakeFrame extends GetBys implements FakeContext {
+  constructor(readonly owner: FakePage, readonly element: Element, readonly parent: FakePage | FakeFrame) {
+    super();
+  }
 
   get document(): Document {
     return (this.element as HTMLIFrameElement).contentDocument as Document;
@@ -673,16 +940,12 @@ export class FakeFrame implements FakeContext {
     return this.element.isConnected ? this : null;
   }
 
-  locator(selector: string): FakeLocator {
+  override locator(selector: string): FakeLocator {
     return new FakeLocator(this.owner, selector, () => this.here());
   }
 
   frameLocator(selector: string): FakeFrameLocator {
     return new FakeFrameLocator(this.owner, selector, () => this.here());
-  }
-
-  getByTestId(id: string): FakeLocator {
-    return this.locator('css=[data-testid="' + id + '"]');
   }
 
   async content(): Promise<string> {
@@ -710,7 +973,7 @@ function named(el: Element): string {
   return text + '>';
 }
 
-export class FakePage implements FakeContext {
+export class FakePage extends GetBys implements FakeContext {
   dom: JSDOM;
   currentUrl: string;
   blocker: string | null;
@@ -747,6 +1010,7 @@ export class FakePage implements FakeContext {
   };
 
   constructor(html: string, options: FakePageOptions = {}) {
+    super();
     this.currentUrl = options.url ?? 'https://shop.test/signup';
     this.blocker = options.blocker ?? null;
     this.trustedTypes = options.trustedTypes ?? null;
@@ -989,12 +1253,8 @@ export class FakePage implements FakeContext {
     return inWindow(...args);
   }
 
-  locator(selector: string): FakeLocator {
+  override locator(selector: string): FakeLocator {
     return new FakeLocator(this, selector);
-  }
-
-  getByTestId(id: string): FakeLocator {
-    return this.locator('css=[data-testid="' + id + '"]');
   }
 
   frameLocator(selector: string): FakeFrameLocator {

@@ -95,9 +95,14 @@ test('the popup scripts are self-contained: each is a function from its source t
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
     'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
-    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP', 'getByKey']) {
+    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP', 'getByKey', 'GetByNotFound',
+    'getBySetting']) {
     assert.ok(name in api, name);
   }
+  // open()'s healGetBy, and the error a miss of a getBy* call throws.
+  const openOptions: api.OpenOptions = { healGetBy: null };
+  assert.equal(openOptions.healGetBy, null);
+  assert.ok(new api.GetByNotFound('missed') instanceof api.AttentionRequired);
   // getByKey() takes Playwright's names and the Python package's, with Playwright's arguments.
   const method: api.GetByMethod = 'get_by_role';
   assert.equal(api.getByKey(method, 'button', { name: 'Pay' }), 'get_by_role("button", name="Pay")');

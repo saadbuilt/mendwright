@@ -28,6 +28,12 @@
 // nothing on the page but one element inside one iframe is followed there, with no model call
 // (followIntoFrame), and a key last found inside an iframe that is on the page now heals inside
 // it, never on the page around it.
+//
+// With open({ healGetBy: true }), heal.page.getByRole() and the six other getBy* calls are looked
+// up and healed too, under a key written as the call (see getby.ts and getByLocator): the call
+// itself first, a saved heal only while it matches nothing, and a heal from its fingerprint only,
+// never from a model. A call that matches several elements, or one hidden element, goes to
+// Playwright as written, and a miss throws GetByNotFound, which is Playwright's TimeoutError too.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'node:path';
@@ -45,7 +51,7 @@ import {
   PlaywrightDriver, UNSURE, driverPopupClick, driverPopupControls, driverPopupProbe, driverPopupRelease, driverPopupRoot,
   driverPressEscape, type PageLike, type Placement, type PopupRoot,
 } from './driver';
-import { AttentionRequired, InterruptionLoop, InvalidSelector } from './errors';
+import { AttentionRequired, GetByNotFound, InterruptionLoop, InvalidSelector } from './errors';
 import {
   DISMISS_KEY, MAX_INTERRUPTIONS_PER_STEP, SETTLE_MS, absentMessage, alertMessage, consentMessage,
   dismissLoopMessage, dismissedMessage, errorType, handledMessage, isInterceptionError, loopMessage, lostMessage,
@@ -54,7 +60,10 @@ import {
 } from './flow';
 import { frameCandidates, frameMessage, framePlan, type FrameMatch } from './frames';
 import { liveReason } from './gate';
-import { isKey, reservedKeyMessage } from './getby';
+import {
+  HIDDEN, NOT_FOLLOWED, REJECTED, STARTED_TO_MATCH, TS_METHODS, argText as plainArgText, callOf, callText as plainCallText,
+  canonical, canonicalKey, isKey, notHealedMessage, reservedKeyMessage, throughMessage, type GetByCall,
+} from './getby';
 import {
   COOKIE_BANNER_KEY, COOKIE_CHOICES, cookieChoiceError, cookiePreset, functionName, makeInterruption, nthTargets,
   type CookieChoice, type InterruptOptions, type Interruption, type InterruptionEvent, type RunFunction,
@@ -67,8 +76,11 @@ import {
 import { log, type LogSink } from './log';
 import { NullProvider, type HealProvider } from './providers/base';
 import { autoProvider } from './providers/detect';
-import { pyLen, pyRepr, pySlice } from './py';
-import { noMatchMessage, peekVisible, present as presentNow, resolve, splitRunnable } from './resolver';
+import { pyRepr } from './py';
+import {
+  THROUGH, noMatchMessage, peekVisible, present as presentNow, presentGetBy, requireVisible, resolve, resolveGetBy,
+  splitRunnable,
+} from './resolver';
 import { inferRole, roleChoices } from './roles';
 import { driverShadowed, followAllowed, healPlace, shadowUnreachable, type HealScope } from './scope';
 import { CSS, XPATH, checkSyntax, classify, normalize } from './selectors';
@@ -153,9 +165,16 @@ export interface OpenOptions {
    * pays or goes somewhere. Off by default. */
   dismiss?: boolean;
   /** { key: check }: expectValue (see LocatorOptions) for those keys on every lookup, those
-   * heal.page makes too, whose key is the selector. An expectValue passed to heal.locator()
-   * wins over it. Not saved. */
+   * heal.page makes too, whose key is the selector (or, for a getBy* call, getByKey()'s key). An
+   * expectValue passed to heal.locator() wins over it. Not saved. */
   expectValues?: Record<string, ExpectValue | null | undefined> | Map<string, ExpectValue | null | undefined> | null;
+  /** Look up and heal heal.page.getByRole() and the other getBy* calls too, under a key written
+   * as the call, such as 'get_by_role("button", name="Sign in")' (getByKey() builds one). A call
+   * that matches nothing for timeoutMs is healed from the fingerprint mendwright recorded when it
+   * last matched, never by a model, and a miss throws GetByNotFound, which is Playwright's
+   * TimeoutError too. A call that matches several elements, or one hidden element, goes to
+   * Playwright as written. MENDWRIGHT_HEAL_GET_BY, else off; null reads the variable too. */
+  healGetBy?: boolean | null;
 }
 
 export interface LocatorOptions {
@@ -226,6 +245,16 @@ export function fingerprintSetting(fingerprint?: boolean): boolean {
   if (fingerprint !== undefined) return Boolean(fingerprint);
   const value = envFlag('MENDWRIGHT_FINGERPRINT');
   return value === null ? true : value;
+}
+
+/** Whether heal.page's getBy* calls are looked up and healed (see Healer.getByLocator): the
+ * healGetBy option when it is not null or undefined, else MENDWRIGHT_HEAL_GET_BY (1 or 0), else
+ * off (the Python package's get_by_setting). MENDWRIGHT_DISABLE=1 leaves it as it is: the calls
+ * are looked up, and nothing heals. Throws TypeError for a MENDWRIGHT_HEAL_GET_BY that is not a
+ * flag. */
+export function getBySetting(healGetBy?: boolean | null): boolean {
+  if (healGetBy !== undefined && healGetBy !== null) return Boolean(healGetBy);
+  return Boolean(envFlag('MENDWRIGHT_HEAL_GET_BY'));
 }
 
 /** What turns the fingerprint tier off, in the words a message uses, with the precedence of
@@ -449,6 +478,11 @@ export class Healer {
   dismissOn = false;
   /** @internal open({ expectValues }): key -> the check a read through a heal must pass. */
   expectValues: Map<string, Expectation> = new Map();
+  /** @internal open({ healGetBy: true }): heal.page's getBy* calls are looked up and healed (see
+   * getByLocator()). */
+  healGetBy = false;
+  // The getBy* calls of heal.page that are never keys, logged once each (see noteGetBy()).
+  private readonly getByNoted = new Set<string>();
 
   constructor(page: PageLike, driver: PlaywrightDriver, store: SelectorStore, coordinator: HealCoordinator,
               timeoutMs: number) {
@@ -468,9 +502,11 @@ export class Healer {
 
   /** The page to use in place of your own, so steps heal without changing them:
    * page.locator(selector) and the page methods that take a selector go through
-   * heal.locator(selector, selector). Everything else is the real page's, except that with
-   * open({ dismiss: true }) the locators it does not heal (getBy*, chained ones, ...) come back
-   * guarded: the real Locator, with the interruption and popup checks before its actions. */
+   * heal.locator(selector, selector). With open({ healGetBy: true }), getByRole() and the other
+   * getBy* calls on it are looked up and healed too (see getByLocator()). Everything else is the
+   * real page's, except that with open({ dismiss: true }) the locators it does not heal (getBy*
+   * without healGetBy, chained ones, ...) come back guarded: the real Locator, with the
+   * interruption and popup checks before its actions. */
   get page(): Page {
     if (!this.pageProxy) this.pageProxy = healingPage(this);
     return this.pageProxy as Page;
@@ -550,9 +586,142 @@ export class Healer {
   }
 
   /** True when one of key's stored selectors matches a single element now. No waiting and
-   * no healing. */
+   * no healing. For the key of a getBy* call (getByKey()), the call itself first: true when it
+   * matches one visible element, false when it matches several or one hidden one, and its saved
+   * heals only while it matches nothing (see resolver.presentGetBy). A call written in another
+   * spelling, such as "get_by_role('button', name='Pay')", is read as the call's key. */
   present(key: string): Promise<boolean> {
+    if (isKey(key)) return presentGetBy(this.store, this.driver, canonicalKey(key) as string);
     return presentNow(this.store, this.driver, key);
+  }
+
+  // --- heal.page.getBy*(), with open({ healGetBy: true }) (see getby.ts) ---------------------
+
+  /** @internal The HealLocator an action or a waiting read of a heal.page.getBy*() call runs on
+   * (the Python package's Healer._get_by_locator): call is its GetByCall, target the real
+   * Locator, and the key is the call (getby.canonical), such as
+   * 'get_by_role("button", name="Sign in")'.
+   *
+   * A. One look first, before anything is written: a call the browser rejects (level on a
+   *    button), or that matches several elements or one hidden element (unless the key's role is
+   *    checkbox), is not broken: it goes to Playwright as written (getByThrough), with nothing
+   *    saved and no saved heal used. A call that matches nothing has the registered
+   *    interruptions handled now, before the wait: a modal cookie banner can hide the rest of the
+   *    page from the accessibility tree.
+   * B. The lookup (resolver.resolveGetBy): the call itself first, as the key's code selector, and
+   *    a saved heal only while the call matches nothing. A miss handles the registered
+   *    interruptions and tries again. A call that starts to match several elements or a hidden
+   *    one during the wait goes to Playwright at once.
+   * C. After a miss: a call that matches only inside an iframe is not followed there, and no heal
+   *    of it is either (getByFrames); else the coordinator heals it from its fingerprint only
+   *    (HealCoordinator.healGetBy). What it cannot find or heal is thrown as a GetByNotFound,
+   *    which is also Playwright's TimeoutError, so a catch of that around an optional step still
+   *    works. InterruptionLoop, what a run function threw and the refusal of a heal on a key
+   *    marked destructive are thrown as they are.
+   * D. After a match, as locate() does: the role, the page and the fingerprint are saved. An
+   *    action on the element the call itself found reports nothing to the heal canary; one on a
+   *    heal's element does. */
+  async getByLocator(call: GetByCall, target: Locator, timeoutMs?: number, pollMs = 200): Promise<HealLocator> {
+    const key = canonical(call);
+    const timeout = timeoutMs ?? this.timeoutMs;
+    const plan: Plan = {
+      roles: null, code: [key], text: undefined, destructive: undefined, timeoutMs: timeout, pollMs, optional: false,
+      intent: undefined, expect: this.expectValues.get(key) ?? null,
+    };
+    const located = await this.turn(async (): Promise<Located | string> => {
+      const budget = newBudget();
+      const state = await this.getByState(key);
+      if (typeof state === 'string') return state;
+      const early = state[0] === 0 && this.others(key).length > 0
+        && (await this.handleInterruptions(key, budget, timeout, pollMs));
+      // The page changed when an interruption was handled: look at the call again.
+      let first: [number, boolean | null] | null = early ? null : state;
+      this.prime(key, plan);
+      const attempt = (wait: number = timeout) => {
+        const given = first;
+        first = null;
+        return resolveGetBy(this.store, this.driver, key, { timeoutMs: wait, pollMs, first: given });
+      };
+      let native: Locator | typeof THROUGH;
+      try {
+        try {
+          native = await this.resolveStep(key, () => attempt(), plan, budget);
+        } catch (error) {
+          if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired) || raisedByRun(error)) {
+            throw error;
+          }
+          await this.getByFrames(key, error);
+          native = await this.heal(key, error, attempt);
+        }
+      } catch (error) {
+        // The page is blocked, or a run function threw it: as it is, not a miss of this step.
+        if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired) || raisedByRun(error)) {
+          throw error;
+        }
+        throw new GetByNotFound(error.message, { cause: error });
+      }
+      if (native === THROUGH) return STARTED_TO_MATCH;
+      this.checkHealedTarget(key);
+      await this.learn(key, null);
+      this.rememberPage(key);
+      await this.recordFingerprint(key);
+      const winner = this.store.lastSuccess(key);
+      const healed = winner && winner.source === 'heal' && typeof winner.xpath === 'string' ? winner.xpath : null;
+      const where = this.winnerTarget(key);
+      return { native, healed, hosts: where && where.hosts.length ? where.hosts : null };
+    });
+    if (typeof located === 'string') return this.getByThrough(key, target, plan, located);
+    return HealLocator.found(this, key, plan, located, located.healed !== null);
+  }
+
+  /** Step A of getByLocator(): [count, visible] of the call key on the page now, or why it goes
+   * to Playwright as written. One round trip, two when it matches one element. */
+  private async getByState(key: string): Promise<[number, boolean | null] | string> {
+    const visible = requireVisible(this.store, key);
+    let count: number;
+    let shown: boolean | null = null;
+    try {
+      count = await this.driver.count(key);
+      if (count === 1 && visible) shown = await this.driver.isVisible(key);
+    } catch (error) {
+      if (error instanceof InvalidSelector) return REJECTED;
+      throw error;
+    }
+    if (count >= 2) return 'matches ' + count + ' elements';
+    if (count === 1 && visible && !shown) return HIDDEN;
+    return [count, shown];
+  }
+
+  /** The HealLocator of a getBy* call that goes to Playwright as written, and why, in a DEBUG
+   * line: its actions handle the registered interruptions and, with dismiss: true, a popup over
+   * the element first, and Playwright throws its own error (a strict mode violation, its wait
+   * and timeout, a selector error). Nothing is saved, no saved heal is used, and it reports
+   * nothing to the heal canary. */
+  private getByThrough(key: string, target: Locator, plan: Plan, why: string): HealLocator {
+    this.coordinator.emit('debug', throughMessage(key, why));
+    return HealLocator.element(this, key, target, { ...plan, expect: null }, { due: true }, null);
+  }
+
+  /** Step C1 of getByLocator(): when the call itself matches inside an iframe, throw the
+   * AttentionRequired that says mendwright does not follow a getBy* call there (the Python
+   * package's _get_by_frames). Only the call is looked for, not its heals: nothing of a call key
+   * is followed into an iframe. */
+  private async getByFrames(key: string, missed: AttentionRequired): Promise<void> {
+    let frames: FrameMatch[];
+    try {
+      frames = await this.driver.frameMatches(key);
+    } catch {
+      return;
+    }
+    if (frames.length) this.frameStop(key, missed, key, frames, NOT_FOLLOWED);
+  }
+
+  /** @internal Log, once per healer and call, that heal.page's getBy* call step is never a key
+   * (see getby.callOf) and goes to Playwright as written (the Python package's _note_get_by). */
+  noteGetBy(step: string, why: string): void {
+    if (this.getByNoted.has(step)) return;
+    this.getByNoted.add(step);
+    this.coordinator.emit('info', notHealedMessage(step, why));
   }
 
   // --- lists: locatorAll() (see lists.ts) ---------------------------------------------------
@@ -1221,9 +1390,9 @@ export class Healer {
 
   /** attempt(), and after a miss, handle the registered interruptions and try again while one
    * was handled (the Python package's _resolve_step). Throws the last miss when none is left to
-   * handle. */
-  private async resolveStep<T>(key: string, attempt: () => Promise<T>, plan: Pick<Plan, 'timeoutMs' | 'pollMs'>):
-      Promise<T> {
+   * handle. budget is the step's, when it handled some already. */
+  private async resolveStep<T>(key: string, attempt: () => Promise<T>, plan: Pick<Plan, 'timeoutMs' | 'pollMs'>,
+                               budget: Budget = newBudget()): Promise<T> {
     let missed: unknown;
     try {
       return await attempt();
@@ -1231,7 +1400,6 @@ export class Healer {
       if (!(error instanceof AttentionRequired)) throw error;
       missed = error;
     }
-    const budget = newBudget();
     while (await this.handleInterruptions(key, budget, plan.timeoutMs, plan.pollMs)) {
       try {
         return await attempt();
@@ -1254,7 +1422,7 @@ export class Healer {
 
   /** Heal key through the coordinator after its lookup missed (missed), then retry the
    * lookup (the Python package's Healer._heal), where healScope() says. */
-  private async heal(key: string, missed: AttentionRequired, attempt: () => Promise<Locator>): Promise<Locator> {
+  private async heal<T>(key: string, missed: AttentionRequired, attempt: () => Promise<T>): Promise<T> {
     const context = this.flowContext(key);
     const [refusal, scope] = await this.healScope(key);
     return resolveWithHeal(() => attempt(), this.coordinator, key, context, missed, refusal, scope);
@@ -2125,6 +2293,19 @@ export class HealLocator {
     return item;
   }
 
+  /** @internal A lookup of a heal.page.getBy*() call, resolved to located (see
+   * Healer.getByLocator): the heal canary hears of its actions only when canary is true, when the
+   * element was found through a heal and not by the call itself. */
+  static found(healer: Healer, key: string, plan: Plan, located: Located, canary: boolean): HealLocator {
+    const item = new HealLocator(healer, key, plan);
+    item.resolved = Promise.resolve(located);
+    item.nativeLocator = located.native;
+    item.hosts = located.hosts;
+    item.healed = located.healed;
+    item.canary = canary;
+    return item;
+  }
+
   /** Resolve the key now (healing it if needed), and return this locator. */
   async resolve(): Promise<this> {
     await this.ensure();
@@ -2405,27 +2586,13 @@ function argText(value: unknown): string {
   if (value && typeof value === 'object' && PROXIES.has(value)) return PROXIES.get(value)!.step;
   if (value instanceof HealLocator) return 'heal.locator(' + pyRepr(value.key) + ')';
   if (looksLikeLocator(value)) return '<locator>';
-  const cut = (text: string) => (pyLen(text) <= 60 ? text : pySlice(text, 57) + '...');
-  if (typeof value === 'string') return cut(pyRepr(value));
-  if (value === undefined) return 'undefined';
-  if (value === null) return 'null';
-  if (value instanceof RegExp) return cut(String(value));
-  if (typeof value === 'function') return '<function>';
-  if (Array.isArray(value)) return '[' + value.map(argText).join(', ') + ']';
-  if (typeof value === 'object') {
-    const parts = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined)
-      .map(([k, v]) => (/^[A-Za-z_$][\w$]*$/.test(k) ? k : pyRepr(k)) + ': ' + argText(v));
-    return parts.length ? '{ ' + parts.join(', ') + ' }' : '{}';
-  }
-  return String(value);
+  return plainArgText(value, argText);
 }
 
 /** A call as a guarded locator's name shows it: getByRole('button', { name: 'Go' }). Trailing
  * arguments left out (undefined) are not shown. */
 function callText(name: string, args: unknown[]): string {
-  const shown = [...args];
-  while (shown.length && shown[shown.length - 1] === undefined) shown.pop();
-  return name + '(' + shown.map(argText).join(', ') + ')';
+  return plainCallText(name, args, argText);
 }
 
 /** value as a guarded locator named name, when open({ dismiss: true }) was passed and value is
@@ -2506,6 +2673,42 @@ function healingLocator(healer: Healer, target: Locator, selector: string): Loca
   return proxy;
 }
 
+/** With open({ healGetBy: true }), what heal.page.getByRole() and the other getBy* calls return
+ * (the Python package's HealingGetByLocator). Its actions and the reads that wait for the
+ * element go through Healer.getByLocator(), under the call's key (see getby.ts): the call itself
+ * first, a saved heal only while the call matches nothing, a heal from the call's fingerprint when
+ * it matches nothing for the timeout, and Playwright as written when it matches several elements
+ * or one hidden one. An action's timeout is the lookup's timeout too.
+ *
+ * Everything else is the real Locator's and is never healed: isVisible() (Playwright's own, so a
+ * renamed button is not visible to it, while its click() heals), count(), waitFor(), isHidden(),
+ * all() (as on heal.page.locator()), and Playwright's expect(). Locators built from it (first(),
+ * nth(), filter(), getByText(), ...) are the real ones, or guarded ones with dismiss: true, named
+ * as before. expect() takes it, and native is the Locator. */
+function healingGetByLocator(healer: Healer, target: Locator, call: GetByCall, step: string): Locator {
+  const proxy = new Proxy(target, {
+    get(t, name) {
+      if (name === 'native') return t;
+      if (typeof name === 'string' && LOCATOR_HEALED.has(name)) {
+        return async (...args: unknown[]) => {
+          const found = await healer.getByLocator(call, t, timeoutOf(args));
+          return (found as unknown as Record<string, (...a: unknown[]) => unknown>)[name](...args);
+        };
+      }
+      if (name === 'all') {
+        // A Locator for each element the call matches, as Playwright gives them, never healed and
+        // with nothing saved; each one guarded with dismiss: true.
+        return async () => (await t.all()).map((item, i) => guard(healer, item, step + '.all()[' + i + ']'));
+      }
+      return chained(healer, step, t, name);
+    },
+  });
+  PROXIES.set(proxy, { native: target, step });
+  return proxy;
+}
+
+const GET_BY_METHODS: ReadonlySet<string> = new Set(TS_METHODS);
+
 /** heal.page: see Healer.page. */
 function healingPage(healer: Healer): Page | Frame {
   const target = healer.native;
@@ -2544,7 +2747,23 @@ function healingPage(healer: Healer): Page | Frame {
           return (proxy as unknown as Record<string, (...a: unknown[]) => unknown>)[name](...args);
         };
       }
-      // With dismiss: true, the getBy* locators and frameLocator() come back guarded.
+      if (typeof name === 'string' && GET_BY_METHODS.has(name)) {
+        return (...args: unknown[]) => {
+          // The real Locator first, so Playwright checks its own arguments, then, with
+          // healGetBy: true and a call that can be a key, a healing one. Otherwise the real
+          // Locator, guarded with dismiss: true. Nothing touches the page or the store here.
+          const real = (t as unknown as Record<string, (...a: unknown[]) => Locator>)[name](...args);
+          const step = 'page.' + callText(name, args);
+          if (!healer.healGetBy) return guard(healer, real, step);
+          const [call, why] = callOf(name, args);
+          if (call === null) {
+            healer.noteGetBy(step, why);
+            return guard(healer, real, step);
+          }
+          return healingGetByLocator(healer, real, call, step);
+        };
+      }
+      // With dismiss: true, frameLocator() and the other locators it builds come back guarded.
       return chained(healer, 'page', t, name);
     },
   }) as Page | Frame;
@@ -2594,7 +2813,15 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
     throw new TypeError('mendwright.open() takes dismiss: true or dismiss: false, got dismiss: '
       + argText(options.dismiss) + '.');
   }
-  const checks = expectations(options.expectValues);
+  const healGetByOption = options.healGetBy;
+  if (healGetByOption !== undefined && healGetByOption !== null && typeof healGetByOption !== 'boolean') {
+    throw new TypeError('mendwright.open() takes healGetBy: true, healGetBy: false or healGetBy: null, got healGetBy: '
+      + argText(healGetByOption) + '.');
+  }
+  // A key of destructiveKeys or expectValues written as a getBy* call on an object is named here.
+  const warn = (message: string) => emit(options.log, 'warning', message);
+  const checks = expectations(options.expectValues, warn);
+  const healGetBy = getBySetting(healGetByOption);
   const storePath = path.resolve(expandPath(options.storePath ?? process.env.MENDWRIGHT_STORE ?? DEFAULT_STORE_PATH));
   const timeoutMs = options.timeoutMs ?? envTimeout() ?? DEFAULT_TIMEOUT_MS;
   const dryRun = options.dryRun ?? Boolean(envFlag('MENDWRIGHT_DRY_RUN'));
@@ -2624,7 +2851,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   // the tests: it is ignored, and said once per open(), as the Python package says it.
   const badRunId = runId().bad;
   if (badRunId !== null) emit(options.log, 'warning', runIdProblem(badRunId));
-  const store = options.store ?? loadStore(storePath, { destructiveKeys: options.destructiveKeys });
+  const store = options.store ?? loadStore(storePath, { destructiveKeys: options.destructiveKeys, warn });
   const storeFile = store.overridePath;
   const journal = options.journal ?? new Journal(path.join(path.dirname(storeFile), 'journal.jsonl'));
   let guardrails = options.guardrails ?? null;
@@ -2641,6 +2868,7 @@ export function open(page: Page | Frame, options: OpenOptions = {}): Healer {
   const healer = new Healer(native, driver, store, coordinator, timeoutMs);
   healer.dismissOn = Boolean(options.dismiss);
   healer.expectValues = checks;
+  healer.healGetBy = healGetBy;
   if (cookies) {
     const preset = cookiePreset(cookies);
     (healer as unknown as { interruptions: Map<string, Interruption> }).interruptions.set(preset.key, preset);
