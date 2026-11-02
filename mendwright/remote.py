@@ -302,8 +302,10 @@ class RemoteSelectorStore(SelectorStore):
         # backend is a _Guarded around the StoreBackend; place names the store.
         self.backend = backend
         self.remote_place = place
-        # Why the store could not be read when it loaded, or None once it was read.
+        # Why the store could not be read when it loaded, or None once it was read, and the
+        # name of the error that said so.
         self.unread = unread
+        self.unread_error = None
         # The journal of the Healer this store serves, for store.unavailable and
         # store.available (mendwright.open() sets it).
         self.journal = NullJournal()
@@ -373,11 +375,9 @@ class RemoteSelectorStore(SelectorStore):
         it is read now. A store that still cannot be read keeps its reason."""
         try:
             data, version = self._latest((), max_age)
-        except BackendError as exc:
+        except (BackendError, StoreReadError) as exc:
             self.unread = _unread_reason(self.remote_place, exc)
-            return False
-        except StoreReadError as exc:
-            self.unread = _unread_reason(self.remote_place, exc)
+            self.unread_error = type(exc).__name__
             return False
         with self._mutex:
             if self.unread is None:
@@ -388,7 +388,7 @@ class RemoteSelectorStore(SelectorStore):
                 self._remember_base(taken)
             self._version = version
             self._key_versions = {}
-            self.unread = None
+            self.unread = self.unread_error = None
         logger.warning('mendwright: read the store %s, which could not be read when mendwright '
                        'opened it; heals are made again.', self.remote_place)
         return True
@@ -580,10 +580,9 @@ def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_on
                 'read from ' + os.getcwd() + '). Pass an absolute path, or seed_path=None '
                 'for no seed.')
         seed = _call_keys(_read_schema2(seed_path, destructive_keys), seed_path)
-    override, native, version, unread = _empty(), False, None, None
+    override, native, version, unread, error = _empty(), False, None, None, failure
     if failure is not None:
         guarded = _Guarded(_Unbuilt(place, failure), place)
-        unread = _unread_reason(place, failure)
     else:
         guarded = _Guarded(backend, place)
         try:
@@ -592,12 +591,15 @@ def load_remote_store(seed_path, store, destructive_keys=frozenset(), *, read_on
             override, native = _parse(text, place + OVERRIDES, destructive_keys)
             version = read.version
         except (BackendError, StoreReadError) as exc:
-            override, native, version = _empty(), False, None
-            unread = _unread_reason(place, exc)
+            override, native, version, error = _empty(), False, None, exc
+    if error is not None:
+        unread = _unread_reason(place, error)
     store = RemoteSelectorStore(merge(seed, override), guarded, place, destructive_keys,
                                 seed=seed, override=override if native else None,
                                 read_only=read_only, version=version if native else None,
                                 unread=unread)
+    if error is not None:
+        store.unread_error = type(error).__name__
     if unread is None and native:
         _doc(place).wrote(None, version, override)
     return store

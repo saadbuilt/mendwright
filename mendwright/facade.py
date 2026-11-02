@@ -72,6 +72,7 @@ from .shadow import (MISSING, ShadowHost, as_document, chain_hosts, driver_shado
                      place_text, saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
 from .fleet import decline_ttl_setting, page_signature, single_flight
+from .backends.url import is_store_url
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 
@@ -223,6 +224,18 @@ class HealEvent:
 
 DEFAULT_STORE_PATH = './.mendwright/overrides.json'
 DEFAULT_TIMEOUT_MS = 10000
+# Where journal.jsonl goes for a remote store (a store URL), which has no folder on this
+# machine: MENDWRIGHT_JOURNAL_DIR, else this folder, relative to the current directory. A
+# local store keeps its journal next to its file.
+JOURNAL_DIR_VAR = 'MENDWRIGHT_JOURNAL_DIR'
+DEFAULT_JOURNAL_DIR = './.mendwright'
+
+
+def journal_dir():
+    """The folder journal.jsonl goes to for a remote store, as an absolute path (see
+    JOURNAL_DIR_VAR)."""
+    return os.path.abspath(os.path.expanduser(os.environ.get(JOURNAL_DIR_VAR)
+                                              or DEFAULT_JOURNAL_DIR))
 
 _TRUE = ('1', 'true', 'yes', 'on')
 _FALSE = ('0', 'false', 'no', 'off', '')
@@ -375,8 +388,10 @@ def rate_setting(rate):
     return value
 
 
-def _shared_limiter(store_path, per_key, per_hour):
-    key = (os.path.normcase(os.path.abspath(store_path)), per_key, per_hour)
+def _shared_limiter(name, per_key, per_hour):
+    """The rate limiter of every Healer of this process on the store named name (a local
+    file's normalized absolute path, or a remote store's URL) with these caps."""
+    key = (name, per_key, per_hour)
     with _LIMITERS_LOCK:
         limiter = _LIMITERS.get(key)
         if limiter is None:
@@ -554,7 +569,8 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     (store, coordinator, timeout_ms). mendwright.aio.open() shares it."""
     if store_path is None:
         store_path = os.environ.get('MENDWRIGHT_STORE') or DEFAULT_STORE_PATH
-    store_path = os.path.expanduser(os.fspath(store_path))
+    if not is_store_url(store_path):
+        store_path = os.path.expanduser(os.fspath(store_path))
     if timeout_ms is None:
         timeout_ms = _env_timeout()
     if timeout_ms is None:
@@ -598,15 +614,25 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
                 'mendwright doctor)'))
 
     if store is None:
-        # No seed, plus any previously-healed overrides at store_path.
+        # No seed, plus any previously-healed overrides at store_path (a file, or a store URL:
+        # see mendwright.remote).
         store = load_store(None, store_path, destructive_keys)
-    store_file = os.fspath(getattr(store, '_override_path', None) or store_path)
-
-    if journal is None:
-        journal = Journal(os.path.join(os.path.dirname(store_file) or '.', 'journal.jsonl'))
+    place = getattr(store, 'remote_place', None)
+    if isinstance(place, str) and place:
+        # A remote store: the journal stays on this machine, and the rate limit is per store.
+        name = place
+        if journal is None:
+            journal = Journal(os.path.join(journal_dir(), 'journal.jsonl'))
+        store.journal = journal
+        _say_unread(store, journal, entry)
+    else:
+        store_file = os.fspath(getattr(store, '_override_path', None) or store_path)
+        name = os.path.normcase(os.path.abspath(store_file))
+        if journal is None:
+            journal = Journal(os.path.join(os.path.dirname(store_file) or '.', 'journal.jsonl'))
     if guardrails is None and not isinstance(provider, (GatewayProvider, _NullProvider)):
         # No gateway in front of a direct provider, so meter it here.
-        guardrails = Guardrails(_shared_limiter(store_file, rate_per_key_per_hour,
+        guardrails = Guardrails(_shared_limiter(name, rate_per_key_per_hour,
                                                 rate_global_per_hour))
 
     coord = HealCoordinator(
@@ -625,6 +651,21 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     # nonempty=True (see Healer._nonempty_blocked).
     coord.fingerprint_off_by = None if fingerprint else off_by
     return store, coord, timeout_ms
+
+
+def _say_unread(store, journal, entry):
+    """For a remote store that could not be read when it loaded: one WARNING, and
+    store.unavailable in the journal (op open). Its heals are refused until it is read (see
+    mendwright.remote)."""
+    reason = getattr(store, 'unread', None)
+    if not reason:
+        return
+    logger.warning(entry + ': ' + reason)
+    try:
+        journal.event('store.unavailable', store=store.remote_place, op='open',
+                      error=getattr(store, 'unread_error', None), reason=reason)
+    except Exception:
+        pass
 
 
 def _healed_target_error(key, xpath, locked):

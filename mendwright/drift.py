@@ -1285,8 +1285,14 @@ def store_journal(store):
     """The events of journal.jsonl next to a SelectorStore's file, oldest first, or []."""
     from .cli import _read_journal
     from .store import SelectorStore
+    if not isinstance(store, SelectorStore):
+        return []
+    if getattr(store, 'remote_place', None):
+        # A remote store's journal is on this machine (see facade.journal_dir).
+        path = getattr(getattr(store, 'journal', None), '_path', None)
+        return (_read_journal(os.fspath(path)) or []) if path is not None else []
     path = getattr(store, '_override_path', None)
-    if not isinstance(store, SelectorStore) or path is None:
+    if path is None:
         return []
     return _read_journal(os.path.join(os.path.dirname(os.fspath(path)) or '.',
                                       'journal.jsonl')) or []

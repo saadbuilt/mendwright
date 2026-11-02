@@ -64,6 +64,7 @@ import weakref
 from typing import Any, Callable, Iterable, Sequence
 
 from . import getby
+from .backends.url import is_store_url
 from .coordinator import HealCoordinator, _canary_call, resolve_with_heal
 from .drivers.base import (NOWHERE, PLACED, _member, _takes_place, css_pierces, is_async_api,
                            is_driver, looks_like_locator, takes_keyword, unsupported_message)
@@ -95,6 +96,7 @@ from .resolver import (THROUGH, Reuse, _again, _no_match_message, _require_visib
                        reuse_meta)
 from .selectors import CSS, XPATH, InvalidSelector, classify
 from .shadow import driver_shadowed
+from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 from . import steps as _steps
 
@@ -487,6 +489,11 @@ async def open(page: Any, *, provider: Any = None, store: Any = None,
             # awaited (a bare coroutine is truthy and would always allow the heal).
             return bool(bridge.run(user_guard))
 
+    if store is None:
+        place = store_path if store_path is not None else os.environ.get('MENDWRIGHT_STORE')
+        if is_store_url(place):
+            # A remote store is read over the network: in a worker thread, not on the loop.
+            store = await asyncio.to_thread(load_store, None, place, destructive_keys)
     store, coord, timeout_ms = _setup(
         bridge, provider=provider, store=store, store_path=store_path, guard=guard,
         dry_run=dry_run, destructive_keys=destructive_keys, guardrails=guardrails,

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import random
 import threading
 import time
 
@@ -80,7 +81,11 @@ def page_signature(page, selectors):
 
 def store_name(store):
     """The name single-flight knows a store's file by (its absolute path, normalized for
-    case on Windows), or None for a store without one (a custom store), which heals alone."""
+    case on Windows; for a remote store, its place, see mendwright.remote.place_of), or None
+    for a store without one (a custom store), which heals alone."""
+    place = getattr(store, 'remote_place', None)
+    if isinstance(place, str) and place:
+        return place
     path = getattr(store, '_override_path', None)
     if path is None:
         return None
@@ -405,6 +410,12 @@ LEASE_POLL = 0.05
 RECORD_SCHEMA = 1
 # How many times a compare-and-swap is tried before the change is given up.
 _CAS_TRIES = 50
+# The same for the records of a remote store (mendwright.remote), where a look or a try is a
+# request: a waiter looks four times a second, and a compare-and-swap is tried 8 times, with a
+# random pause of up to 50 ms between tries.
+REMOTE_LEASE_POLL = 0.25
+REMOTE_CAS_TRIES = 8
+REMOTE_CAS_PAUSE = 0.05
 
 
 def _owner():
@@ -426,9 +437,12 @@ class KeyRecords:
     """The per-key records of one store file (see the comment above LEASE_TTL), through a
     backend that keeps the StoreBackend contract."""
 
-    def __init__(self, backend, prefix='keys/'):
+    def __init__(self, backend, prefix='keys/', *, tries=_CAS_TRIES, pause=0.0, poll=LEASE_POLL):
         self.backend = backend
         self.prefix = prefix
+        # How many times update() tries a compare-and-swap, the most it pauses between two
+        # tries (a random part of it), and the seconds between two looks of a lease's waiter.
+        self.tries, self.pause, self.poll = tries, pause, poll
 
     def name(self, key):
         return self.prefix + hashlib.sha256(key.encode('utf-8')).hexdigest()[:32] + '.json'
@@ -453,7 +467,9 @@ class KeyRecords:
         Conflict. Returns result. Backend errors propagate."""
         import json
         from .backends import Conflict
-        for _ in range(_CAS_TRIES):
+        for attempt in range(self.tries):
+            if attempt and self.pause:
+                time.sleep(random.uniform(0, self.pause))
             record, version = self.read(key)
             new, result = change(dict(record))
             if new is None:
@@ -468,8 +484,8 @@ class KeyRecords:
                 return result
             except Conflict:
                 continue
-        raise Conflict('mendwright: ' + self.name(key) + ' kept changing under ' + str(_CAS_TRIES)
-                       + ' tries')
+        raise Conflict('mendwright: ' + self.name(key) + ' kept changing under '
+                       + str(self.tries) + ' tries')
 
     # --- the lease ------------------------------------------------------------------------------
 
@@ -581,7 +597,8 @@ _RECORDS_LOCK = threading.Lock()
 
 def records_for(store):
     """The KeyRecords of store's file (see the comment above LEASE_TTL), or None for a store
-    without a file, or one that never writes (read_only)."""
+    without a file, or one that never writes (read_only). A remote store's records are
+    keys/<hash>.json next to its overrides.json, in its backend (mendwright.remote)."""
     from .backends import OVERRIDES
     from .backends.file import FileBackend
     if getattr(store, 'read_only', False) is True:
@@ -592,9 +609,14 @@ def records_for(store):
     with _RECORDS_LOCK:
         found = _RECORDS.get(name)
         if found is None:
-            folder, file_name = os.path.split(os.path.abspath(os.fspath(store._override_path)))
-            prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
-            found = _RECORDS[name] = KeyRecords(FileBackend(folder), prefix)
+            if name == getattr(store, 'remote_place', None):
+                found = KeyRecords(store.backend, 'keys/', tries=REMOTE_CAS_TRIES,
+                                   pause=REMOTE_CAS_PAUSE, poll=REMOTE_LEASE_POLL)
+            else:
+                folder, file_name = os.path.split(os.path.abspath(os.fspath(store._override_path)))
+                prefix = 'keys/' if file_name == OVERRIDES else file_name + '.keys/'
+                found = KeyRecords(FileBackend(folder), prefix)
+            _RECORDS[name] = found
         return found
 
 
@@ -640,7 +662,7 @@ def _lead_across_processes(records, key, signature, deadline, clock, pause):
     """For the in-process leader: True when this process holds key's lease for signature
     now (it must release it, see _release), False when it heals without one. While the live
     lease of another process for the same page is held, and clock() is before deadline, it
-    waits, pause(LEASE_POLL) between looks. A lease its owner gave back meanwhile ends the
+    waits, pause(records.poll) between looks. A lease its owner gave back meanwhile ends the
     wait (that heal or decline is there to adopt or reuse); an expired one is taken over, by
     exactly one waiter. A decline another process kept for this page means no lease: heal()
     reuses it (see HealCoordinator._reused_decline), and the record is not written for it."""
@@ -661,7 +683,7 @@ def _lead_across_processes(records, key, signature, deadline, clock, pause):
                 if not waited:
                     waited = True
                     FLIGHTS._lease_waiting(1)
-                pause(LEASE_POLL)
+                pause(records.poll)
                 continue
             if state == 'none' and waited:
                 return False        # the other process is done: adopt or reuse its outcome
@@ -706,7 +728,7 @@ async def _lead_across_processes_async(records, key, signature, deadline, clock)
                 if not waited:
                     waited = True
                     FLIGHTS._lease_waiting(1)
-                await asyncio.sleep(LEASE_POLL)
+                await asyncio.sleep(records.poll)
                 continue
             if state == 'none' and waited:
                 return False

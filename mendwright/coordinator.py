@@ -217,11 +217,14 @@ def _place(label, container):
 
 def _store_flag(store):
     """' --store "PATH"' for the commands a list message names, when the store's file is not
-    the default one."""
+    the default one: a remote store's URL, which the commands name and refuse for now."""
+    from .cli import store_flag
+    place = getattr(store, 'remote_place', None)
+    if isinstance(place, str) and place:
+        return ' --store "' + place + '"'
     path = getattr(store, '_override_path', None)
     if path is None:
         return ''
-    from .cli import store_flag
     return store_flag(path)
 
 
