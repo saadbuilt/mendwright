@@ -142,6 +142,7 @@ Each has its own section, and most have a short clip, in the [guide](https://git
 - `mendwright fix --apply` writes confirmed repairs into your code, as CSS where your code used CSS.
 - The GitHub Action does that after your tests and opens a pull request for you to review ([guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#open-a-pull-request-with-the-fixes)).
 - `mendwright notify` posts a summary to Slack or any webhook: what was repaired and what needs a human. It sends counts and key names, never page text or form values, and `--detail counts` leaves the names out. The URL comes from `MENDWRIGHT_WEBHOOK_URL`.
+- Many workers on one store, such as `pytest -n auto` or a pool of scrapers, repair a broken key once, and the others use that repair after checking it on their own page. The store can also be an S3 bucket or an HTTPS server that many machines share (`MENDWRIGHT_STORE=s3://bucket/prefix/`, with `pip install "mendwright[s3]"`); the commands above and the GitHub Action read a downloaded copy of it ([remote stores](https://github.com/saadbuilt/mendwright/blob/main/docs/remote-store.md)).
 
 ## Selenium, async and pytest
 
