@@ -184,3 +184,43 @@ def test_the_flush_keeps_the_merge_rules_of_a_write():
     assert _apply_soft(data, {'k': {'rows': {'#heal': '2026-10-06T00:00:00+00:00'},
                                     'meta': {}}}) is True
     assert rows['#heal']['status'] == 'quarantined'     # a soft change never reactivates
+
+
+FP_OLD = {'v': 1, 'tag': 'input', 'id': 'old-field'}
+FP_NEW = {'v': 1, 'tag': 'input', 'id': 'new-field'}
+
+
+def test_a_flush_never_writes_back_a_fingerprint_this_process_only_read(tmp_path, soft_clock):
+    # This process finds the key on another page, a soft change that waits. Another process
+    # (an xdist worker) then heals the key and saves a new fingerprint. This process's flush at
+    # exit keeps it: it never changed the fingerprint.
+    import subprocess
+    import sys
+    path = tmp_path / 'overrides.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'expectedRole': 'input', 'fingerprint': FP_OLD, 'pages': ['/a'], 'lastPage': '/a',
+        'candidates': [{'xpath': "//input[@id='x']", 'source': 'code',
+                        'lastSucceededAt': '2026-01-01T00:00:00+00:00', 'status': 'active'}]}}}),
+        encoding='utf-8')
+    load_store(None, str(path)).set_last_page('k', '/b')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(mendwright.__file__)))
+    code = ('from mendwright import load_store\n'
+            's = load_store(None, %r)\n'
+            's.set_meta("k", fingerprint=%r)\n'
+            'assert s.flush()\n' % (str(path), FP_NEW))
+    subprocess.run([sys.executable, '-c', code], check=True,
+                   env=dict(os.environ, PYTHONPATH=root))
+    flush_all()
+    entry = json.loads(path.read_text(encoding='utf-8'))['selectors']['k']
+    assert entry['fingerprint'] == FP_NEW and set(entry['pages']) == {'/a', '/b'}
+
+
+def test_a_waiting_fingerprint_is_written_only_over_the_one_it_replaced():
+    def file(fp):
+        return {'schema': 2, 'selectors': {'k': {'fingerprint': fp, 'candidates': []}}}
+    mine = {'k': {'rows': {}, 'meta': {'fingerprint': FP_NEW}, 'replaced': {'fingerprint': FP_OLD}}}
+    data = file(FP_OLD)
+    assert _apply_soft(data, mine) is True and data['selectors']['k']['fingerprint'] == FP_NEW
+    other = {'v': 1, 'tag': 'input', 'id': 'other-field'}     # another process's, newer
+    data = file(other)
+    assert _apply_soft(data, mine) is False and data['selectors']['k']['fingerprint'] == other

@@ -564,12 +564,16 @@ def _changes_order(rows, row, when):
 
 
 def _apply_soft(data, pending):
-    """Apply soft changes ({key: {'rows': {xpath: lastSucceededAt}, 'meta': {field: value}}})
-    to the parsed override file data, in place, with the merge rules of a write. True when the
-    file must be written: a first success the file does not have, a success that changes the
-    order, pages or steps it does not list, a new fingerprint, a first address. A new order of
-    known pages, a newer success of the row already on top and a new address are written only
-    with such a change, as a store writes them with its next write."""
+    """Apply soft changes ({key: {'rows': {xpath: lastSucceededAt}, 'meta': {field: value},
+    'replaced': {field: value}}}) to the parsed override file data, in place, with the merge
+    rules of a write. True when the file must be written: a first success the file does not
+    have, a success that changes the order, pages or steps it does not list, a new
+    fingerprint, a first address. A new order of known pages, a newer success of the row
+    already on top and a new address are written only with such a change, as a store writes
+    them with its next write. meta holds only what the process changed (see
+    SelectorStore._persist_soft); a fingerprint or list fingerprint with the value it replaced
+    in replaced is written only while the file still holds that value: another process's
+    newer one stays."""
     selectors = data.setdefault('selectors', {})
     changed, carried = False, []
     for key, delta in pending.items():
@@ -605,10 +609,14 @@ def _apply_soft(data, pending):
                 changed = True
             elif merged != theirs:
                 carried.append((entry, field, merged))
+        replaced = delta.get('replaced') or {}
         for field in ('fingerprint', 'listFingerprint'):
-            if field in meta and entry.get(field) != meta[field]:
-                entry[field] = copy.deepcopy(meta[field])
-                changed = True
+            if field not in meta or entry.get(field) == meta[field]:
+                continue
+            if field in replaced and entry.get(field) != replaced[field]:
+                continue        # another process saved one since this one was read
+            entry[field] = copy.deepcopy(meta[field])
+            changed = True
         for field in ('lastUrl', 'lastPage'):
             if field not in meta or entry.get(field) == meta[field]:
                 continue
@@ -646,11 +654,15 @@ class SoftWrites:
         with self._lock:
             self._writers[path] = writer
 
-    def record(self, path, key, rows=None, meta=None):
+    def record(self, path, key, rows=None, meta=None, replaced=None):
         """Keep a soft change of key in the file at path: rows {xpath: lastSucceededAt} (the
-        newest wins) and meta (pages and steps join, the newest of the rest wins)."""
+        newest wins) and meta (pages and steps join, the newest of the rest wins), and for a
+        fingerprint, what it replaced (the latest wins: see _apply_soft)."""
         with self._lock:
-            entry = self._pending.setdefault(path, {}).setdefault(key, {'rows': {}, 'meta': {}})
+            entry = self._pending.setdefault(path, {}).setdefault(
+                key, {'rows': {}, 'meta': {}, 'replaced': {}})
+            for field, value in (replaced or {}).items():
+                entry.setdefault('replaced', {})[field] = copy.deepcopy(value)
             for xpath, when in (rows or {}).items():
                 if isinstance(when, str) and when > (entry['rows'].get(xpath) or ''):
                     entry['rows'][xpath] = when
@@ -732,7 +744,7 @@ class SoftWrites:
                         _atomic_write(path, json.dumps(data, separators=(',', ':')), sleep)
         except Exception as exc:
             for key, delta in pending.items():
-                self.record(path, key, delta['rows'], delta['meta'])
+                self.record(path, key, delta['rows'], delta['meta'], delta.get('replaced'))
             if path not in self._failed:
                 self._failed.add(path)
                 logger.warning('mendwright could not save the pages, fingerprints and last '
@@ -1616,9 +1628,15 @@ class SelectorStore:
         wrote them."""
         if not self.writes:
             return
-        meta = {f: v for f, v in self._meta.get(key, {}).items() if f in SOFT_META}
+        # Only what this store changed since it last read or wrote the file, and the
+        # fingerprints it replaced: a flush never writes back a value this process only read,
+        # over one another process saved since (see _apply_soft).
+        base = getattr(self, '_base_meta', {}).get(key, {})
+        meta = {f: v for f, v in self._meta.get(key, {}).items()
+                if f in SOFT_META and v != base.get(f)}
+        replaced = {f: base.get(f) for f in ('fingerprint', 'listFingerprint') if f in meta}
         path = self._soft_path()
-        SOFT.record(path, key, rows, meta)
+        SOFT.record(path, key, rows, meta, replaced)
         self._soft_waiting.add(key)
         state = self._batch
         if getattr(state, 'depth', 0):
