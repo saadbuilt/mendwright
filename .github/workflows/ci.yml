@@ -97,6 +97,27 @@ jobs:
       - name: Run the offline suite
         run: python -m pytest -q -rs
 
+  # The offline tests that need the Playwright or Selenium package but no browser, such as the
+  # get_by tests: the fakes stand in for the page. The jobs above install neither, so they skip
+  # them, and the browsers job runs only the tests marked browser.
+  test-extras:
+    name: test (py3.12, with Playwright and Selenium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with test extras, Playwright and Selenium
+        run: python -m pip install -e ".[test,playwright,selenium]"
+      - name: Run the offline suite
+        run: python -m pytest -q -rs
+
   # The oldest versions pyproject.toml claims to support: lxml>=5 and pytest>=7.
   lowest-deps:
     name: test (lowest deps, py3.10)
