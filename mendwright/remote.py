@@ -106,8 +106,8 @@ class _Health:
         """Note a failure, and the start of an outage when the store answered before."""
         with self._lock:
             self.failures += 1
-            pause = min(self.MOST, self.FIRST * 2 ** min(self.failures - 1, 16))
-            pause *= random.uniform(0.8, 1.2)
+            pause = self.FIRST * 2 ** min(self.failures - 1, 16)
+            pause = min(self.MOST, pause * random.uniform(0.8, 1.2))    # jitter, then the cap
             self.retry_at = self.clock() + pause
             if self.failures == 1:
                 self.since = self.clock()

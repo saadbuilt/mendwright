@@ -84,6 +84,20 @@ def test_changes_wait_in_memory_and_go_with_a_write_once_the_store_answers(journ
     assert up['op'] == 'read' and up['after'] == 61
 
 
+@pytest.mark.parametrize('jitter', [0.8, 1.2])
+def test_the_wait_after_failures_doubles_from_1_second_to_at_most_60(monkeypatch, jitter):
+    from mendwright import remote
+    monkeypatch.setattr(remote.random, 'uniform', lambda low, high: jitter)
+    health = remote._Health('read')
+    health.clock = Clock()
+    waits = []
+    for _ in range(10):
+        health.failed(DOWN)
+        waits.append(health.wait())
+    assert waits[0] == pytest.approx(jitter) and waits[1] == pytest.approx(2 * jitter)
+    assert waits[-1] == pytest.approx(60.0)               # the cap, whatever the jitter
+
+
 @pytest.mark.parametrize('error', [
     DOWN, Denied('the credentials were refused'),
     BackendError('the server answered HTTP 400 to PUT'),
