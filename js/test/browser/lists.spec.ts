@@ -1,13 +1,15 @@
 // heal.locatorAll() in a real browser: the cards of a grid, each one a HealLocator, with the list
 // fingerprint recorded in one round trip; an emptied cart whose items all moved to Saved for later
 // throws and is never healed onto that other list, and no model is asked; optional: true gives []
-// at once. The pages are served by page.route(), and a page's body is changed between lookups by
-// reloading it.
+// at once. With nonempty: true, a redesigned cart gives a proposal, which the Python package's
+// command line lists and accepts, and the lookup still throws until the selector is in the code;
+// an emptied cart is refused as another list. The pages are served by page.route(), and a page's
+// body is changed between lookups by reloading it.
 
 import { AttentionRequired, open } from 'mendwright';
 import { expect, test } from 'mendwright/test';
 
-import { FakeModel, journal, readStore, serve, tempStore } from './helpers';
+import { FakeModel, journal, mendwrightCli, pythonCommand, readStore, serve, tempStore } from './helpers';
 
 const PRODUCTS: [string, string][] = [['Blue mug', '$12.00'], ['Red mug', '$13.00'], ['Green mug', '$14.00'],
   ['Tea pot', '$29.00']];
@@ -93,4 +95,66 @@ test('optional: true gives [] at once for a list that matches nothing', async ({
   const started = Date.now();
   expect(await heal.locatorAll('cart', '.cart-item', { optional: true })).toEqual([]);
   expect(Date.now() - started).toBeLessThan(5000);
+});
+
+const ROWS = "//div[contains(concat(' ', normalize-space(@class), ' '), ' cart-row ')]";
+
+test('a redesigned cart with nonempty: true gives a proposal, which the Python package accepts, and is never used',
+  async ({ page }) => {
+    test.skip(!pythonCommand(), 'no Python that imports mendwright from this repository');
+    const routes = { '/cart': cart(true) };
+    await serve(page, routes);
+    const store = tempStore('lists-proposal');
+    const model = new FakeModel(["//div[@class='saved-item']"]);
+    const heal = open(page, { provider: model, storePath: store, timeoutMs: 300 });
+    expect(await heal.locatorAll('cart', '.cart-item', { nonempty: true })).toHaveLength(3);
+    expect(readStore(store).selectors.cart.listFingerprint.label).toBe('Shopping cart');
+    routes['/cart'] = cart(true, 'cart-row');
+    await page.reload();
+    const error = await heal.locatorAll('cart', '.cart-item', { nonempty: true }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AttentionRequired);
+    const row = readStore(store).selectors.cart.candidates.find((c: { list?: boolean }) => c.list);
+    expect(row).toMatchObject({ xpath: ROWS, status: 'proposed', list: true, css: 'div.cart-row' });
+    const pid = row.proposal.id as string;
+    const flag = ' --store "' + store + '"';
+    expect((error as Error).message).toContain("found 3 div elements, under 'Shopping cart', in <section "
+      + 'class="cart">, that hold 3 of the 3 items it recorded: ' + ROWS + ' (as CSS: div.cart-row).');
+    expect((error as Error).message).toContain('Accept it with: mendwright lists accept cart ' + pid + flag + '.');
+    expect(journal(store).filter((e) => e.event === 'heal.held')).toMatchObject([{ key: 'cart', xpath: ROWS, id: pid,
+      list: true, items: 3, label: 'Shopping cart' }]);
+    expect(model.bundles).toEqual([]);
+    expect(heal.heals).toEqual([]);
+
+    const [listed, out, listErr] = mendwrightCli(['lists', '--store', store]);
+    expect(listed, listErr).toBe(0);
+    expect(out.split(/\r?\n/)).toContain('cart  (div elements)  id ' + pid);
+    const [accepted, said, acceptErr] = mendwrightCli(['lists', 'accept', 'cart', pid, '--store', store]);
+    expect(accepted, acceptErr).toBe(0);
+    expect(said).toContain("Accepted the list heal of 'cart' (" + pid + '): ' + ROWS);
+
+    // An accepted proposal still throws, in this run and the next, until the selector is in the code.
+    for (const run of [heal, open(page, { provider: model, storePath: store, timeoutMs: 300 })]) {
+      await expect(run.locatorAll('cart', '.cart-item', { nonempty: true })).rejects.toThrow("'cart' matched 3 elements "
+        + 'when its list fingerprint was recorded, and none of its selectors matches now. You accepted a list heal for '
+        + 'it on ');
+    }
+    expect(model.bundles).toEqual([]);
+    const fixed = await open(page, { provider: model, storePath: store, timeoutMs: 300 })
+      .locatorAll('cart', 'div.cart-row', { nonempty: true });
+    expect(await Promise.all(fixed.map((r) => r.native!.locator('a').textContent()))).toEqual(['Blue mug', 'Red mug',
+      'Tea pot']);
+  });
+
+test('an emptied cart with nonempty: true is refused as another list, and nothing is proposed', async ({ page }) => {
+  const routes = { '/cart': cart(true) };
+  await serve(page, routes);
+  const store = tempStore('lists-nonempty-emptied');
+  const heal = open(page, { provider: new FakeModel([]), storePath: store, timeoutMs: 300 });
+  expect(await heal.locatorAll('cart', '.cart-item', { nonempty: true })).toHaveLength(3);
+  routes['/cart'] = cart(false);
+  await page.reload();
+  await expect(heal.locatorAll('cart', '.cart-item', { nonempty: true })).rejects.toThrow("but each group of div "
+    + "elements on the page is another list: the one most like the list (3 elements) is under 'Saved for later', which "
+    + "labelled another part of the page when the list was recorded, and the list was under 'Shopping cart'.");
+  expect(readStore(store).selectors.cart.candidates.filter((c: { list?: boolean }) => c.list)).toEqual([]);
 });

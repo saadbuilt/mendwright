@@ -739,7 +739,7 @@ const BACKSLASH = '\\';
 /** repr() of a string, as Python writes it: pyRepr(), with the characters it leaves as they
  * are that Python escapes, such as a non-breaking or a narrow space in a price, written as
  * Python writes them (\xa0, \u202f, \U000e0001). */
-function reprText(value: string): string {
+export function reprText(value: string): string {
   let out = '';
   for (const ch of pyRepr(value)) {
     if (ch === ' ' || !UNPRINTABLE.test(ch)) {

@@ -27,11 +27,11 @@
 // CSS, with the hosts as its shadowHosts. An element no CSS form tells apart is refused.
 
 import { cssXpath } from './css';
-import { TrustedTypesRefused } from './driver';
+import { TrustedTypesRefused, type ItemRow, type PlaywrightDriver } from './driver';
 import type { Proposal } from './prompt';
 import type { HealDriver } from './scope';
 import { CSS, XPATH, classify, frameSpelling, hasPosition, isBrittle, normalize, stripPrefix } from './selectors';
-import { formsRead, shadowText, splitText, type Hosts } from './shadow';
+import { formsRead, hostsOf, shadowText, splitText, type Hosts } from './shadow';
 import type { KeyMeta, SelectorStore } from './store';
 
 export const NOT_LIVE = 'passed static validation but not uniquely present on the live page';
@@ -221,4 +221,146 @@ export async function apply(store: SelectorStore, key: string, proposal: Partial
     return [xpath, result.reason];
   }
   return [null, reason];
+}
+
+// --- the list gate (the Python package's client.list_gate and gate.list_live_reason) ------------
+//
+// A list found for heal.locatorAll() with nonempty: true (see lists.ts) is never used: it is
+// proposed, for a person to check. These are the checks it passes before it is proposed.
+
+/** listLiveReason()'s reason when the live page could not be read (fail closed). */
+export const LIST_UNREADABLE = 'the live page could not be read';
+/** listGate()'s reasons for a list a quarantine holds. An accepted list heal is quarantined
+ * when the selector it replaced matches again (SelectorStore.retireListHeals). */
+export const REJECTED_LIST = 'it is a list heal you rejected, or one mendwright quarantined: it quarantines a list heal '
+  + 'you accepted once the selector it replaced matches again, even on one element';
+export const REJECTED_ELEMENTS = 'it takes elements of a list heal you rejected, or of a quarantined selector of this key';
+/** The static check's reason for an XPath with a position. */
+export const LIST_POSITIONAL = 'it uses a position ([2], last() or position()), and a list heal never does';
+
+function tooFew(count: number): string {
+  return 'it matches ' + count + (count === 1 ? ' element' : ' elements') + ' on the live page, and a list heal needs 2 '
+    + 'or more';
+}
+
+/** '' when the list xpath passes the live check, else the reason it does not: the first 200
+ * elements it matches, read in one round trip, are two or more, each of the key's role, and at
+ * least one is visible. Any error fails it (fail closed). */
+export async function listLiveReason(driver: PlaywrightDriver, xpath: string, meta: Pick<KeyMeta, 'expectedRole'>):
+    Promise<string> {
+  const want = meta.expectedRole;
+  let items: ItemRow[];
+  try {
+    items = await driver.listItems(xpath);
+  } catch {
+    return LIST_UNREADABLE;
+  }
+  if (!Array.isArray(items)) return LIST_UNREADABLE;
+  if (items.length < 2) return tooFew(items.length);
+  for (const item of items) {
+    if (want && want !== 'unknown' && item.role !== want) {
+      return 'live element role mismatch: got ' + String(item.role) + ' want ' + String(want);
+    }
+  }
+  if (!items.some((item) => item.visible)) return 'none of its ' + items.length + ' elements is visible on the live page';
+  return '';
+}
+
+export interface ListCheck {
+  ok: boolean;
+  reason: string;
+  count: number;
+  /** A quarantined selector of the key reaches one of the elements. */
+  taken: boolean;
+}
+
+/** The static check of a list heal (the Python package's lists.validate): ok when xpath, with
+ * no position and not an index-only path, matches two or more elements of role in the captured
+ * page html and none of them is inside another; taken when one of the quarantined XPaths
+ * reaches one of them. */
+export async function validateList(driver: HealDriver, xpath: string, html: string, role: string,
+                                   quarantined: string[] = []): Promise<ListCheck> {
+  if (isBrittle(xpath)) return { ok: false, reason: 'brittle absolute-index path', count: 0, taken: false };
+  if (hasPosition(xpath)) return { ok: false, reason: LIST_POSITIONAL, count: 0, taken: false };
+  try {
+    const result = await driver.lib<ListCheck>('listValidate', { xpath, html, role, quarantined });
+    if (!result || typeof result.ok !== 'boolean') return { ok: false, reason: UNPARSED, count: 0, taken: false };
+    return result;
+  } catch (error) {
+    const reason = error instanceof TrustedTypesRefused ? UNPARSED + ': ' + error.message : UNPARSED;
+    return { ok: false, reason, count: 0, taken: false };
+  }
+}
+
+/** The first of the key's selectors from code (on the page, not in an iframe or a shadow root)
+ * that matches one element or more on the live page now, as a list that was still loading does
+ * once it came while mendwright looked for it, else ''. Errors are skipped. */
+async function codeBack(store: SelectorStore, key: string, driver: PlaywrightDriver): Promise<string> {
+  let own: string[];
+  try {
+    own = store.candidates(key).filter((c) => (c.source === 'code' || c.source === 'seed') && !c.frameXPath
+      && !hostsOf(c).length).map((c) => c.xpath);
+  } catch {
+    return '';
+  }
+  for (const selector of own) {
+    try {
+      if (await driver.count(selector)) return selector;
+    } catch {
+      continue;
+    }
+  }
+  return '';
+}
+
+/** True when one of the key's selectors from code is CSS. */
+function codeUsesCss(store: SelectorStore, key: string): boolean {
+  try {
+    return store.candidates(key).some((c) => c.source === 'code' && typeof c.xpath === 'string'
+      && classify(c.xpath) === CSS);
+  } catch {
+    return false;
+  }
+}
+
+/** The checks of a list found for heal.locatorAll() with nonempty: true, which mendwright
+ * proposes and never uses: [kind, reason, count, css]. kind is
+ *
+ * - 'came' when a selector of the key's code matches on the live page now (reason is that
+ *   selector): the list came while mendwright looked for it. Checked first, so a list that came
+ *   is never refused;
+ * - 'accepted' when the key already has this XPath as a list heal a person accepted;
+ * - 'refused' with the reason: not an XPath; a list heal of the key that was rejected or
+ *   quarantined; validateList(); an element a quarantined selector of the key reaches; or the
+ *   live check (listLiveReason);
+ * - 'ok', with count the elements it matches in the captured page, and css the CSS form css
+ *   when one of the key's selectors in code is CSS and css matches as many elements on the live
+ *   page as the XPath, else null.
+ *
+ * A superseded or proposed list heal with the same XPath passes: it may be proposed again. */
+export async function listGate(store: SelectorStore, key: string, xpath: string, html: string, meta: KeyMeta,
+                               driver: PlaywrightDriver, css: string | null = null):
+    Promise<['came' | 'accepted' | 'refused' | 'ok', string, number, string | null]> {
+  const came = await codeBack(store, key, driver);
+  if (came) return ['came', came, 0, null];
+  if (typeof xpath !== 'string' || !xpath.trim()) return ['refused', 'no candidates in proposal', 0, null];
+  const [body, stored] = xpathForms(xpath);
+  if (classify(stored) !== XPATH) return ['refused', 'not an XPath expression', 0, null];
+  const status = store.status(key, stored);
+  if (status === 'quarantined') return ['refused', REJECTED_LIST, 0, null];
+  if (status === 'accepted') return ['accepted', '', 0, null];
+  const result = await validateList(driver, body, html, meta.expectedRole, quarantinedBodies(store, key));
+  if (!result.ok) return ['refused', result.reason, result.count, null];
+  if (result.taken) return ['refused', REJECTED_ELEMENTS, result.count, null];
+  const live = await listLiveReason(driver, stored, meta);
+  if (live) return ['refused', live, result.count, null];
+  let twin: string | null = null;
+  if (css && codeUsesCss(store, key)) {
+    try {
+      if ((await driver.count(css)) === (await driver.count(stored))) twin = css;
+    } catch {
+      twin = null;
+    }
+  }
+  return ['ok', 'ok', result.count, twin];
 }

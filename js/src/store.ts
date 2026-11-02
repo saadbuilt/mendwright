@@ -6,8 +6,9 @@
 // - Candidates from code come first, in the order the code passes them; older code
 //   selectors become 'superseded', and heals stay behind as fallbacks.
 // - Only 'active' candidates are tried. 'quarantined' and 'superseded' ones stay in the file,
-//   and so do the list heals ('proposed', 'accepted') the Python package keeps for a person
-//   to check: this package never tries or changes those.
+//   and so do the list heals ('proposed', 'accepted') a lookup with nonempty: true saves for a
+//   person to check, as the Python package saves them (see lists.ts): no lookup tries those,
+//   and only the Python package's mendwright lists accepts one.
 // - Per-key metadata: expectedRole, expectedText, destructive, lastPage and pages, lastUrl,
 //   steps, intent, fingerprint, listFingerprint and shadowHosts (where the element was
 //   found, see shadow.ts), written only when one of them changes.
@@ -121,6 +122,22 @@ function clone<T>(value: T): T {
  * synchronous, as the Python package's are. */
 function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Where open() keeps the store when neither storePath nor MENDWRIGHT_STORE says. */
+export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
+
+/** The store a command names with no --store: MENDWRIGHT_STORE, else DEFAULT_STORE_PATH, as an
+ * absolute path (the Python package's cli.default_store_path). */
+export function defaultStorePath(): string {
+  return path.resolve(expandPath(process.env.MENDWRIGHT_STORE || DEFAULT_STORE_PATH));
+}
+
+/** ' --store "FILE"' for a command a message tells you to run on the store at file, or '' when
+ * file is the default store (the Python package's cli.store_flag). */
+export function storeFlag(file: string): string {
+  const normcase = (p: string) => (process.platform === 'win32' ? p.toLowerCase().replace(/\//g, '\\') : p);
+  return normcase(path.resolve(file)) === normcase(defaultStorePath()) ? '' : ' --store "' + file + '"';
 }
 
 /** A path with '~' expanded. */

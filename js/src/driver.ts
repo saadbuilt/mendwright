@@ -34,16 +34,18 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
   'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'shadowRoots',
-  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listRaw', 'listItems']);
+  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listRaw', 'listItems', 'listScan', 'listXpath',
+  'listValidate']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
   | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'shadowRoots'
-  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt' | 'listRaw' | 'listItems';
+  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt' | 'listRaw' | 'listItems' | 'listScan'
+  | 'listXpath' | 'listValidate';
 
 // The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
 // nothing of the live page. A page that enforces Trusted Types refuses a plain string to
 // DOMParser, so these get mendwright's own policy there (see PlaywrightDriver.lib).
 const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths', 'cssForms',
-  'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt']);
+  'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listScan', 'listXpath', 'listValidate']);
 const TRUSTED_TYPES = 'mendwright:trusted-types';
 
 /** True for a helper of the page library that reads only the HTML string it is given, never

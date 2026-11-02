@@ -57,3 +57,14 @@ export class NoModel implements HealProvider {
     throw new Error('mendwright asked a model about a list');
   }
 }
+
+export const TASKS = ['Buy milk', 'Call the bank', 'Book flights', 'Pay rent'];
+
+/** TodoMVC's list (test_lists_emptied.todomvc): one <ul class='todo-list'>, where a completed
+ * task gets class='completed'. */
+export function todomvc(cls: string): string {
+  const item = (task: string) => '<li' + (cls ? " class='" + cls + "'" : '') + "><div class='view'><input "
+    + "class='toggle' type='checkbox'><label>" + task + "</label><button class='destroy'></button></div></li>";
+  return "<html><body><section class='todoapp'><h1>todos</h1><ul class='todo-list'>" + TASKS.map(item).join('')
+    + '</ul></section></body></html>';
+}

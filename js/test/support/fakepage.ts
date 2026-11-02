@@ -52,6 +52,10 @@
 //   n more times), and data-click-raises then throws the error Playwright throws for a
 //   click whose navigation did not commit in time. page.clicked lists the elements clicked.
 //
+// A page made with { rects: true } and no layout gives each element that visible() says is
+// visible one box in getClientRects(), and the others none, so a script that counts boxes, such
+// as the live gate of a list (ITEMS_JS), sees what a browser would.
+//
 // Any page, with a layout or without: a click on an element runs data-click-shows="<css>",
 // which takes the inline display: none off what the CSS matches, and data-click-goes="<url>",
 // which loads the page page.site holds for that address (resolved against the current one),
@@ -80,6 +84,10 @@ export interface FakePageOptions {
   blocker?: string;
   trustedTypes?: 'require' | 'refuse';
   layout?: boolean | { width?: number; height?: number };
+  /** Without a layout: getClientRects() gives a box to each element visible() says is
+   * visible, and none to the others, so a script that counts boxes, such as the live gate of a
+   * list, sees what a browser would. */
+  rects?: boolean;
 }
 
 const POINTER = ['click', 'dblclick', 'check', 'uncheck', 'hover', 'tap'];
@@ -214,6 +222,13 @@ function installLayout(page: FakePage, window: any, width: number, height: numbe
         : Array.from(this.childNodes).map(text).join('').replace(/\n+/g, '\n').trim();
     },
   });
+}
+
+/** Give each element of window that page.visible() says is visible a box (see { rects }). */
+function installRects(page: FakePage, window: any): void {
+  window.Element.prototype.getClientRects = function () {
+    return this.isConnected && page.visible(this) ? [new window.DOMRect(0, 0, 100, 20)] : [];
+  };
 }
 
 /** A document a locator looks in, and runs functions in: the page's, or a frame's. */
@@ -712,6 +727,7 @@ export class FakePage implements FakeContext {
   documents = 0;
   /** With a layout: the window's size, and how far the page is scrolled down. */
   readonly layout: { width: number; height: number } | null;
+  readonly rects: boolean;
   scrollY = 0;
   /** The keys page.keyboard pressed, and the element each went to (its id, or its tag). */
   readonly keys: [string, string][] = [];
@@ -736,6 +752,7 @@ export class FakePage implements FakeContext {
     this.trustedTypes = options.trustedTypes ?? null;
     const layout = options.layout;
     this.layout = layout ? { width: 1000, height: 800, ...(layout === true ? {} : layout) } : null;
+    this.rects = Boolean(options.rects);
     this.dom = this.load(html);
   }
 
@@ -744,6 +761,7 @@ export class FakePage implements FakeContext {
     declareShadowRoots(dom.window.document);
     if (this.trustedTypes) enforceTrustedTypes(dom.window, this.trustedTypes, this.policies);
     if (this.layout) installLayout(this, dom.window, this.layout.width, this.layout.height);
+    else if (this.rects) installRects(this, dom.window);
     this.scrollY = 0;
     this.documents += 1;
     this.visits.push(this.currentUrl);

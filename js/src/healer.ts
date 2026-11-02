@@ -35,7 +35,7 @@ import * as path from 'node:path';
 import type { Frame, Locator, Page } from '@playwright/test';
 
 import {
-  DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord, type Refusal,
+  DISABLED_REASON, HealCoordinator, resolveWithHeal, type FlowContext, type HealRecord, type ListOutcome, type Refusal,
 } from './coordinator';
 import {
   NOT_LOOKED_AT, asksAnswer, asksConsent, controlText, expectControl, expectOf, isConsent, parseProbe, pick, popupOf,
@@ -60,7 +60,9 @@ import {
 } from './interruptions';
 import { Journal, runId, runIdProblem, type JournalLike } from './journal';
 import { sharedLimiter, type Guardrails } from './limits';
-import { itemRole, placed as listPlaced, validList, type ListFingerprint } from './lists';
+import {
+  itemRole, nonemptyArgsError, placed as listPlaced, tierOffText, validList, type ListFingerprint,
+} from './lists';
 import { log, type LogSink } from './log';
 import { NullProvider, type HealProvider } from './providers/base';
 import { autoProvider } from './providers/detect';
@@ -76,12 +78,12 @@ import {
   StepRun, WAITING_STEP, makeStep, plainMessage, registerStep, runArgs, scopeMessage, shows, type RunStepsOptions,
   type Step, type StepFunction, type StepOptions,
 } from './steps';
-import { expandPath, loadStore, type Candidate, type KeyMeta, type SelectorStore } from './store';
+import { DEFAULT_STORE_PATH, expandPath, loadStore, type Candidate, type KeyMeta, type SelectorStore } from './store';
 import {
   VALUE_READS, expectation, expectations, refusalReason, refusedMessage, type ExpectValue, type Expectation,
 } from './values';
 
-export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
+export { DEFAULT_STORE_PATH } from './store';
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** The actions a HealLocator runs with the heal canary. */
@@ -184,6 +186,11 @@ export interface LocatorAllOptions {
   pollMs?: number;
   /** The list may be empty at this point: a lookup that matches nothing gives [] at once. */
   optional?: boolean;
+  /** The list always has items at this point, such as the rows of a cart the test just filled.
+   * Such a lookup records where the list sits and its heading too, and when none of its
+   * selectors matches, it waits, then looks for the list on the page and saves what it finds as
+   * a proposed list heal for a person to check, never used (see Healer.locatorAll). */
+  nonempty?: boolean;
 }
 
 const TRUE = ['1', 'true', 'yes', 'on'];
@@ -576,11 +583,22 @@ export class Healer {
    *   other list, asks no model and saves nothing, and a selector that broke is fixed in your
    *   code.
    *
+   * nonempty: true says the list always has items at this point, such as the rows of a cart the
+   * test just filled. Such a lookup records where the list sits and its heading with its list
+   * fingerprint, and so does every later lookup of the key. When none of its selectors matches,
+   * it always waits timeoutMs, then looks for the list on the page (see lists.ts) and never uses
+   * what it finds: it saves it in the store as a proposed list heal and throws AttentionRequired
+   * with the new selector, where the list was and where the group found is, and the commands to
+   * check it (mendwright lists), accept it (mendwright lists accept KEY ID) and write it into
+   * your code (mendwright fix --apply), all of the Python package. Only then does the list come
+   * from it, as your selector. When it finds nothing it can propose, AttentionRequired says why.
+   *
    * The elements' actions handle interruptions and popups as locator()'s do, and confirm or
    * quarantine nothing, and neither does their confirm(). The first read of any of them handles
    * the registered interruptions once for the whole list, and their reads are never checked
    * against expectValues. Throws TypeError or InvalidSelector at once, before anything touches
-   * the page, for arguments that can never work. */
+   * the page, for arguments that can never work (nonempty other than true or false, or
+   * nonempty: true with optional: true). */
   locatorAll(key: string, selector?: string | string[] | null, options: LocatorAllOptions = {}): Promise<HealLocator[]> {
     if (typeof key !== 'string' || !key) {
       throw new TypeError('mendwright: heal.locatorAll() needs a key, a non-empty name such as "cards", got '
@@ -596,17 +614,19 @@ export class Healer {
     }
     const roles = roleChoices(options.role);
     const code = codeSelectors(key, selector);
+    const wrong = nonemptyArgsError(key, options.nonempty, options.optional);
+    if (wrong) throw wrong;
     const plan: Plan = {
       roles, code, text: undefined, destructive: undefined, timeoutMs: options.timeoutMs ?? this.timeoutMs,
       pollMs: options.pollMs ?? 200, optional: Boolean(options.optional), intent: undefined, expect: null,
     };
-    return this.lookUpList(key, plan);
+    return this.lookUpList(key, plan, options.nonempty === true);
   }
 
   /** locatorAll() once its arguments were checked: the lookup under the healer's mutex, then a
    * HealLocator for each element. */
-  private async lookUpList(key: string, plan: Plan): Promise<HealLocator[]> {
-    const natives = await this.turn(() => this.list(key, plan));
+  private async lookUpList(key: string, plan: Plan, nonempty: boolean): Promise<HealLocator[]> {
+    const natives = await this.turn(() => this.list(key, plan, nonempty));
     const reads = { due: true };   // one check of the interruptions for the reads of the whole list
     const target = natives.length ? this.winnerTarget(key) : null;
     const hosts = target && target.hosts.length ? target.hosts : null;
@@ -616,23 +636,24 @@ export class Healer {
   /** The Locators of list key (see locatorAll), with its code primed first. What a lookup that
    * matches at once saves (the code's selectors, the first success, the page, the list
    * fingerprint) costs one write of the store (the Python package's Healer._list). */
-  private async list(key: string, plan: Plan): Promise<Locator[]> {
+  private async list(key: string, plan: Plan, nonempty: boolean): Promise<Locator[]> {
     const matched = await this.store.batchAsync(async () => {
       this.prime(key, plan);
       const found = await this.listLook(key, this.listRunnable(key));
-      return found === null ? null : this.listFound(key, plan.roles, found);
+      return found === null ? null : this.listFound(key, plan.roles, found, nonempty);
     });
     if (matched !== null) return matched;
-    if (plan.optional || !this.listWaits(key)) return [];
+    if (!nonempty && (plan.optional || !this.listWaits(key))) return [];
     let found: [string, number];
     try {
       found = await this.resolveStep(key, () => this.listAttempt(key, plan.timeoutMs, plan.pollMs), plan);
     } catch (error) {
       // The page is blocked (InterruptionLoop), or a run function threw it: as it is.
       if (error instanceof InterruptionLoop || !(error instanceof AttentionRequired) || raisedByRun(error)) throw error;
+      if (nonempty) return this.listNonemptyMissing(key, plan.roles, error);
       throw this.listMissing(key, error);
     }
-    return this.store.batchAsync(() => this.listFound(key, plan.roles, found));
+    return this.store.batchAsync(() => this.listFound(key, plan.roles, found, nonempty));
   }
 
   /** True when a list lookup of key that matches nothing waits and throws: key has a list
@@ -688,11 +709,13 @@ export class Healer {
   }
 
   /** The Locators of what found ([selector, count]) matched for list key, with the page saved
-   * and, when it should be read (see listTarget), the list fingerprint. */
-  private async listFound(key: string, roles: string[] | null, found: [string, number]): Promise<Locator[]> {
+   * and, when it should be read (see listTarget), the list fingerprint: with where the list sits
+   * when place (nonempty: true) or when the stored one already holds it. */
+  private async listFound(key: string, roles: string[] | null, found: [string, number], place = false):
+      Promise<Locator[]> {
     const [selector, count] = found;
     this.rememberPage(key);
-    const place = this.listPlaced(key);
+    place = place || this.listPlaced(key);
     if (this.listTarget(key, selector, count, place)) {
       this.keepList(key, selector, roles, await this.readList(selector, place), place);
     }
@@ -738,6 +761,95 @@ export class Healer {
     } catch {
       // a list fingerprint that cannot be saved is not recorded
     }
+  }
+
+  /** What a lookup of list key with nonempty: true does when none of its selectors matched
+   * (missed): the Locators of a list that came while mendwright looked for it, or
+   * AttentionRequired with the miss and why: the fingerprint tier is off, a list heal you
+   * accepted waits for mendwright fix, or what HealCoordinator.proposeList() proposed or
+   * refused. */
+  private async listNonemptyMissing(key: string, roles: string[] | null, missed: AttentionRequired):
+      Promise<Locator[]> {
+    const blocked = this.nonemptyBlocked(key);
+    if (blocked) throw new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + blocked);
+    this.reloadLists(key);
+    for (const row of this.listRows(key)) {
+      if (row.status !== 'accepted') continue;
+      const count = await this.countLive(row.xpath);
+      if (count) throw this.waitsForFix(key, missed, row, count);
+    }
+    const outcome = await this.coordinator.proposeList(key, this.store.metaOf(key), this.listRunnable(key),
+      this.flowContext(key));
+    if (outcome.kind === 'came') {
+      const natives = await this.store.batchAsync(async () => {
+        const found = await this.listLook(key, this.listRunnable(key));
+        if (found === null) return null;
+        this.coordinator.came(key, found[0]);
+        return this.listFound(key, roles, found, true);
+      });
+      if (natives !== null) return natives;
+    }
+    throw this.listOutcomeError(key, missed, outcome);
+  }
+
+  /** The refusal of a list looked up with nonempty: true while the fingerprint tier is off,
+   * naming what turned it off, else ''. */
+  private nonemptyBlocked(key: string): string {
+    const coordinator = this.coordinator;
+    if (coordinator.fingerprint) return '';
+    return coordinator.declineNonempty(key, tierOffText(coordinator.fingerprintOffBy
+      || "the HealCoordinator's fingerprint: false"));
+  }
+
+  /** Take in what the Python package's mendwright lists accept or reject did to key's list heals
+   * since the store was read (SelectorStore.reloadListHeals), so a healer that lives across an
+   * accept or a reject doesn't propose that list heal again. */
+  private reloadLists(key: string): void {
+    try {
+      this.store.reloadListHeals(key);
+    } catch {
+      // read again on the next lookup
+    }
+  }
+
+  /** key's list heals that wait (SelectorStore.listHeals). */
+  private listRows(key: string): Candidate[] {
+    try {
+      return this.store.listHeals(key);
+    } catch {
+      return [];
+    }
+  }
+
+  /** How many elements selector matches on the page now; 0 on any error. */
+  private async countLive(selector: unknown): Promise<number> {
+    try {
+      return typeof selector === 'string' ? await this.driver.count(selector) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** The AttentionRequired for list key, when a list heal you accepted for it (row) matches
+   * count elements and waits for mendwright fix. */
+  private waitsForFix(key: string, missed: AttentionRequired, row: Candidate, count: number): AttentionRequired {
+    const reason = this.coordinator.waitsForFix(key, this.store.metaOf(key), row, count);
+    return new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
+  }
+
+  /** The AttentionRequired for what proposeList() did (see ListOutcome), but a list that came
+   * and is still there: the miss and the reason. */
+  private listOutcomeError(key: string, missed: AttentionRequired, outcome: ListOutcome): AttentionRequired {
+    let reason: string;
+    if (outcome.kind === 'came') {
+      reason = this.coordinator.cameAndWent(key, this.store.metaOf(key), outcome.xpath, outcome.reason);
+    } else if (outcome.kind === 'accepted') {
+      reason = this.coordinator.waitsForFix(key, this.store.metaOf(key), outcome.row ?? { xpath: outcome.xpath },
+        outcome.count);
+    } else {
+      reason = outcome.reason;
+    }
+    return new AttentionRequired(missed.message.trimEnd() + '\n  -> ' + reason);
   }
 
   /** The AttentionRequired for list key, whose lookup missed when none of its selectors

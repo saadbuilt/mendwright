@@ -24,20 +24,25 @@ import { TrustedTypesRefused, type PlaywrightDriver } from './driver';
 import { AttentionRequired } from './errors';
 import { fmt, valid as validFingerprint } from './fingerprint';
 import { flowChangeMessage } from './flow';
-import { apply, quarantinedBodies, validateStatic } from './gate';
+import { REJECTED_LIST, apply, listGate, quarantinedBodies, validateStatic } from './gate';
 import type { JournalLike } from './journal';
 import type { Guardrails } from './limits';
-import { listMissingMessage } from './lists';
+import {
+  IN_SHADOW, NEVER_SEEN, PLACELESS, cameAndWentWhy, cameLine, dryRunReason, findList, foundLine, gateRefusal, inShadow,
+  listMissingMessage, nonemptySearched, nonemptyUnsearched, placed, proposalEvidence, proposalMessage, stateWord,
+  stateWordReason, unsavedReason, validList, waitsForFixMessage, type ListFingerprint, type ListMatch,
+} from './lists';
 import { log, type LogLevel, type LogSink } from './log';
 import { MAX_PROMPT_PART, type Bundle, type Proposal } from './prompt';
-import { pyRepr } from './py';
+import { nowIso, pyFixed, pyRepr } from './py';
 import { providerName, type HealProvider, type ProviderTools } from './providers/base';
 import { NOT_HERE_HINT } from './providers/errors';
 import { healPlace, type HealDriver, type HealScope } from './scope';
 import { hasPosition } from './selectors';
 import { placeText } from './shadow';
-import type { KeyMeta, SelectorStore } from './store';
+import { storeFlag, type Candidate, type KeyMeta, type SelectorStore } from './store';
 import { findMatch, shadowVisible } from './tier';
+import { reprText } from './values';
 
 export const FINGERPRINT_PROVIDER = 'fingerprint';
 /** The provider and source of a key's own selector that matched only inside an iframe and is
@@ -79,6 +84,29 @@ export interface Refusal {
   code: 'shadow';
 }
 
+/** What HealCoordinator.proposeList() did (the Python package's ListOutcome): kind is
+ * 'proposed' (saved for a person to check: reason is the message, xpath the selector, row the
+ * store's row), 'came' (a selector of the key's code matches now: reason is that selector, xpath
+ * the group found), 'refused' (reason says why), 'accepted' (the group found is a list heal a
+ * person accepted: row is it, count how many elements it matched on the captured page) or
+ * 'dry_run'. */
+export interface ListOutcome {
+  kind: 'proposed' | 'came' | 'refused' | 'accepted' | 'dry_run';
+  reason: string;
+  xpath: string | null;
+  row: Candidate | null;
+  count: number;
+}
+
+/** A list proposeList() found and saved as a proposed list heal (HealCoordinator.held). */
+export interface HeldList {
+  key: string;
+  xpath: string;
+  id: string;
+  label: string;
+  count: number;
+}
+
 export interface FlowContext {
   url: string;
   page: string | null;
@@ -91,9 +119,9 @@ export function destructiveMessage(key: string): string {
     + 'validated but wrong selector here could act on a live account. Fix the selector in your code by hand.';
 }
 
-function roleNeeded(key: string): string {
+function roleNeeded(key: string, call = 'heal.locator()'): string {
   return "does not know what kind of element '" + key + "' is (its expected role is unknown), so it cannot "
-    + "check a repaired selector. Pass role to heal.locator(), for example role: 'textbox' for a text field, "
+    + 'check a repaired selector. Pass role to ' + call + ", for example role: 'textbox' for a text field, "
     + "'button', 'checkbox', 'link' or 'combobox'.";
 }
 
@@ -152,6 +180,9 @@ export class HealCoordinator {
   /** key -> why its last heal attempt applied nothing. */
   readonly healReasons = new Map<string, string>();
   readonly heals: HealRecord[] = [];
+  /** Every list this coordinator found for heal.locatorAll() with nonempty: true and saved as a
+   * proposed list heal, oldest first. None was used. */
+  readonly held: HeldList[] = [];
 
   constructor(store: SelectorStore, options: CoordinatorOptions) {
     this.store = store;
@@ -238,6 +269,169 @@ export class HealCoordinator {
     this.decline(key, listMissingMessage(key, lfp && typeof lfp === 'object' ? lfp.count : null), 'warning', null,
       'list_empty');
     return this.explain(key);
+  }
+
+  /** Look for list key, which heal.locatorAll() with nonempty: true says has items here and
+   * whose selectors broken all match nothing, and save what is found as a proposed list heal for
+   * a person to check (see lists.ts). It is never used: only the selectors in your code give a
+   * list. Returns a ListOutcome; every refusal is recorded, logged and journaled as a heal that
+   * did not apply (the Python package's propose_list).
+   *
+   * In order, it refuses a key marked destructive, a key with no list fingerprint, a list whose
+   * items were inside a shadow root, a list fingerprint without where the list sat (recorded
+   * before a call with nonempty: true matched the list), a page the key was never found on, an
+   * unknown role and the guard. Then it captures the page and looks (lists.findList), refuses a
+   * group picked by a word for a state the list didn't have (lists.stateWord), and runs the list
+   * gate (gate.listGate). No provider is asked, and the rate limit is not touched. */
+  async proposeList(key: string, meta: KeyMeta, broken: Candidate[], context: FlowContext): Promise<ListOutcome> {
+    const lfp = meta.listFingerprint;
+    if (meta.destructive) return this.listRefused(key, destructiveMessage(key), 'destructive');
+    if (!validList(lfp)) return this.listRefused(key, nonemptyUnsearched(key, NEVER_SEEN));
+    if (inShadow(lfp)) return this.listRefused(key, nonemptyUnsearched(key, IN_SHADOW));
+    const count = lfp.count;
+    if (!placed(lfp)) return this.listRefused(key, nonemptySearched(key, count, PLACELESS));
+    const moved = this.flowChange(key, context);
+    if (moved) return this.listRefused(key, moved, 'page_guard');
+    const role = meta.expectedRole;
+    if (!role || role === 'unknown') {
+      return this.listRefused(key, 'mendwright ' + roleNeeded(key, 'heal.locatorAll()'), 'role_unknown');
+    }
+    if (!this.guard()) return this.listRefused(key, GUARD_REASON, 'guard');
+    const html = await this.driver.content();
+    this.journal.event('heal.requested', { key, list: true });
+    const started = this.clock();
+    const match = await findList(lfp, html, role, (name, arg) => this.driver.lib(name, arg),
+      { visible: (xpath) => this.listVisible(xpath) });
+    if (!match.xpath) {
+      if (!['L2', 'L3', 'L10'].includes(match.code)) {
+        this.journal.event('heal.rejected', { key, list: true, reason: match.reason, source: FINGERPRINT_PROVIDER });
+      }
+      return this.listRefused(key, nonemptySearched(key, count, match.fragment));
+    }
+    const state = stateWord(match.xpath, lfp);
+    if (state) {
+      const reason = stateWordReason(match.xpath, state[0], state[1]);
+      this.journal.event('heal.rejected', { key, xpath: match.xpath, list: true, reason, source: FINGERPRINT_PROVIDER });
+      return this.listRefused(key, nonemptySearched(key, count, reason));
+    }
+    const reasoning = 'list fingerprint score ' + pyFixed(match.score, 2) + ', next best ' + pyFixed(match.runnerUp, 2)
+      + ', ' + match.count + ' elements, ' + match.held + ' of ' + match.recorded + ' recorded items';
+    this.journal.event('heal.proposed', { key, xpath: match.xpath, reasoning, source: FINGERPRINT_PROVIDER, list: true });
+    const [kind, why, , css] = await listGate(this.store, key, match.xpath, html, meta, this.driver, match.css);
+    if (kind === 'came') return { kind: 'came', reason: why, xpath: match.xpath, row: null, count: 0 };
+    if (kind === 'accepted') {
+      const rows = this.store.listHeals(key).filter((r) => r.xpath === match.xpath);
+      return { kind: 'accepted', reason: '', xpath: match.xpath, row: rows[0] ?? null, count: match.count };
+    }
+    if (kind === 'refused') {
+      this.journal.event('heal.rejected', { key, xpath: match.xpath, list: true, reason: why, source: FINGERPRINT_PROVIDER });
+      return this.listRefused(key, nonemptySearched(key, count, gateRefusal(match.xpath, why)));
+    }
+    if (this.dryRun) {
+      this.emit('info', '[heal dry-run] key=' + key + ' proposed=' + match.xpath + ' (list) valid=true (not saved)');
+      const reason = dryRunReason(key, match.xpath);
+      this.decline(key, reason, 'info', null, 'dry_run');
+      return { kind: 'dry_run', reason, xpath: match.xpath, row: null, count: 0 };
+    }
+    return this.holdList(key, meta, lfp, match, css, broken, context, started);
+  }
+
+  /** Save what proposeList() found as a proposed list heal: journal heal.held, remember it in
+   * held, record the message for explain() and log one WARNING. */
+  private holdList(key: string, meta: KeyMeta, lfp: ListFingerprint, match: ListMatch, css: string | null,
+                   broken: Candidate[], context: FlowContext, started: number): ListOutcome {
+    const xpath = match.xpath as string;
+    const old = broken.map((c) => c.xpath).filter(Boolean).map(String);
+    const page = typeof context.page === 'string' ? context.page : '';
+    const evidence = proposalEvidence(key, lfp, match, xpath, css, old, page, nowIso());
+    let row: Candidate;
+    try {
+      row = this.store.proposeListHeal(key, xpath, { css, proposal: evidence as unknown as Record<string, unknown> });
+    } catch (error) {
+      const detail = String((error as Error)?.name) + ((error as Error)?.message ? ': ' + (error as Error).message : '');
+      return this.listRefused(key, unsavedReason(key, 'it raised ' + detail));
+    }
+    // The write takes in the file: a person may have accepted or rejected this list heal since
+    // the store was read, and then it is not proposed.
+    if (row.status === 'accepted') return { kind: 'accepted', reason: '', xpath, row, count: match.count };
+    if (row.status === 'quarantined') {
+      this.journal.event('heal.rejected', { key, xpath, list: true, reason: REJECTED_LIST, source: FINGERPRINT_PROVIDER });
+      return this.listRefused(key, nonemptySearched(key, lfp.count, gateRefusal(xpath, REJECTED_LIST)));
+    }
+    const seconds = Math.max(0, (this.clock() - started) / 1000);
+    const now = evidence.now;
+    this.journal.event('heal.held', { key, provider: FINGERPRINT_PROVIDER, latency_ms: Math.round(seconds * 1000), xpath,
+                                      css, id: evidence.id, list: true, items: match.count, label: now.label,
+                                      differs: evidence.differs, old, page: evidence.page, source: FINGERPRINT_PROVIDER });
+    this.held.push({ key, xpath, id: evidence.id, label: now.label, count: match.count });
+    const role = meta.expectedRole;
+    const accepted = this.store.listHeals(key).find((r) => r.status === 'accepted' && r.xpath !== xpath) ?? null;
+    const message = proposalMessage(key, lfp, xpath, css, role, evidence, storeFlag(this.store.overridePath),
+      accepted ? { xpath: accepted.xpath, acceptedAt: accepted.acceptedAt } : null);
+    this.healReasons.set(key, message);
+    this.emit('warning', foundLine(key, match.count, role, now.label, old, xpath, seconds));
+    return { kind: 'proposed', reason: message, xpath, row, count: match.count };
+  }
+
+  /** Decline a list looked up with nonempty: true (see decline()), as a ListOutcome. code is
+   * 'list_not_found' unless a check every heal has refused it. */
+  private listRefused(key: string, reason: string, code: DeclineCode = 'list_not_found'): ListOutcome {
+    this.decline(key, reason, 'warning', null, code);
+    return { kind: 'refused', reason, xpath: null, row: null, count: 0 };
+  }
+
+  /** Decline list key, looked up with nonempty: true, before anything was looked for: text
+   * says why (see lists.nonemptyUnsearched). Returns the reason. */
+  declineNonempty(key: string, text: string): string {
+    const reason = nonemptyUnsearched(key, text);
+    this.decline(key, reason, 'warning', null, 'list_not_found');
+    return reason;
+  }
+
+  /** Log that list key came while mendwright looked for it: its own selector gave the list, and
+   * nothing was proposed. */
+  came(key: string, selector: string): void {
+    this.healReasons.delete(key);
+    this.emit('info', cameLine(key, selector));
+  }
+
+  /** Decline list key when a selector of its code matched while mendwright looked for the list
+   * and matches nothing again now. Returns the reason. */
+  cameAndWent(key: string, meta: KeyMeta, xpath: string | null, selector: string): string {
+    const why = cameAndWentWhy(selector);
+    this.journal.event('heal.rejected', { key, xpath, list: true, reason: why, source: FINGERPRINT_PROVIDER });
+    const lfp = meta.listFingerprint as { count?: unknown } | null;
+    const reason = nonemptySearched(key, lfp && typeof lfp === 'object' ? lfp.count : null,
+      gateRefusal(String(xpath), why));
+    this.decline(key, reason, 'warning', null, 'list_not_found');
+    return reason;
+  }
+
+  /** Record, log and journal (heal.declined, code list_waits_fix) why list key, looked up with
+   * nonempty: true, throws when a list heal a person accepted for it (row) matches count
+   * elements on the page now: mendwright takes a list only from the selectors in the code, and
+   * mendwright fix puts it there. Returns the reason. */
+  waitsForFix(key: string, meta: KeyMeta, row: { xpath?: unknown; acceptedAt?: unknown }, count: number): string {
+    const lfp = meta.listFingerprint as { count?: unknown } | null;
+    const reason = waitsForFixMessage(key, lfp && typeof lfp === 'object' ? lfp.count : null, row, count,
+      storeFlag(this.store.overridePath));
+    this.healReasons.set(key, reason);
+    this.emit('warning', reprText(key) + ' waits for mendwright fix: ' + reason);
+    this.journal.event('heal.declined', { key, code: 'list_waits_fix', reason });
+    return reason;
+  }
+
+  /** For findList(): false when the live page has elements of xpath and none of them is
+   * visible, true when one is, null when it could not be read or has none. */
+  private async listVisible(xpath: string): Promise<boolean | null> {
+    let items;
+    try {
+      items = await this.driver.listItems(xpath);
+    } catch {
+      return null;
+    }
+    if (!items.length) return null;
+    return items.some((item) => item.visible);
   }
 
   /** The reason to decline when this page is not one the key was found on, else ''. */
