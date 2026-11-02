@@ -1696,17 +1696,22 @@ class AsyncHealer:
             return None
 
         scope = await self._heal_scope(key)
+        tried = self._core._missed_now(key)      # before any wait (see Healer._look_again)
 
         async def heal():
             meta = self.store.meta(key)      # now: a follower heals after its wait
-            if scope is None:
-                await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key, meta,
-                                 context)
-            else:
-                # The key was last found inside an iframe or a shadow root: capture, check and
-                # save the heal there, or refuse it.
-                await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key, meta,
-                                 context)
+            self._core._missed[key] = tried
+            try:
+                if scope is None:
+                    await _in_thread(resolve_with_heal, resolve_fn, self.coordinator, key,
+                                     meta, context)
+                else:
+                    # The key was last found inside an iframe or a shadow root: capture,
+                    # check and save the heal there, or refuse it.
+                    await _in_thread(_scoped_heal, scope, resolve_fn, self.coordinator, key,
+                                     meta, context)
+            finally:
+                self._core._missed.pop(key, None)
             return await attempt()
 
         return await single_flight_async(self.store, key, self._core._signature(key, context),

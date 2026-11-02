@@ -143,6 +143,74 @@ def test_a_herd_of_threads_makes_one_model_call(tmp_path, make_page, stub_provid
     assert len(writes) == 2
 
 
+def test_healers_that_share_one_store_make_one_model_call(tmp_path, make_page, stub_provider):
+    # open(store=shared): the leader's heal is in the shared store's memory when a follower
+    # wakes, among the store's selectors, and never arrives from the file. A follower adopts
+    # it as a heal added since its own selectors missed, instead of asking its model.
+    _warm(make_page, tmp_path, stub_provider)
+    shared = load_store(None, _store(tmp_path))
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    workers = []
+    for _ in range(N):
+        page = make_page(V2, url=URL)
+        heal = mendwright.open(page, provider=Blocking(calls, release, changed), store=shared,
+                               timeout_ms=60000, fingerprint=False)
+        heal._clock = _instant()
+        workers.append((page, heal))
+    errors = []
+
+    def run(heal):
+        try:
+            heal.locator(KEY, CODE).check()
+        except Exception as exc:        # noqa: BLE001 - reported below
+            errors.append(exc)
+    threads = [threading.Thread(target=run, args=(heal,)) for _page, heal in workers]
+    for thread in threads:
+        thread.start()
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
+    assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+    release.set()
+    for thread in threads:
+        thread.join(60)
+    assert not any(t.is_alive() for t in threads) and errors == []
+    events = _journal(tmp_path)
+    assert len(calls) == 1 and _count(events, 'heal.adopted') == N - 1
+    assert _count(events, 'heal.declined', code='rate_limit') == 0
+    assert all(page.actions[-1][:2] == ('xpath=' + HEALED, 'check') for page, _h in workers)
+    assert sum(len(h.pending()) for _page, h in workers) == N     # each one's canary decides
+
+
+def test_async_healers_that_share_one_store_make_one_model_call(tmp_path, make_page,
+                                                                 stub_provider):
+    _warm(make_page, tmp_path, stub_provider)
+    shared = load_store(None, _store(tmp_path))
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    pages = [make_page(V2, url=URL) for _ in range(N)]
+
+    async def main():
+        healers = []
+        for page in pages:
+            heal = await mendwright.aio.open(AsyncFakePage(page), store=shared,
+                                             provider=Blocking(calls, release, changed),
+                                             timeout_ms=60000, fingerprint=False)
+            heal._clock = _instant()
+            healers.append(heal)
+        tasks = [asyncio.ensure_future(h.locator(KEY, CODE).check()) for h in healers]
+
+        def ready():
+            with changed:
+                changed.wait_for(lambda: len(calls) == 1, 60)
+            return FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+        waited = await asyncio.to_thread(ready)
+        release.set()
+        await asyncio.gather(*tasks)
+        return waited
+    assert asyncio.run(main())
+    assert len(calls) == 1 and _count(_journal(tmp_path), 'heal.adopted') == N - 1
+    assert all(page.actions[-1][:2] == ('xpath=' + HEALED, 'check') for page in pages)
+
+
 def test_the_async_healer_follows_on_its_event_loop(tmp_path, make_page, stub_provider):
     _warm(make_page, tmp_path, stub_provider)
     calls, release, changed = [], threading.Event(), threading.Condition()

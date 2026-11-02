@@ -1187,6 +1187,9 @@ class Healer:
         # (see _refused_reuse): (key, page, selector) journaled, and (key, page) logged.
         self._refusals: set = set()
         self._refusals_logged: set = set()
+        # key -> the selectors of key that missed when its heal began, before any wait for
+        # another worker's heal (see _heal and _look_again).
+        self._missed: dict = {}
         # The clock and sleep of a locator() lookup's poll (resolver.resolve). Tests replace them.
         self._clock = time.monotonic
         self._sleep = time.sleep
@@ -2965,19 +2968,28 @@ class Healer:
     def _look_again(self, key, broken, driver=None, url=None):
         """The coordinator's look_again (see HealCoordinator._look_again), right after
         store.refresh() before a heal's fingerprint tier or model call: the first heal of key
-        that another worker saved since this store read the file (store.arrived), that is not
-        among the selectors that just missed, and that matches one element here passing the
-        reuse check, is adopted (HealCoordinator.adopt). Returns its selector, or None.
-        driver is the page's sync driver (the async healer passes its SyncBridge, and url, a
-        callable for the page's address)."""
+        that another worker saved since this store read the file (store.arrived), or, in a
+        store Healers share (open(store=...)), that another Healer added since this one's
+        selectors missed (_missed), that is not among the selectors that missed, and that
+        matches one element here passing the reuse check, is adopted
+        (HealCoordinator.adopt). Returns its selector, or None. driver is the page's sync
+        driver (the async healer passes its SyncBridge, and url, a callable for the page's
+        address)."""
         from .resolver import Reuse, _match_handle, _target
         store, driver = self.store, self._driver if driver is None else driver
         arrived = getattr(store, 'arrived', None)
         if not callable(arrived):
             return None
-        tried = {c.get('xpath') for c in broken or () if isinstance(c, dict)}
+        missed = self._missed.get(key)
+        if missed is None:
+            tried = {c.get('xpath') for c in broken or () if isinstance(c, dict)}
+        else:
+            # What missed before this worker waited for another's heal. broken is the store's
+            # selectors now, which holds that heal already when the store is shared.
+            tried = missed
         rows = [c for c in store.candidates(key) if c.get('source') == 'heal'
-                and c.get('xpath') not in tried and arrived(key, c.get('xpath'))]
+                and c.get('xpath') not in tried
+                and (missed is not None or arrived(key, c.get('xpath')))]
         if not rows:
             return None
         runnable, _errors = _split_runnable(key, rows, driver)
@@ -3337,18 +3349,32 @@ class Healer:
 
         context = self._flow_context(key, self._url())
         scope = self._heal_scope(key)
+        missed = self._missed_now(key)
 
         def heal():
-            if scope is None:
-                return resolve_with_heal(resolve_fn, self.coordinator, key,
-                                         self.store.meta(key), context)
-            # The key was last found inside an iframe or a shadow root: capture, check and
-            # save the heal there, or refuse it.
-            with scope.entered(self.coordinator):
-                return resolve_with_heal(resolve_fn, self.coordinator, key,
-                                         self.store.meta(key), context)
+            self._missed[key] = missed
+            try:
+                if scope is None:
+                    return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                             self.store.meta(key), context)
+                # The key was last found inside an iframe or a shadow root: capture, check
+                # and save the heal there, or refuse it.
+                with scope.entered(self.coordinator):
+                    return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                             self.store.meta(key), context)
+            finally:
+                self._missed.pop(key, None)
 
         return single_flight(self.store, key, self._signature(key, context), heal)
+
+    def _missed_now(self, key):
+        """The selectors of key that just missed, before any wait for another worker's heal
+        (see _look_again): a heal another Healer of a shared store adds meanwhile is not one
+        of them."""
+        try:
+            return {c.get('xpath') for c in self.store.candidates(key)}
+        except Exception:
+            return set()
 
     def _signature(self, key, context):
         """The page signature of a heal of key here (see mendwright.fleet.page_signature):
