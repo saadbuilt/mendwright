@@ -80,7 +80,7 @@ export ANTHROPIC_MODEL="..."      # a current model id from Anthropic's model li
 
 A tool that clicks the wrong button is worse than a failing test. mendwright refuses rather than guesses:
 
-- **Checked on the live page.** A repair is used only if it matches exactly one visible element with the step's role (checkbox, button, link and so on; a hidden checkbox is allowed), and never a bare position like `/html[1]/body[1]/div[3]`.
+- **Checked on the live page.** A repair is made only if it matches exactly one visible element with the step's role (checkbox, button, link and so on; a hidden checkbox is allowed), and never a bare position like `/html[1]/body[1]/div[3]`. A saved repair of a control is checked again on each page that uses it.
 - **Steps you mark are never repaired.** Pass `destructive=True` for pay, submit or delete, and mendwright stops and tells you instead. It can't know which other steps are dangerous: the checks stop ambiguous, hidden and wrong-kind targets, not a plausible button of the same kind, so mark them.
 - **Not on a page it wasn't found on.** A key is only repaired on URL paths it was seen on, so a missing Continue button doesn't become the Help button on the next page. A step that moved while the path stayed the same isn't covered.
 - **Failed repairs are quarantined.** If the action on a repaired element raises, or an `expect=` or `expect_value=` check fails, the repair is never used again. A wrong click that succeeds isn't caught this way, so `mendwright report` lists repairs no passing test has confirmed.
