@@ -90,6 +90,21 @@ describe('an XPath that matches only inside one open shadow root', () => {
     assert.deepEqual(loadStore(w.storePath).shadowHosts('save'), [HOST]);
   });
 
+  test('never acts outside its shadow root after a re-render that came after the follow', async () => {
+    const w = world(V1);
+    const box = await w.open().locator('save', XPATH, { role: 'button' }).resolve();   // followed into it
+    assert.deepEqual(healRows(w), [[CHAIN, [HOST], 'active']]);
+    // The component re-renders: its button leaves the shadow root, and the page slots one with
+    // the same test id into the host's light DOM, where Playwright's CSS reaches it.
+    w.page.goto(page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE)));
+    await assert.rejects(box.click(), /'save' was found inside the shadow root of my-app\[id="root"\], but when it came to click\(\)/);
+    assert.deepEqual([w.page.clicked, healRows(w)], [[], [[CHAIN, [HOST], 'active']]]);
+    // While the button is inside the shadow root, the action runs.
+    w.page.goto(V1);
+    await box.click();
+    assert.equal(last(w).id, 'save');
+  });
+
   test('is confirmed or quarantined by its canary, which never reports it to the provider', async () => {
     const model = new FakeModel([]);
     const w = world(V1);

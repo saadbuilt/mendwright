@@ -149,6 +149,23 @@ describe('a key last found inside a shadow root', () => {
       assert.deepEqual(again.heals, []);
     });
 
+  test('never acts outside its shadow root after a re-render that came after the heal', async () => {
+    const w = await recorded();
+    w.page.goto(V2);
+    const box = await w.open().locator('save', '#save', { role: 'button' }).resolve();   // healed inside it
+    assert.deepEqual(healRows(w), [[CHAIN, [HOST], 'active']]);
+    // The component re-renders: its button leaves the shadow root, and the page slots one with
+    // the same test id into the host's light DOM, where Playwright's CSS reaches it.
+    w.page.goto(page(shadow('<p>loading</p><slot></slot>', undefined, 'open', LOOKALIKE)));
+    await assert.rejects(box.click(), /'save' was found inside the shadow root of my-app\[id="root"\], but when it came to click\(\)/);
+    assert.equal(w.page.clicked.length, 1);
+    assert.deepEqual(healRows(w), [[CHAIN, [HOST], 'active']]);
+    // While the button is inside the shadow root, the action runs.
+    w.page.goto(V2);
+    await box.click();
+    assert.equal(last(w).id, 'save-2');
+  });
+
   test('never heals onto a look-alike in the host\'s light DOM, which the page\'s HTML holds', async () => {
     const w = await recorded();
     // The look-alike in the light DOM scores as the renamed button does, and its own CSS form
