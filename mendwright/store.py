@@ -269,8 +269,8 @@ def _restore_shadow_hosts(data):
     return data
 
 
-# How many times _locked() tries again, a few milliseconds apart, when creating the lock file
-# is refused and no lock file is there (see the comment in _locked).
+# How many times in a row _locked() tries again, a few milliseconds apart, when creating the
+# lock file is refused and no lock file is there (see the comment in _locked).
 _LOCK_DENIED_TRIES = 4
 
 
@@ -301,6 +301,9 @@ def _locked(path, *, timeout, stale_after, clock=time.monotonic, sleep=time.slee
                     raise
                 sleep(0.002 * denied)
                 continue
+            # The lock is there: the refusals before were writers coming and going, so a
+            # waiter behind many of them meets that moment once per release, not too often.
+            denied = 0
             if _break_if_stale(lock, stale_after, wallclock):
                 continue
             if clock() >= deadline:

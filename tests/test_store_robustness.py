@@ -118,6 +118,25 @@ def test_a_lock_file_that_cannot_be_made_raises_after_a_few_quick_tries(tmp_path
     assert 2 <= len(refused) <= 6 and sum(slept) < 0.05     # not at the deadline
 
 
+def test_a_waiter_behind_many_writers_is_not_refused_by_their_releases(tmp_path, monkeypatch):
+    # Each release of a lock it waits behind can show it a lock file being deleted: only
+    # refusals in a row, with no lock file between them, mean a folder it cannot write.
+    from mendwright.store import _locked
+    real, answers = os.open, ['denied'] * 3 + ['held'] + ['denied'] * 3
+
+    def opening(path, flags, mode=0o777):
+        if str(path).endswith('.lock') and answers:
+            answer = answers.pop(0)
+            if answer == 'held':
+                raise FileExistsError(17, 'File exists')
+            raise PermissionError(13, 'Access is denied')
+        return real(path, flags, mode)
+    monkeypatch.setattr(os, 'open', opening)
+    with _locked(tmp_path / 'o.json', timeout=5, stale_after=10, sleep=lambda s: None):
+        assert (tmp_path / 'o.json.lock').exists()
+    assert answers == []
+
+
 def test_the_lock_file_is_removed_after_a_write(tmp_path):
     store = _load(tmp_path)
     store.add_candidate('k', '//a', source='code')
