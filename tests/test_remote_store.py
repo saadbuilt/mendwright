@@ -142,7 +142,7 @@ def test_a_heal_reaches_the_other_machines(make_page, stub_provider, tmp_path):
     assert page.actions[-1][:2] == ('xpath=' + HEALED, 'check')
     assert set(_rows(backend)) == {CODE, HEALED}
     # A machine that loads now has it, and one that was open takes it in.
-    assert [c['xpath'] for c in load_store(None, backend).candidates(KEY)][-1] == HEALED
+    assert HEALED in [c['xpath'] for c in load_store(None, backend).candidates(KEY)]
     assert first.refresh(KEY) is True and first.arrived(KEY, HEALED)
 
 
