@@ -245,6 +245,10 @@ def single_flight(store, key, signature, heal, *, clock=time.monotonic):
         FLIGHTS.wait(flight, FOLLOW_CAP)
         return heal()
     try:
+        if DECLINES.get(name, key, signature, time.time()) is not None:
+            # The model's answer about this page is kept here: heal() reuses it, and the lease
+            # would be two writes of the key's record for nothing.
+            return heal()
         records = records_for(store)
         held = _lead_across_processes(records, key, signature, clock() + FOLLOW_CAP, clock,
                                       FLIGHTS._pause)
@@ -269,6 +273,8 @@ async def single_flight_async(store, key, signature, heal, *, clock=time.monoton
         await FLIGHTS.wait_async(flight, FOLLOW_CAP)
         return await heal()
     try:
+        if DECLINES.get(name, key, signature, time.time()) is not None:
+            return await heal()     # a decline kept for this page: no lease (see single_flight)
         records = records_for(store)
         held = await _lead_across_processes_async(records, key, signature,
                                                   clock() + FOLLOW_CAP, clock)
@@ -470,6 +476,11 @@ class KeyRecords:
     def look(self, key, now):
         """('none' | 'live' | 'expired', lease): the lease of key's record at now."""
         record, _version = self.read(key)
+        return self.lease_of(record, now)
+
+    @staticmethod
+    def lease_of(record, now):
+        """look() of a record already read."""
         lease = record.get('lease')
         if not isinstance(lease, dict) or not isinstance(lease.get('owner'), str):
             return 'none', None
@@ -534,7 +545,13 @@ class KeyRecords:
     def decline(self, key, signature, now):
         """The decline in force for key on the page signature at now, or None."""
         record, _version = self.read(key)
-        row = (record.get('declines') or {}).get(signature)
+        return self.decline_of(record, signature, now)
+
+    @staticmethod
+    def decline_of(record, signature, now):
+        """decline() of a record already read."""
+        declines = record.get('declines')
+        row = declines.get(signature) if isinstance(declines, dict) else None
         if not isinstance(row, dict) or not isinstance(row.get('reason'), str):
             return None
         try:
@@ -625,14 +642,19 @@ def _lead_across_processes(records, key, signature, deadline, clock, pause):
     lease of another process for the same page is held, and clock() is before deadline, it
     waits, pause(LEASE_POLL) between looks. A lease its owner gave back meanwhile ends the
     wait (that heal or decline is there to adopt or reuse); an expired one is taken over, by
-    exactly one waiter."""
+    exactly one waiter. A decline another process kept for this page means no lease: heal()
+    reuses it (see HealCoordinator._reused_decline), and the record is not written for it."""
     from .backends import BackendError, Conflict
     if records is None:
         return False
     waited = False
     try:
         while True:
-            state, lease = records.look(key, time.time())
+            record, _version = records.read(key)
+            now = time.time()
+            if not waited and records.decline_of(record, signature, now) is not None:
+                return False        # another process's decline of this page: reuse it
+            state, lease = records.lease_of(record, now)
             if state == 'live' and lease.get('owner') != OWNER:
                 if lease.get('sig') != signature or clock() >= deadline:
                     return False    # another page's heal, or no time left: heal alone
@@ -673,7 +695,11 @@ async def _lead_across_processes_async(records, key, signature, deadline, clock)
     waited = False
     try:
         while True:
-            state, lease = records.look(key, time.time())
+            record, _version = records.read(key)
+            now = time.time()
+            if not waited and records.decline_of(record, signature, now) is not None:
+                return False        # another process's decline of this page: reuse it
+            state, lease = records.lease_of(record, now)
             if state == 'live' and lease.get('owner') != OWNER:
                 if lease.get('sig') != signature or clock() >= deadline:
                     return False

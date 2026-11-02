@@ -2219,9 +2219,11 @@ A file that can't be read leaves memory as it is.
 ### Fewer writes
 
 What the store file doesn't have yet is written at once: heals, quarantines, roles, destructive flags, your code's selectors, a first success, and a key's first pages, address, steps and fingerprint.
-A first success another worker already recorded isn't written again.
+What another worker saved first isn't written again. When many workers register the code's selector and role of a key the store never saw, or record the first success and page of a heal they all adopted, the first one writes each, and the others take it in from the file.
+A worker that only uses another worker's heal or decline writes nothing, to the store or to the key's [record](#coordination-records).
+The workers of one process take turns to write the store, so one at a time waits for its lock file.
 
-Changes to what the file has are written at most every 5 minutes per key per process: the order of the last successes, a new page in a key's list, a new fingerprint, such as the fingerprint of an element whose text changes on every view.
+Changes to what the file has are written at most every 5 minutes per key per process, by one of its workers: the order of the last successes, a new page in a key's list, a new fingerprint, such as the fingerprint of an element whose text changes on every view.
 In between they wait in the worker's memory and go with its next write.
 Whatever still waits is written when the process exits, also from a `multiprocessing` child.
 `SelectorStore.flush()` and `mendwright.store.flush_all()` write what waits now; call one before `os._exit()`.
@@ -2252,7 +2254,9 @@ Measured with 1000 threads in one process, or 16 processes of 10 threads, on one
 | 16 processes of 10 threads, the model heals | 48 calls, 112 failures | 1 call, 159 adopted |
 | 16 processes of 10 threads, the model finds nothing | 48 calls, 112 failures | 1 call, 159 with the model's reason |
 
-A shorter `timeout_ms`, even one below the model's answer time, gives the same counts: the workers wait for the leader whatever their step's timeout (see [One heal for many workers](#one-heal-for-many-workers)).
+A shorter `timeout_ms`, even one below the model's answer time, gives the same counts: the workers wait for the leader whatever their step's timeout (see [One heal for many workers](#one-heal-for-many-workers)). With `timeout_ms=100` and the caps off, 1000 threads made 1 model call where they made 1000, whether the model heals or finds nothing.
+
+On a store that has never seen the key, such as a first run, every worker registers the code's selector and role before it misses. 1000 threads with `timeout_ms=10000` then write the store 6 times in all when the model heals, and twice when it finds nothing, with no lock timeout: the first worker writes each change and the others take it in from the file (see [Fewer writes](#fewer-writes)).
 
 ## CI
 
