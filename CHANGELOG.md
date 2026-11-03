@@ -7,6 +7,10 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- The guide and docs/remote-store.md said the async healer makes every request to a remote store in a worker thread. A proxy's `confirm()` and the healer's `confirm_all()` are sync, so their writes, and their reports to a gateway, run on the thread that calls them. The docs and docstrings now say so, and show the way around it: call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`.
+
 ## [0.11.0] - 2026-11-03
 
 ### Added

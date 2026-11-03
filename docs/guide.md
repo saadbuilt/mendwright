@@ -1129,7 +1129,7 @@ print(await heal.present("newsletter"))
 - The element is resolved, and healed if needed, when you await an action, a method such as `inner_text()`, or the proxy itself.
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` and `proxy.present` raise `RuntimeError` until the proxy has been awaited.
-- `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
+- `pending()`, `confirm_all()`, `heals` and a proxy's `confirm()` are sync, as on the sync Healer. `confirm_all()` and `confirm()` write the store, and report to the provider, on the thread that calls them. With a [remote store](remote-store.md) or a gateway, call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`, so the event loop goes on meanwhile.
 - `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer.
 - `interrupt()` is a plain call. The action is awaited when the interruption is handled, and so is a `run=` function: an async function here (or a plain one that returns an awaitable), with no time limit, and it is cancelled with the step it runs for.
 - Playwright's overlay handler for an interruption is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls.
@@ -1139,7 +1139,7 @@ print(await heal.present("newsletter"))
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
-With a [remote store](remote-store.md), each of a step's requests to the store runs in a worker thread too.
+With a [remote store](remote-store.md), each of a step's requests to the store runs in a worker thread too. The writes of `confirm()` and `confirm_all()` don't: see above.
 
 Calls on one `AsyncHealer` take turns, except those of a `run=` function, which go ahead while the step that called it waits. `asyncio.gather()` over several of its locators is safe, but they resolve one after another.
 Use one `AsyncHealer` per event loop.
