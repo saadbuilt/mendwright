@@ -7,6 +7,8 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-03
+
 ### Fixed
 
 - With the fingerprint tier on, the workers that waited for another worker's attempt at a key whose element is gone each scored the page before reusing the model's decline, and each journaled a `heal.requested`. 1000 threads made 1000 fingerprint runs and 1000 requests for 1 model call, so `mendwright report` counted 1000 heals asked for. A worker of the same process on the page the tier found nothing on, with the same HTML, now takes the decline without scoring the page again, when the tier needed nothing from the live page to find nothing there: no element with the key's role, or none close enough to look at whether it shows. An attempt that a reused decline, or another worker's heal, answers after the tier found nothing isn't a request of its own: 1 run and 1 request. A worker on another variant of the page path, or on a page that may show the element where the first hid it, such as a desktop and a phone, still scores its own page first, and a worker with no model gets its own decline.
@@ -193,7 +195,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/saadbuilt/mendwright/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/saadbuilt/mendwright/compare/v0.9.0...v0.10.0
