@@ -3295,6 +3295,7 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 | The network | `mendwright notify: could not reach the webhook at https://hooks.slack.com (timed out after 10 s, tried 2 times). Nothing was sent.` | 0 / 1 |
 | No journal | `mendwright notify: no journal at <path>, so there is nothing to summarize. Run your tests with mendwright first, or pass --store.` | 0 / 1 |
 | No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
+| A [remote store](remote-store.md) in `--store` or `MENDWRIGHT_STORE` | `mendwright notify: remote stores aren't supported by this command yet (s3://bucket/prefix/). Download the store ...` | 0 / 1 |
 | Bad arguments | argparse's message | 2 |
 
 Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`.

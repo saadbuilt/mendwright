@@ -100,6 +100,7 @@ def test_a_store_url_mendwright_refuses_is_one_line_that_does_not_quote_it(url, 
     out, err = capsys.readouterr()
     [line] = _lines(err)
     assert line.startswith('mendwright report: ') and 'SECRETVALUE' not in err + out
+    assert line.endswith('.') and not line.endswith('..')
     assert 'Traceback' not in err
 
 
@@ -135,7 +136,9 @@ def test_doctor_hides_a_store_url_it_refuses(capsys, monkeypatch):
     assert cli.main(['doctor']) == 0
     out = capsys.readouterr().out
     assert 'SECRETVALUE' not in out
-    assert 'MENDWRIGHT_STORE is a store URL mendwright refuses' in out
+    [refused] = [line for line in out.splitlines()
+                 if 'MENDWRIGHT_STORE is a store URL mendwright refuses' in line]
+    assert refused.endswith('.') and not refused.endswith('..')
     assert 'MENDWRIGHT_STORE=(a store URL mendwright refuses, value hidden)' in out
     assert cli.main(['doctor', '--json']) == 0
     assert 'SECRETVALUE' not in capsys.readouterr().out
