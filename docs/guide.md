@@ -1129,7 +1129,7 @@ print(await heal.present("newsletter"))
 - The element is resolved, and healed if needed, when you await an action, a method such as `inner_text()`, or the proxy itself.
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` and `proxy.present` raise `RuntimeError` until the proxy has been awaited.
-- `pending()`, `confirm_all()` and `heals` are sync, as on the sync Healer.
+- `pending()`, `confirm_all()`, `heals` and a proxy's `confirm()` are sync, as on the sync Healer. `confirm_all()` and `confirm()` write the store, and report to the provider, on the thread that calls them. With a [remote store](remote-store.md) or a gateway, call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`, so the event loop goes on meanwhile.
 - `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer.
 - `interrupt()` is a plain call. The action is awaited when the interruption is handled, and so is a `run=` function: an async function here (or a plain one that returns an awaitable), with no time limit, and it is cancelled with the step it runs for.
 - Playwright's overlay handler for an interruption is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls.
@@ -1139,7 +1139,7 @@ print(await heal.present("newsletter"))
 
 A heal runs the same sync coordinator in a worker thread through `asyncio.to_thread`, so the model call doesn't block the event loop.
 Every page call the heal makes is handed back to the event loop and waited for, up to `mendwright.aio.SyncBridge.timeout` (30 seconds).
-With a [remote store](remote-store.md), each of a step's requests to the store runs in a worker thread too.
+With a [remote store](remote-store.md), each of a step's requests to the store runs in a worker thread too. The writes of `confirm()` and `confirm_all()` don't: see above.
 
 Calls on one `AsyncHealer` take turns, except those of a `run=` function, which go ahead while the step that called it waits. `asyncio.gather()` over several of its locators is safe, but they resolve one after another.
 Use one `AsyncHealer` per event loop.
@@ -2197,6 +2197,8 @@ No matching element for: accept_terms (tried 1 candidate(s)).
 - A heal another worker saves still wins over a reused decline.
 - A failure of the provider itself (a network error, a rate limit, a bad key) is never kept: asking again can work.
 - A reused decline doesn't skip the fingerprint tier, which asks no model: two variants of one page share its signature, and the tier may heal the key on this one.
+  A worker of the same process on the very page the tier found nothing on (the same HTML) doesn't score it again, and takes the decline at once, when the tier needed nothing from the live page to find nothing there. When it looked at whether elements show, which can differ with the same HTML, such as on a phone and a desktop, each worker scores its own page.
+- An attempt that a reused decline answers isn't a `heal.requested` of its own, so `mendwright report` counts one request for the model's one answer. Nor is one that another worker's heal answers after the fingerprint tier found nothing.
 
 ### What is checked when a saved heal is used
 
@@ -2402,12 +2404,12 @@ jobs:
       - uses: actions/checkout@<sha>  # v7.0.1
         with:
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.11.0
+      - uses: saadbuilt/mendwright@v0.11.1
         with:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.11.0` can be a SHA too, with the release tag as its comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.11.1` can be a SHA too, with the release tag as its comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -2453,7 +2455,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.11.0
+      - uses: saadbuilt/mendwright@v0.11.1
         with:
           tests-result: ${{ github.event.workflow_run.conclusion }}
 ```
@@ -2597,7 +2599,7 @@ Run: https://github.com/saadbuilt/shop/actions/runs/11893412207
 With the GitHub Action, pass the webhook as a secret:
 
 ```yaml
-      - uses: saadbuilt/mendwright@v0.11.0
+      - uses: saadbuilt/mendwright@v0.11.1
         with:
           tests-result: ${{ needs.test.result }}
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -3293,6 +3295,7 @@ The JSON document has `schema` (1), `mendwright`, `title`, `run`, `run_url`, `pr
 | The network | `mendwright notify: could not reach the webhook at https://hooks.slack.com (timed out after 10 s, tried 2 times). Nothing was sent.` | 0 / 1 |
 | No journal | `mendwright notify: no journal at <path>, so there is nothing to summarize. Run your tests with mendwright first, or pass --store.` | 0 / 1 |
 | No run | `mendwright notify: no run to summarize. Pass --run, --since or --all, or set MENDWRIGHT_RUN_ID where the tests and this command run.` | 0 / 1 |
+| A [remote store](remote-store.md) in `--store` or `MENDWRIGHT_STORE` | `mendwright notify: remote stores aren't supported by this command yet (s3://bucket/prefix/). Download the store ...` | 0 / 1 |
 | Bad arguments | argparse's message | 2 |
 
 Every message but the sent and `--when` lines goes to stderr, and on GitHub Actions it is also printed as a `::warning`.

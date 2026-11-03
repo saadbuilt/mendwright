@@ -333,10 +333,9 @@ class _PreviewCoordinator(HealCoordinator):
     tier_note = None
 
     def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
-        applied, note, requested = super()._fingerprint_tier(
-            selector_key, meta, broken_candidates, html, started)
-        self.tier_note = note
-        return applied, note, requested
+        result = super()._fingerprint_tier(selector_key, meta, broken_candidates, html, started)
+        self.tier_note = result[1]
+        return result
 
 
 class _MemoryJournal(_BaseJournal):

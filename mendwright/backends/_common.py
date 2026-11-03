@@ -201,7 +201,7 @@ def refuse_secrets(url, parts) -> None:
             'the store URL has a user name or password in it (user:password@). Take it out: '
             'S3 credentials come from the AWS credential chain (AWS_PROFILE, the environment, '
             'SSO or a role), and an HTTP store\'s token from ' + TOKEN_ENV + ' or '
-            + TOKEN_FILE_ENV + '.')
+            + TOKEN_FILE_ENV)
     if parts.query:
         names = {unquote(piece.split('=', 1)[0]).strip().lower()
                  for piece in re.split('[&;]', parts.query)}
@@ -211,7 +211,7 @@ def refuse_secrets(url, parts) -> None:
                 'the store URL has a credential in its query string (' + ', '.join(found) + '). '
                 'A store URL takes no query string: use the folder\'s plain URL, with S3 '
                 'credentials from the AWS credential chain and an HTTP store\'s token from '
-                + TOKEN_ENV + ' or ' + TOKEN_FILE_ENV + '.')
+                + TOKEN_ENV + ' or ' + TOKEN_FILE_ENV)
         raise ValueError('the store URL has a query string (?...): a store URL takes none')
     if parts.fragment:
         raise ValueError('the store URL has a fragment (#...): a store URL takes none')

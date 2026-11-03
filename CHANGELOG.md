@@ -7,6 +7,16 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-03
+
+### Fixed
+
+- With the fingerprint tier on, the workers that waited for another worker's attempt at a key whose element is gone each scored the page before reusing the model's decline, and each journaled a `heal.requested`. 1000 threads made 1000 fingerprint runs and 1000 requests for 1 model call, so `mendwright report` counted 1000 heals asked for. A worker of the same process on the page the tier found nothing on, with the same HTML, now takes the decline without scoring the page again, when the tier needed nothing from the live page to find nothing there: no element with the key's role, or none close enough to look at whether it shows. An attempt that a reused decline, or another worker's heal, answers after the tier found nothing isn't a request of its own: 1 run and 1 request. A worker on another variant of the page path, or on a page that may show the element where the first hid it, such as a desktop and a phone, still scores its own page first, and a worker with no model gets its own decline.
+- A store's new fingerprint that waited (`mendwright.store.SOFT_EVERY`) and was written by another store's flush in the same process, `store.flush()` or `flush_all()`, kept the store's next fingerprint from being written at exit: that one was written only over the fingerprint the store had read, which the file no longer held. Now a waiting fingerprint is also written while the file holds what this process's last flush left there, which no other process has changed since, however many changes follow. A fingerprint another process saved in between still stays. On a remote store, the process's read of `overrides.json` also takes in what such a flush wrote.
+- A fingerprint that waited to be written and then came back to the one the store read, as an A/B test's two variants take turns, was written at exit over that one.
+- The command line's and `mendwright doctor`'s refusal of a store URL with a user name, a password or a credential in its query string ended in two periods.
+- The guide and docs/remote-store.md said the async healer makes every request to a remote store in a worker thread. A proxy's `confirm()` and the healer's `confirm_all()` are sync, so their writes, and their reports to a gateway, run on the thread that calls them. The docs and docstrings now say so, and show the way around it: call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`.
+
 ## [0.11.0] - 2026-11-03
 
 ### Added
@@ -185,7 +195,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/saadbuilt/mendwright/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/saadbuilt/mendwright/compare/v0.9.0...v0.10.0

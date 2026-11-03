@@ -578,3 +578,31 @@ def test_the_async_healer_makes_no_store_request_on_its_event_loop(make_page, st
     asked = [(op, name) for op, name, _ in backend.threads]
     assert ('put', OVERRIDES) in asked and any(name.startswith('keys/') for _, name in asked)
     assert [(op, name) for op, name, thread in backend.threads if thread == loop_thread] == []
+
+
+def test_a_confirm_called_through_to_thread_writes_off_the_event_loop(make_page, stub_provider,
+                                                                      tmp_path):
+    # confirm() and confirm_all() are sync, so they write on the thread that calls them. The
+    # guide tells async code to call them between steps through asyncio.to_thread().
+    import asyncio
+
+    import mendwright.aio
+    from test_lists import _Page
+    backend = Threads()
+    _warm(backend.inner, make_page, tmp_path, stub_provider)
+    page = make_page(V2, url=URL)
+
+    async def main():
+        heal = await mendwright.aio.open(_Page(page), store=load_store(None, backend),
+                                         provider=stub_provider(HEALED), timeout_ms=0)
+        box = heal.locator(KEY, CODE, role=ROLE)
+        await box.check()
+        assert heal.pending() == {KEY: HEALED}
+        backend.threads.clear()
+        await asyncio.to_thread(box.confirm, False)
+        return heal, threading.get_ident()
+
+    heal, loop_thread = asyncio.run(main())
+    assert heal.pending() == {} and heal.store.quarantined(KEY) == [HEALED]
+    assert ('put', OVERRIDES) in [(op, name) for op, name, _ in backend.threads]
+    assert [(op, name) for op, name, thread in backend.threads if thread == loop_thread] == []

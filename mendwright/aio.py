@@ -1000,7 +1000,9 @@ class AsyncHealer:
     def confirm_all(self, success: bool) -> int:
         """Report every pending heal as confirmed (True) or failed (False, which
         quarantines it), and return how many there were. Sync, like Healer.confirm_all();
-        call it when no step of this healer is running."""
+        call it when no step of this healer is running. Its store writes and the provider's
+        reports run on the calling thread: with a remote store or a gateway, call it through
+        ``await asyncio.to_thread(heal.confirm_all, True)``."""
         return self._core.confirm_all(success)
 
     @property
@@ -2085,7 +2087,9 @@ class AsyncActionProxy:
     def confirm(self, success: bool) -> AsyncActionProxy:
         """Confirm (True) or quarantine (False) a heal for this key, from a check of your
         own. An element of heal.locator_all() reports nothing, as ActionProxy.confirm()
-        says. Sync, like ActionProxy.confirm()."""
+        says. Sync, like ActionProxy.confirm(): the store write and the provider's report run
+        on the calling thread, so with a remote store or a gateway, call it between steps
+        through ``await asyncio.to_thread(proxy.confirm, False)``."""
         if self._canary:
             _canary_call(self._healer.coordinator.confirm_pending, self._key, bool(success),
                          by='confirm')

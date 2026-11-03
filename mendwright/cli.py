@@ -351,7 +351,8 @@ def _settings_problems():
         try:
             store_url(store)
         except ValueError as exc:
-            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc))
+            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc)
+                            + '.')
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
                  'MENDWRIGHT_SUGGEST_GET_BY', 'MENDWRIGHT_STORE_READ_ONLY'):
         problem, _ = _flag_problem(name)

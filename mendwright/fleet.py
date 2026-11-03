@@ -79,6 +79,24 @@ def page_signature(page, selectors):
     return hashlib.sha256(blob).hexdigest()
 
 
+def scored_page(html, fingerprint, role):
+    """What the fingerprint tier's answer on a page depends on when it asks the live page
+    nothing, as 64 lowercase hex digits: SHA-256 of the netstrings of the page's HTML, the
+    key's fingerprint (as sorted JSON) and its role. This process keeps it with a decline
+    made after the tier found nothing on that page that way (Declines.put), so a worker on
+    the same page takes the decline without scoring the page again, and a worker on another
+    variant of the page path still scores its own. An answer the live page's visibility took
+    part in is never kept: a phone and a desktop can show the same HTML differently. It stays
+    in this process: two workers' pages rarely have the same HTML."""
+    import json
+    # surrogatepass: a page's text can hold a lone surrogate, which strict UTF-8 refuses.
+    page = (html if isinstance(html, str) else '').encode('utf-8', 'surrogatepass')
+    blob = (str(len(page)).encode('ascii') + b':' + page + b','
+            + _netstring(json.dumps(fingerprint, sort_keys=True, default=str))
+            + _netstring(role if isinstance(role, str) else ''))
+    return hashlib.sha256(blob).hexdigest()
+
+
 def store_name(store):
     """The name single-flight knows a store's file by (its absolute path, normalized for
     case on Windows; for a remote store, its place, see mendwright.remote.place_of), or None
@@ -325,8 +343,9 @@ def decline_ttl_setting(environ=None):
 
 class Declines:
     """The declines a process reuses: (store file, key, page signature) -> {'code', 'reason',
-    'at', 'until'}, with wall-clock times (time.time()), so a record another process wrote
-    (see mendwright.fleet's per-key records) means the same."""
+    'at', 'until', 'page'}, with wall-clock times (time.time()), so a record another process
+    wrote (see mendwright.fleet's per-key records) means the same. page is the scored_page()
+    of the page the fingerprint tier found nothing on before the model declined, or None."""
 
     # Expired rows are dropped once the table has this many.
     PRUNE_AT = 1000
@@ -346,16 +365,16 @@ class Declines:
                 return None
             return dict(row)
 
-    def put(self, name, key, signature, code, reason, now, ttl):
-        """Keep a decline of code (one of REUSED_DECLINES) for ttl seconds from now. Any other
-        code, and ttl 0, keep nothing."""
+    def put(self, name, key, signature, code, reason, now, ttl, page=None):
+        """Keep a decline of code (one of REUSED_DECLINES) for ttl seconds from now, with the
+        page it was made on (see the class). Any other code, and ttl 0, keep nothing."""
         if not ttl or ttl <= 0 or code not in REUSED_DECLINES:
             return
         with self._lock:
             if len(self._rows) >= self.PRUNE_AT:
                 self._rows = {k: r for k, r in self._rows.items() if r['until'] > now}
             self._rows[(name, key, signature)] = {'code': code, 'reason': reason, 'at': now,
-                                                  'until': now + ttl}
+                                                  'until': now + ttl, 'page': page}
 
     def clear(self):
         with self._lock:

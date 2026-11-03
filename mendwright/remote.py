@@ -280,7 +280,9 @@ def _text(body, place):
 def _soft_writer(backend, place, tries):
     """The writer SOFT flushes a remote store's soft changes with (see SoftWrites.register):
     get, apply them as a local flush does, and put with if_match only when that says to write.
-    Never makes overrides.json for soft changes alone."""
+    Never makes overrides.json for soft changes alone. The process's parse of overrides.json
+    (_Doc) takes what it wrote, as after a store's own write, so no store refreshes from the
+    version before it."""
     def write(pending):
         for _ in range(tries):
             read = backend.get(OVERRIDES)
@@ -290,11 +292,12 @@ def _soft_writer(backend, place, tries):
             if not _apply_soft(data, pending):
                 return
             try:
-                backend.put(OVERRIDES, json.dumps(data, separators=(',', ':')).encode('utf-8'),
-                            if_match=read.version)
-                return
+                version = backend.put(OVERRIDES, json.dumps(data, separators=(',', ':'))
+                                      .encode('utf-8'), if_match=read.version)
             except Conflict:
                 continue
+            _doc(place).wrote(read.version, version, data)
+            return
         raise Conflict(place + OVERRIDES + ' kept changing under ' + str(tries) + ' writes')
     return write
 
