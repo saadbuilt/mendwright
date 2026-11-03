@@ -7,6 +7,8 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-03
+
 ### Added
 
 - `mendwright.open(page, heal_get_by="model")` (also `mendwright.aio.open()`, `MENDWRIGHT_HEAL_GET_BY=model` and `pytest --mendwright-heal-get-by-model`) lets the model provider heal a `heal.page.get_by_*()` call when its fingerprint doesn't (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#a-model-for-calls)). The model gets the call as the key and what the call says of its element as the intent, such as `the button named "Sign in"`, used for that heal only. A call that never matched is sent only when it is a `get_by_role()` call, checked against the kinds of element its role can mean (a heading with no `level=` is any of h1 to h6, a textbox an input or a textarea); any other such call is declined before a model call. Every check of a heal applies: destructive keys, the page guard, `guard=`, dry run, `MENDWRIGHT_DISABLE=1`, quarantines, the gate and the live check with Playwright's ARIA role check of a `get_by_role()` call, and the hourly rate limit, which such a heal counts toward. `heal_get_by=True` is unchanged: fingerprint only, no model. On 19 call-shaped cases in Chromium the local model raised correct heals from 4 of 11 (fingerprint only) to 8 of 11, with no wrong heal and all 8 negative cases declined ([results](https://github.com/saadbuilt/mendwright/blob/main/benchmarks/RESULTS.md#get_by-calls)). `mendwright doctor` says which mode is set, with `model` in its `--json`.
@@ -183,7 +185,8 @@ From the private builds. If you never used them under the name selfheal, you can
 
 - On Selenium, the handle for a candidate inside an iframe is a `FramedElement`. `driver.execute_script()` and `ActionChains` need `el.in_frame(lambda e: ...)` to get an element that still works in the frame (see the [guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#selenium)).
 
-[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/saadbuilt/mendwright/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/saadbuilt/mendwright/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/saadbuilt/mendwright/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/saadbuilt/mendwright/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/saadbuilt/mendwright/compare/v0.8.0...v0.9.0

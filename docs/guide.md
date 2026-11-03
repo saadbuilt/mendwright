@@ -2402,12 +2402,12 @@ jobs:
       - uses: actions/checkout@<sha>  # v7.0.1
         with:
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.10.1
+      - uses: saadbuilt/mendwright@v0.11.0
         with:
           tests-result: ${{ needs.test.result }}
 ```
 
-Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.10.1` can be a SHA too, with the release tag as its comment; Dependabot keeps both kinds of pin current.
+Put the commit SHA of each release in place of `<sha>`, as the comment names it, or the tag itself. `saadbuilt/mendwright@v0.11.0` can be a SHA too, with the release tag as its comment; Dependabot keeps both kinds of pin current.
 
 - The token that can push lives only in the `mendwright` job, which runs none of your test code, packages or browsers. A test dependency that turns hostile gets the `test` job's read-only token.
 - `if: always()` runs the job after a failed test job too. A heal from a failed test isn't confirmed, so it is listed, not written. Rerunning the tests later doesn't confirm it either, and the action never writes it: check it and run `mendwright fix --include-unconfirmed --apply` by hand, or delete it from the store.
@@ -2453,7 +2453,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: saadbuilt/mendwright@v0.10.1
+      - uses: saadbuilt/mendwright@v0.11.0
         with:
           tests-result: ${{ github.event.workflow_run.conclusion }}
 ```
@@ -2597,7 +2597,7 @@ Run: https://github.com/saadbuilt/shop/actions/runs/11893412207
 With the GitHub Action, pass the webhook as a secret:
 
 ```yaml
-      - uses: saadbuilt/mendwright@v0.10.1
+      - uses: saadbuilt/mendwright@v0.11.0
         with:
           tests-result: ${{ needs.test.result }}
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
