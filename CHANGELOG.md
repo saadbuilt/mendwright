@@ -9,6 +9,7 @@ While the version starts with 0, a minor release can change the public API.
 
 ### Fixed
 
+- With the fingerprint tier on, the workers that waited for another worker's attempt at a key whose element is gone each scored the page before reusing the model's decline, and each journaled a `heal.requested`. 1000 threads made 1000 fingerprint runs and 1000 requests for 1 model call, so `mendwright report` counted 1000 heals asked for. A worker of the same process on the page the tier found nothing on, with the same HTML, now takes the decline without scoring the page again, and an attempt a reused decline answers isn't a request of its own: 1 run and 1 request. A worker on another variant of the page path still scores its own page first.
 - The guide and docs/remote-store.md said the async healer makes every request to a remote store in a worker thread. A proxy's `confirm()` and the healer's `confirm_all()` are sync, so their writes, and their reports to a gateway, run on the thread that calls them. The docs and docstrings now say so, and show the way around it: call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`.
 
 ## [0.11.0] - 2026-11-03

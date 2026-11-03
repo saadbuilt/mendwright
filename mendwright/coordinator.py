@@ -47,6 +47,13 @@ def _old_selectors(broken_candidates):
     return out
 
 
+def _scored_page(html, meta):
+    """fleet.scored_page() of html for a key with meta: what the fingerprint tier's answer
+    there depends on."""
+    from .fleet import scored_page
+    return scored_page(html, meta.get('fingerprint'), meta.get('expectedRole'))
+
+
 def _role_needed(selector_key, call='heal.locator()'):
     """The sentence that asks for role= when a key's expected role is unknown. call is the
     function named in it."""
@@ -613,40 +620,47 @@ class HealCoordinator:
         page = context.get('page') if isinstance(context, dict) else None
         return name, selector_key, page_signature(page, _old_selectors(broken_candidates))
 
-    def _reused_decline(self, selector_key, broken_candidates, context):
+    def _reused_decline(self, selector_key, broken_candidates, context, page=None,
+                        scored=None):
         """A model's decline of this key on this page, given here or by another worker
         within MENDWRIGHT_DECLINE_TTL_SECONDS: declined again with its reason and code, and
         cached=True in the journal, with no model call and no budget spent. None when there
-        is none."""
+        is none. With page (fleet.scored_page), only a decline this process keeps with that
+        page: one the fingerprint tier found nothing on. scored is the page this worker's
+        tier just found nothing on, kept with the decline taken for the next worker here."""
         from .fleet import DECLINES, records_for, reused_note
         ident = self._decline_ident(selector_key, broken_candidates, context)
         if ident is None:
             return None
         now = self.wallclock()
         row = DECLINES.get(*ident, now)
+        if page is not None and (row is None or row.get('page') != page):
+            return None
         records = records_for(self.store) if row is None else None
         if records is not None:
             try:
                 row = records.decline(selector_key, ident[2], now)    # another process's
             except Exception:
                 row = None
-            if row is not None:
-                DECLINES.put(*ident, row['code'], row['reason'], row['at'],
-                             row['until'] - row['at'])
         if row is None:
             return None
+        if records is not None or (scored is not None and row.get('page') != scored):
+            DECLINES.put(*ident, row['code'], row['reason'], row['at'], row['until'] - row['at'],
+                         page=scored if scored is not None else row.get('page'))
         reason = row['reason'] + reused_note(row['at'], now, self.decline_ttl)
         return self._decline(selector_key, reason, code=row['code'], cached=True)
 
-    def _remember_decline(self, selector_key, broken_candidates, context, code, reason):
+    def _remember_decline(self, selector_key, broken_candidates, context, code, reason,
+                          page=None):
         """Keep the model's decline (code not_here or gate) for other workers and the next
-        lookups (see mendwright.fleet.DECLINES)."""
+        lookups (see mendwright.fleet.DECLINES), with page, the fleet.scored_page() of the
+        page the fingerprint tier found nothing on first, when it did."""
         from .fleet import DECLINES, REUSED_DECLINES, records_for
         ident = self._decline_ident(selector_key, broken_candidates, context)
         if ident is None or code not in REUSED_DECLINES:
             return
         now = self.wallclock()
-        DECLINES.put(*ident, code, reason, now, self.decline_ttl)
+        DECLINES.put(*ident, code, reason, now, self.decline_ttl, page=page)
         records = records_for(self.store)
         if records is not None:
             try:
@@ -781,7 +795,8 @@ class HealCoordinator:
         if marked is not None:
             return marked
         started = self.clock()
-        html, requested = None, False
+        # scored: the fleet.scored_page() of the page the fingerprint tier found nothing on.
+        html, requested, scored = None, False, None
         # 'intent' when the key had no selector at all and the model looks for it from its
         # intent= description; the journal names that source, and the plain model none.
         source = 'intent' if not broken_candidates and meta.get('intent') else 'model'
@@ -793,10 +808,21 @@ class HealCoordinator:
                 if summary else None, code=self._unavailable_code())
         if self.fingerprint and source != 'intent':
             html = self.html_provider()
+            page = _scored_page(html, meta)
+            # The model declined this key on this very page a moment ago, after the tier found
+            # nothing on it. The tier would score it the same, so that answer comes at once.
+            reused = self._reused_decline(selector_key, broken_candidates, context, page=page)
+            if reused is not None:
+                return reused
             applied, note, requested = self._fingerprint_tier(selector_key, meta,
                                                               broken_candidates, html, started)
             if applied is not None:
                 return applied
+            if not requested and _fingerprint.valid(meta.get('fingerprint')):
+                # The tier scored the page and found no confident match. Its heal.requested
+                # waits until the attempt goes on: a reused decline or another worker's heal
+                # may answer it.
+                scored = page
             # Before any model call: another worker's heal may have come in meanwhile.
             adopted = self._look_again(selector_key, broken_candidates)
             if adopted:
@@ -805,6 +831,8 @@ class HealCoordinator:
             if marked is not None:
                 return marked
             if unavailable:
+                if scored:
+                    self.journal.requested(selector_key)
                 # note says why the fingerprint did not heal; the provider's reason says
                 # what to set so a model can try.
                 return self._decline(
@@ -815,9 +843,12 @@ class HealCoordinator:
         # Or the model already said, about this page, that nothing here fits. Looked at
         # after the fingerprint tier, which asks no model: two variants of a page share its
         # signature, and the tier may heal on this one.
-        reused = self._reused_decline(selector_key, broken_candidates, context)
+        reused = self._reused_decline(selector_key, broken_candidates, context, scored=scored)
         if reused is not None:
             return reused
+        if scored:
+            self.journal.requested(selector_key)
+            requested = True
         # Direct-mode budget: fail closed when the rate/spend cap is reached (one heal
         # attempt == one slot), mirroring the gateway's server-side needs_human. This
         # process's caps are looked at first, which spends nothing; then the attempt is
@@ -878,7 +909,7 @@ class HealCoordinator:
                     reason = (type(self.provider).__name__ + " returned no selector for '"
                               + selector_key + "': " + error)
                     self._remember_decline(selector_key, broken_candidates, context, code,
-                                           reason)
+                                           reason, scored)
                     return self._decline(selector_key, reason, code=code)
                 self.journal.rejected(selector_key, reason='no proposal')
                 return self._decline(selector_key,
@@ -931,7 +962,7 @@ class HealCoordinator:
                   "mendwright's local gate (last reason: " + str(reason) + "). The gate requires "
                   "a non-brittle xpath that matches exactly one element of the expected role and "
                   "is present on the live page.")
-        self._remember_decline(selector_key, broken_candidates, context, 'gate', reason)
+        self._remember_decline(selector_key, broken_candidates, context, 'gate', reason, scored)
         self._decline(selector_key, reason, code='gate')
         return None
 
@@ -989,26 +1020,29 @@ class HealCoordinator:
         marked = self._marked_now(selector_key)
         if marked is not None:
             return marked
-        applied, note, _requested = self._fingerprint_tier(
+        applied, note, requested = self._fingerprint_tier(
             selector_key, meta, broken_candidates, self.html_provider(), self.clock())
         if applied is not None:
             return applied      # the heal, or False after the dry run declined it
+        if not requested:
+            self.journal.requested(selector_key)    # it scored the page and found nothing
         return self._decline(selector_key, note + '. ' + getby.NO_MODEL, code='get_by')
 
     def _fingerprint_tier(self, selector_key, meta, broken_candidates, html, started):
         """The first tier: (applied, note, requested). applied is the xpath applied, False
         when dry run declined the heal (with its reason recorded), or None to go on to the
         model; note says why the tier did not heal, and requested whether heal.requested
-        was journaled."""
+        was journaled. The tier journals it for a confident match only: for a page it scored
+        without one, try_heal journals it once the attempt goes on."""
         stored = meta.get('fingerprint')
         if not _fingerprint.valid(stored):
             return None, _no_fingerprint(selector_key), False
-        self.journal.requested(selector_key)
         match = _fingerprint.find(stored, html, meta.get('expectedRole'),
                                   visible=self._visible_check(html))
         if not match.xpath:
             return None, ("the fingerprint match for '" + selector_key + "' was not confident: "
-                          + match.reason), True
+                          + match.reason), False
+        self.journal.requested(selector_key)
         reasoning = ('fingerprint score ' + format(match.score, '.2f') + ', next best '
                      + format(match.runner_up, '.2f'))
         self.journal.proposed(selector_key, xpath=match.xpath, reasoning=reasoning,

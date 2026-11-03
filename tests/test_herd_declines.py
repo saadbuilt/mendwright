@@ -15,7 +15,7 @@ from mendwright import AttentionRequired
 from mendwright.fleet import DECLINES, FLIGHTS
 from mendwright.providers._errors import NOT_HERE_HINT
 from test_aio import AsyncFakePage
-from test_herd import CODE, KEY, URL, V2, _count, _html, _instant, _journal, _store, _warm
+from test_herd import CODE, KEY, URL, V1, V2, _count, _html, _instant, _journal, _store, _warm
 
 N = 12
 GONE = _html("<p class='note'>You accept the terms on the next page.</p>")
@@ -255,3 +255,79 @@ def test_a_decline_leaves_the_fingerprint_tier_to_heal_another_variant_of_the_pa
         'conditions</span></label></fieldset>'), model)
     redesigned.locator(KEY, CODE).check()
     assert [h.source for h in redesigned.heals] == ['fingerprint'] and model.bundles == []
+
+
+def _fingerprinted(tmp_path, make_page, stub_provider):
+    """The store after a run on V1 that recorded the key's fingerprint and role."""
+    path = _store(tmp_path)
+    mendwright.open(make_page(V1, url=URL, fingerprints=True), provider=stub_provider(None),
+                    store_path=path, timeout_ms=0, fingerprint=True
+                    ).locator(KEY, CODE, role='checkbox').check()
+    return path
+
+
+@pytest.fixture
+def finds(monkeypatch):
+    """Each run of the fingerprint tier's scoring (mendwright.fingerprint.find)."""
+    import mendwright.fingerprint as fingerprint
+    runs, real = [], fingerprint.find
+    monkeypatch.setattr(fingerprint, 'find', lambda *a, **k: runs.append(1) or real(*a, **k))
+    return runs
+
+
+def test_the_page_a_decline_was_made_on_is_not_scored_again(tmp_path, make_page, stub_provider,
+                                                            finds):
+    # The tier found nothing on the page, then the model declined. A worker on the same page
+    # takes that decline without scoring the page again. One on another variant of the page
+    # path scores its own first (see the test above). Neither counts as a heal requested.
+    path = _fingerprinted(tmp_path, make_page, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    release.set()
+
+    def worker(html):
+        heal = mendwright.open(make_page(html, url=URL, fingerprints=True),
+                               provider=Declining(calls, release, changed), store_path=path,
+                               timeout_ms=0, fingerprint=True)
+        with pytest.raises(AttentionRequired) as caught:
+            heal.locator(KEY, CODE).check()
+        return str(caught.value)
+
+    assert 'reuses its answer' not in worker(GONE)
+    assert len(calls) == 1 and len(finds) == 1
+    assert 'reuses its answer' in worker(GONE)
+    assert len(calls) == 1 and len(finds) == 1
+    assert 'reuses its answer' in worker(GONE.replace('the next page', 'the page after this'))
+    assert len(calls) == 1 and len(finds) == 2
+    events = _journal(tmp_path)
+    assert _count(events, 'heal.requested') == 1
+    assert _count(events, 'heal.declined', code='not_here', cached=True) == 2
+
+
+def test_a_herd_on_a_decline_scores_the_page_once(tmp_path, make_page, stub_provider, finds):
+    path = _fingerprinted(tmp_path, make_page, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    healers = []
+    for _ in range(N):
+        heal = mendwright.open(make_page(GONE, url=URL, fingerprints=True),
+                               provider=Declining(calls, release, changed), store_path=path,
+                               timeout_ms=60000, fingerprint=True)
+        heal._clock = _instant()
+        healers.append(heal)
+
+    def run(heal):
+        with pytest.raises(AttentionRequired):
+            heal.locator(KEY, CODE).check()
+    threads = [threading.Thread(target=run, args=(heal,)) for heal in healers]
+    for thread in threads:
+        thread.start()
+    with changed:
+        assert changed.wait_for(lambda: len(calls) == 1, 60)
+    assert FLIGHTS.wait_until(lambda: FLIGHTS.waiting() == N - 1, 60)
+    release.set()
+    for thread in threads:
+        thread.join(60)
+    assert not any(t.is_alive() for t in threads)
+    events = _journal(tmp_path)
+    assert len(calls) == 1 and len(finds) == 1
+    assert _count(events, 'heal.requested') == 1
+    assert _count(events, 'heal.declined', code='not_here', cached=True) == N - 1
