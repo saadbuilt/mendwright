@@ -224,3 +224,52 @@ def test_a_waiting_fingerprint_is_written_only_over_the_one_it_replaced():
     other = {'v': 1, 'tag': 'input', 'id': 'other-field'}     # another process's, newer
     data = file(other)
     assert _apply_soft(data, mine) is False and data['selectors']['k']['fingerprint'] == other
+
+
+def test_this_store_s_change_another_store_flushed_is_what_its_next_one_replaces(tmp_path,
+                                                                                 soft_clock):
+    # A store's new fingerprint waits, and another store of this process flushes it. The
+    # store's next fingerprint waits too: the flush at exit writes it over the store's own,
+    # which the file holds now, and not only over the one the store read.
+    third = {'v': 1, 'tag': 'input', 'id': 'third-field'}
+    path = tmp_path / 'overrides.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'expectedRole': 'input', 'fingerprint': FP_OLD,
+        'candidates': [{'xpath': "//input[@id='x']", 'source': 'code', 'status': 'active'}]}}}),
+        encoding='utf-8')
+
+    def saved():
+        return json.loads(path.read_text(encoding='utf-8'))['selectors']['k']['fingerprint']
+    store = load_store(None, str(path))
+    SOFT.written(store._soft_path(), ['k'])     # written a moment ago: the next change waits
+    store.set_meta('k', fingerprint=FP_NEW)
+    assert saved() == FP_OLD
+    assert load_store(None, str(path)).flush() and saved() == FP_NEW
+    store.set_meta('k', fingerprint=third)
+    assert saved() == FP_NEW
+    flush_all()
+    assert saved() == third
+
+
+def test_a_write_of_the_store_s_own_comes_after_what_a_flush_left_before_it(tmp_path,
+                                                                           soft_clock):
+    # As above, but the store then writes a newer fingerprint itself, with a change that can't
+    # wait (a new role). Its next fingerprint replaces that one, not what the flush left.
+    third, fourth = ({'v': 1, 'tag': 'input', 'id': name} for name in ('third', 'fourth'))
+    path = tmp_path / 'overrides.json'
+    path.write_text(json.dumps({'schema': 2, 'selectors': {'k': {
+        'expectedRole': 'input', 'fingerprint': FP_OLD,
+        'candidates': [{'xpath': "//input[@id='x']", 'source': 'code', 'status': 'active'}]}}}),
+        encoding='utf-8')
+
+    def saved():
+        return json.loads(path.read_text(encoding='utf-8'))['selectors']['k']['fingerprint']
+    store = load_store(None, str(path))
+    SOFT.written(store._soft_path(), ['k'])
+    store.set_meta('k', fingerprint=FP_NEW)
+    assert load_store(None, str(path)).flush() and saved() == FP_NEW
+    store.set_meta('k', fingerprint=third, role='textbox')     # written at once
+    assert saved() == third
+    store.set_meta('k', fingerprint=fourth)
+    flush_all()
+    assert saved() == fourth
