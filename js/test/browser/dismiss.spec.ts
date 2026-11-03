@@ -205,7 +205,8 @@ test.describe('popups nobody registered', () => {
     expect(log).not.toContain('signup');
     expect(o.heal.handledInterruptions.map((e) => e.key)).toEqual([DISMISS_KEY, DISMISS_KEY, DISMISS_KEY]);
     expect(await doneText(page)).toBe('');
-    expect(journal(o.store).filter((e) => e.event === 'flow.stop').map(({ ts: _ts, ...e }) => e))
+    // A CI job on GitHub Actions adds its run id to every journal line.
+    expect(journal(o.store).filter((e) => e.event === 'flow.stop').map(({ ts: _ts, run: _run, ...e }) => e))
       .toEqual([{ event: 'flow.stop', key: '<popup>', code: 'popup_loop', before: 'go' }]);
   });
 });
