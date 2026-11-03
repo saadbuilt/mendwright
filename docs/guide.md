@@ -2198,7 +2198,7 @@ No matching element for: accept_terms (tried 1 candidate(s)).
 - A failure of the provider itself (a network error, a rate limit, a bad key) is never kept: asking again can work.
 - A reused decline doesn't skip the fingerprint tier, which asks no model: two variants of one page share its signature, and the tier may heal the key on this one.
   A worker of the same process on the very page the tier found nothing on (the same HTML) doesn't score it again, and takes the decline at once, when the tier needed nothing from the live page to find nothing there. When it looked at whether elements show, which can differ with the same HTML, such as on a phone and a desktop, each worker scores its own page.
-- An attempt that a reused decline answers isn't a `heal.requested` of its own, so `mendwright report` counts one request for the model's one answer.
+- An attempt that a reused decline answers isn't a `heal.requested` of its own, so `mendwright report` counts one request for the model's one answer. Nor is one that another worker's heal answers after the fingerprint tier found nothing.
 
 ### What is checked when a saved heal is used
 

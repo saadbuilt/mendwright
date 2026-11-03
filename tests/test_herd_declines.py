@@ -399,3 +399,11 @@ def test_a_worker_with_no_model_gets_its_own_decline_not_another_s(tmp_path, mak
         alone.locator(KEY, CODE).check()
     declined = [e for e in _journal(tmp_path) if e['event'] == 'heal.declined']
     assert declined[-1]['code'] == 'no_provider' and 'cached' not in declined[-1]
+
+
+def test_a_page_whose_text_holds_a_lone_surrogate_gets_a_digest_too():
+    # A driver can hand over text that strict UTF-8 refuses; the lookup must not stop on it.
+    from mendwright.fleet import scored_page
+    digest = scored_page('<p>\ud83d</p>', {'v': 1, 'tag': 'button'}, 'button')
+    assert len(digest) == 64 and digest != scored_page('<p></p>', {'v': 1, 'tag': 'button'},
+                                                       'button')

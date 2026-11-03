@@ -575,9 +575,10 @@ def _apply_soft(data, pending):
     already on top and a new address are written only with such a change, as a store writes
     them with its next write. meta holds only what the process changed (see
     SelectorStore._persist_soft); a fingerprint or list fingerprint with the value it replaced
-    in replaced is written only while the file still holds that value: another process's
-    newer one stays. Each change gets 'left': the fingerprints the file holds its value of
-    afterwards, written now or there already (see SoftWrites.left)."""
+    in replaced is written only while the file still holds that value, or the one in 'ours',
+    which a flush of this process left there (SoftWrites.flush): another process's newer one
+    stays. Each change gets 'left': the fingerprints the file holds its value of afterwards,
+    written now or there already."""
     selectors = data.setdefault('selectors', {})
     changed, carried = False, []
     for key, delta in pending.items():
@@ -613,13 +614,15 @@ def _apply_soft(data, pending):
                 changed = True
             elif merged != theirs:
                 carried.append((entry, field, merged))
-        replaced = delta.get('replaced') or {}
+        replaced, ours = delta.get('replaced') or {}, delta.get('ours') or {}
         left = delta['left'] = {}
         for field in ('fingerprint', 'listFingerprint'):
             if field not in meta:
                 continue
-            if entry.get(field) != meta[field]:
-                if field in replaced and entry.get(field) != replaced[field]:
+            held = entry.get(field)
+            if held != meta[field]:
+                if field in replaced and held != replaced[field] and (
+                        field not in ours or held != ours[field]):
                     continue        # another process saved one since this one was read
                 entry[field] = copy.deepcopy(meta[field])
                 changed = True
@@ -649,7 +652,7 @@ class SoftWrites:
         self._flushed = {}          # (path, key) -> clock() of its last flush
         self._failed = set()        # paths whose flush failed (logged once)
         # (path, key) -> {field: value}: the fingerprints the last flush left in the file (see
-        # left).
+        # flush).
         self._left = {}
         # path -> writer(pending) for a store kept elsewhere than a local file (see register).
         self._writers = {}
@@ -719,12 +722,10 @@ class SoftWrites:
             for key in keys:
                 self._flushed[(path, key)] = now
 
-    def left(self, path, key, field):
-        """The fingerprint or list fingerprint of key that a flush of this process last left in
-        the file at path, or None. That flush may be another store's: SelectorStore._persist_soft
-        takes its own change found there as what its next change replaces."""
+    def waiting_value(self, path, key, field):
+        """The value of key's field that waits for the file at path (see record), or None."""
         with self._lock:
-            found = (self._left.get((path, key)) or {}).get(field)
+            found = ((self._pending.get(path) or {}).get(key) or {}).get('meta', {}).get(field)
         return copy.deepcopy(found)
 
     def waiting(self, path=None):
@@ -744,8 +745,13 @@ class SoftWrites:
             if not pending:
                 return True
             now = self.clock()
-            for key in pending:
+            for key, delta in pending.items():
                 self._flushed[(path, key)] = now
+                # What the last flush left in the file: a store whose change of it waits read
+                # the file before that flush, maybe, and the file holding it still means no
+                # other process changed it since.
+                if self._left.get((path, key)):
+                    delta['ours'] = copy.deepcopy(self._left[(path, key)])
             writer = self._writers.get(path)
         if writer is None and not os.path.exists(path):
             return True     # the store file is gone: soft changes alone never make one
@@ -978,8 +984,7 @@ class SelectorStore:
         # tell which side changed (a three-way merge).
         self._base = {}
         self._base_meta = {}
-        # key -> {field: (value, what it replaced)}: the fingerprints this store last gave SOFT
-        # (see _persist_soft).
+        # key -> {field: value}: the fingerprints this store last gave SOFT (see _persist_soft).
         self._soft_sent = {}
         self._remember_base(override or {})
 
@@ -1658,28 +1663,23 @@ class SelectorStore:
         # Only what this store changed since it last read or wrote the file, and the
         # fingerprints it replaced: a flush never writes back a value this process only read,
         # over one another process saved since (see _apply_soft).
+        base = getattr(self, '_base_meta', {}).get(key, {})
+        current = self._meta.get(key, {})
+        meta = {f: v for f, v in current.items() if f in SOFT_META and v != base.get(f)}
         path = self._soft_path()
-        # field -> (value, what it replaced): the fingerprints this store last gave SOFT.
         sent = self._soft_sent.setdefault(key, {})
-        with self._mutex:
-            for field in ('fingerprint', 'listFingerprint'):
-                mine = sent.get(field)
-                if (mine is not None and self._base_meta.get(key, {}).get(field) == mine[1]
-                        and SOFT.left(path, key, field) == mine[0]):
-                    # A flush, maybe another store's, wrote this store's last change over what
-                    # it replaced, which is still what this store last read: the file holds
-                    # that change now, and the next one replaces it.
-                    self._base_meta.setdefault(key, {})[field] = copy.deepcopy(mine[0])
-            base = self._base_meta.get(key, {})
-            # A fingerprint set back to the one read goes too: it takes the place of this
-            # store's change that waits.
-            meta = {f: v for f, v in self._meta.get(key, {}).items()
-                    if f in SOFT_META and (v != base.get(f) or (f in sent and sent[f][0] != v))}
-            replaced = {f: copy.deepcopy(base.get(f)) for f in ('fingerprint', 'listFingerprint')
-                        if f in meta}
+        for field in ('fingerprint', 'listFingerprint'):
+            if (field not in meta and field in current and field in sent
+                    and sent[field] != current[field]
+                    and SOFT.waiting_value(path, key, field) == sent[field]):
+                # Set back to the one this store read, as an A/B test's two variants take
+                # turns: it takes the place of this store's change that waits, which the
+                # flush at exit would write over it.
+                meta[field] = current[field]
+        replaced = {f: base.get(f) for f in ('fingerprint', 'listFingerprint') if f in meta}
         SOFT.record(path, key, rows, meta, replaced)
-        for field, was in replaced.items():
-            sent[field] = (copy.deepcopy(meta[field]), was)
+        for field in replaced:
+            sent[field] = copy.deepcopy(meta[field])
         self._soft_waiting.add(key)
         state = self._batch
         if getattr(state, 'depth', 0):

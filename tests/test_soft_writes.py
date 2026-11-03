@@ -352,3 +352,68 @@ def test_a_remote_store_s_change_another_store_flushed_is_what_its_next_one_repl
     store.set_meta('k', fingerprint=_field('third'))
     flush_all()
     assert saved()['fingerprint'] == _field('third')
+
+
+def _rewrite(tmp_path, change):
+    """Another process's write of the store file: change(data) edits its parse."""
+    data = json.loads(open(_store(tmp_path), encoding='utf-8').read())
+    change(data)
+    with open(_store(tmp_path), 'w', encoding='utf-8') as f:
+        json.dump(data, f)
+
+
+def test_a_fingerprint_the_store_only_read_never_takes_another_store_s_place(tmp_path,
+                                                                            soft_clock):
+    # The store's FP_NEW went out with a write of the store; then the store took in another
+    # process's fingerprint. Another store of this process has a newer one waiting when the
+    # store records a new page of the key: the flush at exit writes the other store's.
+    _seed(tmp_path)
+    store = load_store(None, _store(tmp_path))
+    _waiting(store)
+    store.set_meta('other', role='textbox')
+    assert _saved(tmp_path, 'k')['fingerprint'] == FP_NEW
+    _rewrite(tmp_path, lambda d: d['selectors']['k'].update(fingerprint=_field('theirs')))
+    store.refresh('k')
+    load_store(None, _store(tmp_path)).set_meta('k', fingerprint=_field('newer'))
+    store.set_last_page('k', '/b')
+    flush_all()
+    assert _saved(tmp_path, 'k')['fingerprint'] == _field('newer')
+
+
+def test_a_fingerprint_another_process_put_back_is_what_the_next_one_replaces(tmp_path,
+                                                                             soft_clock):
+    # After a flush wrote the store's FP_NEW, another process put FP_OLD back, as the other
+    # variant of an A/B test, and the store read it. Its next fingerprint replaces FP_OLD.
+    store = _flushed_by_another_store(tmp_path)
+
+    def back(data):
+        data['selectors']['k']['fingerprint'] = FP_OLD
+        data['selectors']['other']['expectedText'] = ['Search']
+    _rewrite(tmp_path, back)
+    store.refresh('k')
+    store.set_meta('k', fingerprint=_field('third'))
+    flush_all()
+    assert _saved(tmp_path, 'k')['fingerprint'] == _field('third')
+
+
+def test_a_change_made_while_another_store_s_flush_writes_goes_out_at_exit(tmp_path,
+                                                                          soft_clock,
+                                                                          monkeypatch):
+    # As another thread would: the store sets a newer fingerprint while another store's flush
+    # writes its FP_NEW, and one more after.
+    _seed(tmp_path)
+    store = load_store(None, _store(tmp_path))
+    _waiting(store)
+    real = store_module._atomic_write
+
+    def atomic_write(*args, **kwargs):
+        out = real(*args, **kwargs)
+        monkeypatch.setattr(store_module, '_atomic_write', real)
+        store.set_meta('k', fingerprint=_field('third'))
+        return out
+    monkeypatch.setattr(store_module, '_atomic_write', atomic_write)
+    assert load_store(None, _store(tmp_path)).flush()
+    assert _saved(tmp_path, 'k')['fingerprint'] == FP_NEW
+    store.set_meta('k', fingerprint=_field('fourth'))
+    flush_all()
+    assert _saved(tmp_path, 'k')['fingerprint'] == _field('fourth')

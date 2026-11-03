@@ -89,7 +89,9 @@ def scored_page(html, fingerprint, role):
     part in is never kept: a phone and a desktop can show the same HTML differently. It stays
     in this process: two workers' pages rarely have the same HTML."""
     import json
-    blob = (_netstring(html if isinstance(html, str) else '')
+    # surrogatepass: a page's text can hold a lone surrogate, which strict UTF-8 refuses.
+    page = (html if isinstance(html, str) else '').encode('utf-8', 'surrogatepass')
+    blob = (str(len(page)).encode('ascii') + b':' + page + b','
             + _netstring(json.dumps(fingerprint, sort_keys=True, default=str))
             + _netstring(role if isinstance(role, str) else ''))
     return hashlib.sha256(blob).hexdigest()
