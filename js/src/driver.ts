@@ -4,17 +4,36 @@
 // an iframe has one) or the shadow hosts of a CSS selector saved inside an open shadow root
 // (see shadow.ts). A selector the browser cannot parse raises InvalidSelector at once.
 //
+// For iframes one level down (see frames.ts) it finds the frames a selector matches in
+// (frameMatches) and gives a driver on the Frame of one iframe (framed), which a heal inside
+// that iframe reads through. For open shadow roots (see shadow.ts) it reads what the shadow
+// root that a key's hosts lead to holds (shadowHtml, shadowInventory), which a heal inside it
+// reads through a ShadowDriver (scope.ts), and the open shadow roots of the page an XPath may
+// match in (shadowMatches).
+//
 // The page-side work runs mendwrightLib() (browser/lib.ts), sent as its source text.
+//
+// A selector may also be a getBy* call written as its key, such as
+// get_by_role("button", name="Go") (see getby.ts): it runs as that call on the page, or in a
+// frame, and so does it in each frame frameMatches() looks in. A call the browser rejects when
+// it runs (level on a button, say) raises InvalidSelector, as a selector the browser cannot parse
+// does. roleMatch() asks Playwright's own role matcher whether an element has an ARIA role, for
+// the live check of a heal of a getByRole() call.
 
-import type { Frame, JSHandle, Locator, Page } from '@playwright/test';
+import type { ElementHandle, Frame, FrameLocator, JSHandle, Locator, Page } from '@playwright/test';
 
 import { mendwrightLib } from './browser/lib';
+import { POPUP_CONTROLS_JS, POPUP_CONTROL_JS, POPUP_FOCUS_JS, POPUP_PROBE_JS, POPUP_ROOT_JS } from './browser/popup';
 import { InvalidSelector } from './errors';
 import { fromRaw, type Fingerprint, type RawElement } from './fingerprint';
+import { clickMayHaveRun } from './flow';
+import { frameOptions, frameSelector, type FrameMatch } from './frames';
+import { build, parse, tsMethodOf, type GetByCall } from './getby';
+import { listFromRaw, type ListFingerprint } from './lists';
 import { pySlice } from './py';
 import { roleFor } from './roles';
-import { playwrightSelector } from './selectors';
-import { savedHosts, type Hosts } from './shadow';
+import { GET_BY, checkSyntax, playwrightSelector } from './selectors';
+import { hostCss, innerCss, rootsOf, savedHosts, shadowArg, type Hosts, type ShadowMatch } from './shadow';
 
 export type PageLike = Page | Frame;
 
@@ -22,15 +41,26 @@ const LIB = '(' + mendwrightLib.toString() + ')()';
 // The helpers of mendwrightLib() the driver calls by name. Only these names are ever put
 // into a function's source below, never text from a page, a store or a caller.
 const LIB_NAMES = new Set(['collect', 'describe', 'recordRaw', 'inventory', 'validate', 'cleanHtml',
-  'candidates', 'indexOfMatch', 'robustXpaths', 'placed']);
+  'candidates', 'indexOfMatch', 'robustXpaths', 'placed', 'shadowHtml', 'shadowInventory', 'shadowRoots',
+  'cssForms', 'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listRaw', 'listItems', 'listScan', 'listXpath',
+  'listValidate']);
 export type LibName = 'collect' | 'describe' | 'recordRaw' | 'inventory' | 'validate' | 'cleanHtml'
-  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed';
+  | 'candidates' | 'indexOfMatch' | 'robustXpaths' | 'placed' | 'shadowHtml' | 'shadowInventory' | 'shadowRoots'
+  | 'cssForms' | 'cssFormsEach' | 'collectHtml' | 'xpathAt' | 'outsideAt' | 'listRaw' | 'listItems' | 'listScan'
+  | 'listXpath' | 'listValidate';
 
 // The helpers that parse an HTML string (the captured page, or its cleaned copy) and read
 // nothing of the live page. A page that enforces Trusted Types refuses a plain string to
 // DOMParser, so these get mendwright's own policy there (see PlaywrightDriver.lib).
-const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths']);
+const PARSERS = new Set<string>(['validate', 'cleanHtml', 'candidates', 'indexOfMatch', 'robustXpaths', 'cssForms',
+  'cssFormsEach', 'collectHtml', 'xpathAt', 'outsideAt', 'listScan', 'listXpath', 'listValidate']);
 const TRUSTED_TYPES = 'mendwright:trusted-types';
+
+/** True for a helper of the page library that reads only the HTML string it is given, never
+ * the live page: the only ones a heal inside a shadow root may run (see scope.ShadowDriver). */
+export function isParser(name: string): boolean {
+  return PARSERS.has(name);
+}
 
 /** What lib() throws when the page enforces Trusted Types and its trusted-types directive
  * does not allow mendwright's policy, so no HTML string can be parsed in it. */
@@ -107,6 +137,10 @@ function handleFunction(name: 'xpathFor' | 'outside' | 'raw'): (h: unknown, arg:
 
 // How Playwright words a selector it cannot parse (the Python drivers read the same text).
 const BROWSER_SELECTOR_ERROR = /while parsing|Unknown engine|not a valid (?:XPath|selector)|not a legal expression|did not match the expected pattern/i;
+// How Playwright's role engine words a getBy* call whose arguments it rejects when the call
+// runs, not when it is built: level or a state on a role that has none, for example '"level"
+// attribute is only supported for roles: "heading", ...' (the Python package's _GET_BY_REJECTED).
+const GET_BY_REJECTED = /is only supported for roles|Unknown attribute|does not support .* matcher|must be a string or a regular expression|Role must not be empty/;
 
 /** True for a Playwright error that says the browser cannot parse a selector. */
 export function browserRejected(error: unknown): boolean {
@@ -114,11 +148,32 @@ export function browserRejected(error: unknown): boolean {
   return BROWSER_SELECTOR_ERROR.test(first);
 }
 
-function invalid(error: unknown, selector: string): InvalidSelector {
+/** The InvalidSelector for a Playwright error that says the browser cannot parse selector,
+ * or, for a getBy* call, that its role engine rejects the call's arguments; else null. */
+function rejection(error: unknown, selector: string): InvalidSelector | null {
   const first = String((error as Error)?.message ?? error).trim().split('\n')[0] ?? '';
-  const detail = /^\w+\.\w+: /.test(first) ? first.slice(first.indexOf(': ') + 2) : first;
+  let detail = /^\w+\.\w+: /.test(first) ? first.slice(first.indexOf(': ') + 2) : first;
+  const call = first && GET_BY_REJECTED.test(first) ? callOf(selector) : null;
+  if (call) {
+    if (detail.startsWith('Error: ')) detail = detail.slice('Error: '.length);
+    return InvalidSelector.build(selector, 'the browser rejected a get_by_* call (' + detail.replace(/\.$/, '') + ').',
+      "Check the call's arguments against what Playwright's " + tsMethodOf(call.method) + '() takes.');
+  }
+  if (!first || !BROWSER_SELECTOR_ERROR.test(first)) return null;
   return InvalidSelector.build(selector, 'the browser rejected a selector (' + detail.replace(/\.$/, '') + ').',
     "Fix the selector, or use an XPath such as \"//button[@id='save']\".");
+}
+
+/** Throw rejection()'s InvalidSelector for error, when it is one. */
+function throwRejected(error: unknown, selector: string): void {
+  const bad = rejection(error, selector);
+  if (bad) throw bad;
+}
+
+/** The GetByCall of a selector written as a getBy* call (see getby.ts), else null. Throws
+ * TypeError or InvalidSelector for a selector that can never run, as checkSyntax() does. */
+function callOf(selector: string): GetByCall | null {
+  return checkSyntax(selector, { calls: true }) === GET_BY ? parse(selector) : null;
 }
 
 interface Placed {
@@ -187,6 +242,27 @@ export interface Snapshot {
   dispose(): Promise<void>;
 }
 
+// The popup scripts (browser/popup.ts), each made a function from its source text once, so
+// Playwright sends the source to the page and calls it, as it does any function. A string
+// would reach the page as an expression and never be called.
+const popupFunctions = new Map<string, (...args: any[]) => unknown>();
+
+function popupFunction(source: string): (...args: any[]) => unknown {
+  let fn = popupFunctions.get(source);
+  if (!fn) {
+    fn = new Function('return ' + source)() as (...args: any[]) => unknown;
+    popupFunctions.set(source, fn);
+  }
+  return fn;
+}
+
+/** The handle on a popup's root that popupRoot() gives. */
+export type PopupRoot = ElementHandle;
+
+/** What popupClick() returns for a click that threw after it may have reached the page
+ * (flow.clickMayHaveRun): mendwright records it and stops. */
+export const UNSURE = 'unsure';
+
 /** True while handle's document is still the page's. */
 async function alive(handle: JSHandle): Promise<boolean> {
   try {
@@ -195,6 +271,68 @@ async function alive(handle: JSHandle): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// The attributes of an <iframe> or <frame> element that frames.frameSelector() builds from
+// (the Python package's FRAME_ATTRS_JS), read from the element's handle.
+const FRAME_ATTRS = (e: Element) => ({ tag: e.tagName.toLowerCase(), id: e.id || '',
+  name: e.getAttribute('name') || '', title: e.getAttribute('title') || '', src: e.getAttribute('src') || '' });
+
+/** The model's inventory from the page script's rows (the Python package's inventory_rows):
+ * up to limit, each with its tag, role, id, name, text and aria_label, cut as the Python
+ * package cuts them. [] for anything that is not a list. */
+function inventoryRows(raw: unknown, limit: number): InventoryRow[] {
+  if (!Array.isArray(raw)) return [];
+  const norm = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  return raw.slice(0, limit).filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => ({
+    tag: String(r.tag ?? '').toLowerCase(),
+    role: roleFor(String(r.tag ?? '').toLowerCase(), r.role as string, r.type as string),
+    id: pySlice(String(r.id ?? ''), 200),
+    name: pySlice(String(r.name ?? ''), 200),
+    text: pySlice(norm(r.text), 80),
+    aria_label: pySlice(norm(r.aria_label), 80),
+  }));
+}
+
+/** One element of a list, as the live gate reads it (the Python package's list_items() rows):
+ * its tag, its gate role, its type attribute, and whether it is visible as Playwright counts it. */
+export interface ItemRow {
+  tag: string;
+  role: string;
+  type: string;
+  visible: boolean;
+}
+
+/** listItems()'s rows from the page script's result (the Python package's item_rows): the role
+ * computed with roleFor(), anything malformed skipped. A result that is not a list throws. */
+export function itemRows(raw: unknown): ItemRow[] {
+  if (!Array.isArray(raw)) {
+    throw new TypeError('mendwright: the read of a list gave ' + (raw === null ? 'null' : typeof raw) + ', not a list');
+  }
+  const rows: ItemRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const tag = String((item as { tag?: unknown }).tag || '').toLowerCase();
+    const rawType = (item as { type?: unknown }).type;
+    const type = typeof rawType === 'string' ? rawType : '';
+    const role = (item as { role?: unknown }).role;
+    rows.push({ tag, role: roleFor(tag, typeof role === 'string' ? role : null, type || null), type,
+                visible: (item as { visible?: unknown }).visible === true });
+  }
+  return rows;
+}
+
+/** A frame's name and url, '' for one that cannot be read (the Python package's frame_info). */
+function frameInfo(frame: Frame): { name: string; url: string } {
+  const read = (get: () => unknown) => {
+    try {
+      const value = get();
+      return typeof value === 'string' ? value : '';
+    } catch {
+      return '';
+    }
+  };
+  return { name: read(() => frame.name()), url: read(() => frame.url()) };
 }
 
 export class PlaywrightDriver {
@@ -207,16 +345,47 @@ export class PlaywrightDriver {
   /** The Locator for a stored selector, inside the iframe frameXPath when it has one. For a
    * CSS selector inside an open shadow root, hosts are the CSS of its shadow hosts, outermost
    * first, and the Locator is their chain: Playwright's CSS pierces open shadow roots, so
-   * every read through it checks first that each match is in that shadow root (placed). */
+   * every read through it checks first that each match is in that shadow root (placed). A
+   * getBy* call written as its key runs as that call (getby.build), on the page or in the
+   * iframe; inside a shadow root, which takes CSS only, it throws InvalidSelector. */
   locator(selector: string, frameXPath?: string | null, hosts?: string[] | null): Locator {
-    const target = playwrightSelector(selector);
-    if (hosts && hosts.length) {
-      let loc = this.page.locator('css=' + hosts[0]);
-      for (const host of hosts.slice(1)) loc = loc.locator('css=' + host);
-      return loc.locator(target);
+    const call = callOf(selector);
+    if (call !== null) {
+      if (hosts && hosts.length) innerCss(selector);
+      return build(frameXPath ? this.page.frameLocator(playwrightSelector(frameXPath)) : this.page, call);
     }
+    const target = playwrightSelector(selector);
+    if (hosts && hosts.length) return this.hostChain(hosts).locator(target);
     if (frameXPath) return this.page.frameLocator(playwrightSelector(frameXPath)).locator(target);
     return this.page.locator(target);
+  }
+
+  /** The Locator of the last of hosts (CSS, outermost first), each looked for in the one before:
+   * Playwright's CSS pierces into the shadow root of each from there. */
+  private hostChain(hosts: string[]): Locator {
+    let loc = this.page.locator('css=' + hosts[0]);
+    for (const host of hosts.slice(1)) loc = loc.locator('css=' + host);
+    return loc;
+  }
+
+  /** Whether Playwright gives the one element selector matches the ARIA role role, and the
+   * heading level level when it is not null, by its own matcher: true when getByRole(role,
+   * { level }) and the selector's Locator match one element, false when they do not, and null on
+   * any error (the Python package's role_match). One round trip. Like a getByRole() call
+   * without includeHidden: true, it leaves out an element hidden from the accessibility tree.
+   * Inside a shadow root (hosts), a match outside it gives false. */
+  async roleMatch(selector: string, role: string, level: number | null = null, frameXPath?: string | null,
+                  hosts?: string[] | null): Promise<boolean | null> {
+    try {
+      const built = this.locator(selector, frameXPath, hosts);
+      if (hosts && hosts.length && !allPlaced(await this.place(built, hosts))) return false;
+      const ctx: Page | Frame | FrameLocator | Locator = hosts && hosts.length ? this.hostChain(hosts)
+        : frameXPath ? this.page.frameLocator(playwrightSelector(frameXPath)) : this.page;
+      const options = level === null ? {} : { level };
+      return (await ctx.getByRole(role as Parameters<Page['getByRole']>[0], options).and(built).count()) === 1;
+    } catch {
+      return null;
+    }
   }
 
   /** What placed() says of the Locator of a selector inside a shadow root. */
@@ -245,7 +414,7 @@ export class PlaywrightDriver {
       if (hosts && hosts.length && !allPlaced(await this.place(loc, hosts))) return fallback;
       return await op(loc);
     } catch (error) {
-      if (browserRejected(error)) throw invalid(error, selector);
+      throwRejected(error, selector);
       return fallback;
     }
   }
@@ -256,7 +425,7 @@ export class PlaywrightDriver {
       try {
         return placedCount(await this.place(loc, hosts));
       } catch (error) {
-        if (browserRejected(error)) throw invalid(error, selector);
+        throwRejected(error, selector);
         return 0;
       }
     }
@@ -282,6 +451,110 @@ export class PlaywrightDriver {
   /** True when mendwright was opened on a Page, whose url() is the top-level address. */
   topLevel(): boolean {
     return typeof (this.page as Page).mainFrame === 'function';
+  }
+
+  // --- iframes one level down (see frames.ts) -----------------------------------------------
+
+  /** The frames inside the Page or Frame this driver wraps, at any depth, without its own
+   * (the Python package's child_frames). [] on any error. */
+  childFrames(): Frame[] {
+    try {
+      if (this.topLevel()) return (this.page as Page).frames().filter((frame) => frame.parentFrame() !== null);
+      const out: Frame[] = [];
+      const todo = [...(this.page as Frame).childFrames()];
+      while (todo.length) {
+        const frame = todo.shift() as Frame;
+        out.push(frame);
+        todo.push(...frame.childFrames());
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  /** True when frame sits directly in the Page (in its main frame) or Frame this driver
+   * wraps, not inside another iframe (the Python package's is_direct_child). */
+  private isDirectChild(frame: Frame): boolean {
+    try {
+      const parent = frame.parentFrame();
+      if (this.topLevel()) return parent !== null && parent.parentFrame() === null;
+      return parent === this.page;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The frames inside this page or frame (any depth) in which selector matches at least one
+   * element (see frames.FrameMatch): how many it matches there, whether the frame sits inside
+   * another iframe, and, for one that does not, a CSS selector for its iframe element here
+   * (frames.frameSelector), or null when nothing tells it apart (the Python package's
+   * frame_matches). Throws InvalidSelector for a selector that can never run; any other error
+   * skips that frame. A getBy* call runs as that call in each frame. */
+  async frameMatches(selector: string): Promise<FrameMatch[]> {
+    const call = callOf(selector);
+    const target = call === null ? playwrightSelector(selector) : '';
+    const found: FrameMatch[] = [];
+    for (const frame of this.childFrames()) {
+      let count: number;
+      try {
+        count = await (call === null ? frame.locator(target) : build(frame, call)).count();
+      } catch {
+        continue;
+      }
+      if (count <= 0) continue;
+      const match: FrameMatch = { ...frameInfo(frame), count, nested: !this.isDirectChild(frame), selector: null };
+      if (!match.nested) {
+        try {
+          match.selector = await this.frameSelectorOf(frame);
+        } catch {
+          // nothing tells it apart
+        }
+      }
+      found.push(match);
+    }
+    return found;
+  }
+
+  /** frames.frameSelector() for the iframe element of frame, with the count of each selector
+   * it may try read here first. A count that throws leaves that selector out. */
+  private async frameSelectorOf(frame: Frame): Promise<string | null> {
+    const handle = await frame.frameElement();
+    let attrs: unknown;
+    try {
+      attrs = await handle.evaluate(FRAME_ATTRS);
+    } finally {
+      await handle.dispose().catch(() => undefined);
+    }
+    const counts = new Map<string, number>();
+    for (const option of frameOptions(attrs)) {
+      try {
+        counts.set(option, await this.count(option));
+      } catch {
+        // as a count that raised in the Python package's frame_selector()
+      }
+    }
+    return frameSelector(attrs, (option) => counts.get(option));
+  }
+
+  /** A driver for the document inside the one iframe that selector, an iframe's selector such
+   * as a frameXPath, matches in this page or frame, or null when it matches none or several,
+   * or that element has no document (the Python package's framed()). */
+  async framed(selector: string): Promise<PlaywrightDriver | null> {
+    let frame: Frame | null;
+    try {
+      const loc = this.locator(selector);
+      if ((await loc.count()) !== 1) return null;
+      const handle = await loc.elementHandle({ timeout: 2000 });
+      try {
+        frame = await handle.contentFrame();
+      } finally {
+        await handle.dispose().catch(() => undefined);
+      }
+    } catch {
+      return null;
+    }
+    return frame ? new PlaywrightDriver(frame) : null;
   }
 
   async content(): Promise<string> {
@@ -364,6 +637,45 @@ export class PlaywrightDriver {
     }, { fp: null, hosts: undefined } as FingerprintRead, hosts);
   }
 
+  // --- lists (see lists.ts) -------------------------------------------------------------------
+
+  /** A Locator for each element selector matches now, as Locator.all() gives them (nth(0),
+   * nth(1), ...) (the Python package's handles()). A malformed selector throws InvalidSelector,
+   * and any other error throws as it is. */
+  async handles(selector: string): Promise<Locator[]> {
+    const loc = this.locator(selector);
+    let count: number;
+    try {
+      count = await loc.count();
+    } catch (error) {
+      throwRejected(error, selector);
+      throw error;
+    }
+    return Array.from({ length: count }, (_, i) => loc.nth(i));
+  }
+
+  /** The list fingerprint of the elements selector matches (see lists.ts), or null when it
+   * matches fewer than two; with place, with the list's label and where it sits. One round
+   * trip, which reads no input value. A malformed selector throws InvalidSelector; any other
+   * error gives null. */
+  listFingerprint(selector: string, place = false): Promise<ListFingerprint | null> {
+    return this.probe(selector, null, async (loc) => listFromRaw(
+      await loc.evaluateAll(elementsFunction('listRaw') as (els: Element[], arg: unknown) => unknown, place)), null);
+  }
+
+  /** [{ tag, role, type, visible }] for the first 200 elements selector matches, in one round
+   * trip that does not wait. A malformed selector throws InvalidSelector, and any other error
+   * throws as it is: the live check of a list fails on it. */
+  async listItems(selector: string): Promise<ItemRow[]> {
+    const loc = this.locator(selector);
+    try {
+      return itemRows(await loc.evaluateAll(elementsFunction('listItems') as (els: Element[]) => unknown));
+    } catch (error) {
+      throwRejected(error, selector);
+      throw error;
+    }
+  }
+
   /** Up to limit interactive elements of the page, as the model's inventory. Never input
    * values. [] on any error. */
   async inventory(limit = 200): Promise<InventoryRow[]> {
@@ -373,16 +685,118 @@ export class PlaywrightDriver {
     } catch {
       return [];
     }
-    if (!Array.isArray(raw)) return [];
-    const norm = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
-    return raw.slice(0, limit).filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => ({
-      tag: String(r.tag ?? '').toLowerCase(),
-      role: roleFor(String(r.tag ?? '').toLowerCase(), r.role as string, r.type as string),
-      id: pySlice(String(r.id ?? ''), 200),
-      name: pySlice(String(r.name ?? ''), 200),
-      text: pySlice(norm(r.text), 80),
-      aria_label: pySlice(norm(r.aria_label), 80),
-    }));
+    return inventoryRows(raw, limit);
+  }
+
+  // --- open shadow roots (see shadow.ts) ------------------------------------------------------
+
+  /** What the open shadow root that hosts (their selectors, outermost first) lead to in this
+   * page or frame holds (its innerHTML), or null when they lead to none now: a host missing,
+   * matching several elements or having a closed shadow root (the Python package's
+   * shadow_html). One round trip; null on any error. */
+  async shadowHtml(hosts: string[]): Promise<string | null> {
+    try {
+      const out = await this.lib<unknown>('shadowHtml', hosts.map(hostCss));
+      return typeof out === 'string' ? out : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** inventory() of the open shadow root that hosts lead to, [] when they lead to none. One
+   * round trip. */
+  async shadowInventory(hosts: string[], limit = 200): Promise<InventoryRow[]> {
+    let raw: unknown;
+    try {
+      raw = await this.lib('shadowInventory', { hosts: hosts.map(hostCss), limit });
+    } catch {
+      return [];
+    }
+    return inventoryRows(raw, limit);
+  }
+
+  /** [roots, cut]: the open shadow roots of this page or frame, at any depth, that a CSS
+   * selector matches something in (with how many elements), or, for an XPath, every one with
+   * its HTML, for mendwright to evaluate it in (see shadow.rootsOf; the Python package's
+   * shadow_matches). One round trip. [[], false] for an engine selector, or a read that
+   * failed. A malformed selector throws InvalidSelector. */
+  async shadowMatches(selector: string): Promise<[ShadowMatch[], boolean]> {
+    const arg = shadowArg(selector);
+    if (arg === null) return [[], false];
+    let raw: unknown;
+    try {
+      raw = await this.lib('shadowRoots', arg);
+    } catch {
+      return [[], false];
+    }
+    return rootsOf(raw);
+  }
+
+  // --- popups, for open({ dismiss: true }) (see dismiss.ts) ---------------------------------
+
+  /** What covers the element of native (POPUP_PROBE_JS), in one round trip that does not
+   * wait: null unless the Locator matches one element. known is a popup's root from
+   * popupRoot(), to learn whether it is gone. scroll scrolls an element whose middle is
+   * outside the window into view first. */
+  popupProbe(native: Locator, known: PopupRoot | null = null, scroll = false): Promise<unknown> {
+    return native.evaluateAll(popupFunction(POPUP_PROBE_JS) as (els: Element[], arg: unknown) => unknown,
+      { known, scroll });
+  }
+
+  /** An ElementHandle on the root of the popup over the element (POPUP_ROOT_JS), or null when
+   * it is no longer what dismiss.expectOf() describes. */
+  async popupRoot(native: Locator, expect: unknown): Promise<PopupRoot | null> {
+    const handle = await native.evaluateHandle(popupFunction(POPUP_ROOT_JS) as (el: Element, arg: unknown) => unknown,
+      expect, { timeout: 2000 });
+    const element = handle.asElement() as ElementHandle | null;
+    if (element === null) await handle.dispose();
+    return element;
+  }
+
+  /** The facts of each control of the popup whose root is root (POPUP_CONTROLS_JS). */
+  popupControls(_native: Locator, root: PopupRoot): Promise<unknown> {
+    return root.evaluate(popupFunction(POPUP_CONTROLS_JS) as (el: Element) => unknown);
+  }
+
+  /** Click control number expect.index of the popup, a real click through Playwright's checks,
+   * when it is still the one mendwright chose (POPUP_CONTROL_JS). true when it was clicked,
+   * false when it was not, UNSURE when the click threw after it may have reached the page (it
+   * started a navigation that did not commit in time, say). */
+  async popupClick(_native: Locator, root: PopupRoot, expect: unknown, timeoutMs: number): Promise<boolean | typeof UNSURE> {
+    const handle = await root.evaluateHandle(popupFunction(POPUP_CONTROL_JS) as (el: Element, arg: unknown) => unknown,
+      expect);
+    const element = handle.asElement() as ElementHandle | null;
+    if (element === null) {
+      await handle.dispose();
+      return false;
+    }
+    try {
+      await element.click({ timeout: timeoutMs });
+    } catch (error) {
+      return clickMayHaveRun(error) ? UNSURE : false;
+    } finally {
+      try {
+        await element.dispose();
+      } catch {
+        // the page navigated or closed
+      }
+    }
+    return true;
+  }
+
+  /** Press Escape on the page's keyboard (a Frame's page's, for a Frame), when POPUP_FOCUS_JS
+   * says the key reaches the popup whose root is root: the keyboard sends it to the focused
+   * element, in whatever frame has the focus. true when it was pressed. */
+  async pressEscape(_native: Locator, root: PopupRoot): Promise<boolean> {
+    if ((await root.evaluate(popupFunction(POPUP_FOCUS_JS) as (el: Element) => unknown)) !== true) return false;
+    const page = this.page as Page;
+    const keyboard = page.keyboard ?? (this.page as Frame).page().keyboard;
+    await keyboard.press('Escape');
+    return true;
+  }
+
+  popupRelease(root: PopupRoot): Promise<void> {
+    return root.dispose();
   }
 
   /** The elements of the page that have role (a hidden one only for checkbox), with their
@@ -403,4 +817,55 @@ export class PlaywrightDriver {
       },
     };
   }
+}
+
+// --- the fail-closed popup calls (the Python package's driver_popup_*) -----------------------
+// A popup that cannot be read or reached is left alone: any error gives the answer that does
+// nothing.
+
+async function optional<T>(call: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await call();
+  } catch {
+    return fallback;
+  }
+}
+
+/** driver.popupProbe(): POPUP_PROBE_JS's result for the element, or null when the read
+ * failed. */
+export function driverPopupProbe(driver: PlaywrightDriver, native: Locator, known: PopupRoot | null = null,
+                                 scroll = false): Promise<unknown> {
+  return optional(() => driver.popupProbe(native, known, scroll), null);
+}
+
+/** driver.popupRoot(): a handle on the popup's root, or null. */
+export function driverPopupRoot(driver: PlaywrightDriver, native: Locator, expect: unknown): Promise<PopupRoot | null> {
+  return optional(() => driver.popupRoot(native, expect), null);
+}
+
+/** driver.popupControls(): the controls POPUP_CONTROLS_JS lists, or []. */
+export async function driverPopupControls(driver: PlaywrightDriver, native: Locator, root: PopupRoot): Promise<unknown[]> {
+  const out = await optional(() => driver.popupControls(native, root), null);
+  return Array.isArray(out) ? out : [];
+}
+
+/** driver.popupClick(): true when the control was found as expected and clicked, UNSURE when
+ * the click threw after it may have reached the page, else false (also when it threw). */
+export async function driverPopupClick(driver: PlaywrightDriver, native: Locator, root: PopupRoot, expect: unknown,
+                                       timeoutMs: number): Promise<boolean | typeof UNSURE> {
+  const out = await optional(() => driver.popupClick(native, root, expect, timeoutMs), false);
+  return out === true || out === UNSURE ? out : false;
+}
+
+/** driver.pressEscape(): true when Escape was pressed. false when the keyboard focus is not on
+ * the page's body or in the popup whose root is root, or the element is in an iframe
+ * (POPUP_FOCUS_JS): Escape goes to the focused element, and could clear a field the script
+ * filled or close a dialog it uses. */
+export async function driverPressEscape(driver: PlaywrightDriver, native: Locator, root: PopupRoot): Promise<boolean> {
+  return (await optional(() => driver.pressEscape(native, root), false)) === true;
+}
+
+/** driver.popupRelease(). Never throws. */
+export async function driverPopupRelease(driver: PlaywrightDriver, root: PopupRoot): Promise<void> {
+  await optional(() => driver.popupRelease(root), undefined);
 }

@@ -104,6 +104,7 @@ def test_the_pages_a_key_was_found_on_are_saved_and_read_back(tmp_path):
         store.set_last_page('next', page)
     assert store.meta('next')['lastPage'] == '/d'
     assert store.meta('next')['pages'] == ['/d', '/c', '/b', '/a', '/signup']   # at most 5
+    store.flush()           # a change of the page list waits (SOFT_EVERY); flush() writes it
     saved = json.loads(path.read_text(encoding='utf-8'))['selectors']['next']
     assert saved['lastPage'] == '/d' and saved['pages'] == ['/d', '/c', '/b', '/a', '/signup']
     again = load_store(None, str(path))
@@ -111,18 +112,25 @@ def test_the_pages_a_key_was_found_on_are_saved_and_read_back(tmp_path):
     assert again.meta('next')['pages'] == ['/d', '/c', '/b', '/a', '/signup']
 
 
-def test_set_last_page_writes_only_when_it_changes(tmp_path):
+def test_set_last_page_writes_only_when_it_changes(tmp_path, soft_clock):
+    from mendwright.store import SOFT_EVERY
     path = tmp_path / 'o.json'
     store = load_store(None, str(path))
     store.add_candidate('next', '#next', source='code')
-    store.set_last_page('next', '/signup')
+    store.set_last_page('next', '/signup')              # the first pages: written at once
+    assert json.loads(path.read_text(encoding='utf-8'))['selectors']['next']['pages'] == [
+        '/signup']
     writes = []
     store._persist_override = lambda: writes.append(1)
     store.set_last_page('next', '/signup')
     store.set_last_page('next', None)
     store.set_last_page('next', '')
     assert writes == []
+    # A new page waits until the key's soft changes are due (SOFT_EVERY), then is written.
     store.set_last_page('next', '/checkout')
+    assert writes == []
+    soft_clock.advance(SOFT_EVERY)
+    store.set_last_page('next', '/help')
     assert writes == [1]
     # Back and forth between known pages: the order changes in memory, the file waits.
     store.set_last_page('next', '/signup')

@@ -68,7 +68,7 @@ jobs:
           export PATH="$RUNNER_TEMP/venv/bin:$PATH"
           mendwright --version
           python -m mendwright doctor
-          mendwright demo
+          mendwright demo --scripted
 
       - name: Run the sdist's tests against the installed wheel
         run: |

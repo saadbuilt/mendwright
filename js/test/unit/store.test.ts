@@ -441,6 +441,179 @@ describe('shadowHosts in this package', () => {
   });
 });
 
+const CALL = 'get_by_role("button", name="Sign in")';
+const HEALED = "//button[@id='login']";
+const TWIN = 'get_by_role("button", name="Log in", exact=True)';
+
+describe('a get_by twin the Python package 0.11 saved with a heal', () => {
+  function writeTwin(): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema: 2, selectors: { [CALL]: {
+      expectedRole: 'button', candidates: [
+        { xpath: CALL, source: 'code', addedAt: '2026-11-01T00:00:00+00:00', lastSucceededAt: null, status: 'active' },
+        { xpath: HEALED, source: 'heal', addedAt: '2026-11-01T00:00:01+00:00',
+          lastSucceededAt: '2026-11-01T00:00:01+00:00', status: 'active', getBy: TWIN }] } } }));
+  }
+
+  test('stays on its row when this package writes the file', () => {
+    writeTwin();
+    const store = loadStore(file);
+    assert.equal(store.candidates(CALL).find((c) => c.xpath === HEALED)?.getBy, TWIN);
+    store.setLastPage(CALL, '/login');
+    store.recordSuccess(CALL, HEALED);
+    store.setCodeCandidates('other', ['#other']);
+    const row = read().selectors[CALL].candidates.find((c: any) => c.xpath === HEALED);
+    assert.equal(row.getBy, TWIN);
+  });
+
+  test('is taken in when another process saved it after this store read the file', () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const store = loadStore(file);
+    store.setCodeCandidates(CALL, [CALL]);
+    writeTwin();                                   // another process healed the call
+    store.setLastPage(CALL, '/login');
+    const row = read().selectors[CALL].candidates.find((c: any) => c.xpath === HEALED);
+    assert.equal(row.getBy, TWIN);
+  });
+});
+
+describe('a get_by twin in a store the Python package wrote', { skip: needsPython() }, () => {
+  test('is still there for the Python package after this package writes', () => {
+    runPython(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+store.set_code_candidates(args['call'], [args['call']])
+store.add_candidate(args['call'], args['healed'], source='heal', get_by=args['twin'])
+print('null')`, { file, call: CALL, healed: HEALED, twin: TWIN });
+    const store = loadStore(file);
+    store.recordSuccess(CALL, HEALED);
+    store.setMeta(CALL, { text: 'Log in' });
+    const py = runPython<string | null>(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+print(json.dumps(next(c.get('getBy') for c in store.candidates(args['call']) if c['xpath'] == args['healed'])))`,
+    { file, call: CALL, healed: HEALED });
+    assert.equal(py, TWIN);
+  });
+});
+
+describe('fields this package does not know', () => {
+  // A later version of either package may save more on a row or an entry. This package keeps
+  // what it doesn't know as the file has it, so a write of its own never drops it.
+  const ROW = { xpath: '#email', source: 'code', addedAt: '2026-11-01T00:00:00+00:00', lastSucceededAt: null,
+    status: 'active', checkedAt: '2026-11-02T10:00:00+00:00', twin: { kind: 'css', value: '#email' } };
+  const HEAL = { xpath: "xpath=//input[@id='user-email']", source: 'heal', addedAt: '2026-11-01T00:00:01+00:00',
+    lastSucceededAt: '2026-11-01T00:00:01+00:00', status: 'active', reuse: [1, 2, 3] };
+
+  function writeFile(extra: Record<string, unknown> = {}, row: Record<string, unknown> = ROW): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema: 2, selectors: {
+      email: { expectedRole: 'input', owner: 'team-a', budget: { left: 2 }, ...extra, candidates: [row, HEAL] },
+      quiet: { later: true, candidates: [] } } }));
+  }
+
+  test('stay on their rows and entries when this package writes the file', () => {
+    writeFile();
+    const store = loadStore(file);
+    store.recordSuccess('email', '#email');
+    store.setLastPage('email', '/signup');
+    store.addCandidate('email', "xpath=//input[@name='email']", { source: 'heal', frameXPath: '' });
+    store.quarantine('email', HEAL.xpath);
+    const entry = read().selectors.email;
+    assert.equal(entry.owner, 'team-a');
+    assert.deepEqual(entry.budget, { left: 2 });
+    assert.equal(entry.lastPage, '/signup');
+    const row = entry.candidates.find((c: any) => c.xpath === '#email');
+    assert.equal(row.checkedAt, ROW.checkedAt);
+    assert.deepEqual(row.twin, ROW.twin);
+    assert.ok(row.lastSucceededAt);
+    const heal = entry.candidates.find((c: any) => c.xpath === HEAL.xpath);
+    assert.equal(heal.status, 'quarantined');
+    assert.deepEqual(heal.reuse, [1, 2, 3]);
+    // An entry with nothing but a field this package doesn't know stays too.
+    assert.deepEqual(read().selectors.quiet, { later: true, candidates: [] });
+    // A row this package added gets none of them.
+    const added = entry.candidates.find((c: any) => c.xpath === "xpath=//input[@name='email']");
+    for (const field of ['checkedAt', 'twin', 'reuse', 'owner', 'budget']) assert.ok(!(field in added), field);
+  });
+
+  test('take the value another process wrote since this store read the file, and stay dropped when it dropped them', () => {
+    writeFile();
+    const store = loadStore(file);
+    // Another process changed one of them, dropped another, and added a third.
+    writeFile({ budget: { left: 1 }, owner: undefined, region: 'eu' },
+      { ...ROW, checkedAt: '2026-11-03T08:00:00+00:00', twin: undefined });
+    store.recordSuccess('email', '#email');
+    const entry = read().selectors.email;
+    assert.deepEqual(entry.budget, { left: 1 });
+    assert.equal(entry.region, 'eu');
+    assert.ok(!('owner' in entry));
+    const row = entry.candidates.find((c: any) => c.xpath === '#email');
+    assert.equal(row.checkedAt, '2026-11-03T08:00:00+00:00');
+    assert.ok(!('twin' in row));
+  });
+
+  test("a folder with the Python package's per-key records in keys/ is left as it is", () => {
+    writeFile();
+    const keys = path.join(path.dirname(file), 'keys');
+    fs.mkdirSync(keys);
+    const record = path.join(keys, '0123456789abcdef0123456789abcdef.json');
+    fs.writeFileSync(record, '{"lease": {"owner": "host:1", "until": 1}}');
+    fs.mkdirSync(path.join(keys, 'nested'));
+    const store = loadStore(file);
+    store.recordSuccess('email', '#email');
+    store.setCodeCandidates('other', ['#other']);
+    assert.equal(fs.readFileSync(record, 'utf-8'), '{"lease": {"owner": "host:1", "until": 1}}');
+    assert.deepEqual(fs.readdirSync(keys).sort(), ['0123456789abcdef0123456789abcdef.json', 'nested']);
+    assert.ok(read().selectors.other);
+    assert.ok(read().selectors.email.candidates.find((c: any) => c.xpath === '#email').lastSucceededAt);
+  });
+});
+
+describe('a store the Python package 0.11 keeps, keys/ and all', { skip: needsPython() }, () => {
+  test('each package reads and writes what the other wrote, and neither drops a field the other keeps', () => {
+    // The Python package writes the store, a heal with its get_by twin included, and a per-key
+    // record of its own in keys/.
+    runPython(`
+import json, sys
+from pathlib import Path
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+store.set_code_candidates('email', ['#email'])
+store.set_meta('email', role='input')
+store.add_candidate('email', "xpath=//input[@id='user-email']", source='heal', get_by='get_by_label("Email")')
+keys = Path(args['file']).parent / 'keys'
+keys.mkdir(exist_ok=True)
+(keys / 'record.json').write_text('{"lease": null}', encoding='utf-8')
+print('null')`, { file });
+    const store = loadStore(file);
+    assert.deepEqual(store.candidates('email').map((c) => c.xpath), ['#email', "xpath=//input[@id='user-email']"]);
+    store.recordSuccess('email', "xpath=//input[@id='user-email']");
+    store.setLastPage('email', '/signup');
+    store.setCodeCandidates('terms', ['#terms']);
+    const py = runPython<any>(`
+import json, sys
+from mendwright.store import load_store
+args = json.load(sys.stdin)
+store = load_store(None, args['file'])
+heal = next(c for c in store.candidates('email') if c['xpath'] == "xpath=//input[@id='user-email']")
+store.set_last_page('terms', '/signup')
+print(json.dumps({'getBy': heal.get('getBy'), 'succeeded': bool(heal.get('lastSucceededAt')),
+                  'role': store.meta('email').get('expectedRole'), 'page': store.meta('email').get('lastPage'),
+                  'terms': [c['xpath'] for c in store.candidates('terms')]}))`, { file });
+    assert.deepEqual(py, { getBy: 'get_by_label("Email")', succeeded: true, role: 'input', page: '/signup',
+      terms: ['#terms'] });
+    assert.equal(fs.readFileSync(path.join(path.dirname(file), 'keys', 'record.json'), 'utf-8'), '{"lease": null}');
+    // And this package reads what the Python package wrote last.
+    assert.equal(loadStore(file).metaOf('terms').lastPage, '/signup');
+  });
+});
+
 describe('list rows the Python package 0.10.0 wrote', { skip: needsPython() }, () => {
   test('stay as they are when this package writes, a list fingerprint taken inside a shadow root included', () => {
     runPython(`

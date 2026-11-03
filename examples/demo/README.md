@@ -1,37 +1,31 @@
 # Demo
 
-Two small offline demos of the same idea: a redesign breaks a selector, mendwright gets a new one from a provider, checks it against the page, and retries the step. `mendwright demo` also shows a change in the flow: a cookie banner that now opens first.
-Neither needs a browser or an API key.
+Two small demos of the same idea: a redesign breaks a selector, mendwright gets a new one from a provider, checks it against the page, and retries the step. `mendwright demo` also shows a change in the flow: a cookie banner that now opens first.
+Neither needs a browser.
 
-- `mendwright demo` ships in the package and runs anywhere mendwright is installed. It uses a checkout page.
-- `python examples/demo/demo.py` is the same idea as a short script you can read and copy. It uses a signup page.
+- `mendwright demo` ships in the package and runs anywhere mendwright is installed. It uses a checkout page and asks the model from your environment. `mendwright demo --scripted` uses a canned reply instead, with no API key.
+- `python examples/demo/demo.py` is the same idea as a short script you can read and copy. It uses a signup page and a canned reply, so it runs offline.
 
 ## mendwright demo
 
 ```bash
 pip install mendwright
-mendwright demo
+mendwright demo              # asks your model (mendwright doctor shows which)
+mendwright demo --scripted   # a canned reply: no model call, no API key
 ```
 
-Output from a run:
+Output from `mendwright demo --scripted`:
 
 ```
-mendwright demo: a redesign breaks two selectors on a checkout page and adds a cookie banner.
-Offline: a stand-in page (lxml, no browser) and a scripted model reply (no API call).
-
-  v1  accept_terms  #accept-terms   ok     matched, box checked
-  v1  pay           #pay            ok     matched (not clicked)
-      -- v2: a redesign ships, both ids are gone, and a cookie banner opens first --
-  v2  cookies       #cookie-accept  ok     banner covered the form, clicked it (heal.interrupt)
-  v2  accept_terms  #accept-terms   MISS   no element matches
-      model    proposed //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (scripted reply, no API call)
-      checks   pass: 1 checkbox in the captured HTML, 1 match on the live page
-      retry    ok: box checked with the healed selector, heal confirmed
-  v2  pay           #pay            MISS   no element matches
-      refused  'pay' is marked destructive=True. Not healed, no model call.
-
-Done: 1 heal applied and confirmed, 1 refused, 1 interruption handled, 1 model call in total.
+mendwright demo: a checkout page is redesigned and two selectors break.
+Provider: ScriptedProvider, a canned reply (--scripted): no model call, nothing sent.
+WARNING mendwright: handled interruption 'cookies' before 'accept_terms'
+WARNING mendwright: healed 'accept_terms': #accept-terms -> //label[contains(normalize-space(.),'accept the terms')]//input[@type='checkbox'] (ScriptedProvider, 0.0s)
+WARNING mendwright: did not heal 'pay': 'pay' is marked as a destructive control, and mendwright never auto-heals those, because a validated but wrong selector here could act on a live account. Fix the selector in your code or seed file by hand.
+Done: 1 repaired (checked on the live page and confirmed by the retried step), 1 refused, 1 interruption handled, 1 scripted reply.
 ```
+
+With your own provider, the second line names it and its model, and the heal line ends with its name and how long the call took. The WARNING lines are the ones mendwright logs in any run (see [Logging](../../docs/guide.md#logging)).
 
 The pages are `mendwright/demo/v1.html` and `v2.html`, a checkout form.
 In v2 the ids `accept-terms` and `pay` are gone, while the checkbox, its label and the "Pay now" button are unchanged.
@@ -40,11 +34,11 @@ The demo marks the pay step `destructive=True`, so the pay button is refused wit
 
 Options:
 
+- `--scripted` uses a canned reply instead of your provider. No model call, nothing sent.
 - `--browser [chromium|firefox|webkit]` runs the same demo in a real headless Playwright browser. With no value it uses chromium. It needs `pip install "mendwright[playwright]"` and `python -m playwright install chromium` (or the browser you name).
-- `--live` asks the model from your environment (for example `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`) instead of the scripted reply. Only the demo page is sent. The pay button is still refused without a model call.
 - `--keep` keeps the store from the run and prints its path, so you can look at it with `mendwright report --store <path>`.
-- `--slow` pauses 0.4 seconds between lines, for screen recordings.
 
+Without `--scripted`, only the demo page is sent to your provider. With no provider set up, the demo exits with 1 and says how to set one up, or to use `--scripted`.
 The demo writes only to a temporary folder and deletes it at the end, unless you pass `--keep`.
 It exits with 1 if the banner isn't handled, the checkbox isn't healed or the pay button isn't refused.
 
@@ -79,7 +73,7 @@ result: red -> green
 
 ## How it works
 
-Both demos use two stand-ins from `mendwright.demo`. Everything else is the code a real run uses.
+Both demos use `StandInPage` from `mendwright.demo`, and `demo.py` and `mendwright demo --scripted` also use `ScriptedProvider`. Everything else is the code a real run uses.
 
 - `StandInPage` is an lxml page with the methods of a sync Playwright page. `mendwright.open()` detects it as Playwright, so the real driver, resolver, checks and store run against it. `#accept-terms` misses on v2 because v2 has no element with that id, and the healed XPath is checked against the same v2 DOM. It runs no JavaScript, so it knows one thing a script would do: an element marked `data-overlay` covers the page until a click inside it closes it, and an action outside it fails the way Playwright fails when another element intercepts the click.
 - `ScriptedProvider` builds the real prompt with `build_prompt()` and parses a canned reply with `parse_proposal()`. It makes no API call. The model reply is the only thing that is canned.
@@ -114,4 +108,4 @@ with sync_playwright() as p:
 
 This sends a redacted copy of v2.html to your provider. [SECURITY.md](../../SECURITY.md#redaction) lists what redaction removes.
 The heal is saved to `./.mendwright/overrides.json`, so a second run uses it without calling the model.
-This snippet has been run in headless Chromium with `ScriptedProvider` standing in for the model, but not yet against a real model. `mendwright demo --live` is the quickest way to try your own.
+This snippet has been run in headless Chromium with `ScriptedProvider` standing in for the model, but not yet against a real model. `mendwright demo` is the quickest way to try your own.

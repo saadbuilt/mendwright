@@ -19,8 +19,11 @@ On a 47-case benchmark of hand-built redesigns: 30 of 35 broken selectors repair
 
 ```bash
 pip install mendwright
-mendwright demo   # a redesign breaks two selectors: one is repaired, the pay button is refused. Offline: no browser, no API key
+mendwright demo              # a redesign breaks two selectors: your model repairs one, the pay button is refused
+mendwright demo --scripted   # the same with a canned reply: no model, no API key
 ```
+
+If `mendwright` isn't found, `python -m mendwright demo` works the same, and so does `python -m mendwright` for every command.
 
 https://github.com/user-attachments/assets/5367abb9-4ffb-45c8-8af2-fa5939d735cb
 
@@ -77,7 +80,7 @@ export ANTHROPIC_MODEL="..."      # a current model id from Anthropic's model li
 
 A tool that clicks the wrong button is worse than a failing test. mendwright refuses rather than guesses:
 
-- **Checked on the live page.** A repair is used only if it matches exactly one visible element with the step's role (checkbox, button, link and so on; a hidden checkbox is allowed), and never a bare position like `/html[1]/body[1]/div[3]`.
+- **Checked on the live page.** A repair is made only if it matches exactly one visible element with the step's role (checkbox, button, link and so on; a hidden checkbox is allowed), and never a bare position like `/html[1]/body[1]/div[3]`. A saved repair of a control is checked again on each page that uses it.
 - **Steps you mark are never repaired.** Pass `destructive=True` for pay, submit or delete, and mendwright stops and tells you instead. It can't know which other steps are dangerous: the checks stop ambiguous, hidden and wrong-kind targets, not a plausible button of the same kind, so mark them.
 - **Not on a page it wasn't found on.** A key is only repaired on URL paths it was seen on, so a missing Continue button doesn't become the Help button on the next page. A step that moved while the path stayed the same isn't covered.
 - **Failed repairs are quarantined.** If the action on a repaired element raises, or an `expect=` or `expect_value=` check fails, the repair is never used again. A wrong click that succeeds isn't caught this way, so `mendwright report` lists repairs no passing test has confirmed.
@@ -120,7 +123,7 @@ Pages also change in ways that aren't a broken selector. Each of these is off un
 - **Popups you didn't know about**, with `dismiss=True`. When one covers the element of an action, mendwright presses Escape, then a close button, then a decline button such as No thanks, chosen by its label. It never clicks Subscribe, Accept, a priced button, or Continue (except "Continue without..."), though it can't see what a button's own script does.
 - **Steps in a different order**, such as a checkout that now asks for the card before the address: `heal.step()` and `heal.run_steps()`.
 - **Iframes** one level down, and **open shadow roots** at any depth.
-- **Playwright's `get_by_role()` and the other `get_by_*` calls**, with `heal_get_by=True`, repaired from the saved details only.
+- **Playwright's `get_by_role()` and the other `get_by_*` calls**: with `heal_get_by=True` repaired from the saved details only, and with `heal_get_by="model"` by a model too when those aren't enough.
 
 <!-- readme-test: flow -->
 ```python
@@ -139,6 +142,7 @@ Each has its own section, and most have a short clip, in the [guide](https://git
 - `mendwright fix --apply` writes confirmed repairs into your code, as CSS where your code used CSS.
 - The GitHub Action does that after your tests and opens a pull request for you to review ([guide](https://github.com/saadbuilt/mendwright/blob/main/docs/guide.md#open-a-pull-request-with-the-fixes)).
 - `mendwright notify` posts a summary to Slack or any webhook: what was repaired and what needs a human. It sends counts and key names, never page text or form values, and `--detail counts` leaves the names out. The URL comes from `MENDWRIGHT_WEBHOOK_URL`.
+- Many workers on one store, such as `pytest -n auto` or a pool of scrapers, repair a broken key once, and the others use that repair after checking it on their own page. The store can also be an S3 bucket or an HTTPS server that many machines share (`MENDWRIGHT_STORE=s3://bucket/prefix/`, with `pip install "mendwright[s3]"`); the commands above and the GitHub Action read a downloaded copy of it ([remote stores](https://github.com/saadbuilt/mendwright/blob/main/docs/remote-store.md)).
 
 ## Selenium, async and pytest
 
@@ -191,7 +195,7 @@ A port for Playwright Test is on npm. It has this package's fingerprint scoring,
 import { test, expect } from 'mendwright/test';   // instead of '@playwright/test'
 ```
 
-It does less than the Python package for now (no `dismiss`, `expect_value`, iframe or shadow-root repairs yet). See [js/README.md](https://github.com/saadbuilt/mendwright/blob/main/js/README.md).
+It does less than the Python package for now (no Selenium, remote stores, one heal for many workers or model repairs of `getBy*` calls yet), and it uses this package's commands on its store. See [js/README.md](https://github.com/saadbuilt/mendwright/blob/main/js/README.md).
 
 ## A model that runs on your machine
 

@@ -1,0 +1,8 @@
+{
+  "id": "call-id-removed-digest-checkbox",
+  "category": "id_renamed",
+  "description": "The step is the call get_by_role(\"checkbox\", name=\"Email me The Ledger Weekly digest.\"). The comment form was rebuilt and the digest checkbox's label was reworded.",
+  "pages": "id-removed-digest-checkbox",
+  "call": "get_by_role(\"checkbox\", name=\"Email me The Ledger Weekly digest.\")",
+  "truth": "//input[@name='digest']"
+}

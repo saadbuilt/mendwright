@@ -225,7 +225,8 @@ def test_a_control_of_another_role_is_wrong_role(make_page, stub_provider, tmp_p
                                                              'broken')
     assert k.reason == ("#submit matches one visible element, but it is a div, and 'submit' is "
                         'a button. A run acts on it all the same: mendwright compares roles '
-                        'only for heals. Check the selector in your code.')
+                        'only for selectors a heal or a seed file saved. Check the selector in '
+                        'your code.')
     assert k.fails() and k.fails(fail_on='unhealable')
 
 
@@ -924,6 +925,42 @@ def test_a_call_key_s_heal_says_fix_lists_it_and_leaves_the_call(make_page, stub
     assert ('Run mendwright fix to see the healed selector and where the call is; it does not '
             'change the call itself.') in k.reason
     assert 'to put it in your code' not in k.reason
+
+
+@pytest.mark.parametrize('mode, verdict', [(True, 'refused'), ('model', 'needs-model')])
+def test_a_call_the_fingerprint_cannot_heal_needs_a_model_only_with_heal_get_by_model(
+        mode, verdict, make_page, stub_provider, tmp_path, caplog):
+    from mendwright import getby
+    _called(make_page, stub_provider, tmp_path, LOGIN)
+    # The id and the words changed: the fingerprint has nothing strong to go on.
+    redone = LOGIN.replace("<button id='login' type='submit' class='primary'>Sign in</button>",
+                           "<button id='enter' type='submit'>Continue</button>")
+    heal, page = checker(make_page, stub_provider, tmp_path, html=redone, url=LOGIN_URL,
+                         heal_get_by=mode)
+    looked = []
+    heal.coordinator.driver.same_element = lambda *a: looked.append(a)
+    heal.coordinator.driver.aria_name = lambda *a: looked.append(a)
+    [k] = drifted(heal, page, caplog, [CALL]).keys
+    assert k.verdict == verdict
+    if mode is True:
+        assert k.reason.endswith(getby.NO_MODEL)
+    else:
+        assert 'A run would ask StubProvider' in k.reason
+    assert looked == []
+
+
+def test_a_preview_of_a_call_heal_looks_for_no_suggested_call(make_page, stub_provider, tmp_path,
+                                                             caplog):
+    _called(make_page, stub_provider, tmp_path, LOGIN)
+    renamed = LOGIN.replace('>Sign in<', '>Log in<')
+    heal, page = checker(make_page, stub_provider, tmp_path, html=renamed, url=LOGIN_URL,
+                         heal_get_by=True)
+    looked = []
+    heal.coordinator.driver.same_element = lambda *a: looked.append(a)
+    heal.coordinator.driver.aria_name = lambda *a: looked.append(a)
+    [k] = drifted(heal, page, caplog, [CALL]).keys
+    assert (k.verdict, k.heal['selector']) == ('would-heal', "//button[@id='login']")
+    assert looked == []
 
 
 def test_a_call_written_in_another_spelling_is_the_call_s_key(make_page, stub_provider, tmp_path,

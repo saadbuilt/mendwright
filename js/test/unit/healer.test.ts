@@ -3,9 +3,12 @@
 // fails without it.
 
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { beforeEach, describe, test } from 'node:test';
 
 import { PlaywrightDriver } from '../../src/driver';
+import { open } from '../../src/healer';
 import { AttentionRequired, InvalidSelector } from '../../src/errors';
 import { loadStore } from '../../src/store';
 import { FakeModel, cleanEnv, journalOf, world } from '../support/env';
@@ -392,52 +395,7 @@ describe('what is never healed', () => {
     assert.equal(heal.heals[0].source, 'fingerprint');
   });
 
-  describe('a key last found inside an iframe, which this package does not heal in', () => {
-    const FRAMED = /'card' was last found inside the iframe iframe\[name='pay'\], and mendwright for TypeScript does not heal inside an iframe/;
-
-    function framed(options: { destructive?: boolean; page?: string } = {}) {
-      const w = world(V2);
-      const store = loadStore(w.storePath);
-      store.setCodeCandidates('card', ['#card']);
-      store.setMeta('card', { role: 'input', destructive: options.destructive });
-      store.addCandidate('card', "xpath=//input[@id='card-number']", { frameXPath: "iframe[name='pay']" });
-      store.recordSuccess('card', "xpath=//input[@id='card-number']");
-      if (options.page) store.setLastPage('card', options.page);
-      return w;
-    }
-    const codes = (w: ReturnType<typeof world>) => journalOf(w.dir).filter((e) => e.event === 'heal.declined').map((e) => e.code);
-
-    test('is refused, and no model is asked', async () => {
-      const w = framed();
-      const model = new FakeModel(["//input[@name='email']"]);
-      await assert.rejects(w.open({ provider: model }).locator('card', '#card').fill('4242'), FRAMED);
-      assert.equal(model.bundles.length, 0);
-      assert.deepEqual(codes(w), ['frame']);
-    });
-
-    test('marked destructive, it is declined as destructive first', async () => {
-      const w = framed({ destructive: true });
-      await assert.rejects(w.open().locator('card', '#card').fill('4242'), /'card' is marked as a destructive control/);
-      assert.deepEqual(codes(w), ['destructive']);
-    });
-
-    test('on a page it was never found on, the page guard declines it first', async () => {
-      const w = framed({ page: '/checkout/pay' });
-      await assert.rejects(w.open().locator('card', '#card').fill('4242'), /'card' was last found on \/checkout\/pay, and this page is \/signup/);
-      assert.deepEqual(codes(w), ['page_guard']);
-      assert.ok(journalOf(w.dir).some((e) => e.event === 'flow.page_guard' && e.key === 'card'));
-    });
-
-    test('in dry run and under MENDWRIGHT_DISABLE=1, the decline is on purpose', async () => {
-      const dry = framed();
-      await assert.rejects(dry.open({ dryRun: true }).locator('card', '#card').fill('4242'), FRAMED);
-      assert.deepEqual(codes(dry), ['dry_run']);
-      const off = framed();
-      process.env.MENDWRIGHT_DISABLE = '1';
-      await assert.rejects(off.open().locator('card', '#card').fill('4242'), FRAMED);
-      assert.deepEqual(codes(off), ['disabled']);
-    });
-  });
+  // A key last found inside an iframe: see frames.test.ts.
 
   test('a key whose role is unknown', async () => {
     const w = world(V2);
@@ -561,7 +519,7 @@ describe('interruptions and the cookies preset', () => {
     const heal = w.open({ cookies: 'reject' });
     await heal.locator('email', '#email').fill('ada@example.com');
     assert.deepEqual(w.page.clicked.map((el) => el.id), ['onetrust-reject-all-handler']);
-    assert.deepEqual(heal.handledInterruptions, [{ key: 'cookie_banner', before: 'email' }]);
+    assert.deepEqual(heal.handledInterruptions, [{ key: 'cookie_banner', before: 'email', popup: null, how: null, label: null }]);
     assert.ok(journalOf(w.dir).some((e) => e.event === 'flow.interrupt' && e.preset === 'reject'));
   });
 
@@ -701,5 +659,35 @@ describe('heal.page', () => {
     assert.equal(await page.isVisible('#email'), true);
     w.page.goto(V2);
     assert.equal(await w.open().page.isVisible('#email'), false);
+  });
+});
+
+describe('a store URL', () => {
+  test('open() refuses one from storePath or MENDWRIGHT_STORE by name, and quotes none of it', () => {
+    const w = world(V1);
+    const quiet = { timeoutMs: 100, log: () => undefined };
+    assert.throws(() => open(w.page as never, { ...quiet, storePath: 's3://bucket/heals/' }),
+      (error: Error) => error instanceof TypeError && error.message.startsWith('mendwright: storePath is a s3: store URL')
+        && !error.message.includes('bucket'));
+    process.env.MENDWRIGHT_STORE = 'https://ci:t0ken@stores.example/team/';
+    assert.throws(() => open(w.page as never, quiet),
+      (error: Error) => error instanceof TypeError && error.message.startsWith('mendwright: MENDWRIGHT_STORE is a https: store URL')
+        && !/t0ken|stores\.example|team/.test(error.message));
+    // storePath comes first, and a store passed as it is needs no path.
+    assert.doesNotThrow(() => open(w.page as never, { ...quiet, storePath: w.storePath }));
+    assert.doesNotThrow(() => open(w.page as never, { ...quiet, store: loadStore(w.storePath) }));
+  });
+
+  test('an empty MENDWRIGHT_STORE is unset, as a CI variable that is not set gives it', () => {
+    const w = world(V1);
+    const here = process.cwd();
+    process.chdir(w.dir);
+    try {
+      process.env.MENDWRIGHT_STORE = '';
+      const heal = open(w.page as never, { timeoutMs: 100, log: () => undefined });
+      assert.equal(heal.store.overridePath, path.join(fs.realpathSync(w.dir), '.mendwright', 'overrides.json'));
+    } finally {
+      process.chdir(here);
+    }
   });
 });

@@ -20,7 +20,8 @@ What it adds:
   never accepts one.
 
 Options: --mendwright-page-fixture, --mendwright-store, --mendwright-dry-run,
---mendwright-disable, --mendwright-strict, --mendwright-heal-get-by, and the ini keys
+--mendwright-disable, --mendwright-strict, --mendwright-heal-get-by,
+--mendwright-heal-get-by-model, and the ini keys
 mendwright_page_fixture and mendwright_store. ``-p no:mendwright`` turns the plugin off.
 
 pytest loads this module in every session wherever mendwright is installed. Importing it
@@ -63,8 +64,8 @@ def pytest_addoption(parser):
              '(pytest-playwright). For Selenium, use the name of your driver fixture.')
     group.addoption(
         '--mendwright-store', dest='mendwright_store', default=None, metavar='PATH',
-        help="override store for the 'heal' fixture. Default: .mendwright/overrides.json "
-             'in the rootdir.')
+        help="override store for the 'heal' fixture: a file, or a store URL such as "
+             's3://bucket/prefix/. Default: .mendwright/overrides.json in the rootdir.')
     group.addoption(
         '--mendwright-dry-run', dest='mendwright_dry_run', action='store_true', default=False,
         help='ask for heals and check them, but do not apply them. Sets MENDWRIGHT_DRY_RUN=1 '
@@ -82,13 +83,19 @@ def pytest_addoption(parser):
         default=False,
         help='heal heal.page.get_by_*() calls too, from their fingerprints. Sets '
              'MENDWRIGHT_HEAL_GET_BY=1 for the run.')
+    group.addoption(
+        '--mendwright-heal-get-by-model', dest='mendwright_heal_get_by_model',
+        action='store_true', default=False,
+        help='heal heal.page.get_by_*() calls too, from their fingerprints or, when that does '
+             'not heal one, with the model provider. Sets MENDWRIGHT_HEAL_GET_BY=model for '
+             'the run.')
     parser.addini(
         'mendwright_page_fixture', default='',
         help="fixture that the 'heal' fixture passes to mendwright.open() (default: page).")
     parser.addini(
         'mendwright_store', default='',
-        help="override store for the 'heal' fixture, relative to this ini file "
-             '(default: .mendwright/overrides.json in the rootdir).')
+        help="override store for the 'heal' fixture, relative to this ini file, or a store "
+             'URL (default: .mendwright/overrides.json in the rootdir).')
 
 
 def pytest_configure(config):
@@ -175,23 +182,30 @@ def _store_path(config):
     """Where the 'heal' fixture keeps heals. The first one set wins: --mendwright-store
     (relative to where pytest was started), the mendwright_store ini key (relative to the
     ini file), MENDWRIGHT_STORE (relative to where pytest was started), then
-    .mendwright/overrides.json in the rootdir."""
+    .mendwright/overrides.json in the rootdir. A store URL (s3://..., https://..., memory:)
+    is passed on as it is (see mendwright.remote)."""
+    from .backends.url import is_store_url
     start = config.invocation_params.dir
     option = config.getoption('mendwright_store')
     if option:
-        return _absolute(option, start)
+        return option if is_store_url(option) else _absolute(option, start)
     ini = (config.getini('mendwright_store') or '').strip()
     if ini:
         base = config.inipath.parent if config.inipath else config.rootpath
-        return _absolute(ini, base)
+        return ini if is_store_url(ini) else _absolute(ini, base)
     env = os.environ.get('MENDWRIGHT_STORE', '').strip()
     if env:
-        return _absolute(env, start)
+        return env if is_store_url(env) else _absolute(env, start)
     return os.path.join(os.fspath(config.rootpath), '.mendwright', 'overrides.json')
 
 
 def _env_on(name):
     return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _get_by_model():
+    """True when MENDWRIGHT_HEAL_GET_BY=model: a model may heal get_by_* calls too."""
+    return os.environ.get('MENDWRIGHT_HEAL_GET_BY', '').strip().lower() == 'model'
 
 
 def _provider_overridden(items):
@@ -230,6 +244,13 @@ def _fingerprint_on():
 
 
 def _shown_path(path, root):
+    from .backends.url import is_store_url, store_url
+    if is_store_url(path):
+        # Never the URL as it was given: one with a credential in it is refused.
+        try:
+            return store_url(path)
+        except ValueError as exc:
+            return 'a store URL mendwright refuses (' + str(exc) + ')'
     try:
         rel = os.path.relpath(path, os.fspath(root))
     except ValueError:   # another drive on Windows
@@ -281,13 +302,16 @@ class _Session:
         dry_run = config.getoption('mendwright_dry_run')
         disable = config.getoption('mendwright_disable')
         get_by = config.getoption('mendwright_heal_get_by')
-        if dry_run or disable or get_by:
+        get_by_model = config.getoption('mendwright_heal_get_by_model')
+        if dry_run or disable or get_by or get_by_model:
             self._env = pytest.MonkeyPatch()
             if dry_run:
                 self._env.setenv('MENDWRIGHT_DRY_RUN', '1')
             if disable:
                 self._env.setenv('MENDWRIGHT_DISABLE', '1')
-            if get_by:
+            if get_by_model:
+                self._env.setenv('MENDWRIGHT_HEAL_GET_BY', 'model')
+            elif get_by:
                 self._env.setenv('MENDWRIGHT_HEAL_GET_BY', '1')
 
     def pytest_unconfigure(self, config):
@@ -311,7 +335,9 @@ class _Session:
             mode = 'heal'
         if self.strict:
             mode += ', strict'
-        if mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
+        if mode != 'disabled' and _get_by_model():
+            mode += ', get_by_* healed (model too)'
+        elif mode != 'disabled' and _env_on('MENDWRIGHT_HEAL_GET_BY'):
             mode += ', get_by_* healed'
         if mode != 'disabled' and _no_provider(healing):
             if _fingerprint_on():

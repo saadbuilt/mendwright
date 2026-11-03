@@ -1,0 +1,8 @@
+{
+  "id": "call-translated-search-flights-fr",
+  "category": "translated",
+  "description": "The step is the call get_by_role(\"button\", name=\"Search flights\"). The French search page: the submit button reads \"Rechercher des vols\", next to a site search button.",
+  "pages": "translated-search-flights-fr",
+  "call": "get_by_role(\"button\", name=\"Search flights\")",
+  "truth": "//form[@data-testid='flight-search']//button[@type='submit']"
+}

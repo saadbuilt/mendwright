@@ -352,7 +352,7 @@ def test_the_command_line_writes_results_and_the_report_reads_them(tmp_path, cap
 def test_the_published_baseline_runs_are_for_the_current_cases():
     files = sorted((BENCH / 'results').glob('*.json'))
     baselines = [json.loads(f.read_text(encoding='utf-8')) for f in files]
-    baselines = [r for r in baselines if r['provider'] in bench.BASELINES]
+    baselines = [r for r in baselines if r['provider'] in bench.BASELINES and not r.get('calls')]
     assert {r['provider'] for r in baselines} == set(bench.BASELINES)
     for run in baselines:
         assert run['case_count'] == len(CASES)
@@ -381,3 +381,83 @@ def test_the_local_provider_is_built_and_measured_by_its_candidate_task(monkeypa
     assert bench.prompt_chars(prov, bundle) == len(system) + len(user)
     page = build_prompt(bundle)
     assert bench.prompt_chars(bench.NoneProposer(), bundle) == len(page['system']) + len(page['user'])
+
+
+# --- the call cases (benchmarks/calls/, run.py --calls) ------------------------------------------
+
+CALL_CASES = bench.load_call_cases()
+
+
+def test_the_call_corpus_takes_redesigns_from_the_cases():
+    assert 15 <= len(CALL_CASES) <= 25
+    assert sum(c.positive for c in CALL_CASES) >= 10
+    assert sum(not c.positive for c in CALL_CASES) >= 6
+    assert {c.category for c in CALL_CASES if c.category == 'flow'} == {'flow'}
+
+
+@pytest.mark.parametrize('case', CALL_CASES, ids=lambda c: c.id)
+def test_call_case_is_well_formed(case):
+    from mendwright import getby
+    data = json.loads((BENCH / 'calls' / (case.id + '.json')).read_text(encoding='utf-8'))
+    assert set(data) == {'id', 'category', 'description', 'pages', 'call', 'truth'}
+    assert case.id == 'call-' + case.pages
+    base = BY_ID[case.pages]
+    assert (case.category, case.truth, case.v1, case.v2, case.v1_url, case.v2_url) == (
+        base.category, base.truth, base.v1, base.v2, base.v1_url, base.v2_url)
+    # The call is a key, in mendwright's own spelling.
+    assert getby.parse(case.call) is not None and getby.canonical_key(case.call) == case.call
+    assert case.description.startswith('The step is the call ' + case.call + '. ')
+
+
+def test_the_published_call_runs_are_for_the_current_call_cases():
+    runs = [json.loads(f.read_text(encoding='utf-8'))
+            for f in sorted((BENCH / 'results').glob('*.json'))]
+    calls = [r for r in runs if r.get('calls')]
+    assert {(r['provider'], r['fingerprint'], r['cold']) for r in calls} >= {
+        ('none', True, False), ('local', True, False), ('local', True, True)}
+    for run in calls:
+        assert run['page'] != 'standin' and run['endpoint'] in (None, 'http://127.0.0.1:11434'), \
+            'call runs are published for the fingerprint tier and the local model only'
+        assert run['case_count'] == len(CALL_CASES)
+        assert run['corpus'] == bench.corpus_hash(CALL_CASES), \
+            'the call cases changed since this run: rerun it, then python benchmarks/report.py'
+        assert run['heal_get_by'] == (True if run['provider'] == 'none' else 'model')
+
+
+def test_calls_need_a_browser_and_cold_needs_calls(capsys):
+    with pytest.raises(SystemExit):
+        bench.main(['--provider', 'none', '--calls'])
+    assert '--calls needs --browser' in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        bench.main(['--provider', 'none', '--cold', '--browser', 'chromium'])
+    assert '--cold needs --calls' in capsys.readouterr().err
+
+
+class _CallPage:
+    """conftest's FakePage, which runs get_by_* calls the way Playwright does, with the
+    set_content() the harness loads a page with."""
+
+    def __init__(self, make_page):
+        self.page = make_page('<html><body></body></html>', fingerprints=True)
+        self.page.set_content = self.page.set_html
+
+
+@pytest.mark.parametrize('cold', [False, True], ids=['warm', 'cold'])
+def test_a_call_case_runs_its_call_and_grades_the_heal_and_its_twin(make_page, cold):
+    case = next(c for c in CALL_CASES if c.id == 'call-label-reworded-signin-link')
+    page = _CallPage(make_page).page
+    record = bench.run_case(case, bench.OracleProposer(case.truth), page, cold=cold)
+    assert record['outcome'] == 'correct', record['note']
+    assert record['call'] == case.call and record['cold'] is cold
+    assert record['twin'] == 'get_by_role("link", name="Log in", exact=True)'
+    assert record['twin_ok'] is True
+    assert record['model_calls'] == 1
+
+
+def test_the_none_baseline_runs_calls_with_the_fingerprint_only(make_page):
+    case = next(c for c in CALL_CASES if c.id == 'call-label-reworded-signin-link')
+    record = bench.run_case(case, bench.NoneProposer(), _CallPage(make_page).page)
+    assert record['outcome'] == 'missed' and record['model_calls'] == 0
+    assert 'With heal_get_by=True, mendwright asks no model' in record['decline_reason']
+    assert bench.get_by_mode(bench.NoneProposer()) is True
+    assert bench.get_by_mode(bench.OracleProposer(None)) == 'model'

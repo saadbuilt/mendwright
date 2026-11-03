@@ -1,0 +1,8 @@
+{
+  "id": "call-field-order-last-name",
+  "category": "field_order",
+  "description": "The step is the call get_by_label(\"Last name\"). The sign-up form was rebuilt: \"Last name\" is now \"Surname\", in a row with the first name.",
+  "pages": "field-order-last-name",
+  "call": "get_by_label(\"Last name\")",
+  "truth": "//input[@name='lastName']"
+}

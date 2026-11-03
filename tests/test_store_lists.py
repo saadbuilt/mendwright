@@ -231,12 +231,15 @@ def test_taking_an_accepted_list_heal_over_as_code_makes_it_a_plain_code_row(tmp
 # --- retiring ---------------------------------------------------------------------------------
 
 def test_the_selector_a_list_heal_replaced_retires_it(tmp_path):
+    # One time for every proposal: their evidence has one 'at', so their order is by when
+    # each was added, which a second boundary between them would turn round.
+    now = '2026-11-02T10:14:03+00:00'
     store = _store(tmp_path, code=(CODE, '.basket-item'))
-    store.propose_list_heal('cart', ROWS, proposal=evidence())
-    store.propose_list_heal('cart', SAVED, proposal=evidence('9b8c7d6e'))
+    store.propose_list_heal('cart', ROWS, proposal=evidence(), now=now)
+    store.propose_list_heal('cart', SAVED, proposal=evidence('9b8c7d6e'), now=now)
     edit_list_heal(tmp_path / 'o.json', 'cart', 'accept', '9b8c7d6e')
     store = load_store(None, str(tmp_path / 'o.json'))
-    store.propose_list_heal('cart', ROWS, proposal=evidence())
+    store.propose_list_heal('cart', ROWS, proposal=evidence(), now=now)
     store.add_candidate('cart', '//li', list_heal=True)                 # 0.8.0's own: left alone
     assert store.retire_list_heals('cart', '.basket-item') == []        # another page's selector
     assert store.retire_list_heals('cart', CODE) == [(ROWS, 'proposed', 'superseded'),
@@ -301,12 +304,14 @@ def test_what_mendwright_lists_accept_and_reject_refuse(tmp_path, monkeypatch):
                                + ' to see the keys with a list heal to check.')
     with pytest.raises(ListHealError, match="^'cart' has no list heal to check.$"):
         edit_list_heal(path, 'cart', 'accept', 'x')
-    store.propose_list_heal('cart', ROWS, proposal=evidence())
+    # One time for both proposals, as above: the waiting ones are listed in the order added.
+    now = '2026-11-02T10:14:03+00:00'
+    store.propose_list_heal('cart', ROWS, proposal=evidence(), now=now)
     with pytest.raises(ListHealError) as info:
         edit_list_heal(path, 'cart', 'accept', '9b8c7d6e')
     assert str(info.value) == ("'cart' has no list heal with id 9b8c7d6e. It changed since you "
                                'looked: run mendwright lists' + flag + ' to see it again.')
-    store.propose_list_heal('cart', SAVED, proposal=evidence('1a2b3c4d'))
+    store.propose_list_heal('cart', SAVED, proposal=evidence('1a2b3c4d'), now=now)
     with pytest.raises(ListHealError) as info:
         edit_list_heal(path, 'cart', 'accept', '9b8c7d6e')
     assert 'The ones waiting are 3f2a9c1d and 1a2b3c4d: run mendwright lists' in str(info.value)

@@ -16,7 +16,7 @@ test.describe('the cookies preset', () => {
     await serve(page, { '/signup': page1(ONETRUST) });
     await page.fill('#email', 'ada@example.com');
     expect(await page.evaluate(() => (window as any).consent)).toBe('reject');
-    expect(heal.handledInterruptions).toEqual([{ key: 'cookie_banner', before: '#email' }]);
+    expect(heal.handledInterruptions).toEqual([{ key: 'cookie_banner', before: '#email', popup: null, how: null, label: null }]);
   });
 
   test('rejects a banner no listed manager made, by its button text', async ({ page }) => {

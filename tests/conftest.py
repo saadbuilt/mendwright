@@ -26,7 +26,9 @@ message} makes the browser reject that method's calls when they run.
 """
 
 import inspect
+import json
 import re
+import sys
 
 import lxml.html
 import pytest
@@ -128,6 +130,27 @@ class FakeLocator:
     def input_value(self, **kwargs):
         els = self._elements()
         return (els[0].get('value') or '') if els else ''
+
+    def aria_snapshot(self, **kwargs):
+        """The first line of Playwright's aria_snapshot() for one element: '- role "name"',
+        with [level=N] for a heading. page.aria_snapshot = False makes it missing, as on a
+        Playwright before 1.49."""
+        self._page.aria_reads += 1
+        els = self._elements()
+        if len(els) != 1:
+            raise FakeTimeout('Timeout exceeded: aria_snapshot needs one element')
+        el = els[0]
+        role = aria_role(el) or 'generic'
+        name = accessible_name(self._page._doc, el)
+        line = '- ' + role + (' ' + json.dumps(name) if name else '')
+        if role == 'heading':
+            line += ' [level=' + str(_level(el)) + ']'
+        return line
+
+    def __getattribute__(self, name):
+        if name == 'aria_snapshot' and object.__getattribute__(self, '_page').aria_snapshot is False:
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
 
     def __getattr__(self, verb):
         if verb.startswith('get_by_'):     # a get_by_* call inside this locator's elements
@@ -465,6 +488,8 @@ class FakePage:
         self.get_by_calls = []   # (method, args, kwargs) of every get_by_* call
         self.reject = {}      # get_by_* method -> the error the browser gives for its calls
         self.trips = 0        # page queries of the get_by_* locators
+        self.aria_reads = 0   # aria_snapshot() round trips
+        self.aria_snapshot = True   # False: locators have no aria_snapshot() (Playwright < 1.49)
         self.frames = []      # a Page has a list of frames, a Frame none (no iframes here)
         self.set_html(html)
 
@@ -570,7 +595,10 @@ def stub_provider():
 _ENV_SETTINGS = (
     'MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE',
     'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID',
-    'MENDWRIGHT_WEBHOOK_URL',
+    'MENDWRIGHT_WEBHOOK_URL', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR',
+    'MENDWRIGHT_DECLINE_TTL_SECONDS', 'MENDWRIGHT_STORE_TOKEN', 'MENDWRIGHT_STORE_TOKEN_FILE',
+    'MENDWRIGHT_JOURNAL_DIR', 'MENDWRIGHT_STORE_READ_ONLY', 'MENDWRIGHT_SUGGEST_GET_BY',
+    'MENDWRIGHT_LOCAL_MODEL', 'MENDWRIGHT_LOCAL_MIN_CONFIDENCE',
     'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_GATEWAY', 'MENDWRIGHT_KEY', 'MENDWRIGHT_AUTH_HEADER',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
     'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL',
@@ -587,6 +615,45 @@ def _no_mendwright_env(monkeypatch):
     shell out."""
     for name in _ENV_SETTINGS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_fleet_state():
+    """The process-wide tables of mendwright.fleet and mendwright.store: no test sees the
+    declines another test's model gave, or the soft writes it left waiting (its files are
+    temporary)."""
+    from mendwright import fleet, store
+    yield
+    fleet.DECLINES.clear()
+    store.SOFT.clear()
+    # A remote store's shared read and outage state are per URL, and a test server's URL can
+    # come back with the next test's server on the same port.
+    remote = sys.modules.get('mendwright.remote')
+    if remote is not None:
+        remote._DOCS.clear()
+        remote._HEALTH.clear()
+
+
+class SoftClock:
+    """The clock of the writes that can wait (mendwright.store.SOFT): advance(seconds) moves
+    it on, so a test sees a soft change written when it is due without waiting for it."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def soft_clock(monkeypatch):
+    from mendwright import store
+    clock = SoftClock()
+    monkeypatch.setattr(store.SOFT, 'clock', clock)
+    return clock
 
 
 @pytest.fixture(autouse=True)

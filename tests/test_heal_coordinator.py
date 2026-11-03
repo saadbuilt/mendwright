@@ -437,7 +437,7 @@ def test_the_decline_codes_are_the_documented_ones():
     from mendwright.coordinator import DECLINE_CODES
     assert {code for code, _, _ in DECLINES} | {'not_here', 'list_empty', 'list_not_found',
                                                 'list_waits_fix', 'get_by', 'frame', 'shadow',
-                                                'other'} == set(DECLINE_CODES)
+                                                'store', 'other'} == set(DECLINE_CODES)
 
 
 def test_a_heal_that_applies_writes_no_decline():

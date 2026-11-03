@@ -129,7 +129,7 @@ def _note(healer):
     return healer.locator('note', '#note', role='textarea', timeout_ms=0, poll_ms=0)
 
 
-def test_the_address_is_saved_with_the_page_in_one_write(tmp_path, make_page):
+def test_the_address_is_saved_with_the_page_in_one_write(tmp_path, make_page, soft_clock):
     page = make_page(NOTE, url='about:blank')
     healer = sh_open(page, store_path=str(tmp_path / 'o.json'))
     _note(healer)                               # no address on about:blank
@@ -146,8 +146,13 @@ def test_the_address_is_saved_with_the_page_in_one_write(tmp_path, make_page):
     page.url = 'https://shop.example/Orders/10483/'
     _note(healer)
     assert len(writes) == 1
-    # Another page: one write for lastPage, pages and lastUrl together.
+    # Another page waits until the key's soft changes are due (mendwright.store.SOFT_EVERY),
+    # then one write saves lastPage, pages and lastUrl together.
+    from mendwright.store import SOFT_EVERY
     page.url = 'https://shop.example/Help'
+    _note(healer)
+    assert len(writes) == 1
+    soft_clock.advance(SOFT_EVERY)
     _note(healer)
     assert len(writes) == 2
     saved = json.loads(writes[-1])['selectors']['note']

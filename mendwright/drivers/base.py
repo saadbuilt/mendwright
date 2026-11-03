@@ -26,6 +26,13 @@ url and outer_html are expected as well. Optional, and absent from older custom 
                                           True, False, or None when it cannot tell. The
                                           live gate checks a heal of a get_by_role() call
                                           with it, and refuses the heal without it
+  same_element(selector, other, frame_chain=())
+                                          whether selector matches one element and it is
+                                          the one other matches: True, False, or None when
+                                          it cannot tell. A get_by twin of a heal is saved
+                                          only when it says True (client.get_by_twin)
+  aria_name(selector, frame_chain=())     {'role', 'name', 'level'} of the element as the
+                                          browser's accessibility tree has it, or None
 
 For open shadow roots (see mendwright.shadow). A driver with shadow_html() takes the
 ShadowHost steps of a frame chain in every method above, after its frame selectors: the
@@ -177,6 +184,34 @@ def driver_role_match(driver, selector, role, level=None, frame_chain=()):
     except Exception:
         return None
     return out if isinstance(out, bool) else None
+
+
+def driver_same_element(driver, selector, other, frame_chain=()):
+    """driver.same_element(selector, other, frame_chain) when the driver has it, else None:
+    whether selector matches one element and it is the one other matches. None also when it
+    raises or answers anything but True or False, so a twin is saved only on True."""
+    method = getattr(driver, 'same_element', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, other, frame_chain)
+    except Exception:
+        return None
+    return out if isinstance(out, bool) else None
+
+
+def driver_aria_name(driver, selector, frame_chain=()):
+    """driver.aria_name(selector, frame_chain) when the driver has it, else None: the
+    element's ARIA role, accessible name and level as {'role', 'name', 'level'}. None also
+    when it raises or answers something else."""
+    method = getattr(driver, 'aria_name', None)
+    if not callable(method):
+        return None
+    try:
+        out = method(selector, frame_chain)
+    except Exception:
+        return None
+    return out if isinstance(out, dict) else None
 
 
 def driver_visible_match(driver, selector, frame_chain=()):

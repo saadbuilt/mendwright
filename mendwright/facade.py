@@ -71,6 +71,8 @@ from .selectors import (CSS, XPATH, InvalidSelector, check_syntax, classify, fra
 from .shadow import (MISSING, ShadowHost, as_document, chain_hosts, driver_shadowed, hosts_of,
                      place_text, saved_hosts, shadow_text, take_hosts)
 from . import steps as _steps
+from .fleet import decline_ttl_setting, page_signature, single_flight
+from .backends.url import is_store_url
 from .store import load_store
 from .values import READS as VALUE_READS, expectation, expectations, refusal_reason, refused_message
 
@@ -222,6 +224,21 @@ class HealEvent:
 
 DEFAULT_STORE_PATH = './.mendwright/overrides.json'
 DEFAULT_TIMEOUT_MS = 10000
+# Where journal.jsonl goes for a remote store (a store URL), which has no folder on this
+# machine: MENDWRIGHT_JOURNAL_DIR, else this folder, relative to the current directory. A
+# local store keeps its journal next to its file.
+JOURNAL_DIR_VAR = 'MENDWRIGHT_JOURNAL_DIR'
+DEFAULT_JOURNAL_DIR = './.mendwright'
+# A read-only worker: MENDWRIGHT_STORE_READ_ONLY=1 makes open() read the store and take in what
+# other workers save, and never write it or its key records (see SelectorStore.writes).
+READ_ONLY_VAR = 'MENDWRIGHT_STORE_READ_ONLY'
+
+
+def journal_dir():
+    """The folder journal.jsonl goes to for a remote store, as an absolute path (see
+    JOURNAL_DIR_VAR)."""
+    return os.path.abspath(os.path.expanduser(os.environ.get(JOURNAL_DIR_VAR)
+                                              or DEFAULT_JOURNAL_DIR))
 
 _TRUE = ('1', 'true', 'yes', 'on')
 _FALSE = ('0', 'false', 'no', 'off', '')
@@ -271,20 +288,52 @@ def fingerprint_setting(fingerprint=None):
 
 def get_by_setting(heal_get_by=None):
     """Whether heal.page's get_by_* calls are looked up and healed (see
-    Healer._get_by_locator): the heal_get_by= argument when it is not None, else
-    MENDWRIGHT_HEAL_GET_BY (1 or 0), else off. MENDWRIGHT_DISABLE=1 leaves it as it is: the
-    calls are looked up, and nothing heals. Raises ValueError for a MENDWRIGHT_HEAL_GET_BY
-    that is not a flag."""
+    Healer._get_by_locator), and how: False, True (from the fingerprint only) or 'model'
+    (getby.MODEL: the model provider too). The heal_get_by= argument when it is not None,
+    else MENDWRIGHT_HEAL_GET_BY (1, 0 or model), else False. MENDWRIGHT_DISABLE=1 leaves it
+    as it is: the calls are looked up, and nothing heals. Raises ValueError for a
+    MENDWRIGHT_HEAL_GET_BY that is none of those."""
     if heal_get_by is not None:
-        return bool(heal_get_by)
-    return bool(_env_flag('MENDWRIGHT_HEAL_GET_BY'))
+        return getby.MODEL if heal_get_by == getby.MODEL else bool(heal_get_by)
+    return get_by_env()
+
+
+def get_by_env():
+    """MENDWRIGHT_HEAL_GET_BY as get_by_setting() reads it: False when it is unset."""
+    raw = os.environ.get('MENDWRIGHT_HEAL_GET_BY')
+    if raw is not None and raw.strip().lower() == getby.MODEL:
+        return getby.MODEL
+    try:
+        return bool(_env_flag('MENDWRIGHT_HEAL_GET_BY'))
+    except ValueError:
+        raise ValueError('mendwright: MENDWRIGHT_HEAL_GET_BY must be 1, 0 or model, got '
+                         + repr(raw) + ". Set it to 1 to heal heal.page's get_by_* calls from "
+                         'their fingerprints, to model to let the model provider heal them too, '
+                         'or unset it.') from None
 
 
 def _get_by_choice(heal_get_by, entry):
-    """Raise TypeError for a heal_get_by= other than True, False or None."""
-    if heal_get_by is not None and not isinstance(heal_get_by, bool):
-        raise TypeError(entry + ' takes heal_get_by=True, heal_get_by=False or heal_get_by=None, '
-                        'got heal_get_by=' + repr(heal_get_by) + '.')
+    """Raise TypeError for a heal_get_by= other than True, False, None or 'model'."""
+    if heal_get_by is not None and not isinstance(heal_get_by, bool) and not (
+            isinstance(heal_get_by, str) and heal_get_by == getby.MODEL):
+        raise TypeError(entry + " takes heal_get_by=True, heal_get_by='model', "
+                        'heal_get_by=False or heal_get_by=None, got heal_get_by='
+                        + repr(heal_get_by) + '.')
+
+
+def suggest_setting(suggest_get_by=None, entry='mendwright.open()'):
+    """Whether a heal of any key, not only of a get_by_* call, is saved with a get_by twin
+    for mendwright fix (see client.get_by_twin): the suggest_get_by= argument when it is not
+    None, else MENDWRIGHT_SUGGEST_GET_BY (1 or 0), else off. Raises TypeError for an
+    argument other than True, False or None, and ValueError for a variable that is not a
+    flag."""
+    if suggest_get_by is not None:
+        if not isinstance(suggest_get_by, bool):
+            raise TypeError(entry + ' takes suggest_get_by=True, suggest_get_by=False or '
+                            'suggest_get_by=None, got suggest_get_by=' + repr(suggest_get_by)
+                            + '.')
+        return suggest_get_by
+    return bool(_env_flag('MENDWRIGHT_SUGGEST_GET_BY'))
 
 
 def _env_timeout():
@@ -302,8 +351,65 @@ def _env_timeout():
     return value
 
 
-def _shared_limiter(store_path, per_key, per_hour):
-    key = (os.path.normcase(os.path.abspath(store_path)), per_key, per_hour)
+class _RateDefault:
+    """The default of one of open()'s two rates: its environment variable when that is set,
+    else the built-in number. A rate passed to open(), None included, wins over both."""
+
+    __slots__ = ('var', 'value', 'param')
+
+    def __init__(self, var, value, param):
+        self.var, self.value, self.param = var, value, param
+
+    def __repr__(self):
+        return self.var + ' or ' + str(self.value)
+
+
+RATE_PER_KEY_DEFAULT = _RateDefault('MENDWRIGHT_RATE_PER_KEY_PER_HOUR', 3, 'rate_per_key_per_hour')
+RATE_GLOBAL_DEFAULT = _RateDefault('MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 60, 'rate_global_per_hour')
+RATE_DEFAULTS = (RATE_PER_KEY_DEFAULT, RATE_GLOBAL_DEFAULT)
+
+
+def rate_setting(rate):
+    """One of open()'s two rates: the one passed (a whole number, or None for no limit),
+    else its environment variable (a whole number, or none), else 3 or 60. Raises ValueError
+    for a variable that is neither, as MENDWRIGHT_TIMEOUT_MS does."""
+    if not isinstance(rate, _RateDefault):
+        return rate
+    raw = os.environ.get(rate.var)
+    if raw is None or not raw.strip():
+        return rate.value
+    if raw.strip().lower() == 'none':
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError('mendwright: ' + rate.var + ' must be a whole number of heal attempts '
+                         'per hour, or none for no limit, got ' + repr(raw) + '. Fix it, or pass '
+                         + rate.param + '= to mendwright.open().')
+    return value
+
+
+def rate_sources(guardrails, per_key, per_hour, entry='mendwright.open()'):
+    """What sets each of open()'s two rates, as the sentence the message of a heal a full cap
+    stops ends with (see coordinator.rate_cap_message): {'per_key': ..., 'global': ...}. Its
+    environment variable when the rate was not passed; the argument when it was, since the
+    variable then changes nothing; the guardrails when they were passed, since the rates then
+    change nothing."""
+    if guardrails is not None:
+        said = 'The guardrails passed to ' + entry + ' set the caps.'
+        return {'per_key': said, 'global': said}
+    return {kind: (default.var + ' sets this cap.' if isinstance(rate, _RateDefault) else
+                   'The ' + default.param + '= passed to ' + entry + ' sets this cap.')
+            for kind, rate, default in (('per_key', per_key, RATE_PER_KEY_DEFAULT),
+                                        ('global', per_hour, RATE_GLOBAL_DEFAULT))}
+
+
+def _shared_limiter(name, per_key, per_hour):
+    """The rate limiter of every Healer of this process on the store named name (a local
+    file's normalized absolute path, or a remote store's URL) with these caps."""
+    key = (name, per_key, per_hour)
     with _LIMITERS_LOCK:
         limiter = _LIMITERS.get(key)
         if limiter is None:
@@ -323,11 +429,13 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
          store_path: str | os.PathLike | None = None, guard: Callable[[], bool] | None = None,
          dry_run: bool | None = None, destructive_keys: Iterable[str] = frozenset(),
          guardrails: Guardrails | None = None, journal: Any = None,
-         rate_per_key_per_hour: int | None = 3, rate_global_per_hour: int | None = 60,
+         rate_per_key_per_hour: int | None | _RateDefault = RATE_PER_KEY_DEFAULT,
+         rate_global_per_hour: int | None | _RateDefault = RATE_GLOBAL_DEFAULT,
          timeout_ms: int | None = None, cookies: str | None = None,
          heal_across_pages: bool = False, fingerprint: bool | None = None,
          dismiss: bool = False, expect_values: dict | None = None,
-         heal_get_by: bool | None = None) -> Healer:
+         heal_get_by: bool | str | None = None,
+         suggest_get_by: bool | None = None) -> Healer:
     """Wrap a live page or driver into a Healer.
 
     - The driver is detected from the object (sync Playwright, camoufox, patchright,
@@ -381,17 +489,29 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
       Playwright as written. Off by default (None reads the environment), and then
       heal.page's get_by_* are the real ones. On Selenium it does nothing. See
       Healer._get_by_locator.
+    - heal_get_by='model' (or MENDWRIGHT_HEAL_GET_BY=model) does the same, and when the
+      fingerprint does not heal a call, or the call never matched, asks the model provider
+      too, with the call's role and words as the intent; every check of a heal still runs,
+      and a call that never matched is looked for only when it is a get_by_role() call.
+      A heal of a call is saved with a get_by twin, a call that matched the healed element
+      and nothing else, which mendwright fix suggests (see client.get_by_twin).
+    - suggest_get_by=True (or MENDWRIGHT_SUGGEST_GET_BY=1) saves a get_by twin with the heal
+      of any key on Playwright, at a few more round trips per heal. Off by default.
 
     Settings an argument leaves at None come from the environment:
     MENDWRIGHT_STORE (store_path, default ./.mendwright/overrides.json),
-    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000), MENDWRIGHT_DRY_RUN=1 (dry_run) and
-    MENDWRIGHT_HEAL_GET_BY=1 (heal_get_by). MENDWRIGHT_DISABLE=1 turns healing off:
+    MENDWRIGHT_TIMEOUT_MS (timeout_ms, default 10000), MENDWRIGHT_DRY_RUN=1 (dry_run),
+    MENDWRIGHT_HEAL_GET_BY=1 or model (heal_get_by) and MENDWRIGHT_SUGGEST_GET_BY=1
+    (suggest_get_by). MENDWRIGHT_DISABLE=1 turns healing off:
     selectors still resolve, nothing is healed and no provider is called, even one passed
     as provider=.
 
     Heals are written to journal.jsonl next to the store. A direct in-process provider
     (not GatewayProvider, which meters server-side) also gets an hourly rate limit, shared
-    by every Healer on the same store file in this process.
+    by every Healer on the same store file in this process: rate_per_key_per_hour and
+    rate_global_per_hour, else MENDWRIGHT_RATE_PER_KEY_PER_HOUR and
+    MENDWRIGHT_RATE_GLOBAL_PER_HOUR, else 3 and 60. None (or none in the variable) removes
+    a limit.
     """
     from .proxies import unwrap
     page = unwrap(page)    # heal.page or heal.driver of another Healer: use the real one
@@ -400,6 +520,7 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     _get_by_choice(heal_get_by, 'mendwright.open()')
     checks = expectations(expect_values)
     heal_get_by = get_by_setting(heal_get_by)
+    suggest_get_by = suggest_setting(suggest_get_by)
     driver = wrap(page)
     store, coord, timeout_ms = _setup(
         driver, provider=provider, store=store, store_path=store_path, guard=guard,
@@ -411,10 +532,32 @@ def open(page: Any, *, provider: Any = None, store: Any = None,
     healer._dismiss_on = dismiss
     healer._expect_values = checks
     healer._heal_get_by = heal_get_by
+    get_by_modes(coord, heal_get_by, suggest_get_by)
+    coord.look_again = _weak_look(healer, lambda h, key, broken: h._look_again(key, broken))
     if preset is not None:
         healer._interruptions[preset.key] = preset
         healer._watch(preset)
     return healer
+
+
+def _weak_look(healer, look):
+    """The coordinator's look_again for healer (see HealCoordinator._look_again):
+    look(healer, key, broken), through a weak reference, so the coordinator does not keep
+    the healer alive (live_healers() is a weak set)."""
+    ref = weakref.ref(healer)
+
+    def look_again(key, broken):
+        found = ref()
+        return look(found, key, broken) if found is not None else None
+    return look_again
+
+
+def get_by_modes(coordinator, heal_get_by, suggest_get_by):
+    """Tell the coordinator what open(heal_get_by=, suggest_get_by=) chose: get_by_model,
+    whether a model may heal a get_by_* call, and twins, which heals are saved with a get_by
+    twin ('calls' for the keys of get_by_* calls, 'all' for every key)."""
+    coordinator.get_by_model = heal_get_by == getby.MODEL
+    coordinator.twins = 'all' if suggest_get_by else 'calls'
 
 
 def _dismiss_choice(dismiss, entry):
@@ -444,11 +587,15 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     (store, coordinator, timeout_ms). mendwright.aio.open() shares it."""
     if store_path is None:
         store_path = os.environ.get('MENDWRIGHT_STORE') or DEFAULT_STORE_PATH
-    store_path = os.path.expanduser(os.fspath(store_path))
+    if not is_store_url(store_path):
+        store_path = os.path.expanduser(os.fspath(store_path))
     if timeout_ms is None:
         timeout_ms = _env_timeout()
     if timeout_ms is None:
         timeout_ms = DEFAULT_TIMEOUT_MS
+    sources = rate_sources(guardrails, rate_per_key_per_hour, rate_global_per_hour, entry)
+    rate_per_key_per_hour = rate_setting(rate_per_key_per_hour)
+    rate_global_per_hour = rate_setting(rate_global_per_hour)
     if dry_run is None:
         dry_run = bool(_env_flag('MENDWRIGHT_DRY_RUN'))
     off_by = _fingerprint_off_by(fingerprint)
@@ -485,16 +632,29 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
                 'no model provider is configured (see the ' + entry + ' warning, or run '
                 'mendwright doctor)'))
 
+    read_only = _env_flag(READ_ONLY_VAR)
     if store is None:
-        # No seed, plus any previously-healed overrides at store_path.
-        store = load_store(None, store_path, destructive_keys)
-    store_file = os.fspath(getattr(store, '_override_path', None) or store_path)
-
-    if journal is None:
-        journal = Journal(os.path.join(os.path.dirname(store_file) or '.', 'journal.jsonl'))
+        # No seed, plus any previously-healed overrides at store_path (a file, or a store URL:
+        # see mendwright.remote).
+        store = load_store(None, store_path, destructive_keys, writes=not read_only)
+    elif read_only and getattr(store, 'writes', False):
+        store.writes = False        # a read-only worker never writes, whatever store it has
+    place = getattr(store, 'remote_place', None)
+    if isinstance(place, str) and place:
+        # A remote store: the journal stays on this machine, and the rate limit is per store.
+        name = place
+        if journal is None:
+            journal = Journal(os.path.join(journal_dir(), 'journal.jsonl'))
+        store.journal = journal
+        _say_unread(store, journal, entry)
+    else:
+        store_file = os.fspath(getattr(store, '_override_path', None) or store_path)
+        name = os.path.normcase(os.path.abspath(store_file))
+        if journal is None:
+            journal = Journal(os.path.join(os.path.dirname(store_file) or '.', 'journal.jsonl'))
     if guardrails is None and not isinstance(provider, (GatewayProvider, _NullProvider)):
         # No gateway in front of a direct provider, so meter it here.
-        guardrails = Guardrails(_shared_limiter(store_file, rate_per_key_per_hour,
+        guardrails = Guardrails(_shared_limiter(name, rate_per_key_per_hour,
                                                 rate_global_per_hour))
 
     coord = HealCoordinator(
@@ -507,10 +667,29 @@ def _setup(driver, *, provider, store, store_path, guard, dry_run, destructive_k
     # MENDWRIGHT_DISABLE=1 swaps in a provider that declines, which the coordinator's heal
     # path reads; the flag also stops a key being followed into an iframe.
     coord.disabled = _env_flag('MENDWRIGHT_DISABLE')
+    # How long a model's decline of a key on a page is reused (see mendwright.fleet).
+    coord.decline_ttl = decline_ttl_setting()
+    # What set each rate, for the message of a heal a full cap stops (rate_cap_message).
+    coord.rate_sources = sources
     # What turned the fingerprint tier off, for the refusal of a list looked up with
     # nonempty=True (see Healer._nonempty_blocked).
     coord.fingerprint_off_by = None if fingerprint else off_by
     return store, coord, timeout_ms
+
+
+def _say_unread(store, journal, entry):
+    """For a remote store that could not be read when it loaded: one WARNING, and
+    store.unavailable in the journal (op open). Its heals are refused until it is read (see
+    mendwright.remote)."""
+    reason = getattr(store, 'unread', None)
+    if not reason:
+        return
+    logger.warning(entry + ': ' + reason)
+    try:
+        journal.event('store.unavailable', store=store.remote_place, op='open',
+                      error=getattr(store, 'unread_error', None), reason=reason)
+    except Exception:
+        pass
 
 
 def _healed_target_error(key, xpath, locked):
@@ -1022,6 +1201,16 @@ class Healer:
         # _get_by_locator). The calls that are never keys, logged once each (_note_get_by).
         self._heal_get_by = False
         self._get_by_noted: set = set()
+        # Saved selectors a lookup did not use because their element failed the reuse check
+        # (see _refused_reuse): (key, page, selector) journaled, and (key, page) logged.
+        self._refusals: set = set()
+        self._refusals_logged: set = set()
+        # key -> the selectors of key that missed when its heal began, before any wait for
+        # another worker's heal (see _heal and _look_again).
+        self._missed: dict = {}
+        # The clock and sleep of a locator() lookup's poll (resolver.resolve). Tests replace them.
+        self._clock = time.monotonic
+        self._sleep = time.sleep
         _register(self)
 
     @property
@@ -1106,16 +1295,18 @@ class Healer:
     def _peek_visible(self, key):
         """For heal.page's is_visible(): True when the first of key's stored selectors that
         matches one element shows it visible right now. Like Playwright's is_visible(): no
-        wait, no heal, no scrolling, and nothing recorded in the store."""
-        from .resolver import _match_handle, _require_visible, _split_runnable
+        wait, no heal, no scrolling, and nothing recorded in the store. A selector the code did
+        not pass counts only when its element passes the reuse check (resolver.Reuse)."""
+        from .resolver import Reuse, _match_handle, _require_visible, _split_runnable
         require_visible = _require_visible(self.store, key)
         runnable, _errors = _split_runnable(key, self.store.candidates(key), self._driver)
+        reuse = Reuse(self.store, key)
         for candidate in runnable:
             try:
                 native = _match_handle(self._driver, candidate, require_visible)
             except Exception:
                 continue
-            if native is not None:
+            if native is not None and reuse.check(self._driver, candidate) == '':
                 try:
                     return bool(driver_act_on(self._driver, native, 'is_visible'))
                 except Exception:
@@ -1278,7 +1469,9 @@ class Healer:
             # (see ActionProxy._before_read). A run= function called inside the handler
             # would have only the scroll's timeout.
             with self._overlays.handling():
-                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms)
+                return resolve(store, self._page, key, timeout_ms=wait, poll_ms=poll_ms,
+                               refused=self._refused_reuse, monotonic=self._clock,
+                               sleep=self._sleep)
 
         budget = Budget()
         with self._running(key, budget, timeout, poll_ms):
@@ -1301,6 +1494,7 @@ class Healer:
                     native = self._heal(key, exc, attempt)
             # One the overlay handler still runs, for an earlier action that gave up on it
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, roles)
         self._remember_page(key)
@@ -1370,7 +1564,8 @@ class Healer:
                 # Playwright's overlay handlers stay out of the lookup, as in locator().
                 with self._overlays.handling():
                     return resolve_get_by(self.store, self._driver, key, timeout_ms=wait,
-                                          poll_ms=poll_ms, first=first.pop() if first else None)
+                                          poll_ms=poll_ms, first=first.pop() if first else None,
+                                          refused=self._refused_reuse)
 
             try:
                 try:
@@ -1391,6 +1586,7 @@ class Healer:
             if native is THROUGH:
                 return self._get_by_through(key, target, timeout, getby.STARTED_TO_MATCH)
             self._await_runs(budget, poll_ms)
+        self._adopt_winner(key)
         self._check_healed_target(key)
         self._learn(key, None)
         self._remember_page(key)
@@ -2787,6 +2983,92 @@ class Healer:
             self.coordinator._emit(logging.WARNING,
                                    nothing_matched_message(key, mine, preset, framed))
 
+    def _look_again(self, key, broken, driver=None, url=None):
+        """The coordinator's look_again (see HealCoordinator._look_again), right after
+        store.refresh() before a heal's fingerprint tier or model call: the first heal of key
+        that another worker saved since this store read the file (store.arrived), or, in a
+        store Healers share (open(store=...)), that another Healer added since this one's
+        selectors missed (_missed), that is not among the selectors that missed, and that
+        matches one element here passing the reuse check, is adopted
+        (HealCoordinator.adopt). Returns its selector, or None. driver is the page's sync
+        driver (the async healer passes its SyncBridge, and url, a callable for the page's
+        address)."""
+        from .resolver import Reuse, _match_handle, _target
+        store, driver = self.store, self._driver if driver is None else driver
+        arrived = getattr(store, 'arrived', None)
+        if not callable(arrived):
+            return None
+        missed = self._missed.get(key)
+        if missed is None:
+            tried = {c.get('xpath') for c in broken or () if isinstance(c, dict)}
+        else:
+            # What missed before this worker waited for another's heal. broken is the store's
+            # selectors now, which holds that heal already when the store is shared.
+            tried = missed
+        rows = [c for c in store.candidates(key) if c.get('source') == 'heal'
+                and c.get('xpath') not in tried
+                and (missed is not None or arrived(key, c.get('xpath')))]
+        if not rows:
+            return None
+        runnable, _errors = _split_runnable(key, rows, driver)
+        require_visible = _require_visible(store, key)
+
+        def refused(k, candidate, reason):
+            self._refused_reuse(k, candidate, reason, url() if callable(url) else None)
+        reuse = Reuse(store, key, refused)
+        for candidate in runnable:
+            try:
+                if _match_handle(driver, candidate, require_visible) is None:
+                    continue
+            except InvalidSelector:
+                continue
+            verdict = reuse.check(driver, candidate)
+            if verdict:
+                reuse.refuse(candidate, verdict)
+                continue
+            try:
+                driver.scroll_into_view(*_target(candidate))
+            except Exception:
+                pass
+            self.coordinator.adopt(key, candidate['xpath'], old=broken)
+            return candidate['xpath']
+        return None
+
+    def _adopt_winner(self, key):
+        """After a lookup: when the selector that matched is a heal another worker saved after
+        this store read the file (store.arrived), which a refresh during the lookup brought
+        in, adopt it (HealCoordinator.adopt), once: it is this worker's unconfirmed heal from
+        now on."""
+        winner = self.store.last_success(key)
+        if not winner or winner.get('source') != 'heal':
+            return
+        arrived = getattr(self.store, 'arrived', None)
+        try:
+            if callable(arrived) and arrived(key, winner.get('xpath')):
+                self.coordinator.adopt(key, winner['xpath'])
+        except Exception:
+            logger.debug('mendwright: could not adopt the heal of %r', key, exc_info=True)
+
+    def _refused_reuse(self, key, candidate, reason, url=None):
+        """A lookup did not use candidate, a selector a heal or a seed file saved, because the
+        element it matches on this page failed the reuse check (resolver.Reuse): journal
+        heal.refused once per key, page and selector, and log one WARNING per key and page.
+        Nothing is quarantined: the selector may be right on other pages. url is the page's
+        address, read here when it is not given (the async healer reads it itself)."""
+        from .resolver import refused_message
+        page = page_path(self._url() if url is None else url)
+        xpath = candidate.get('xpath')
+        if (key, page, xpath) in self._refusals:
+            return
+        self._refusals.add((key, page, xpath))
+        coordinator = self.coordinator
+        journal_event(coordinator.journal, 'heal.refused', key, xpath=xpath,
+                      source=candidate.get('source'), reason=reason, page=page)
+        if (key, page) in self._refusals_logged:
+            return
+        self._refusals_logged.add((key, page))
+        coordinator._emit(logging.WARNING, refused_message(key, candidate, page, reason))
+
     def _url(self):
         try:
             return self._driver.url() or ''
@@ -2977,6 +3259,18 @@ class Healer:
                 refused = (selector, frames, alt)
         self._frame_stop(key, exc, refused[0], refused[1], opener, refused[2])
 
+    def _store_stop(self, key, exc):
+        """Raise as try_heal() declines (code 'store') when the store could not be read (see
+        HealCoordinator._store_refusal): a follow into an iframe or a shadow root would
+        decide with the empty copy of it, not knowing the quarantines and destructive flags
+        saved there. It may read the store again, so the async healer calls it in a worker
+        thread."""
+        __tracebackhide__ = True
+        unread = self.coordinator._store_refusal(key)
+        if unread:
+            self.coordinator._decline(key, unread, code='store')
+            raise AttentionRequired(str(exc).rstrip() + '\n  -> ' + unread) from exc
+
     def _frame_guard(self, key, exc, url):
         """Raise like the page guard when key was never found on this page."""
         __tracebackhide__ = True
@@ -3007,12 +3301,13 @@ class Healer:
         asked: the selector is the key's own, and only the place changed. It counts as a
         heal with source 'frame' (strict mode fails on it, the canary checks it).
 
-        Not followed, with AttentionRequired saying why: dry run, MENDWRIGHT_DISABLE=1 or a
-        guard that blocks heals, a key marked destructive, a match in several iframes or
-        several elements, an iframe inside another iframe, an iframe nothing tells apart
-        from the others, a Playwright engine selector, a lookup quarantined before, a page
-        the key was never found on (the page guard), or an element that fails the live
-        check. Returns _NOT_FOLLOWED when no selector of the key matches in an iframe."""
+        Not followed, with AttentionRequired saying why: a store that could not be read (see
+        _store_stop), dry run, MENDWRIGHT_DISABLE=1 or a guard that blocks heals, a key
+        marked destructive, a match in several iframes or several elements, an iframe inside
+        another iframe, an iframe nothing tells apart from the others, a Playwright engine
+        selector, a lookup quarantined before, a page the key was never found on (the page
+        guard), or an element that fails the live check. Returns _NOT_FOLLOWED when no
+        selector of the key matches in an iframe."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'frame_matches', None)
         if not callable(finder):
@@ -3027,6 +3322,7 @@ class Healer:
                 matches.append((selector, frames))
         if not matches:
             return _NOT_FOLLOWED
+        self._store_stop(key, exc)
         selector, frames, frame, alt = self._pick_frame(key, exc, matches, 'mendwright.open')
         self._frame_guard(key, exc, self._url())
         why = self._frame_follow(key, selector, frame, alt, self._driver)
@@ -3055,7 +3351,12 @@ class Healer:
         return HealScope(frame=frame, driver=framed) if framed is not None else None
 
     def _heal(self, key, exc, attempt):
-        """Heal through the coordinator after attempt() raised exc, then retry attempt()."""
+        """Heal through the coordinator after attempt() raised exc, then retry attempt().
+
+        At most one worker of this process heals (store file, key, page) at a time (see
+        mendwright.fleet.single_flight): the others wait for it while it works, at most
+        fleet.FOLLOW_CAP seconds whatever the step's timeout, then adopt its heal or reuse its
+        decline, or make their own attempt."""
         __tracebackhide__ = True  # pytest shows the caller
         pending = [exc]
 
@@ -3066,14 +3367,41 @@ class Healer:
 
         context = self._flow_context(key, self._url())
         scope = self._heal_scope(key)
-        if scope is None:
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
-        # The key was last found inside an iframe or a shadow root: capture, check and save
-        # the heal there, or refuse it.
-        with scope.entered(self.coordinator):
-            return resolve_with_heal(resolve_fn, self.coordinator, key, self.store.meta(key),
-                                     context)
+        missed = self._missed_now(key)
+
+        def heal():
+            self._missed[key] = missed
+            try:
+                if scope is None:
+                    return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                             self.store.meta(key), context)
+                # The key was last found inside an iframe or a shadow root: capture, check
+                # and save the heal there, or refuse it.
+                with scope.entered(self.coordinator):
+                    return resolve_with_heal(resolve_fn, self.coordinator, key,
+                                             self.store.meta(key), context)
+            finally:
+                self._missed.pop(key, None)
+
+        return single_flight(self.store, key, self._signature(key, context), heal)
+
+    def _missed_now(self, key):
+        """The selectors of key that just missed, before any wait for another worker's heal
+        (see _look_again): a heal another Healer of a shared store adds meanwhile is not one
+        of them."""
+        try:
+            return {c.get('xpath') for c in self.store.candidates(key)}
+        except Exception:
+            return set()
+
+    def _signature(self, key, context):
+        """The page signature of a heal of key here (see mendwright.fleet.page_signature):
+        the page, and the selectors of key that just missed."""
+        try:
+            selectors = [c.get('xpath') for c in self.store.candidates(key)]
+        except Exception:
+            selectors = []
+        return page_signature((context or {}).get('page'), selectors)
 
     # --- following a key's own selector into an open shadow root -----------------------
 
@@ -3213,11 +3541,11 @@ class Healer:
         followed. A key one of whose selectors matches something on the page (several
         elements, or a hidden one) is not followed, and neither is a key last found on the
         page, in an iframe or in another shadow root (follow_allowed): it heals where it was
-        last found, as any key does. Not followed, with AttentionRequired saying why: the
-        refusals of _shadow_plan, a page the key was never found on (the page guard), a
-        guard that blocks heals, or an element that fails the live check. Returns
-        _NOT_FOLLOWED when no selector of the key may be followed into a shadow root (see
-        _shadow_matches)."""
+        last found, as any key does. Not followed, with AttentionRequired saying why: a store
+        that could not be read (see _store_stop), the refusals of _shadow_plan, a page the
+        key was never found on (the page guard), a guard that blocks heals, or an element
+        that fails the live check. Returns _NOT_FOLLOWED when no selector of the key may be
+        followed into a shadow root (see _shadow_matches)."""
         __tracebackhide__ = True
         finder = getattr(self._driver, 'shadow_matches', None)
         if not callable(finder):
@@ -3225,6 +3553,7 @@ class Healer:
         matches = self._shadow_matches(key, finder)
         if not matches:
             return _NOT_FOLLOWED
+        self._store_stop(key, exc)
         selector, found, root = self._pick_shadow(key, exc, matches)
         self._frame_guard(key, exc, self._url())
         why = self._shadow_follow(key, selector, root, self._driver)

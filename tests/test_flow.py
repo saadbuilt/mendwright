@@ -2421,6 +2421,8 @@ def test_the_page_a_key_was_found_on_is_saved(side, tmp_path):
     side.locate('next', '#next')                       # the same normalized page
     page.url = 'https://shop.example/help'
     side.locate('next', '#next')
+    from mendwright.store import flush_all
+    flush_all()             # a new page waits (SOFT_EVERY); flush_all() writes it now
     saved = json.loads((tmp_path / 'store' / 'overrides.json').read_text(encoding='utf-8'))
     entry = saved['selectors']['next']
     assert entry['lastPage'] == '/help'

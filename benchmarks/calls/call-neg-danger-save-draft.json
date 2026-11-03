@@ -1,0 +1,8 @@
+{
+  "id": "call-neg-danger-save-draft",
+  "category": "removed_near_danger",
+  "description": "The step is the call get_by_role(\"button\", name=\"Save Draft\"). \"Save Draft\" is gone; Publish, Schedule and \"Move to trash\" are on the screen.",
+  "pages": "neg-danger-save-draft",
+  "call": "get_by_role(\"button\", name=\"Save Draft\")",
+  "truth": null
+}

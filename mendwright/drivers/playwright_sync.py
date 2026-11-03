@@ -49,6 +49,10 @@ _GET_BY_REJECTED = re.compile(
     r'is only supported for roles|Unknown attribute|does not support .* matcher'
     r'|must be a string or a regular expression|Role must not be empty')
 
+# How long aria_name() lets aria_snapshot() wait for its element, which the live gate has
+# just found: it is there, or the read is given up.
+ARIA_TIMEOUT_MS = 2000
+
 
 def playwright_selector(selector):
     """The string to hand to page.locator() / frame_locator() for a mendwright selector.
@@ -189,7 +193,8 @@ class PlaywrightSyncDriver:
     outer_html. All take a selector of any kind plus an optional frame chain (frame
     selectors, outermost first). Optional extras, which callers reach through the
     driver_* helpers in mendwright.drivers.base: act_on, describe, inventory, fingerprint,
-    visible_match, role_match, for lists handles, list_fingerprint and list_items, and for
+    visible_match, role_match, same_element and aria_name (for a get_by twin), for lists
+    handles, list_fingerprint and list_items, and for
     open shadow roots shadow_html, shadow_inventory and shadow_matches."""
 
     # Playwright's CSS pierces every open shadow root (see base.css_pierces).
@@ -415,6 +420,37 @@ class PlaywrightSyncDriver:
                 return False
             loc = self._context(frames).get_by_role(role, **options).and_(built)
             return loc.count() == 1
+        except Exception:
+            return None
+
+    def same_element(self, selector, other, frame_chain=()):
+        """True when selector matches one element and it is the one other matches, by
+        Playwright's own matcher: selector's Locator matches one element, and
+        selector.and_(other) matches one. False when not, None on any error. Two round trips.
+        A get_by twin is checked with it (see client.get_by_twin)."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            if step_hosts(frames):
+                return None
+            built = self._build(target, frames)
+            if built.count() != 1:
+                return False
+            return built.and_(self._build(*self._targets(other, frame_chain))).count() == 1
+        except Exception:
+            return None
+
+    def aria_name(self, selector, frame_chain=()):
+        """{'role', 'name', 'level'} of the element selector matches, as the first line of
+        Playwright's aria_snapshot() gives them (getby.parse_aria), or None: on a Playwright
+        before 1.49, which has no aria_snapshot(), and on any error. One round trip."""
+        try:
+            target, frames = self._targets(selector, frame_chain)
+            if step_hosts(frames):
+                return None
+            snapshot = getattr(self._build(target, frames), 'aria_snapshot', None)
+            if not callable(snapshot):
+                return None
+            return getby.parse_aria(snapshot(timeout=ARIA_TIMEOUT_MS))
         except Exception:
             return None
 

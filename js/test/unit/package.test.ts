@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import * as ts from 'typescript';
 
 import { mendwrightLib } from '../../src/browser/lib';
+import * as popupScripts from '../../src/browser/popup';
 import * as api from '../../src/index';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -81,9 +82,48 @@ test('the browser code is self-contained: it runs from its source text alone', (
   assert.ok(!/__awaiter|__spreadArray|__assign|require\(|exports\./.test(source));
 });
 
+test('the popup scripts are self-contained: each is a function from its source text alone', () => {
+  for (const [name, source] of Object.entries(popupScripts)) {
+    const fn = new Function('return ' + source)();
+    assert.equal(typeof fn, 'function', name);
+    assert.ok(!/__awaiter|__spreadArray|__assign|require\(|exports\.|import\(/.test(source), name);
+  }
+  assert.deepEqual(Object.keys(popupScripts).sort(), ['POPUP_CONTROLS_JS', 'POPUP_CONTROL_JS', 'POPUP_FOCUS_JS',
+    'POPUP_PROBE_JS', 'POPUP_ROOT_JS']);
+});
+
 test('the public API', () => {
   for (const name of ['open', 'Healer', 'HealLocator', 'AttentionRequired', 'InvalidSelector', 'AnthropicProvider',
-    'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal']) {
+    'OpenAICompatibleProvider', 'LocalModelProvider', 'autoProvider', 'loadStore', 'SelectorStore', 'Journal',
+    'InterruptionLoop', 'DISMISS_KEY', 'parseMoney', 'parseNumber', 'WAITING_STEP', 'getByKey', 'GetByNotFound',
+    'getBySetting']) {
     assert.ok(name in api, name);
   }
+  // open()'s healGetBy, and the error a miss of a getBy* call throws.
+  const openOptions: api.OpenOptions = { healGetBy: null };
+  assert.equal(openOptions.healGetBy, null);
+  assert.ok(new api.GetByNotFound('missed') instanceof api.AttentionRequired);
+  // getByKey() takes Playwright's names and the Python package's, with Playwright's arguments.
+  const method: api.GetByMethod = 'get_by_role';
+  assert.equal(api.getByKey(method, 'button', { name: 'Pay' }), 'get_by_role("button", name="Pay")');
+  assert.equal(api.getByKey('getByTestId', 'total'), 'get_by_test_id("total")');
+  assert.equal(api.DISMISS_KEY, '<popup>');
+  assert.equal(api.WAITING_STEP, '<next step>');
+  assert.equal(api.parseMoney('1.299,00 €'), '1299.00');
+  // Types, which the build of this test checks: heal.interrupt()'s options and its run function,
+  // and heal.step()'s and heal.runSteps()'.
+  const run: api.RunFunction = async () => undefined;
+  const options: api.InterruptOptions = { run, role: 'dialog' };
+  assert.equal(options.run, run);
+  const step: api.StepFunction = (page) => page.click('#place');
+  const stepOptions: api.StepOptions = { when: ['#card-number'], url: '/checkout/*', last: false, optional: true };
+  const runOptions: api.RunStepsOptions = { timeoutMs: null, pollMs: 50 };
+  assert.deepEqual([typeof step, stepOptions.optional, runOptions.pollMs], ['function', true, 50]);
+  assert.equal(typeof api.Healer.prototype.step, 'function');
+  assert.equal(typeof api.Healer.prototype.runSteps, 'function');
+  // heal.locatorAll()'s options, and the HealLocators it resolves to.
+  const listOptions: api.LocatorAllOptions = { role: 'div', timeoutMs: 1000, pollMs: 50, optional: true };
+  const none: api.HealLocator[] = [] as Awaited<ReturnType<api.Healer['locatorAll']>>;
+  assert.deepEqual([listOptions.optional, none], [true, []]);
+  assert.equal(typeof api.Healer.prototype.locatorAll, 'function');
 });

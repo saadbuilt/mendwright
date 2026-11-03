@@ -38,7 +38,8 @@ jobs:
       - name: ruff check
         run: ruff check --output-format=github .
 
-  # The offline suite needs only lxml and pytest. No browser, network or vendor SDK.
+  # The offline suite: lxml and pytest, cssselect, and boto3 with moto for the S3 store tests
+  # (moto answers in the process, so nothing reaches AWS). No browser and no outside network.
   test:
     name: test (py${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -86,10 +87,36 @@ jobs:
           allow-prereleases: true
           cache: pip
           cache-dependency-path: pyproject.toml
-      - name: Install the package with test extras
+      - name: Install the package and pytest
+        run: python -m pip install -e . "pytest>=7" cssselect
+      # moto's dependencies (cffi, PyYAML) may have no wheel for a new Python yet. The S3 store
+      # tests skip without moto and boto3, and the rest of the suite still runs.
+      - name: Install the test extras for the S3 store tests
+        continue-on-error: true
         run: python -m pip install -e ".[test]"
       - name: Run the offline suite
-        run: python -m pytest -q
+        run: python -m pytest -q -rs
+
+  # The offline tests that need the Playwright or Selenium package but no browser, such as the
+  # get_by tests: the fakes stand in for the page. The jobs above install neither, so they skip
+  # them, and the browsers job runs only the tests marked browser.
+  test-extras:
+    name: test (py3.12, with Playwright and Selenium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package with test extras, Playwright and Selenium
+        run: python -m pip install -e ".[test,playwright,selenium]"
+      - name: Run the offline suite
+        run: python -m pytest -q -rs
 
   # The oldest versions pyproject.toml claims to support: lxml>=5 and pytest>=7.
   lowest-deps:
@@ -159,7 +186,9 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install the Python package
         working-directory: .
-        run: python -m pip install -e .
+        # The parity tests run the Python package, and some of them load tests/conftest.py
+        # (pytest) or lxml.cssselect, so both come along.
+        run: python -m pip install -e . pytest cssselect
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
@@ -251,7 +280,7 @@ jobs:
           export PATH="$RUNNER_TEMP/venv/bin:$PATH"
           mendwright --version
           python -m mendwright doctor
-          mendwright demo
+          mendwright demo --scripted
       - name: Run the sdist's tests against the installed wheel
         run: |
           mkdir "$RUNNER_TEMP/sdist"

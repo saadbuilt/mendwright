@@ -1,6 +1,7 @@
 """The `mendwright` command (also `python -m mendwright`).
 
-    mendwright demo      watch a broken selector get healed, offline
+    mendwright demo      watch your model repair a selector a redesign broke (--scripted:
+                         a canned reply, offline)
     mendwright doctor    check the install, browser libraries, provider and store
     mendwright report    list the selectors and heals in an override store (text, md, json, html)
     mendwright fix       write healed selectors back into your code (a diff, or --apply)
@@ -12,10 +13,11 @@
     mendwright --version
 
 main(argv=None) returns the exit code instead of exiting, so it can be called from tests.
-Nothing here imports a browser library or calls a model, except `mendwright demo --live`,
-which asks the provider from the environment. `mendwright check` launches a headless
-Playwright browser (see mendwright.drift_session), and calls no model either. `mendwright
-notify` makes one POST, to the URL in MENDWRIGHT_WEBHOOK_URL, and never prints that URL.
+Nothing here imports a browser library or calls a model, except `mendwright demo`, which
+asks the provider from the environment (not with --scripted). `mendwright check` launches
+a headless Playwright browser (see mendwright.drift_session), and calls no model either.
+`mendwright notify` makes one POST, to the URL in MENDWRIGHT_WEBHOOK_URL, and never prints
+that URL.
 """
 
 from __future__ import annotations
@@ -48,7 +50,10 @@ PROVIDER_VARS = (
 # MENDWRIGHT_* variables whose value is safe to print. Anything else shows as hidden.
 _SHOWN_VALUES = ('MENDWRIGHT_STORE', 'MENDWRIGHT_TIMEOUT_MS', 'MENDWRIGHT_DRY_RUN',
                  'MENDWRIGHT_DISABLE', 'MENDWRIGHT_PROVIDER', 'MENDWRIGHT_AUTH_HEADER',
-                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_RUN_ID')
+                 'MENDWRIGHT_FINGERPRINT', 'MENDWRIGHT_HEAL_GET_BY', 'MENDWRIGHT_SUGGEST_GET_BY',
+                 'MENDWRIGHT_RUN_ID', 'MENDWRIGHT_RATE_PER_KEY_PER_HOUR',
+                 'MENDWRIGHT_RATE_GLOBAL_PER_HOUR', 'MENDWRIGHT_DECLINE_TTL_SECONDS',
+                 'MENDWRIGHT_STORE_READ_ONLY', 'MENDWRIGHT_JOURNAL_DIR')
 # MENDWRIGHT_* variables that hold a URL whose path or query can be a secret (a webhook's
 # path is its key): doctor shows scheme and host only.
 _ORIGIN_ONLY = ('MENDWRIGHT_GATEWAY', 'MENDWRIGHT_WEBHOOK_URL')
@@ -170,14 +175,32 @@ def _fingerprint_info():
     return {'enabled': True, 'source': 'default'}
 
 
-def _get_by_info():
+def _get_by_info(provider=None, fingerprint=None):
     """Whether mendwright.open() looks up and heals heal.page's get_by_* calls by default,
-    what decides it, and whether one can heal: only with the fingerprint tier on."""
-    problem, env = _flag_problem('MENDWRIGHT_HEAL_GET_BY')
+    what decides it, whether a model may heal one too (MENDWRIGHT_HEAL_GET_BY=model), and
+    whether one can heal: with the fingerprint tier on, or with a model allowed to, a model
+    provider configured and MENDWRIGHT_DISABLE off. provider and fingerprint are what
+    _provider_info() and _fingerprint_info() give, read again when not given."""
+    from .facade import get_by_env
+    from .getby import MODEL
+    try:
+        env, problem = get_by_env(), None
+    except ValueError as exc:
+        env, problem = False, str(exc)
+    raw = os.environ.get('MENDWRIGHT_HEAL_GET_BY')
     enabled = problem is None and bool(env)
-    source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and env is not None else 'default'
-    return {'enabled': enabled, 'source': source,
-            'heals': enabled and _fingerprint_info()['enabled']}
+    model = env == MODEL
+    source = 'MENDWRIGHT_HEAL_GET_BY' if problem is None and raw is not None else 'default'
+    fingerprint = fingerprint or _fingerprint_info()
+    asks = model and enabled and _model_heals(provider or _provider_info())
+    return {'enabled': enabled, 'source': source, 'model': model,
+            'heals': enabled and (fingerprint['enabled'] or asks)}
+
+
+def _model_heals(provider):
+    """Whether mendwright.open() can ask a model provider: one is configured, and
+    MENDWRIGHT_DISABLE is off."""
+    return bool(provider.get('configured')) and not provider.get('disabled')
 
 
 def _provider_info():
@@ -232,10 +255,35 @@ def _nearest_existing(folder):
     return current or None
 
 
+def _remote_store_info(value):
+    """_store_info() for a store URL: the store as mendwright names it, never contacted, and
+    the folder of this machine's journal (see facade.journal_dir)."""
+    from .backends.url import store_url
+    from .facade import READ_ONLY_VAR, _env_flag, journal_dir
+    try:
+        url, error = store_url(value), None
+    except ValueError as exc:
+        url, error = None, str(exc)
+    folder = journal_dir()
+    checked = folder if os.path.isdir(folder) else _nearest_existing(folder)
+    try:
+        read_only = bool(_env_flag(READ_ONLY_VAR))
+    except ValueError:
+        read_only = False
+    return {'path': url, 'source': 'MENDWRIGHT_STORE', 'remote': True, 'exists': None,
+            'folder': folder, 'folder_exists': os.path.isdir(folder),
+            'writable': bool(checked) and os.access(checked, os.W_OK), 'checked': checked,
+            'keys': None, 'journal': os.path.isfile(os.path.join(folder, 'journal.jsonl')),
+            'read_only': read_only, 'error': error}
+
+
 def _store_info():
     """The store path open() would use, and whether its folder can be written. Creates
-    nothing."""
+    nothing. A store URL is not contacted (see _remote_store_info)."""
+    from .backends.url import is_store_url
     env_value = os.environ.get('MENDWRIGHT_STORE')
+    if is_store_url(env_value):
+        return _remote_store_info(env_value)
     raw = env_value or DEFAULT_STORE_PATH
     path = os.path.abspath(os.path.expanduser(raw))
     folder = os.path.dirname(path)
@@ -271,6 +319,8 @@ def _env_info():
         elif name.upper() == 'MENDWRIGHT_RUN_ID':
             from .journal import valid_run_id
             out[name] = value if valid_run_id(value) else repr(value)   # no escape reaches a terminal
+        elif name.upper() == 'MENDWRIGHT_STORE' and _store_url_shown(value) is not None:
+            out[name] = _store_url_shown(value)
         elif name.upper() in _SHOWN_VALUES:
             # A secret pasted into the wrong variable stays hidden. A variable's own value is
             # safe to print, even when its name reads as a secret's (MENDWRIGHT_AUTH_HEADER).
@@ -280,16 +330,51 @@ def _env_info():
     return out
 
 
+def _store_url_shown(value):
+    """MENDWRIGHT_STORE as doctor shows it when it is a store URL: as mendwright names the
+    store, or a note for one it refuses, which can hold a credential. None for a path."""
+    from .backends.url import is_store_url, store_url
+    if not is_store_url(value):
+        return None
+    try:
+        return store_url(value)
+    except ValueError:
+        return '(a store URL mendwright refuses, value hidden)'
+
+
 def _settings_problems():
     from .facade import _env_timeout
     problems = []
+    from .backends.url import is_store_url, store_url
+    store = os.environ.get('MENDWRIGHT_STORE')
+    if is_store_url(store):
+        try:
+            store_url(store)
+        except ValueError as exc:
+            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc))
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
-                 'MENDWRIGHT_HEAL_GET_BY'):
+                 'MENDWRIGHT_SUGGEST_GET_BY', 'MENDWRIGHT_STORE_READ_ONLY'):
         problem, _ = _flag_problem(name)
         if problem:
             problems.append(problem)
+    from .facade import get_by_env
+    try:
+        get_by_env()
+    except ValueError as exc:
+        problems.append(str(exc))
     try:
         _env_timeout()
+    except ValueError as exc:
+        problems.append(str(exc))
+    from .facade import RATE_DEFAULTS, rate_setting
+    for rate in RATE_DEFAULTS:
+        try:
+            rate_setting(rate)
+        except ValueError as exc:
+            problems.append(str(exc))
+    from .fleet import decline_ttl_setting
+    try:
+        decline_ttl_setting()
     except ValueError as exc:
         problems.append(str(exc))
     from .journal import run_id, run_id_problem
@@ -312,14 +397,15 @@ def collect_doctor():
     import lxml.etree
     from . import __file__ as package_file
     libxml2 = '.'.join(str(p) for p in getattr(lxml.etree, 'LIBXML_VERSION', ()))
+    provider, fingerprint = _provider_info(), _fingerprint_info()
     return {
         'mendwright': {'version': _version(), 'path': os.path.dirname(package_file)},
         'python': {'version': sys.version.split()[0], 'executable': sys.executable},
         'lxml': {'version': getattr(lxml, '__version__', None), 'libxml2': libxml2 or None},
         'browser_libraries': _browser_libraries(),
-        'provider': _provider_info(),
-        'fingerprint': _fingerprint_info(),
-        'get_by': _get_by_info(),
+        'provider': provider,
+        'fingerprint': fingerprint,
+        'get_by': _get_by_info(provider, fingerprint),
         'store': _store_info(),
         'run': _run_info(),
         'env': _env_info(),
@@ -364,7 +450,8 @@ def _doctor_text(d):
         else:
             lines.append('  none configured, so a broken selector is reported but not repaired.')
         lines.append(_wrap('Why: ' + p['reason']))
-        lines.append('  `mendwright demo` works without one (it uses a scripted reply).')
+        lines.append('  `mendwright demo --scripted` works without one (it uses a scripted '
+                     'reply).')
     if p['env_set']:
         lines.append('  provider variables set: ' + ', '.join(p['env_set']) + ' (values not shown)')
     if p['disabled']:
@@ -388,12 +475,34 @@ def _doctor_text(d):
 
     g = d.get('get_by') or {}
     lines.append('get_by_* locators')
-    if g.get('heals'):
+    on = bool(f.get('enabled'))
+    asks = bool(g.get('model')) and _model_heals(d.get('provider') or {})
+    if g.get('heals') and g.get('model'):
+        if on and asks:
+            how = ('is healed from its fingerprint, or by the model provider when the fingerprint '
+                   'does not heal it; a get_by_role() call that never matched, by the model '
+                   'provider.')
+        elif asks:
+            how = ('is healed by the model provider, since the fingerprint tier is off; a call '
+                   'that never matched, only when it is a get_by_role() call.')
+        else:
+            how = ('is healed from its fingerprint only, since no model provider is '
+                   'configured.')
+        lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=model): a heal.page.get_by_*() call '
+                           'that matches nothing ' + how))
+    elif g.get('heals'):
         lines.append(_wrap('healed (MENDWRIGHT_HEAL_GET_BY=1): a heal.page.get_by_*() call that '
                            'matches nothing is healed from its fingerprint, never by a model.'))
     elif g.get('enabled'):
-        lines.append(_wrap('routed (MENDWRIGHT_HEAL_GET_BY=1), but the fingerprint tier is off, '
-                           'so a get_by_* call that breaks is reported, not healed.'))
+        if f.get('source') == 'MENDWRIGHT_DISABLE':
+            why = 'MENDWRIGHT_DISABLE is on'
+        elif g.get('model'):
+            why = 'the fingerprint tier is off and no model provider is configured'
+        else:
+            why = 'the fingerprint tier is off'
+        lines.append(_wrap('routed (MENDWRIGHT_HEAL_GET_BY=' + ('model' if g.get('model') else '1')
+                           + '), but ' + why + ', so a get_by_* call that breaks is reported, '
+                           'not healed.'))
     else:
         why = 'default' if g.get('source') != 'MENDWRIGHT_HEAL_GET_BY' else 'MENDWRIGHT_HEAL_GET_BY=0'
         lines.append(_wrap('not healed (' + why + '): heal.page.get_by_role() and the other '
@@ -405,6 +514,11 @@ def _doctor_text(d):
 
     s = d['store']
     lines.append('Store (where mendwright.open() saves heals)')
+    if s.get('remote'):
+        lines.extend(_remote_store_lines(s))
+        _doctor_run_lines(lines, d)
+        _doctor_env_lines(lines, d)
+        return lines
     origin = ('from MENDWRIGHT_STORE' if s['source'] == 'MENDWRIGHT_STORE'
               else 'default, relative to this folder; set MENDWRIGHT_STORE to change it')
     lines.append('  ' + s['path'])
@@ -427,6 +541,32 @@ def _doctor_text(d):
     else:
         lines.append('  ' + str(s['checked'] or s['folder']) + ' is NOT writable, so heals '
                      'stay in memory. Set MENDWRIGHT_STORE to a writable path.')
+    _doctor_run_lines(lines, d)
+    _doctor_env_lines(lines, d)
+    return lines
+
+
+def _remote_store_lines(s):
+    """doctor's lines for a remote store (see _remote_store_info)."""
+    if s['error']:
+        return ['  MENDWRIGHT_STORE is a store URL mendwright refuses: ' + s['error'] + '.']
+    lines = ['  ' + s['path'],
+             '  (a remote store, from MENDWRIGHT_STORE; doctor does not contact it, and '
+             'mendwright report, fix, check, lists and notify do not read it yet)']
+    if s['read_only']:
+        lines.append('  read-only worker (MENDWRIGHT_STORE_READ_ONLY): heals are adopted from '
+                     'it, never written to it')
+    journal = os.path.join(s['folder'], 'journal.jsonl')
+    lines.append('  the journal of this machine: ' + journal + (
+        ' (MENDWRIGHT_JOURNAL_DIR)' if os.environ.get('MENDWRIGHT_JOURNAL_DIR')
+        else ' (set MENDWRIGHT_JOURNAL_DIR to change it)'))
+    if not s['writable']:
+        lines.append('  ' + str(s['checked'] or s['folder']) + ' is NOT writable, so the '
+                     'journal is not written. Set MENDWRIGHT_JOURNAL_DIR to a writable folder.')
+    return lines
+
+
+def _doctor_run_lines(lines, d):
     run = d.get('run') or {}
     if run.get('id'):
         lines.append('  run id for the journal: ' + run['id'] + (
@@ -437,6 +577,8 @@ def _doctor_text(d):
                      'events)')
     lines.append('')
 
+
+def _doctor_env_lines(lines, d):
     lines.append('Environment')
     if d['env']:
         for name, value in d['env'].items():
@@ -448,7 +590,6 @@ def _doctor_text(d):
         lines.append('Problems')
         for problem in d['problems']:
             lines.append(_wrap(problem))
-    return lines
 
 
 def cmd_doctor(args):
@@ -809,9 +950,82 @@ def _report_md(r):
     return lines
 
 
+def remote_refusal(command, value):
+    """The one line `mendwright <command>` prints for value, the store it was given, when that is
+    a store URL (see mendwright.remote): the commands that read a store file do not read a remote
+    store yet, and how to download one and run the command on the copy. None for a local path.
+    The line never quotes a URL mendwright refuses, which can hold a credential."""
+    from .backends.url import is_store_url, store_url
+    if not is_store_url(value):
+        return None
+    head = 'mendwright ' + command + ': '
+    try:
+        url = store_url(value)
+    except ValueError as exc:
+        return head + str(exc) + '.'
+    if url == 'memory:':
+        return (head + 'memory: is a store in the memory of one process, which this command '
+                'cannot read. Pass --store with the path of a store file.')
+    copy = _copy_path()
+    if url.startswith('s3://'):
+        how = 'aws s3 cp ' + url + 'overrides.json ' + copy
+    else:
+        how = _https_download(url, copy)
+    if command in ('lists accept', 'lists reject'):
+        then = ('mendwright lists --store ' + copy + ' to see its list heals. Accepting or '
+                'rejecting one in a remote store is not supported yet, and a copy uploaded over '
+                'a store that workers write would lose their changes')
+    else:
+        then = 'mendwright ' + command + ' --store ' + copy
+    return (head + "remote stores aren't supported by this command yet (" + url + '). Download '
+            'the store next to this machine\'s journal and run the command on the copy: ' + how
+            + ', then ' + then + '.')
+
+
+def _https_download(url, copy, windows=None):
+    """The command that downloads the overrides.json of the HTTPS store url to copy, with the
+    token mendwright reads: MENDWRIGHT_STORE_TOKEN, or the file MENDWRIGHT_STORE_TOKEN_FILE
+    names. The command reads the variable, so neither the token nor the file's path is
+    written out. In PowerShell on Windows (windows=None: this machine's), else for a POSIX
+    shell."""
+    windows = _on_windows() if windows is None else windows
+    from_file = bool(os.environ.get('MENDWRIGHT_STORE_TOKEN_FILE'))
+    if windows:
+        token = ('$((Get-Content -Raw $env:MENDWRIGHT_STORE_TOKEN_FILE).Trim())' if from_file
+                 else '$env:MENDWRIGHT_STORE_TOKEN')
+        return ('Invoke-WebRequest -UseBasicParsing -Headers @{Authorization = "Bearer ' + token
+                + '"} -OutFile ' + copy + ' ' + url + 'overrides.json')
+    token = '$(cat "$MENDWRIGHT_STORE_TOKEN_FILE")' if from_file else '$MENDWRIGHT_STORE_TOKEN'
+    return ('curl -fsS -o ' + copy + ' -H "Authorization: Bearer ' + token + '" ' + url
+            + 'overrides.json')
+
+
+def _on_windows():
+    return os.name == 'nt'
+
+
+def _copy_path():
+    """Where remote_refusal() suggests a copy of a remote store: overrides.json in the folder
+    of this machine's journal of a remote store (see facade.journal_dir), relative to here when
+    it is under here."""
+    from .facade import journal_dir
+    folder = journal_dir()
+    try:
+        relative = os.path.relpath(folder)
+    except ValueError:      # another drive on Windows
+        relative = folder
+    if not relative.startswith('..'):
+        folder = relative
+    return os.path.join(folder, 'overrides.json').replace('\\', '/')
+
+
 def _find_store(command, args):
     """The store path for `mendwright <command>` (--store, MENDWRIGHT_STORE or the default),
-    or None after printing why there is none."""
+    or None after printing why there is none (for a store URL, see remote_refusal)."""
+    refusal = remote_refusal(command, args.store or os.environ.get('MENDWRIGHT_STORE'))
+    if refusal is not None:
+        _err(refusal)
+        return None
     path = (os.path.abspath(os.path.expanduser(args.store)) if args.store
             else default_store_path())
     if os.path.isfile(path):
@@ -1049,6 +1263,9 @@ def cmd_notify(args, *, http=None, sleep=None, clock=None):
             _out('::warning title=mendwright notify::' + _escape_command(text))
         return 1 if args.fail_on_error else 0
 
+    refusal = remote_refusal('notify', args.store or env.get('MENDWRIGHT_STORE'))
+    if refusal is not None:
+        return refuse(refusal)
     store = (os.path.abspath(os.path.expanduser(args.store)) if args.store
              else default_store_path())
     journal = os.path.join(os.path.dirname(store), 'journal.jsonl')
@@ -1678,7 +1895,8 @@ def _lists_edit(args, path, action):
 def cmd_lists(args):
     if getattr(args, 'action_store', None):
         args.store = args.action_store          # the action's --store wins
-    path = _find_store('lists', args)
+    action = getattr(args, 'lists_command', None)
+    path = _find_store('lists ' + action if action in ('accept', 'reject') else 'lists', args)
     if path is None:
         return 1
     action = getattr(args, 'lists_command', None)
@@ -1714,7 +1932,7 @@ def cmd_model_install(args):
 
 def cmd_demo(args):
     from .demo import run
-    return run(browser=args.browser, keep=args.keep, slow=args.slow, live=args.live)
+    return run(browser=args.browser, keep=args.keep, scripted=args.scripted)
 
 
 # --- wiring ----------------------------------------------------------------------------
@@ -1732,24 +1950,25 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', metavar='<command>')
 
     demo = sub.add_parser(
-        'demo', help='watch a broken selector get healed (offline, no key needed)',
-        description='A redesign breaks two selectors on a checkout page. mendwright heals the '
-                    'checkbox and refuses to heal the pay button. Runs offline with a stand-in '
-                    'page and a scripted model reply (no API call); --live asks the model '
-                    'provider from the environment instead. Writes only to a temp folder, '
-                    'which is removed afterwards.')
+        'demo', help='watch your model repair a selector a redesign broke',
+        description='A redesign breaks two selectors on a checkout page. mendwright asks the '
+                    'model provider from your environment (the one mendwright doctor shows) '
+                    'to repair the checkbox, checks the repair on the page, and refuses to '
+                    'repair the pay button, which is marked destructive. It prints '
+                    "mendwright's own log lines from the run. Only the demo page is sent. "
+                    '--scripted uses a canned reply instead, with no model call. Writes only '
+                    'to a temp folder, which is removed afterwards.')
     demo.add_argument('--browser', nargs='?', const='chromium', choices=BROWSERS,
                       metavar='{chromium,firefox,webkit}',
                       help='run the same story in a real headless Playwright browser '
                            '(default: chromium). Needs Playwright and that browser installed.')
     demo.add_argument('--keep', action='store_true',
                       help='keep the temp store and journal, and print where they are')
-    demo.add_argument('--slow', action='store_true',
-                      help='pause between lines, for recording a terminal session')
-    demo.add_argument('--live', action='store_true',
-                      help='ask the model provider from the environment (the one '
-                           'mendwright doctor shows) instead of the scripted reply. Makes a '
-                           'real API call and sends the demo page to that provider.')
+    demo.add_argument('--scripted', action='store_true',
+                      help='use a canned model reply instead of your provider: no model '
+                           'call, no key needed')
+    # The model from the environment is the default now; --live stays for old scripts.
+    demo.add_argument('--live', action='store_true', help=argparse.SUPPRESS)
     demo.set_defaults(handler=cmd_demo)
 
     doctor = sub.add_parser(

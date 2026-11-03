@@ -6,13 +6,24 @@
 // - Candidates from code come first, in the order the code passes them; older code
 //   selectors become 'superseded', and heals stay behind as fallbacks.
 // - Only 'active' candidates are tried. 'quarantined' and 'superseded' ones stay in the file,
-//   and so do the list heals ('proposed', 'accepted') the Python package keeps for a person
-//   to check: this package never tries or changes those.
+//   and so do the list heals ('proposed', 'accepted') a lookup with nonempty: true saves for a
+//   person to check, as the Python package saves them (see lists.ts): no lookup tries those,
+//   and only the Python package's mendwright lists accepts one.
+// - destructiveKeys: a key written as a getBy* call in another spelling, such as
+//   get_by_role('button', name='Pay'), marks the call's key too (getby.canonicalKey). One
+//   written on an object, such as page.get_by_role(...), does not, and is named in a WARNING.
 // - Per-key metadata: expectedRole, expectedText, destructive, lastPage and pages, lastUrl,
 //   steps, intent, fingerprint, listFingerprint and shadowHosts (where the element was
 //   found, see shadow.ts), written only when one of them changes.
 // - A candidate the Python package saved inside an iframe or an open shadow root keeps its
-//   frameXPath, css and shadowHosts, in a three-way merge of their own.
+//   frameXPath, css and shadowHosts, and a heal the Python package saved with a get_by twin
+//   (Python 0.11) keeps its getBy, in a three-way merge of their own. This package never runs
+//   css or getBy: mendwright fix reads them.
+// - A field of a candidate or of a key's entry that this package doesn't know, such as one a
+//   later version of either package writes, is kept as the file has it: the file's value at
+//   each write, never one of this process's own. The store reads only overrides.json in its
+//   folder, so the per-key records the Python package 0.11 keeps in keys/ next to it are left
+//   alone.
 // - Writes take the lock file overrides.json.lock, take in what other processes (Python or
 //   TypeScript, other Playwright Test workers) wrote since the last read with a three-way
 //   merge, and replace the file atomically. On a conflict 'quarantined' wins, then
@@ -30,8 +41,10 @@ import * as path from 'node:path';
 import { StoreReadError } from './errors';
 import { valid as validFingerprint, type Fingerprint } from './fingerprint';
 import { pageUrl } from './flow';
+import { canonicalKey, onObjectWarning } from './getby';
+import { validList, type ListFingerprint } from './lists';
 import { log } from './log';
-import { compactJson, nowIso } from './py';
+import { compactJson, nowIso, pyRepr, pySorted } from './py';
 import { inferRole } from './roles';
 import { frameSpelling } from './selectors';
 import { savedHosts, textHosts, type Hosts } from './shadow';
@@ -45,6 +58,7 @@ export interface Candidate {
   frameXPath?: string;
   css?: string;
   shadowHosts?: Hosts;
+  getBy?: string;
   list?: boolean;
   proposal?: Record<string, unknown>;
   acceptedAt?: string;
@@ -93,10 +107,40 @@ type MetaField = typeof META_FIELDS[number];
 type Meta = Partial<Record<MetaField, unknown>>;
 
 export const MAX_PAGES = 5;
+/** How many step names setLastStep() keeps per key, most recent first. */
+export const MAX_STEPS = 5;
 const LIST_WAITING = ['proposed', 'accepted'];
 const MAX_LIST_HEALS = 3;
-const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts'] as const;
-type Place = [string, string, string];
+const PLACE_FIELDS = ['frameXPath', 'css', 'shadowHosts', 'getBy'] as const;
+type Place = [string, string, string, string];
+
+// The fields of a candidate this package reads and writes. Any other field of one is kept
+// as the file has it (see unknownFields).
+const ROW_FIELDS = new Set(['xpath', 'source', 'addedAt', 'lastSucceededAt', 'status', 'frameXPath', 'css',
+  'shadowHosts', 'getBy', 'list', 'proposal', 'acceptedAt']);
+// The fields of a key's entry this package reads: its metadata and candidates, and those a
+// schema-1 file or a new entry has, which neither package writes to overrides.json.
+const ENTRY_FIELDS = new Set<string>([...META_FIELDS, 'candidates', 'maxCandidates', 'stage', 'action']);
+
+/** The fields of a candidate or an entry (known: ROW_FIELDS or ENTRY_FIELDS) that this
+ * package doesn't know, as a copy. */
+function unknownFields(row: Record<string, unknown>, known: Set<string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(row)) {
+    if (!known.has(field) && value !== undefined) out[field] = clone(value);
+  }
+  return out;
+}
+
+/** Give mine the fields of theirs, a candidate or an entry as the file has it, that this
+ * package doesn't know, in place of its own: it never changes them, so the file's are the
+ * latest, and one a process that doesn't know it dropped stays dropped. */
+function takeUnknown(mine: Record<string, unknown>, theirs: Record<string, unknown>, known: Set<string>): void {
+  for (const field of Object.keys(mine)) {
+    if (!known.has(field)) delete mine[field];
+  }
+  Object.assign(mine, unknownFields(theirs, known));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -118,6 +162,49 @@ function clone<T>(value: T): T {
  * synchronous, as the Python package's are. */
 function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Where open() keeps the store when neither storePath nor MENDWRIGHT_STORE says. */
+export const DEFAULT_STORE_PATH = './.mendwright/overrides.json';
+
+/** The store a command names with no --store: MENDWRIGHT_STORE, else DEFAULT_STORE_PATH, as an
+ * absolute path (the Python package's cli.default_store_path). */
+export function defaultStorePath(): string {
+  return path.resolve(expandPath(process.env.MENDWRIGHT_STORE || DEFAULT_STORE_PATH));
+}
+
+/** ' --store "FILE"' for a command a message tells you to run on the store at file, or '' when
+ * file is the default store (the Python package's cli.store_flag). */
+export function storeFlag(file: string): string {
+  const normcase = (p: string) => (process.platform === 'win32' ? p.toLowerCase().replace(/\//g, '\\') : p);
+  return normcase(path.resolve(file)) === normcase(defaultStorePath()) ? '' : ' --store "' + file + '"';
+}
+
+// A store URL as the Python package 0.11 reads one in MENDWRIGHT_STORE (backends.url's
+// is_store_url): a scheme of two or more letters and a colon, so C:\store is a path.
+const STORE_URL = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+
+/** Whether value is written as a store URL (s3://, https://, memory: and the like), which the
+ * Python package 0.11 opens as a remote store and this package does not. */
+export function isStoreUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const found = STORE_URL.exec(value);
+  return found !== null && found[1].length > 1;
+}
+
+/** file, a store path that where (storePath, mendwrightStore or MENDWRIGHT_STORE) gave, with
+ * '~' expanded. A store URL throws TypeError: this package keeps its store in a local file
+ * only, and taking the URL for a path would write a store nobody reads to a folder named after
+ * it. The message names the scheme only, since a URL can hold a token. */
+export function localStorePath(file: string, where: string): string {
+  if (isStoreUrl(file)) {
+    const scheme = (STORE_URL.exec(file) as RegExpExecArray)[1].toLowerCase();
+    throw new TypeError('mendwright: ' + where + ' is a ' + scheme + ': store URL, and mendwright for TypeScript keeps '
+      + 'its store in a local file only (the Python package 0.11 reads a store at a URL). Set ' + where
+      + ' to the path of a local overrides.json'
+      + (where === 'MENDWRIGHT_STORE' ? ', or pass storePath (mendwrightStore for the fixtures), which comes first.' : '.'));
+  }
+  return expandPath(file);
 }
 
 /** A path with '~' expanded. */
@@ -254,12 +341,8 @@ function validUrl(value: unknown): value is string {
   return typeof value === 'string' && Boolean(value) && pageUrl(value) === value;
 }
 
-// The Python package's lists.valid(): a list fingerprint it can score. This package never
-// makes or uses one, but keeps a valid one when it writes the file.
-function validListFingerprint(lfp: unknown): boolean {
-  return isRecord(lfp) && lfp.v === 1 && typeof lfp.count === 'number' && Number.isInteger(lfp.count)
-    && lfp.count >= 2 && Array.isArray(lfp.items) && lfp.items.length > 0 && lfp.items.every(validFingerprint);
-}
+// A list fingerprint the Python package's lists.valid() can score (see lists.ts).
+const validListFingerprint = validList;
 
 /** The saved metadata of one entry of the file, with malformed values dropped. */
 function metaFields(entry: unknown): Meta {
@@ -350,7 +433,7 @@ function mergeMeta(mine: Meta, theirs: Meta, base: Meta): Meta {
     else if (same(t, b)) value = m;
     else if (field === 'destructive') value = Boolean(m) || Boolean(t);
     else if (field === 'pages' || field === 'steps') {
-      const both = [...new Set([...pagesOf(m), ...pagesOf(t)])].slice(0, MAX_PAGES);
+      const both = [...new Set([...pagesOf(m), ...pagesOf(t)])].slice(0, field === 'pages' ? MAX_PAGES : MAX_STEPS);
       value = both.length ? both : undefined;
     } else value = m;
     if (value !== undefined && value !== null) out[field] = value;
@@ -383,6 +466,16 @@ function sortedDesc<T>(items: T[], key: (item: T) => unknown[]): T[] {
 export interface StoreOptions {
   destructiveKeys?: Iterable<string>;
   readOnly?: boolean;
+  /** Where the WARNING for a destructive key written as a getBy* call on an object goes
+   * (default: the log). */
+  warn?: (message: string) => void;
+}
+
+/** keys and, for each written as a getBy* call in another spelling, the call's key (the Python
+ * package's store reads destructive_keys= so). */
+function destructiveSet(keys: Iterable<string> | undefined): Set<string> {
+  const given = [...(keys ?? [])];
+  return new Set([...given, ...given.map((key) => canonicalKey(key))]);
 }
 
 export class SelectorStore {
@@ -412,7 +505,14 @@ export class SelectorStore {
     this.data = data;
     this.overridePath = path.resolve(expandPath(overridePath));
     this.readOnly = Boolean(options.readOnly);
-    this.destructiveKeys = new Set(options.destructiveKeys ?? []);
+    // A key written as a getBy* call in another spelling marks the call's key too. One written
+    // on an object, such as page.get_by_role(...), does not, and is logged.
+    const marked = [...(options.destructiveKeys ?? [])];
+    for (const key of pySorted(marked.filter((k) => typeof k === 'string'))) {
+      const warning = onObjectWarning('destructiveKeys', key);
+      if (warning !== null) (options.warn ?? ((message: string) => log('warning', message)))(warning);
+    }
+    this.destructiveKeys = destructiveSet(marked);
     for (const [key, entry] of Object.entries(options.override?.selectors ?? {})) {
       const fields = metaFields(entry);
       if (Object.keys(fields).length) {
@@ -559,7 +659,8 @@ export class SelectorStore {
    * hosts around it, outermost first (null for a host nothing tells apart), or [] for the
    * page, which removes the field (see shadow.ts). */
   setMeta(key: string, fields: { role?: string; text?: string | string[]; destructive?: boolean;
-                                 intent?: string; fingerprint?: Fingerprint; shadowHosts?: Hosts }): void {
+                                 intent?: string; fingerprint?: Fingerprint; shadowHosts?: Hosts;
+                                 listFingerprint?: ListFingerprint }): void {
     const e = this.entry(key);
     const changed: Meta = {};
     let cleared = false;
@@ -590,6 +691,14 @@ export class SelectorStore {
       }
       e.fingerprint = fields.fingerprint;
       changed.fingerprint = fields.fingerprint;
+    }
+    if (fields.listFingerprint !== undefined) {
+      if (!validList(fields.listFingerprint)) {
+        throw new TypeError("mendwright: setMeta({ listFingerprint }) takes a list fingerprint from mendwright's lists "
+          + 'module.');
+      }
+      e.listFingerprint = fields.listFingerprint;
+      changed.listFingerprint = fields.listFingerprint;
     }
     if (fields.role !== undefined) {
       e.expectedRole = fields.role;
@@ -626,6 +735,23 @@ export class SelectorStore {
       this.meta.set(key, { ...saved, lastPage: page, pages: [...pages] });
       const before = new Set(pagesOf(saved.pages));
       if (before.size !== pages.length || pages.some((p) => !before.has(p))) this.persist();
+    }
+  }
+
+  /** Record that key's element was just found while runSteps() ran the step named step (see
+   * steps.ts). steps keeps the last few distinct names, most recent first, and the file is
+   * written only when the set of names changes, as for setLastPage(). A name that is not a
+   * string, or '', is ignored. */
+  setLastStep(key: string, step: string | null): void {
+    if (typeof step !== 'string' || !step) return;
+    const e = this.entry(key);
+    const steps = [step, ...pagesOf(e.steps).filter((s) => s !== step)].slice(0, MAX_STEPS);
+    e.steps = steps;
+    const saved = this.meta.get(key) ?? {};
+    if (!same(saved.steps, steps)) {
+      this.meta.set(key, { ...saved, steps: [...steps] });
+      const before = new Set(pagesOf(saved.steps));
+      if (before.size !== steps.length || steps.some((s) => !before.has(s))) this.persist();
     }
   }
 
@@ -708,18 +834,31 @@ export class SelectorStore {
     return !wasTop;
   }
 
-  /** Add a candidate for key, or update the one with the same text. frameXPath '' moves
-   * one saved inside an iframe to the page. */
-  addCandidate(key: string, xpath: string, options: { source?: string; frameXPath?: string } = {}): void {
+  /** Add a candidate for key, or update the one with the same text. frameXPath is the
+   * selector of the iframe it runs in: '' moves one saved inside an iframe to the page, and
+   * undefined leaves it where it is. shadowHosts are the selectors of the shadow hosts of the
+   * open shadow root it runs in, outermost first (see shadow.ts): [] moves one out of a shadow
+   * root, and undefined leaves it. */
+  addCandidate(key: string, xpath: string, options: { source?: string; frameXPath?: string; shadowHosts?: Hosts } = {}):
+      void {
     const entry = this.entry(key);
     const found = this.find(key, xpath);
+    const hosts = options.shadowHosts === undefined ? undefined : savedHosts([...options.shadowHosts]);
     if (!found) {
       const c: Candidate = { xpath, source: options.source ?? 'heal', addedAt: nowIso(), lastSucceededAt: null,
                              status: 'active' };
       if (options.frameXPath) c.frameXPath = options.frameXPath;
+      if (hosts && hosts.length) c.shadowHosts = hosts;
       entry.candidates.push(c);
-    } else if (options.frameXPath !== undefined && ((found.frameXPath as string) || '') !== options.frameXPath) {
-      found.frameXPath = options.frameXPath;
+    } else {
+      if (options.frameXPath !== undefined && ((found.frameXPath as string) || '') !== options.frameXPath) {
+        found.frameXPath = options.frameXPath;
+      }
+      // [] stays as a key, so the merge does not take old hosts back from the file; the file
+      // gets no empty shadowHosts.
+      if (hosts !== undefined && JSON.stringify(savedHosts(found.shadowHosts)) !== JSON.stringify(hosts)) {
+        found.shadowHosts = hosts;
+      }
     }
     this.dirty.add(SelectorStore.pair(key, xpath));
     this.persist();
@@ -734,17 +873,149 @@ export class SelectorStore {
     }
   }
 
+  // --- list heals (see lists.ts) ------------------------------------------------------------
+
+  /** Copies of key's list heals that wait (proposed or accepted, see proposeListHeal), the
+   * newest proposal first; rows with no proposal last. */
+  listHeals(key: string): Candidate[] {
+    const rows = (this.data.selectors[key]?.candidates ?? []).filter(isListHeal).map((c) => clone(c));
+    return sortedDesc(rows, proposalOrder);
+  }
+
+  /** Save xpath as a list heal proposed for key (see heal.locatorAll() with nonempty: true),
+   * with the evidence a person checks it by (proposal, see lists.proposalEvidence) and its CSS
+   * form css, and return a copy of the row. The row is inactive ("status": "proposed",
+   * "list": true): no lookup tries it, and only the Python package's mendwright lists accept
+   * accepts it. A row with the same XPath that was proposed or superseded is proposed again with
+   * the new evidence. Throws for a row that is accepted or quarantined, or an active one from
+   * code: those are never proposed (the Python package's propose_list_heal). */
+  proposeListHeal(key: string, xpath: string, options: { css?: string | null; proposal: Record<string, unknown> }):
+      Candidate {
+    const proposal = options.proposal;
+    if (!isRecord(proposal)) throw new TypeError('mendwright: proposeListHeal() takes the proposal as an object');
+    const entry = this.entry(key);
+    const pair = SelectorStore.pair(key, xpath);
+    let c = this.find(key, xpath);
+    if (c === null) {
+      c = { xpath, source: 'heal', addedAt: nowIso(), lastSucceededAt: null, status: 'proposed', list: true };
+      if (options.css) c.css = options.css;
+      c.proposal = clone(proposal);
+      entry.candidates.push(c);
+    } else {
+      const status = c.status ?? 'active';
+      if (status === 'accepted' || status === 'quarantined' || (status === 'active' && c.source !== 'heal')) {
+        throw new Error('mendwright: ' + pyRepr(xpath) + ' is ' + status + ' for ' + pyRepr(key)
+          + ', so it is not proposed again');
+      }
+      if (c.source !== 'seed') c.source = 'heal';
+      c.status = 'proposed';
+      c.list = true;
+      c.proposal = clone(proposal);
+      // An empty css stays as a key, so the merge does not take an old one back.
+      c.css = options.css || '';
+      this.delisted.delete(pair);
+      // Proposed now, whatever the file says another process made it since: an acceptance or a
+      // quarantine there still wins (see mergeStatus).
+      this.base.delete(pair);
+    }
+    this.dirty.add(pair);
+    this.persist();
+    return clone(c);
+  }
+
+  /** Take in what another process did to key's list heals in the file since this store read or
+   * wrote it, such as the Python package's mendwright lists accept or reject: the statuses
+   * 'accepted', 'quarantined' and 'superseded', and acceptedAt, merged as a write merges them,
+   * without writing. So a store loaded before a person accepted or rejected a list heal doesn't
+   * propose it again. Nothing when the file can't be read. */
+  reloadListHeals(key: string): void {
+    const entry = this.data.selectors[key];
+    if (!entry || !(entry.candidates ?? []).some(isListHeal)) return;
+    let disk: StoreData;
+    try {
+      [disk] = readStoreFile(this.overridePath, this.destructiveKeys);
+    } catch {
+      return;
+    }
+    const theirs = disk.selectors?.[key];
+    if (!isRecord(theirs)) return;
+    const mine = new Map(entry.candidates.filter(isListHeal).map((c) => [c.xpath, c]));
+    for (const c of (theirs.candidates as Candidate[]) ?? []) {
+      if (!isRecord(c) || typeof c.xpath !== 'string' || !mine.has(c.xpath)) continue;
+      const local = mine.get(c.xpath) as Candidate;
+      const pair = SelectorStore.pair(key, c.xpath);
+      const status = mergeStatus(local.status ?? 'active', c.status ?? 'active', this.base.get(pair));
+      if (status === local.status || !['accepted', 'quarantined', 'superseded'].includes(status)) continue;
+      local.status = status;
+      if (status === c.status) this.base.set(pair, status);   // as the file has it now
+      if (typeof c.acceptedAt === 'string' && c.acceptedAt
+          && !(typeof local.acceptedAt === 'string' && local.acceptedAt)) {
+        local.acceptedAt = c.acceptedAt;
+      }
+    }
+  }
+
+  /** End key's list heals that selector, which just matched, was replaced by: those whose
+   * proposal names it among the selectors that matched nothing (proposal.was.selectors), and
+   * those with no proposal when selector is one of the key's selectors from code or a seed
+   * file. A proposed one becomes 'superseded', an accepted one 'quarantined': the list was not
+   * broken. Returns [xpath, old status, new status] for each row it changed, and writes the
+   * file only then (the Python package's retire_list_heals). */
+  retireListHeals(key: string, selector: string): [string, string, string][] {
+    const entry = this.data.selectors[key];
+    if (!entry) return [];
+    let own: Set<string> | null = null;
+    const changes: [string, string, string][] = [];
+    for (const c of entry.candidates ?? []) {
+      if (!isListHeal(c)) continue;
+      const evidence = evidenceOf(c);
+      const was = evidence ? (evidence.was || {}) : null;
+      let hit: boolean;
+      if (isRecord(was) && Array.isArray(was.selectors)) {
+        hit = was.selectors.includes(selector);
+      } else {
+        if (own === null) {
+          own = new Set(this.candidates(key).filter((o) => o.source === 'code' || o.source === 'seed').map((o) => o.xpath));
+        }
+        hit = own.has(selector);
+      }
+      if (!hit) continue;
+      const old = c.status as string;
+      c.status = old === 'proposed' ? 'superseded' : 'quarantined';
+      this.dirty.add(SelectorStore.pair(key, c.xpath));
+      changes.push([c.xpath, old, c.status]);
+    }
+    if (changes.length) this.persist();
+    return changes;
+  }
+
   /** Write the file once for every change made inside fn. */
   batch<T>(fn: () => T): T {
     this.batchDepth += 1;
     try {
       return fn();
     } finally {
-      this.batchDepth -= 1;
-      if (!this.batchDepth && this.batchWanted) {
-        this.batchWanted = false;
-        this.persist();
-      }
+      this.endBatch();
+    }
+  }
+
+  /** batch() for an async fn: the file is written once, when the promise it returns settles,
+   * for every change made until then (the Python package's batch() around a lookup that awaits
+   * the page, as its async healer's is). */
+  async batchAsync<T>(fn: () => Promise<T>): Promise<T> {
+    this.batchDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.endBatch();
+    }
+  }
+
+  private endBatch(): void {
+    this.batchDepth -= 1;
+    if (!this.batchDepth && this.batchWanted) {
+      this.batchWanted = false;
+      this.persist();
     }
   }
 
@@ -812,6 +1083,7 @@ export class SelectorStore {
         this.entry(key).candidates = [];
       }
       const mine = this.entry(key);
+      takeUnknown(mine, entry, ENTRY_FIELDS);
       for (const c of (entry.candidates as Candidate[]) ?? []) {
         if (!isRecord(c) || typeof c.xpath !== 'string') continue;
         const id = SelectorStore.pair(key, c.xpath);
@@ -824,6 +1096,7 @@ export class SelectorStore {
         const newest = [local.lastSucceededAt || '', c.lastSucceededAt || ''].sort()[1];
         local.lastSucceededAt = newest || null;
         mergePlace(local, c, this.basePlace.get(id));
+        takeUnknown(local, c, ROW_FIELDS);
         if (this.delisted.has(id)) continue;   // taken over as code here: no list heal any more
         if (c.list === true) local.list = true;
         const theirs = evidenceOf(c);
@@ -870,17 +1143,22 @@ export class SelectorStore {
         if ('frameXPath' in c) item.frameXPath = c.frameXPath;
         if (Array.isArray(c.shadowHosts) && c.shadowHosts.length) item.shadowHosts = [...c.shadowHosts];
         if (typeof c.css === 'string' && c.css) item.css = c.css;
+        if (typeof c.getBy === 'string' && c.getBy) item.getBy = c.getBy;
         if (c.list === true) item.list = true;
         const evidence = evidenceOf(c);
         if (evidence !== null) item.proposal = evidence;
         if (typeof c.acceptedAt === 'string' && c.acceptedAt) item.acceptedAt = c.acceptedAt;
+        Object.assign(item, unknownFields(c, ROW_FIELDS));
         overlay.push(item);
       }
       const saved: Record<string, unknown> = {};
       for (const [field, value] of Object.entries(this.meta.get(key) ?? {})) {
         if ((META_FIELDS as readonly string[]).includes(field)) saved[field] = value;
       }
-      if (overlay.length || Object.keys(saved).length) selectors[key] = { ...saved, candidates: overlay } as Entry;
+      const kept = unknownFields(e, ENTRY_FIELDS);
+      if (overlay.length || Object.keys(saved).length || Object.keys(kept).length) {
+        selectors[key] = { ...saved, ...kept, candidates: overlay } as Entry;
+      }
     }
     return { schema: 2, selectors };
   }
@@ -978,12 +1256,13 @@ export function atomicWrite(file: string, text: string): void {
  * directory, and '~' is expanded. */
 export function loadStore(overridePath: string, options: StoreOptions = {}): SelectorStore {
   const file = path.resolve(expandPath(overridePath));
-  const destructive = new Set(options.destructiveKeys ?? []);
+  const marked = [...(options.destructiveKeys ?? [])];
+  const destructive = destructiveSet(marked);
   const [override, native] = readStoreFile(file, destructive);
   const data: StoreData = { schema: 2, selectors: {} };
   for (const [key, entry] of Object.entries(override.selectors)) {
     const rows = Array.isArray(entry?.candidates) ? clone(entry.candidates) : [];
     data.selectors[key] = { ...clone(entry), candidates: rows.filter((c) => isRecord(c) && typeof c.xpath === 'string') } as Entry;
   }
-  return new SelectorStore(data, file, { ...options, destructiveKeys: destructive, override: native ? override : null });
+  return new SelectorStore(data, file, { ...options, destructiveKeys: marked, override: native ? override : null });
 }
