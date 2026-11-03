@@ -331,3 +331,71 @@ def test_a_herd_on_a_decline_scores_the_page_once(tmp_path, make_page, stub_prov
     assert len(calls) == 1 and len(finds) == 1
     assert _count(events, 'heal.requested') == 1
     assert _count(events, 'heal.declined', code='not_here', cached=True) == N - 1
+
+
+SIGN_IN = ("<html><body><main><form id='login'><button id='signin' name='signin' type='submit'>"
+           "Sign in</button></form></main></body></html>")
+# Its only Sign in button sits in the desktop navigation, which a stylesheet hides on a phone.
+RESPONSIVE = ("<html><body><main><div class='desktop-only'><form><button name='signin' "
+              "type='submit' class='nav-desktop'>Sign in</button></form></div></main></body>"
+              "</html>")
+
+
+def _hiding(make_page, hidden):
+    """make_page's page, on which a stylesheet hides what is inside class hidden: the live
+    page's is_visible() says so, the HTML doesn't."""
+    found = type(make_page('<html><body></body></html>').locator('body'))
+
+    class Locator(found):
+        def is_visible(self):
+            els = self._elements()
+            if len(els) == 1 and any(hidden in (node.get('class') or '').split()
+                                     for node in (els[0], *els[0].iterancestors())):
+                return False
+            return super().is_visible()
+
+    class Page(make_page):
+        def locator(self, selector):
+            return Locator(self, selector)
+    return Page
+
+
+def test_a_decline_made_where_the_live_page_hid_the_element_leaves_the_tier_to_heal_it(
+        tmp_path, make_page, stub_provider):
+    # One page path and the same HTML on a phone and a desktop. On the phone the tier finds
+    # no visible match and the model declines; on the desktop the tier, which asked the live
+    # page then, heals from the fingerprint.
+    path = _store(tmp_path)
+    mendwright.open(make_page(SIGN_IN, url=URL, fingerprints=True), provider=stub_provider(None),
+                    store_path=path, timeout_ms=0, fingerprint=True
+                    ).locator('signin', '#signin', role='button').click()
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    release.set()
+    phone = mendwright.open(_hiding(make_page, 'desktop-only')(RESPONSIVE, url=URL,
+                                                               fingerprints=True),
+                            provider=Declining(calls, release, changed), store_path=path,
+                            timeout_ms=0, fingerprint=True)
+    with pytest.raises(AttentionRequired):
+        phone.locator('signin', '#signin').click()
+    desktop = mendwright.open(make_page(RESPONSIVE, url=URL, fingerprints=True),
+                              provider=Declining(calls, release, changed), store_path=path,
+                              timeout_ms=0, fingerprint=True)
+    desktop.locator('signin', '#signin').click()
+    assert len(calls) == 1 and [h.source for h in desktop.heals] == ['fingerprint']
+
+
+def test_a_worker_with_no_model_gets_its_own_decline_not_another_s(tmp_path, make_page,
+                                                                    stub_provider):
+    path = _fingerprinted(tmp_path, make_page, stub_provider)
+    calls, release, changed = [], threading.Event(), threading.Condition()
+    release.set()
+    with pytest.raises(AttentionRequired):
+        mendwright.open(make_page(GONE, url=URL, fingerprints=True),
+                        provider=Declining(calls, release, changed), store_path=path,
+                        timeout_ms=0, fingerprint=True).locator(KEY, CODE).check()
+    alone = mendwright.open(make_page(GONE, url=URL, fingerprints=True), provider=None,
+                            store_path=path, timeout_ms=0, fingerprint=True)
+    with pytest.raises(AttentionRequired, match='no model provider is configured'):
+        alone.locator(KEY, CODE).check()
+    declined = [e for e in _journal(tmp_path) if e['event'] == 'heal.declined']
+    assert declined[-1]['code'] == 'no_provider' and 'cached' not in declined[-1]

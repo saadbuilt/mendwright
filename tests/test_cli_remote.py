@@ -142,3 +142,13 @@ def test_doctor_hides_a_store_url_it_refuses(capsys, monkeypatch):
     assert 'MENDWRIGHT_STORE=(a store URL mendwright refuses, value hidden)' in out
     assert cli.main(['doctor', '--json']) == 0
     assert 'SECRETVALUE' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('url', [
+    'https://user:SECRETVALUE@store.example/x/', 'https://store.example/x/?token=SECRETVALUE',
+    'gs://SECRETVALUE/x/',
+])
+def test_doctor_lists_a_store_url_it_refuses_as_one_sentence(url, monkeypatch):
+    monkeypatch.setenv('MENDWRIGHT_STORE', url)
+    [problem] = [p for p in cli._settings_problems() if 'MENDWRIGHT_STORE' in p]
+    assert problem.endswith('.') and not problem.endswith('..') and 'SECRETVALUE' not in problem

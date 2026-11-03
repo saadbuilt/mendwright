@@ -77,12 +77,6 @@ def _err(text):
     write_line(text, sys.stderr)
 
 
-def _ended(text):
-    """text with a period at its end, unless it has one: some reasons end in a sentence of
-    their own."""
-    return text if text.endswith('.') else text + '.'
-
-
 def _wrap(text, indent='  ', width=88):
     return textwrap.fill(text, width=width, initial_indent=indent, subsequent_indent=indent,
                          break_long_words=False, break_on_hyphens=False)
@@ -357,7 +351,8 @@ def _settings_problems():
         try:
             store_url(store)
         except ValueError as exc:
-            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc))
+            problems.append('MENDWRIGHT_STORE is not a store URL mendwright takes: ' + str(exc)
+                            + '.')
     for name in ('MENDWRIGHT_DRY_RUN', 'MENDWRIGHT_DISABLE', 'MENDWRIGHT_FINGERPRINT',
                  'MENDWRIGHT_SUGGEST_GET_BY', 'MENDWRIGHT_STORE_READ_ONLY'):
         problem, _ = _flag_problem(name)
@@ -555,7 +550,7 @@ def _doctor_text(d):
 def _remote_store_lines(s):
     """doctor's lines for a remote store (see _remote_store_info)."""
     if s['error']:
-        return ['  MENDWRIGHT_STORE is a store URL mendwright refuses: ' + _ended(s['error'])]
+        return ['  MENDWRIGHT_STORE is a store URL mendwright refuses: ' + s['error'] + '.']
     lines = ['  ' + s['path'],
              '  (a remote store, from MENDWRIGHT_STORE; doctor does not contact it, and '
              'mendwright report, fix, check, lists and notify do not read it yet)']
@@ -968,7 +963,7 @@ def remote_refusal(command, value):
     try:
         url = store_url(value)
     except ValueError as exc:
-        return head + _ended(str(exc))
+        return head + str(exc) + '.'
     if url == 'memory:':
         return (head + 'memory: is a store in the memory of one process, which this command '
                 'cannot read. Pass --store with the path of a store file.')

@@ -80,12 +80,14 @@ def page_signature(page, selectors):
 
 
 def scored_page(html, fingerprint, role):
-    """What the fingerprint tier's answer on a page depends on, as 64 lowercase hex digits:
-    SHA-256 of the netstrings of the page's HTML, the key's fingerprint (as sorted JSON) and
-    its role. This process keeps it with a decline made after the tier found nothing on that
-    page (Declines.put), so a worker on the same page takes the decline without scoring the
-    page again, and a worker on another variant of the page path still scores its own. It
-    stays in this process: two workers' pages rarely have the same HTML."""
+    """What the fingerprint tier's answer on a page depends on when it asks the live page
+    nothing, as 64 lowercase hex digits: SHA-256 of the netstrings of the page's HTML, the
+    key's fingerprint (as sorted JSON) and its role. This process keeps it with a decline
+    made after the tier found nothing on that page that way (Declines.put), so a worker on
+    the same page takes the decline without scoring the page again, and a worker on another
+    variant of the page path still scores its own. An answer the live page's visibility took
+    part in is never kept: a phone and a desktop can show the same HTML differently. It stays
+    in this process: two workers' pages rarely have the same HTML."""
     import json
     blob = (_netstring(html if isinstance(html, str) else '')
             + _netstring(json.dumps(fingerprint, sort_keys=True, default=str))
