@@ -7,6 +7,10 @@ While the version starts with 0, a minor release can change the public API.
 
 ## [Unreleased]
 
+### Added
+
+- `await proxy.aconfirm(success)` and `await heal.aconfirm_all(success)` on `mendwright.aio`: `confirm()` and `confirm_all()`, awaited. They wait for a step of the healer that runs, then write the store and report to the provider in a worker thread, so a remote store or a gateway doesn't hold up the event loop.
+
 ## [0.11.1] - 2026-11-03
 
 ### Fixed

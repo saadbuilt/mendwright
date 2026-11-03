@@ -580,10 +580,12 @@ def test_the_async_healer_makes_no_store_request_on_its_event_loop(make_page, st
     assert [(op, name) for op, name, thread in backend.threads if thread == loop_thread] == []
 
 
-def test_a_confirm_called_through_to_thread_writes_off_the_event_loop(make_page, stub_provider,
-                                                                      tmp_path):
-    # confirm() and confirm_all() are sync, so they write on the thread that calls them. The
-    # guide tells async code to call them between steps through asyncio.to_thread().
+@pytest.mark.parametrize('call', ['aconfirm', 'aconfirm_all'])
+@pytest.mark.parametrize('success', [False, True])
+def test_aconfirm_and_aconfirm_all_write_and_report_off_the_event_loop(make_page, stub_provider,
+                                                                      tmp_path, call, success):
+    # A quarantine is a request to the store, and a gateway reports the outcome over HTTP:
+    # awaited, neither holds up the event loop, as confirm() and confirm_all() do.
     import asyncio
 
     import mendwright.aio
@@ -591,18 +593,27 @@ def test_a_confirm_called_through_to_thread_writes_off_the_event_loop(make_page,
     backend = Threads()
     _warm(backend.inner, make_page, tmp_path, stub_provider)
     page = make_page(V2, url=URL)
+    provider, reports = stub_provider(HEALED), []
+    provider.report_outcome = lambda key, xpath, ok: reports.append(
+        (key, ok, threading.get_ident()))
 
     async def main():
         heal = await mendwright.aio.open(_Page(page), store=load_store(None, backend),
-                                         provider=stub_provider(HEALED), timeout_ms=0)
+                                         provider=provider, timeout_ms=0)
         box = heal.locator(KEY, CODE, role=ROLE)
         await box.check()
         assert heal.pending() == {KEY: HEALED}
         backend.threads.clear()
-        await asyncio.to_thread(box.confirm, False)
+        if call == 'aconfirm':
+            assert await box.aconfirm(success) is box
+        else:
+            assert await heal.aconfirm_all(success) == 1
         return heal, threading.get_ident()
 
     heal, loop_thread = asyncio.run(main())
-    assert heal.pending() == {} and heal.store.quarantined(KEY) == [HEALED]
-    assert ('put', OVERRIDES) in [(op, name) for op, name, _ in backend.threads]
+    assert heal.pending() == {}
+    assert heal.store.quarantined(KEY) == ([] if success else [HEALED])
+    assert [(key, ok) for key, ok, _ in reports] == [(KEY, success)]
+    assert reports[0][2] != loop_thread
     assert [(op, name) for op, name, thread in backend.threads if thread == loop_thread] == []
+    assert (('put', OVERRIDES) in [(op, name) for op, name, _ in backend.threads]) is not success

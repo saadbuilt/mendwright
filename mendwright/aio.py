@@ -1001,9 +1001,16 @@ class AsyncHealer:
         """Report every pending heal as confirmed (True) or failed (False, which
         quarantines it), and return how many there were. Sync, like Healer.confirm_all();
         call it when no step of this healer is running. Its store writes and the provider's
-        reports run on the calling thread: with a remote store or a gateway, call it through
-        ``await asyncio.to_thread(heal.confirm_all, True)``."""
+        reports run on the calling thread: with a remote store or a gateway, await
+        aconfirm_all() instead."""
         return self._core.confirm_all(success)
+
+    async def aconfirm_all(self, success: bool) -> int:
+        """confirm_all(), awaited: after the step that runs, if one does, and with the store
+        writes and the provider's reports in a worker thread, so the event loop goes on while
+        a remote store or a gateway answers."""
+        async with self._turn():
+            return await _in_thread(self._core.confirm_all, bool(success))
 
     @property
     def heals(self) -> list[HealEvent]:
@@ -2088,11 +2095,18 @@ class AsyncActionProxy:
         """Confirm (True) or quarantine (False) a heal for this key, from a check of your
         own. An element of heal.locator_all() reports nothing, as ActionProxy.confirm()
         says. Sync, like ActionProxy.confirm(): the store write and the provider's report run
-        on the calling thread, so with a remote store or a gateway, call it between steps
-        through ``await asyncio.to_thread(proxy.confirm, False)``."""
+        on the calling thread, so with a remote store or a gateway, await aconfirm() instead."""
         if self._canary:
             _canary_call(self._healer.coordinator.confirm_pending, self._key, bool(success),
                          by='confirm')
+        return self
+
+    async def aconfirm(self, success: bool) -> AsyncActionProxy:
+        """confirm(), awaited: after the step that runs, if one does, and with the store write
+        and the provider's report in a worker thread, so the event loop goes on while a remote
+        store or a gateway answers."""
+        if self._canary:
+            await self._healer._confirm(self._key, bool(success), 'confirm')
         return self
 
     def __getattr__(self, name: str) -> Any:

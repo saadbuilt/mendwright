@@ -1129,7 +1129,7 @@ print(await heal.present("newsletter"))
 - The element is resolved, and healed if needed, when you await an action, a method such as `inner_text()`, or the proxy itself.
 - A `heal.locator(...)` that is never awaited does nothing.
 - `proxy.native` and `proxy.present` raise `RuntimeError` until the proxy has been awaited.
-- `pending()`, `confirm_all()`, `heals` and a proxy's `confirm()` are sync, as on the sync Healer. `confirm_all()` and `confirm()` write the store, and report to the provider, on the thread that calls them. With a [remote store](remote-store.md) or a gateway, call them between steps through `await asyncio.to_thread(heal.confirm_all, True)`, so the event loop goes on meanwhile.
+- `pending()`, `confirm_all()`, `heals` and a proxy's `confirm()` are sync, as on the sync Healer. `confirm_all()` and `confirm()` write the store, and report to the provider, on the thread that calls them. With a [remote store](remote-store.md) or a gateway, await `heal.aconfirm_all(True)` or `proxy.aconfirm(False)` instead: they wait for a step that runs, then do the same in a worker thread, so the event loop goes on meanwhile.
 - `heal.interrupt()`, `cookies=`, `dismiss=True`, `optional=True` and the page guard work as on the sync Healer.
 - `interrupt()` is a plain call. The action is awaited when the interruption is handled, and so is a `run=` function: an async function here (or a plain one that returns an awaitable), with no time limit, and it is cancelled with the step it runs for.
 - Playwright's overlay handler for an interruption is registered by a task on the event loop, in place a moment later. `interrupt(key, None)` removes it the same way, and the changes to one page's handlers run one at a time, in the order of the calls.
