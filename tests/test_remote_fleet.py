@@ -14,7 +14,7 @@ import threading
 from mendwright.backends import key_record_name
 from test_backends_contract import TOKEN
 from test_herd import CODE, KEY, URL, V2, _html
-from test_herd_processes import HEALED, ProcProvider
+from test_herd_processes import HEALED, ProcProvider, _fake_page_class
 
 M, T = 4, 3
 GONE = _html("<p class='note'>You accept the terms on the next page.</p>")
@@ -27,7 +27,7 @@ def _machine(index, url, folder, html, mode, shared):
     os.environ['MENDWRIGHT_JOURNAL_DIR'] = folder
     import mendwright
     import mendwright.fleet as fleet
-    from conftest import FakePage
+    FakePage = _fake_page_class()
     mine = threading.Event()
     healers = []
     for _ in range(T):

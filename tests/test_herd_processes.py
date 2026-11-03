@@ -54,12 +54,27 @@ class ProcProvider:
         pass
 
 
+def _fake_page_class():
+    """FakePage from this folder's conftest.py, for a spawned process. It can't ask pytest for
+    it, and the name conftest can be another folder's: a process copies the run's sys.path, and
+    a whole run under pytest 7 puts tests/browser, with a conftest.py of its own, first."""
+    import importlib.util
+    import pathlib
+    import sys
+    path = pathlib.Path(__file__).resolve().with_name('conftest.py')
+    spec = importlib.util.spec_from_file_location('mendwright_tests_conftest', path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.FakePage
+
+
 def _worker(index, path, html, mode, shared, lease_ttl):
     """One process: T Healers on the shared store file look KEY up at once."""
     import itertools
     import mendwright
     import mendwright.fleet as fleet
-    from conftest import FakePage
+    FakePage = _fake_page_class()
     if lease_ttl:
         fleet.LEASE_TTL = lease_ttl
     mine = threading.Event()
