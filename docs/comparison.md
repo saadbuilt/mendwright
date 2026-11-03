@@ -13,7 +13,7 @@ mendwright's own accuracy without a model is measured on its [47-case benchmark]
 
 | Tool | Version | What it is |
 |---|---|---|
-| mendwright | 0.11.0 | Python library. Repairs a broken selector at run time from a saved fingerprint of the element, or with a model when that match isn't confident, checks the new XPath locally, saves it. |
+| mendwright | 0.11.1 | Python library. Repairs a broken selector at run time from a saved fingerprint of the element, or with a model when that match isn't confident, checks the new XPath locally, saves it. |
 | [Healenium](https://healenium.io/docs/overview) (open source) | healenium-web 3.6.0, hlm-proxy 2.2.1 | Java library, or a proxy for any Selenium client. Tree similarity against a stored baseline, no LLM. |
 | [robotframework-heal](https://github.com/manykarim/robotframework-heal) | 0.4.0 | Robot Framework listener. Deterministic candidates first, then an LLM pick. |
 | [robotframework-selfhealing-agents](https://github.com/MarketSquare/robotframework-selfhealing-agents) | 0.1.7 | Robot Framework library. An LLM multi-agent workflow repairs locators. |
@@ -108,7 +108,7 @@ mendwright's optional gateway mode adds 1: a Cloudflare Worker with a KV binding
 
 | Package | Version | Compressed wheels | Packages | Note |
 |---|---|---|---|---|
-| mendwright | 0.11.0 | 4.58 MB | 2 | mendwright and lxml. 5.68 MB on Linux x86_64. See [Methodology](#mendwright-wheel). |
+| mendwright | 0.11.1 | 4.58 MB | 2 | mendwright and lxml. 5.68 MB on Linux x86_64. See [Methodology](#mendwright-wheel). |
 | [stagehand](https://pypi.org/pypi/stagehand/4.2.0/json) | 4.2.0 | 4.26 MB | 17 | No Playwright dependency; it drives a Chrome you install. |
 | [robotframework-selfhealing-agents](https://pypi.org/pypi/robotframework-selfhealing-agents/0.1.7/json) | 0.1.7 | 17.45 MB | 53 | 37.08 MB in 59 packages with Robot Framework and browser libraries. |
 | [robotframework-heal](https://pypi.org/pypi/robotframework-heal/0.4.0/json) | 0.4.0 | 29.77 MB | 82 | 49.69 MB in 89 packages with Robot Framework and browser libraries. |
@@ -144,10 +144,10 @@ Your test runner, your browser and the LLM API are not counted.
 
 ### mendwright wheel
 
-- The 0.11.0 wheel on [PyPI](https://pypi.org/project/mendwright/0.11.0/#files), built by the release workflow (`python -m build`, isolated, on Linux).
-- The wheel is 570,536 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
+- The 0.11.1 wheel, built from a clean `git archive` with `core.autocrlf=false` (`python -m build`) before the release; replaced by the size PyPI serves once it is published.
+- The wheel is 572,477 bytes. Its only runtime dependency is `lxml>=5`, and lxml declares none of its own.
 - The lxml 6.1.3 wheel is 4,005,999 bytes for cp312 win_amd64 and 5,105,247 bytes for manylinux2014 x86_64 ([PyPI](https://pypi.org/pypi/lxml/6.1.3/json)).
-- Totals: 4,576,535 bytes (4.58 MB) on Windows and 5,675,783 bytes (5.68 MB) on Linux.
+- Totals: 4,578,476 bytes (4.58 MB) on Windows and 5,677,724 bytes (5.68 MB) on Linux.
 - The wheel embeds README.md and the package code, so this changes slightly when either does. It is re-measured at release.
 
 ### Other Python packages
